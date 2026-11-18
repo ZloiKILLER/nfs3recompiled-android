@@ -6,7 +6,7 @@
  * GetProcAddress (THRASH_opendll, native_game.cpp).  The port's driver is
  * voodoo2a, every export of it the port's own, in port_thrash.cpp.
  *
- * Each name is checked against what voodoo2a's generated code does with the
+ * Each name is checked against what voodoo2a's code does with the
  * number; only the numbers voodoo2a knows are here, and where a number means
  * something different to voodoo2a than to the Direct3D driver, voodoo2a's
  * meaning is the one given.

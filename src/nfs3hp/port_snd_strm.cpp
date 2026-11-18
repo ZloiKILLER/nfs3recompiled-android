@@ -1,7 +1,12 @@
 #include "port_snd.h"
+#include "port_snd_stream.h"
+#include "port_snd_stream_calls.h"
+#include "native_ea_threads.h"
+#include "native_frontend_wina.h"
 
 #include <cstdint>
 #include <cstring>
+#include <optional>
 
 /* EA's SNDSTRM (cmn\sst.c, cmn\sstrstat.c) and the packet player under it
  * (cmn\spktplay.c), rewritten (port_snd.h says how): what plays a movie's
@@ -15,20 +20,23 @@
  * decoders take the packets from the players, the movie player reads the
  * streams' state); the records below say what is where.  Each function is
  * here as C++ with arguments and a result and, by the name the game's code
- * knows, as the adapter around it.
+ * knows, as the thunk around it.
  *
  * What the code leaves in registers besides eax: only mul64's esi (its movsd
  * leaves it at a copy on its frame) is outside Watcom's rule that a function
- * may trash the registers it is handed arguments in (GAME_CHECKS_CLOBBERS=1
- * shows no other register changed), and the adapters give that back.  Of the
+ * may trash the registers it is handed arguments in, and the thunks give that back.  Of the
  * trashed ones they give back what is still seen: streamMemory's and
- * nextPacket's edx (the player), packetFramesPlayed's edx (the callback's),
- * which the mixer's decoders, native as the code is, carry up in their own
- * exits; the rest -- whatever the last call left in ebx, ecx and edx -- no
- * caller reads: the movie player calls the streams' entries from 0x495bc0,
- * whose only caller (0x4961b5) reads none of them, by the x86's liveness at
- * each call site followed through the returns; the rest of the callers are
- * the module's own. */
+ * nextPacket's edx (the player); packetFramesPlayed's edx (the callback's)
+ * no more -- its frames, as a callback that keeps edx leaves it; the rest --
+ * whatever the last call left in ebx, ecx and edx -- no caller reads: the
+ * movie player calls the streams' entries from 0x495bc0, whose one caller,
+ * 0x4961b5, reads none of them, by the x86's liveness at each call site
+ * followed through the returns; the rest of the callers are the module's
+ * own.
+ *
+ * The movie file's chunk reader the streams take their chunks from is the
+ * menus' (native_frontend_wina.cpp), its typed cores called as C++ (wina
+ * below); the system tasks are the streamer's (port_snd_stream.cpp). */
 namespace nfs3hp
 {
 namespace port
@@ -172,12 +180,11 @@ constexpr Where kRateError{0x55006c, 0x55007c};
 constexpr reg32 kStreamTask = 0x4f3ebc, kStreamRestore = 0x4f3a90;
 constexpr reg32 kFramesCallback = 0x4f3b60, kFreedCallback = 0x4f3b44;
 
-// What they call of the game's: the movie file's chunk reader, the system tasks.
+// What they call of the game's: the movie file's chunk reader, a surface's lock.
 constexpr reg32 kFreeChunk = 0x4d03c0, kNextChunk = 0x4d0300, kQueueBytes = 0x4d0460, kQueueState = 0x4d0490;
 constexpr reg32 kQueueRequest = 0x4cfef0, kQueueRequestWhole = 0x4cffb0, kQueueMake = 0x4cfa80;
 constexpr reg32 kQueueGone = 0x4cfd30, kQueueEmptied = 0x4d0220, kQueueBlock = 0x4d0500;
 constexpr reg32 kQueueChunksAtOnce = 0x4cfdd0;
-constexpr reg32 kAddSystemTask = 0x4e7520, kRemoveSystemTask = 0x4e75e0;
 
 // The chunks' ids ('SCdl' and the others).
 constexpr reg32 kIdData = 0x6c444353, kIdHeader = 0x6c484353, kIdEnd = 0x6c454353, kIdLoop = 0x6c434353;
@@ -185,7 +192,7 @@ constexpr reg32 kIdData = 0x6c444353, kIdHeader = 0x6c484353, kIdEnd = 0x6c45435
 constexpr int32_t kFull = -13;
 constexpr reg32 kMaxQueuedBytes = 0x3d0900;
 
-/* A loop's safepoint, as the generated code has one at each loop's head: the
+/* A loop's safepoint, as the game's code has one at each loop's head: the
  * guest's context handed over when another thread waits for it. */
 void safepoint(App* app, CPU& cpu)
 {
@@ -209,10 +216,52 @@ reg32 playerOf(App* app, int32_t index) { return kPlayers(app, index); }
 /* The request a stream plays. */
 reg32 playingRequest(const Stream& s) { return s.requests + reg32(int32_t(s.playing)) * kRequestSize; }
 
-/* The call of a callback with eax only, the other registers as they are. */
+/* The call of a callback (through its pointer) with eax only, the other
+ * registers as they are. */
 bool callBack(App* app, CPU& cpu, reg32 esp, reg32 target, reg32 eax)
 {
-    return callGame(app, cpu, esp, target, {eax, cpu.edx, cpu.ebx, cpu.ecx});
+    cpu.esp = esp;
+    return guest::pointerCall(app, cpu, target, {eax}).has_value();
+}
+
+/* A typed core of the movie file's chunk reader (native_frontend_wina.cpp)
+ * called as C++ in place of the game's call of `Address`, esp first where the
+ * game's code has it: its eax, nothing when the game stopped in it (its calls
+ * into the game throw fe::Terminated), every register but eax kept. */
+template <reg32 Address, auto Core, typename... A>
+std::optional<reg32> wina(App* app, CPU& cpu, reg32 esp, A... a)
+{
+    cpu.esp = esp;
+    try
+    {
+        const reg32 r = guest::direct<Address, Core>(app, cpu, a...);
+        if (cpu.terminate)
+            return std::nullopt;
+        return r;
+    }
+    catch (const fe::Terminated&)
+    {
+        return std::nullopt;
+    }
+}
+
+/* 0x4d0300 (the queue's next chunk), as the streams' task calls it: the queue
+ * in eax and, in edx, the loop's test -- which the reader does not take. */
+std::optional<reg32> nextQueueChunk(App* app, CPU& cpu, reg32 esp, reg32 queue, reg32 edx)
+{
+    cpu.esp = esp;
+    try
+    {
+        static_cast<void>(edx);
+        const reg32 r = guest::direct<kNextChunk, frontend::wina::streamNextChunk>(app, cpu, queue);
+        if (cpu.terminate)
+            return std::nullopt;
+        return r;
+    }
+    catch (const fe::Terminated&)
+    {
+        return std::nullopt;
+    }
 }
 
 /* A quotient the x86 does not raise for: as the arm64 does the code's `div` by 0. */
@@ -650,13 +699,8 @@ Result purgePackets(App* app, CPU& cpu, reg32 esp, int32_t index, int32_t first,
         {
             pp.count = uint16_t(pp.count - 1);
             pp.submitted -= packet.frames;
-            if (pp.freed != 0)
-            {
-                cpu.esi = p + kRingOffset + reg32(from) * sizeof(Packet);
-                cpu.edi = reg32(first);
-                if (!callGame(app, cpu, f, pp.freed, {packet.data, p, reg32(to), reg32(from)}))
-                    return {};
-            }
+            if (pp.freed != 0 && !pointerGame(app, cpu, f, pp.freed, {packet.data, p, reg32(to), reg32(from)}))
+                return {};
         }
         if (++from >= pp.size)
             from = 0;
@@ -734,19 +778,21 @@ Result takeNextPacket(App* app, CPU& cpu, reg32 esp, int32_t index, reg32 frames
 }
 
 /* 0x511998's: `frames` frames of packet player `index` played by the
- * hardware, its frames callback told.  eax and edx as the callback leaves
- * them (eax is the caller's own without one). */
-Result packetFramesHeard(App* app, CPU& cpu, reg32 esp, int32_t index, reg32 frames, reg32 eax, reg32& edx)
+ * hardware, its frames callback told (the player's index in eax, the frames
+ * in edx).  eax as the callback leaves it, the caller's own (`eax`) without
+ * one. */
+Result packetFramesHeard(App* app, CPU& cpu, reg32 esp, int32_t index, reg32 frames, reg32 eax)
 {
     const reg32 c = playerOf(app, index);
     PacketPlayer& pp = packetPlayer(app, c);
     pp.inHardware -= int32_t(frames);
-    edx = frames;
     if (pp.framesCallback != 0)
     {
-        if (!callGame(app, cpu, esp - 4, pp.framesCallback, {reg32(index), frames, cpu.ebx, c}, {}, eax))
+        cpu.esp = esp - 4;
+        const std::optional<reg32> r = guest::pointerCall(app, cpu, pp.framesCallback, {reg32(index), frames});
+        if (!r)
             return {};
-        edx = cpu.edx;
+        eax = *r;
     }
     return int32_t(eax);
 }
@@ -757,10 +803,11 @@ Result giveBackPacket(App* app, CPU& cpu, reg32 esp, reg32 data)
 {
     const reg32 chunk = data - 0xc;
     const reg32 s = kStreams(app, int32_t(app->getMemory<reg32>(chunk) & 0xff));
-    reg32 result;
-    if (!callGame(app, cpu, esp - 4, kFreeChunk, {stream(app, s).queue, chunk}, {}, result))
+    const std::optional<reg32> result =
+        wina<kFreeChunk, frontend::wina::streamFreeChunk>(app, cpu, esp - 4, stream(app, s).queue, chunk);
+    if (!result)
         return {};
-    return int32_t(result);
+    return int32_t(*result);
 }
 
 /* 0x4f3b60's: the packet player's frames callback: `frames` frames of packet
@@ -804,7 +851,7 @@ Result chunksAtOnce(App* app, CPU& cpu, reg32 esp, reg32 index, reg32 count)
     const reg32 s = streamOf(app, int32_t(index));
     if (s == 0)
         return kNoSound;
-    if (!callGame(app, cpu, esp, kQueueChunksAtOnce, {stream(app, s).queue, count}))
+    if (!wina<kQueueChunksAtOnce, frontend::wina::streamSetLowWater>(app, cpu, esp, stream(app, s).queue, count))
         return {};
     return 0;
 }
@@ -822,7 +869,7 @@ Result parseHeader(App* app, CPU& cpu, reg32 esp, reg32 s, reg32 chunk)
     if (!patchToHeader(app, cpu, f - 4, chunk + 8, st.parsedHeader, st.parsedSettings, f + 4))
         return {};
     r.frames = load<reg32>(app, f + 4);
-    if (!callGame(app, cpu, f, kFreeChunk, {st.queue, chunk}))
+    if (!wina<kFreeChunk, frontend::wina::streamFreeChunk>(app, cpu, f, st.queue, chunk))
         return {};
     const Result rate = dataRate(app, cpu, f - 4, st.parsedHeader, requestAt);
     if (!rate)
@@ -857,7 +904,7 @@ Result parseHeader(App* app, CPU& cpu, reg32 esp, reg32 s, reg32 chunk)
 Result parseLoop(App* app, CPU& cpu, reg32 esp, reg32 s, reg32 chunk)
 {
     const Stream& st = stream(app, s);
-    if (!callGame(app, cpu, esp - 2 * 4, kFreeChunk, {st.queue, chunk}))
+    if (!wina<kFreeChunk, frontend::wina::streamFreeChunk>(app, cpu, esp - 2 * 4, st.queue, chunk))
         return {};
     // The chunk is read after it was given back, as the code does.
     request(app, playingRequest(st)).loop = app->getMemory<reg32>(chunk + 8);
@@ -895,7 +942,7 @@ Result parseData(App* app, CPU& cpu, reg32 esp, reg32 s, reg32 chunk)
 Result parseEnd(App* app, CPU& cpu, reg32 esp, reg32 s, reg32 chunk)
 {
     Stream& st = stream(app, s);
-    if (!callGame(app, cpu, esp - 4, kFreeChunk, {st.queue, chunk}))
+    if (!wina<kFreeChunk, frontend::wina::streamFreeChunk>(app, cpu, esp - 4, st.queue, chunk))
         return {};
     st.playing = int8_t(st.playing + 1);
     return 1;
@@ -917,7 +964,7 @@ Result parseChunk(App* app, CPU& cpu, reg32 esp, reg32 s, reg32 chunk)
     case kIdLoop:
         return parseLoop(app, cpu, f - 4, s, chunk);
     default:
-        if (!callGame(app, cpu, f, kFreeChunk, {stream(app, s).queue, chunk}))
+        if (!wina<kFreeChunk, frontend::wina::streamFreeChunk>(app, cpu, f, stream(app, s).queue, chunk))
             return {};
         return 1;
     }
@@ -935,9 +982,10 @@ Result waitsForQueue(App* app, CPU& cpu, reg32 esp, reg32 s)
         return 0;
     if (r.waits < 0)
         return 1;
-    reg32 bytes;
-    if (!callGame(app, cpu, f, kQueueBytes, {st.queue}, {}, bytes))
+    const std::optional<reg32> queued = wina<kQueueBytes, frontend::wina::channelBytes>(app, cpu, f, st.queue);
+    if (!queued)
         return {};
+    reg32 bytes = *queued;
     if (bytes > kMaxQueuedBytes)
         bytes = kMaxQueuedBytes;
     if (divided(bytes * 1000, r.dataRate) >= reg32(int32_t(r.waits)))
@@ -945,10 +993,10 @@ Result waitsForQueue(App* app, CPU& cpu, reg32 esp, reg32 s)
         r.waits = 0;
         return 0;
     }
-    reg32 state;
-    if (!callGame(app, cpu, f, kQueueState, {st.queue}, {}, state))
+    const std::optional<reg32> state = wina<kQueueState, frontend::wina::channelState>(app, cpu, f, st.queue);
+    if (!state)
         return {};
-    if ((state & 0xff) != 2)
+    if ((*state & 0xff) != 2)
         return 1;
     r.waits = 0;
     return 0;
@@ -960,18 +1008,16 @@ Result waitsForQueue(App* app, CPU& cpu, reg32 esp, reg32 s)
  * has room for.  0; nothing while a surface is locked. */
 Result streamSystemTask(App* app, CPU& cpu, reg32 esp)
 {
-    reg32 locked;
-    if (!callGame(app, cpu, esp, kSurfaceLocked, {}, {}, locked))
+    const bool locked = stream::directFrom<kSurfaceLocked, ea::surfaceIsLocked>(app, cpu, esp);
+    if (cpu.terminate)
         return {};
-    if (locked != 0)
+    if (locked)
         return 0;
     const reg32 f = esp - 4 * 4;
     for (int32_t i = 0; i < 0x10; ++i)
     {
         safepoint(app, cpu);
         const reg32 s = kStreams(app, i);
-        cpu.edi = 4 * reg32(i);
-        cpu.esi = s;
         if (s == 0 || stream(app, s).holds == 0)
             continue;
         Stream& st = stream(app, s);
@@ -1018,9 +1064,10 @@ Result streamSystemTask(App* app, CPU& cpu, reg32 esp)
         {
             safepoint(app, cpu);
             --chunks;
-            reg32 chunk;
-            if (!callGame(app, cpu, f, kNextChunk, {st.queue, handled}, {}, chunk))
+            const std::optional<reg32> next = nextQueueChunk(app, cpu, f, st.queue, handled);
+            if (!next)
                 return {};
+            const reg32 chunk = *next;
             if (chunk != 0)
             {
                 const Result r = parseChunk(app, cpu, f - 4, s, chunk);
@@ -1051,7 +1098,7 @@ Result purgeStream(App* app, CPU& cpu, reg32 esp, int32_t index)
     if (st.voice >= 0 && !stopPlayer(app, cpu, esp - 2 * 4, st.player))
         return {};
     st.voice = -1;
-    if (st.queueGiven == 0 && !callGame(app, cpu, esp - 4, kQueueEmptied, {st.queue}))
+    if (st.queueGiven == 0 && !wina<kQueueEmptied, frontend::wina::streamFlush>(app, cpu, esp - 4, st.queue))
         return {};
     st.holds = 0;
     st.playing = 0;
@@ -1078,13 +1125,12 @@ Result destroyStream(App* app, CPU& cpu, reg32 esp, int32_t index)
         return {};
     if (streamsMade(app) == 1)
     {
-        if (!callGame(app, cpu, esp - 4 * 4, kRemoveSystemTask, {kStreamTask}))
-            return {};
+        stream::unscheduleTask(app, kStreamTask);
         kStreamerRestore.set(app, 0);
     }
     const Stream& st = stream(app, s);
     destroyPlayer(app, st.player);
-    if (st.queueGiven == 0 && !callGame(app, cpu, f, kQueueGone, {st.queue}))
+    if (st.queueGiven == 0 && !wina<kQueueGone, frontend::wina::streamClose>(app, cpu, f, st.queue))
         return {};
     kStreams.set(app, index, 0);
     return 0;
@@ -1150,16 +1196,20 @@ Result createStream(App* app, CPU& cpu, reg32 esp, reg32 options, reg32 requests
     {
         if (int32_t(size) < 0x6000 && !fail(app, cpu, f, kCreateError, 0x2c2, {0x54ce34}, 0x2c2))
             return {};
-        reg32 made;
-        if (!callGame(app, cpu, f - 4, kQueueMake, {requests + 1, 1, 1, free}, {size}, made))
+        // stdcall: the memory's size pushed.
+        const std::optional<reg32> queueMade =
+            wina<kQueueMake, frontend::wina::streamCreate>(app, cpu, f - 4, requests + 1, 1u, 1u, free, size);
+        if (!queueMade)
             return {};
+        const reg32 made = *queueMade;
         st.queue = made;
         st.queueGiven = 0;
         // The block's size: the call has nothing in eax but the queue's, which a
         // reader that has no size to give leaves there.
-        reg32 block;
-        if (!callGame(app, cpu, f, kQueueBlock, {made}, {}, block))
+        const std::optional<reg32> ring = wina<kQueueBlock, frontend::wina::channelRingSize>(app, cpu, f, made);
+        if (!ring)
             return {};
+        const reg32 block = *ring;
         // The queue is to ask for a third of a block's chunks at once -- of the
         // stream the code names by the queue's address, which is none.
         if (!chunksAtOnce(app, cpu, f - 4, st.queue, reg32(idiv(int32_t(block), 3))))
@@ -1171,7 +1221,7 @@ Result createStream(App* app, CPU& cpu, reg32 esp, reg32 options, reg32 requests
     st.options = record<PlayOptions>(app, options);
     if (streamsMade(app) == 0)
     {
-        if (!callGame(app, cpu, f, kAddSystemTask, {kStreamTask, 0, 1, cpu.ecx}))
+        if (!stream::scheduleTask(app, cpu, f - 4, kStreamTask, 0, 1))
             return {};
         kStreamerRestore.set(app, kStreamRestore);
     }
@@ -1205,11 +1255,13 @@ Result requestStream(App* app, CPU& cpu, reg32 esp, reg32 index, reg32 time, reg
     Request& r = request(app, st.requests + reg32(int32_t(st.holds)) * kRequestSize);
     if (how == 0 || how == 1)
     {
-        reg32 chunks;
-        if (!callGame(app, cpu, f, how == 0 ? kQueueRequest : kQueueRequestWhole,
-                      {st.queue, bytes, how == 1 ? 0 : data, kIdEnd}, {}, chunks))
+        const std::optional<reg32> chunks =
+            how == 0 ? wina<kQueueRequest, frontend::wina::streamOpenFile>(app, cpu, f, st.queue, bytes, data, kIdEnd)
+                     : wina<kQueueRequestWhole, frontend::wina::streamOpenMemory>(app, cpu, f, st.queue, bytes, 0u,
+                                                                                  kIdEnd);
+        if (!chunks)
             return {};
-        r.chunks = chunks;
+        r.chunks = *chunks;
     }
     else
         r.chunks = data;
@@ -1295,319 +1347,367 @@ Result requestStatus(App* app, CPU& cpu, reg32 esp, reg32 handle, reg32 out)
 
 }  // namespace
 
-/* The game's entries: each its adapter -- the game's registers and stack in,
+namespace stream
+{
+
+/* 0x5118fc and 0x511998 as the mixer calls them (port_snd_stream_calls.h). */
+Result packetTaken(App* app, CPU& cpu, reg32 esp, int32_t index, reg32 framesAt)
+{
+    reg32 player;
+    return takeNextPacket(app, cpu, esp, index, framesAt, player);
+}
+
+Result packetFramesPlayedOf(App* app, CPU& cpu, reg32 esp, int32_t index, reg32 frames)
+{
+    return packetFramesHeard(app, cpu, esp, index, frames, reg32(index));
+}
+
+/* 0x4f3a10, 0x4f3a60, 0x4f3a80, 0x4f2f50 and 0x4f43c0 as the movie player
+ * calls them (port_snd_stream_calls.h): their thunks' cores. */
+reg32 streamMemoryOf(App* app, reg32 requests, reg32 packets)
+{
+    static_cast<void>(app);
+    return streamBytes(requests, packets);
+}
+
+Result createQueued(App* app, CPU& cpu, reg32 esp, reg32 queue, reg32 options, reg32 requests, reg32 packets,
+                    reg32 memory, reg32 size)
+{
+    return createStream(app, cpu, esp - 4 - 3 * 4 - 4, options, requests, packets, memory, size, queue, 1);
+}
+
+Result requestData(App* app, CPU& cpu, reg32 esp, reg32 index, reg32 time, reg32 chunks)
+{
+    return requestStream(app, cpu, esp - 4 - 4 - 4, index, time, 0, chunks, 2);
+}
+
+Result requestStatusOf(App* app, CPU& cpu, reg32 esp, reg32 handle, reg32 out)
+{
+    return requestStatus(app, cpu, esp, handle, out);
+}
+
+Result destroyStreamOf(App* app, CPU& cpu, reg32 esp, int32_t index)
+{
+    return destroyStream(app, cpu, esp, index);
+}
+
+}  // namespace stream
+
+/* The game's entries: each its thunk -- the game's registers and stack in,
  * the result in eax out -- around what it does. */
 
 /* 0x503670 (__U8M): eax times edx, unsigned, into the 8 bytes at esi; eax the
  * place.  esi is left at the code's copy on its frame, as its movsd leaves
  * it. */
-void mul64(App* app, CPU& cpu)
+x86::reg32 mul64(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     const uint64_t product = uint64_t(e.eax) * e.edx;
     store(app, e.esi, reg32(product));
     store(app, e.esi + 4, reg32(product >> 32));
-    e.back(cpu, e.esi);
-    cpu.esi = e.frame(4, 0xc) + 8;
+    e.back(cpu, args, e.esi);
+    args.esi = e.frame(4, 0xc) + 8;
+    return args.eax;
 }
 
 /* 0x503760 (__U8D, stdcall 12): the 64 bits [esp+8]:[esp+4] over [esp+0xc]. */
-void div64(App* app, CPU& cpu)
+x86::reg32 div64(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, divide64(e.arg(app, 0), e.arg(app, 1), e.arg(app, 2)), 0xc);
+    const Entry e(cpu, args);
+    return e.back(cpu, args, divide64(e.arg(app, 0), e.arg(app, 1), e.arg(app, 2)), 0xc);
 }
 
-void platformPacketSize(App*, CPU& cpu)
+x86::reg32 platformPacketSize(App*, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, reg32(platformPacketBytes()));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, reg32(platformPacketBytes()));
 }
 
-void findStream(App* app, CPU& cpu)
+x86::reg32 findStream(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, streamOf(app, int32_t(e.eax)));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, streamOf(app, int32_t(e.eax)));
 }
 
 /* 0x4f3ab5: iSNDstreamsystemtask's way out while a surface is locked, a jump
  * into findStream's end. */
-void streamTaskSkipped(App*, CPU& cpu)
+x86::reg32 streamTaskSkipped(App*, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, 0);
+    const Entry e(cpu, args);
+    return e.back(cpu, args, 0);
 }
 
 /* 0x4f3b31: removeRequest's way out, which framesPlayed jumps to: ecx and ebx
  * popped. */
-void framesPlayedDone(App* app, CPU& cpu)
+x86::reg32 framesPlayedDone(App* app, CPU& cpu, x86::Args& args)
 {
     const reg32 esp = cpu.esp;
-    cpu.ecx = app->getMemory<reg32>(esp);
-    cpu.ebx = app->getMemory<reg32>(esp + 4);
+    args.ecx = app->getMemory<reg32>(esp);
+    args.ebx = app->getMemory<reg32>(esp + 4);
     cpu.esp = esp + 12;
+    return args.eax;
 }
 
-void streamCount(App* app, CPU& cpu)
+x86::reg32 streamCount(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, reg32(streamsMade(app)));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, reg32(streamsMade(app)));
 }
 
-void findRequest(App* app, CPU& cpu)
+x86::reg32 findRequest(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, requestOfHandle(app, e.eax));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, requestOfHandle(app, e.eax));
 }
 
 /* The request's state into the four words at edx. */
-void SNDSTRM_requeststatus(App* app, CPU& cpu)
+x86::reg32 SNDSTRM_requeststatus(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, requestStatus(app, cpu, e.esp, e.eax, e.edx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, requestStatus(app, cpu, e.esp, e.eax, e.edx));
 }
 
 /* edx left as the requests' part. */
-void streamMemory(App* app, CPU& cpu)
+x86::reg32 streamMemory(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, streamBytes(e.eax, e.edx));
-    cpu.edx = e.eax * kRequestSize + sizeof(Stream);
+    const Entry e(cpu, args);
+    e.back(cpu, args, streamBytes(e.eax, e.edx));
+    args.edx = e.eax * kRequestSize + sizeof(Stream);
+    return args.eax;
 }
 
-void playerMemory(App* app, CPU& cpu)
+x86::reg32 playerMemory(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, playerBytes(e.eax));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, playerBytes(e.eax));
 }
 
 /* iSNDstreamcreate with the queue eax given: its arguments edx, ebx, ecx and
  * [esp+4]; the memory's size [esp+8].  stdcall 8. */
-void SNDSTRM_createqueued(App* app, CPU& cpu)
+x86::reg32 SNDSTRM_createqueued(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu,
+    const Entry e(cpu, args);
+    return e.finish(cpu, args,
              createStream(app, cpu, e.esp - 4 - 3 * 4 - 4, e.edx, e.ebx, e.ecx, e.arg(app, 0), e.arg(app, 1), e.eax, 1),
              8);
+    return args.eax;
 }
 
 /* A request of the chunks ebx given whole, for time edx on stream eax. */
-void SNDSTRM_requestdata(App* app, CPU& cpu)
+x86::reg32 SNDSTRM_requestdata(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, requestStream(app, cpu, e.esp - 4 - 4 - 4, e.eax, e.edx, 0, e.ebx, 2));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, requestStream(app, cpu, e.esp - 4 - 4 - 4, e.eax, e.edx, 0, e.ebx, 2));
 }
 
-void SNDSTRM_restore(App* app, CPU& cpu)
+x86::reg32 SNDSTRM_restore(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, destroyEveryStream(app, cpu, e.esp));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, destroyEveryStream(app, cpu, e.esp));
 }
 
-void removeRequest(App* app, CPU& cpu)
+x86::reg32 removeRequest(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, takeOutRequest(app, e.eax));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, takeOutRequest(app, e.eax));
 }
 
-void packetFreed(App* app, CPU& cpu)
+x86::reg32 packetFreed(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, giveBackPacket(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, giveBackPacket(app, cpu, e.esp, e.eax));
 }
 
 /* edx as the code leaves it: the frames the last request has played. */
-void framesPlayed(App* app, CPU& cpu)
+x86::reg32 framesPlayed(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     reg32 played;
     const reg32 eax = countPlayedFrames(app, int32_t(e.eax), e.edx, played);
-    e.back(cpu, eax);
-    cpu.edx = played;
+    e.back(cpu, args, eax);
+    args.edx = played;
+    return args.eax;
 }
 
-void iSNDstreamparseheader(App* app, CPU& cpu)
+x86::reg32 iSNDstreamparseheader(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, parseHeader(app, cpu, e.esp, e.eax, e.edx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, parseHeader(app, cpu, e.esp, e.eax, e.edx));
 }
 
-void iSNDstreamparseloop(App* app, CPU& cpu)
+x86::reg32 iSNDstreamparseloop(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, parseLoop(app, cpu, e.esp, e.eax, e.edx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, parseLoop(app, cpu, e.esp, e.eax, e.edx));
 }
 
-void iSNDstreamparsedata(App* app, CPU& cpu)
+x86::reg32 iSNDstreamparsedata(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, parseData(app, cpu, e.esp, e.eax, e.edx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, parseData(app, cpu, e.esp, e.eax, e.edx));
 }
 
-void iSNDstreamparseend(App* app, CPU& cpu)
+x86::reg32 iSNDstreamparseend(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, parseEnd(app, cpu, e.esp, e.eax, e.edx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, parseEnd(app, cpu, e.esp, e.eax, e.edx));
 }
 
-void iSNDstreamparsechunk(App* app, CPU& cpu)
+x86::reg32 iSNDstreamparsechunk(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, parseChunk(app, cpu, e.esp, e.eax, e.edx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, parseChunk(app, cpu, e.esp, e.eax, e.edx));
 }
 
-void streamWaits(App* app, CPU& cpu)
+x86::reg32 streamWaits(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, waitsForQueue(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, waitsForQueue(app, cpu, e.esp, e.eax));
 }
 
-void iSNDstreamsystemtask(App* app, CPU& cpu)
+x86::reg32 iSNDstreamsystemtask(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, streamSystemTask(app, cpu, e.esp));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, streamSystemTask(app, cpu, e.esp));
 }
 
 /* stdcall 12: edx requests, ebx packets, ecx the memory; its size, the queue
  * and whether it is given on the stack. */
-void iSNDstreamcreate(App* app, CPU& cpu)
+x86::reg32 iSNDstreamcreate(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu,
+    const Entry e(cpu, args);
+    return e.finish(cpu, args,
              createStream(app, cpu, e.esp, e.eax, e.edx, e.ebx, e.ecx, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2)),
              0xc);
+    return args.eax;
 }
 
 /* stdcall 4: the time edx, the bytes ebx, the data ecx; how on the stack. */
-void iSNDstreamrequest(App* app, CPU& cpu)
+x86::reg32 iSNDstreamrequest(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, requestStream(app, cpu, e.esp, e.eax, e.edx, e.ebx, e.ecx, e.arg(app, 0)), 4);
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, requestStream(app, cpu, e.esp, e.eax, e.edx, e.ebx, e.ecx, e.arg(app, 0)), 4);
 }
 
-void SNDSTRM_destroy(App* app, CPU& cpu)
+x86::reg32 SNDSTRM_destroy(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, destroyStream(app, cpu, e.esp, int32_t(e.eax)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, destroyStream(app, cpu, e.esp, int32_t(e.eax)));
 }
 
-void SNDSTRM_purge(App* app, CPU& cpu)
+x86::reg32 SNDSTRM_purge(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, purgeStream(app, cpu, e.esp, int32_t(e.eax)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, purgeStream(app, cpu, e.esp, int32_t(e.eax)));
 }
 
 /* The packet player in the memory eax of edx bytes; its free callback ebx and
  * frames callback ecx. */
-void SNDPKTPLAY_create(App* app, CPU& cpu)
+x86::reg32 SNDPKTPLAY_create(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, reg32(createPlayer(app, e.eax, e.edx, e.ebx, e.ecx)));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, reg32(createPlayer(app, e.eax, e.edx, e.ebx, e.ecx)));
 }
 
 /* The header edx, the patch's settings ebx, the play's options ecx. */
-void SNDPKTPLAY_start(App* app, CPU& cpu)
+x86::reg32 SNDPKTPLAY_start(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, startPlayer(app, cpu, e.esp, int32_t(e.eax), e.edx, e.ebx, e.ecx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, startPlayer(app, cpu, e.esp, int32_t(e.eax), e.edx, e.ebx, e.ecx));
 }
 
 /* The packet edx (its frames +4, its data +0xc). */
-void SNDPKTPLAY_submit(App* app, CPU& cpu)
+x86::reg32 SNDPKTPLAY_submit(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, submitPacket(app, cpu, e.esp, int32_t(e.eax), e.edx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, submitPacket(app, cpu, e.esp, int32_t(e.eax), e.edx));
 }
 
-void SNDPKTPLAY_submitspace(App* app, CPU& cpu)
+x86::reg32 SNDPKTPLAY_submitspace(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, submitSpace(app, cpu, e.esp, int32_t(e.eax)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, submitSpace(app, cpu, e.esp, int32_t(e.eax)));
 }
 
-void framesOutstanding(App* app, CPU& cpu)
+x86::reg32 framesOutstanding(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, framesOutstandingOf(app, cpu, e.esp, int32_t(e.eax)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, framesOutstandingOf(app, cpu, e.esp, int32_t(e.eax)));
 }
 
-void SNDPKTPLAY_framesoutstanding(App* app, CPU& cpu)
+x86::reg32 SNDPKTPLAY_framesoutstanding(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, framesOutstandingLocked(app, cpu, e.esp, int32_t(e.eax)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, framesOutstandingLocked(app, cpu, e.esp, int32_t(e.eax)));
 }
 
 /* The serials edx to ebx. */
-void SNDPKTPLAY_purge(App* app, CPU& cpu)
+x86::reg32 SNDPKTPLAY_purge(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, purgePackets(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx), int32_t(e.ebx)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, purgePackets(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx), int32_t(e.ebx)));
 }
 
-void SNDPKTPLAY_stop(App* app, CPU& cpu)
+x86::reg32 SNDPKTPLAY_stop(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, stopPlayer(app, cpu, e.esp, int32_t(e.eax)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, stopPlayer(app, cpu, e.esp, int32_t(e.eax)));
 }
 
-void SNDPKTPLAY_destroy(App* app, CPU& cpu)
+x86::reg32 SNDPKTPLAY_destroy(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, reg32(destroyPlayer(app, int32_t(e.eax))));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, reg32(destroyPlayer(app, int32_t(e.eax))));
 }
 
 /* The frames go into [edx]; edx is left at the player. */
-void nextPacket(App* app, CPU& cpu)
+x86::reg32 nextPacket(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     reg32 player;
     const Result data = takeNextPacket(app, cpu, e.esp, int32_t(e.eax), e.edx, player);
     if (!data)
-        return;
-    e.back(cpu, reg32(*data));
-    cpu.edx = player;
+        return args.eax;
+    e.back(cpu, args, reg32(*data));
+    args.edx = player;
+    return args.eax;
 }
 
-/* edx is left as the callback leaves it. */
-void packetFramesPlayed(App* app, CPU& cpu)
+x86::reg32 packetFramesPlayed(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    reg32 edx;
-    const Result r = packetFramesHeard(app, cpu, e.esp, int32_t(e.eax), e.edx, e.eax, edx);
-    if (!r)
-        return;
-    e.back(cpu, reg32(*r));
-    cpu.edx = edx;
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, packetFramesHeard(app, cpu, e.esp, int32_t(e.eax), e.edx, e.eax));
 }
 
-void patchDefaults(App* app, CPU& cpu)
+x86::reg32 patchDefaults(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     defaultSettings(record<PatchSettings>(app, e.eax));
-    e.back(cpu, 0);
+    return e.back(cpu, args, 0);
 }
 
 /* The patch eax made the header edx, with its settings ebx and its frames
  * into [ecx]. */
-void iSNDpatchtohdr(App* app, CPU& cpu)
+x86::reg32 iSNDpatchtohdr(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu,
+    const Entry e(cpu, args);
+    return e.finish(cpu, args,
              patchToHeader(app, cpu, e.esp, e.eax, record<StreamHeader>(app, e.edx),
                            record<PatchSettings>(app, e.ebx), e.ecx));
+    return args.eax;
 }
 
-void iSNDplatformcalcdatarate(App* app, CPU& cpu)
+x86::reg32 iSNDplatformcalcdatarate(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, dataRate(app, cpu, e.esp, record<StreamHeader>(app, e.eax), e.edx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, dataRate(app, cpu, e.esp, record<StreamHeader>(app, e.eax), e.edx));
 }
 
 /* The count edx for the queue of stream eax. */
-void streamChunksAtOnce(App* app, CPU& cpu)
+x86::reg32 streamChunksAtOnce(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, chunksAtOnce(app, cpu, e.esp, e.eax, e.edx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, chunksAtOnce(app, cpu, e.esp, e.eax, e.edx));
 }
 
 }  // namespace port

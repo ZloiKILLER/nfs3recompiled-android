@@ -1,5 +1,12 @@
 #include "game_settings.h"
+#include "native_ea_memory.h"
+#include "native_ea_support.h"
+#include "native_load_cardb.h"
+#include "native_watcom.h"
 #include "port_snd_speech.h"
+#include "port_snd_stream_calls.h"
+#include "port_sound_calls.h"
+#include "port_sound_effects.h"
 #include "port_sound_speech.h"
 
 #include <cstdint>
@@ -13,17 +20,14 @@
  * bank, native_snd_speech.cpp's).
  *
  * Each function is here twice: as C++ with arguments and a result, and as the
- * game's entry, by the name the game's code knows, an adapter around the
+ * game's entry, by the name the game's code knows, a thunk around the
  * first (port_snd.h says how).  The integer arithmetic is the game's to the
  * bit (its multiplications by 127 and 63, its divisions toward 0); the
  * co-driver's floating point is the game's too, in doubles, with the
  * integer conversions the x87 makes.  The rewrites of SND and the speech
  * itself are called as C++; what is not rewritten yet (the effects, the
  * music, the files) is called as the game's code calls it, by address -- with
- * esi and edi as the code has them (SND's errors push them) and, for the
- * functions the checks put stand-ins in the place of, the registers those
- * log as the code has them there, eax included: a stand-in that makes up no
- * answer leaves the eax it was called with.
+ * esi and edi as the code has them (SND's errors push them).
  *
  * The game's state, per player: kSaid (8 apart) a line said, kToTell one to
  * tell the game of, kPlaying a line playing, kRadioSound the radio's sound,
@@ -68,7 +72,7 @@ constexpr Var<int32_t> kSpokenSound{0x7dd82c};
 constexpr reg32 kCarsFolder = 0x7a28b4;
 constexpr Table<reg32> kCarNames{0x560b50}, kMenuTracks{0x560afc}, kCarTracks{0x560b18};
 
-// What is not rewritten yet, or what the checks put stand-ins in the place of.
+// What is not rewritten yet.
 constexpr reg32 kPlayEffect = 0x4182b0, kPlaySpeech = 0x4184f0, kTellGame = 0x482030, kStreamVolume = 0x4e7470;
 constexpr reg32 kFree = 0x4e1890, kSprintf = 0x4df690;
 constexpr reg32 kPathEnd = 0x4529a0, kTrackName = 0x4392b0, kLoadQuietly = 0x4e0fe0;
@@ -109,14 +113,9 @@ reg32 queueOf(int32_t player) { return player != 0 ? kQueueSecond : kQueueFirst;
 static Result linesSaidMarked(App* app, CPU& cpu, reg32 esp)
 {
     const reg32 frame = esp - 5 * 4;
-    const HeldEbp ebp(cpu, frame);
-    const reg32 ebx = cpu.ebx;
-    reg32 esi = cpu.esi, edi = cpu.edi, eax = 0;
+    reg32 eax = 0;
     for (int32_t p = 0; p < 2; ++p)
     {
-        cpu.ebx = ebx;
-        cpu.esi = esi;
-        cpu.edi = edi;
         const Result status = soundStatus(app, cpu, frame - 4, reg32(kOtherSound(app, p)));
         if (!status)
             return {};
@@ -126,9 +125,6 @@ static Result linesSaidMarked(App* app, CPU& cpu, reg32 esp)
         eax = reg32(p * 8);
         if (kSaid(app, p) == 0)
             continue;
-        esi = reg32(kToClear(app, p));
-        if (esi != 0)
-            edi = 0;
         kLineLock.set(app, 0);
         kSaid.set(app, p, 0);
         kToClear.set(app, p, 0);
@@ -144,7 +140,6 @@ static Result linesSaidMarked(App* app, CPU& cpu, reg32 esp)
 Result speechLineSaid(App* app, CPU& cpu, reg32 esp, reg32 line)
 {
     const reg32 frame = esp - 6 * 4;
-    const HeldEbp ebp(cpu, frame);
     SpeechLine& l = record<SpeechLine>(app, line);
     const int32_t p = l.player > 1 ? 0 : l.player;
     reg32 eax = reg32(p) * 4;
@@ -154,17 +149,20 @@ Result speechLineSaid(App* app, CPU& cpu, reg32 esp, reg32 line)
             return int32_t(eax);
         // Over the radio a line of kind 5 plays at no volume.
         const int32_t volume = kRadioOn(app, 0) != 0 && l.kind == 5 ? 0 : l.volume;
-        reg32 handle;
-        if (!callWith(app, cpu, frame, kPlayEffect, Args{reg32(l.bank), reg32(l.effect), reg32(l.pan), reg32(volume)},
-                      {reg32(l.pitch)}, line, reg32(p), handle))
+        cpu.esp = frame;
+        const Result handle =
+            guest::direct<kPlayEffect, bankEffect>(app, cpu, frame - 8, l.bank, l.effect, volume, l.pan, uint8_t(l.pitch));
+        if (!handle)
             return {};
-        kLineSound.set(app, p, int32_t(handle));
+        kLineSound.set(app, p, *handle);
         kPlaying.set(app, p, 1);
         if (l.kind == 2)
         {
             kToTell.set(app, p, 1);
-            if (!callWith(app, cpu, frame, kTellGame, Args{reg32(l.delay), reg32(p), 0, 0}, {}, line, reg32(p), eax))
+            const Result told = callAt(app, cpu, frame, kTellGame, {reg32(l.delay), reg32(p), 0});
+            if (!told)
                 return {};
+            eax = reg32(*told);
         }
         if (l.kind == 4 || l.kind == 3)
             kLineKind.set(app, p, l.kind);
@@ -186,30 +184,22 @@ Result speechLineSaid(App* app, CPU& cpu, reg32 esp, reg32 line)
 Result playerSpeechTicked(App* app, CPU& cpu, reg32 esp, int32_t player)
 {
     const reg32 frame = esp - 6 * 4;
-    const HeldEbp ebp(cpu, frame);
-    const reg32 ebx = cpu.ebx;
-    reg32 esi = cpu.esi, edi = cpu.edi;
     if (!linesSaidMarked(app, cpu, frame - 4))
         return {};
     const int32_t p = player > 1 ? 0 : player;
     if (kPlaying(app, p) != 0)
     {
-        cpu.ebx = ebx;
-        cpu.esi = esi;
-        cpu.edi = edi;
         const Result status = soundStatus(app, cpu, frame - 4, reg32(kLineSound(app, p)));
         if (!status)
             return {};
         if (*status != 0)
         {
-            esi = 0;
-            edi = reg32(kToTell(app, p));
+            const int32_t toTell = kToTell(app, p);
             kPlaying.set(app, p, 0);
-            if (edi != 0)
+            if (toTell != 0)
             {
                 kToTell.set(app, p, 0);
-                reg32 told;
-                if (!callWith(app, cpu, frame, kTellGame, Args{0xffffffff, reg32(p), 0, reg32(p)}, {}, esi, edi, told))
+                if (!callAt(app, cpu, frame, kTellGame, {0xffffffff, reg32(p), 0}))
                     return {};
             }
             if (kLineKind(app, p) == 4)
@@ -219,8 +209,6 @@ Result playerSpeechTicked(App* app, CPU& cpu, reg32 esp, int32_t player)
     reg32 eax = reg32(p) * 4;
     if (kQueued(app, p) != 0 && kPlaying(app, p) == 0)
     {
-        cpu.esi = esi;
-        cpu.edi = edi;
         Result said = speechLineSaid(app, cpu, frame - 4, queueOf(p));
         if (!said)
             return {};
@@ -242,16 +230,12 @@ Result playerSpeechTicked(App* app, CPU& cpu, reg32 esp, int32_t player)
 /* 0x4c8810's: the radio's sound of `player` ticked: when it is done, its
  * line's volume back; else, the speaker still the one, at `distance`, `pitch`
  * and `pan`: its volume, pitch and place set. */
-static Result radioSoundTicked(App* app, CPU& cpu, reg32 esp, reg32 speaker, reg32 pan, int32_t pitch,
-                               int32_t distance, int32_t player)
+Result radioSoundTicked(App* app, CPU& cpu, reg32 esp, reg32 speaker, reg32 pan, int32_t pitch, int32_t distance,
+                        int32_t player)
 {
     const reg32 frame = esp - 3 * 4;
-    const HeldEbp ebp(cpu, frame);
     const reg32 sp = frame - 8;
     const reg32 sound = reg32(kRadioSound(app, player));
-    cpu.ebx = reg32(player);
-    cpu.esi = pan;
-    cpu.edi = reg32(pitch);
     const Result done = soundStatus(app, cpu, sp - 4, sound);
     if (!done)
         return {};
@@ -263,26 +247,20 @@ static Result radioSoundTicked(App* app, CPU& cpu, reg32 esp, reg32 speaker, reg
         // The setting times 127 times 127 over 2^14.
         const uint32_t setting = uint32_t(gameSettings(app).speechVolume);
         const int32_t volume = int32_t(setting + (((setting << 6) - setting) << 8)) >> 14;
-        return setVolume(app, cpu, sp - 4, reg32(kLineSound(app, player)), volume);
+        return setVolumeFrom(app, cpu, sp - 4, reg32(kLineSound(app, player)), volume, frame);
     }
     if (kRadioOn(app, player) == 0 || speaker != reg32(kRadioSpeaker(app, player)))
         return player * 8;
     const int32_t level = distance < 0x15f9 ? distanceVolume(distance) : 0;
     const int32_t volume = imul(level, int32_t((uint32_t(gameSettings(app).speechVolume) << 7) - uint32_t(gameSettings(app).speechVolume))) >> 14;
-    if (!setVolume(app, cpu, sp - 4, sound, volume))
+    if (!setVolumeFrom(app, cpu, sp - 4, sound, volume, frame))
         return {};
     const int32_t bend = int32_t(uint32_t(pitch) << 6) / 0x10000;
-    // The registers SND's errors would push: the code's esi, edi and ebx.
-    cpu.esi = pan;
-    cpu.edi = sound;
-    cpu.ebx = reg32(player);
-    if (!setBend(app, cpu, sp - 4, sound, bend))
+    // SND's bend's error text reads ebx, esi and edi as the code has them: the player, the pan, the sound.
+    if (!setBendFrom(app, cpu, sp - 4, sound, bend, reg32(player), pan, sound))
         return {};
     if (kSurround(app) != 0)
-    {
-        cpu.ebx = 0;
         return placeSound(app, cpu, sp - 4, sound, kStereo(app) != 0 ? pan : 0, 0);
-    }
     return panSound(app, cpu, sp - 4, sound, kStereo(app) != 0 ? stereoPanOf(pan) : 0x40);
 }
 
@@ -293,7 +271,6 @@ Result radioStarted(App* app, CPU& cpu, reg32 esp, reg32 speaker, int32_t distan
                     int32_t player)
 {
     const reg32 frame = esp - 3 * 4;
-    const HeldEbp ebp(cpu, frame);
     const reg32 sp = frame - 8;
     if (kRadioOn(app, player) != 0)
         return player;
@@ -305,21 +282,18 @@ Result radioStarted(App* app, CPU& cpu, reg32 esp, reg32 speaker, int32_t distan
     const int32_t volume = distanceVolume(distance);
     const int32_t bend = int32_t(uint32_t(pitch) << 6) / 0x10000;
     const int32_t pitchOf = bend > 0x7f ? 0x7f : bend;
-    cpu.esi = chatter;
-    cpu.edi = pan;
-    cpu.ebx = reg32(volume);
-    if (kPlaying(app, 0) != 0 && player == 0 && !setVolume(app, cpu, sp - 4, reg32(kLineSound(app, 0)), 0))
+    if (kPlaying(app, 0) != 0 && player == 0 && !setVolumeFrom(app, cpu, sp - 4, reg32(kLineSound(app, 0)), 0, frame))
         return {};
-    if (kPlaying(app, 1) != 0 && player == 0 && !setVolume(app, cpu, sp - 4, reg32(kLineSound(app, 1)), 0))
+    if (kPlaying(app, 1) != 0 && player == 0 && !setVolumeFrom(app, cpu, sp - 4, reg32(kLineSound(app, 1)), 0, frame))
         return {};
-    reg32 handle;
-    if (!callWith(app, cpu, sp, kPlayEffect,
-                  Args{reg32(bankHandle(app, kSpeechBankCopRadio)), chatter, pan, reg32(volume)}, {reg32(pitchOf)},
-                  chatter, pan, handle))
+    cpu.esp = sp;
+    const Result handle = guest::direct<kPlayEffect, bankEffect>(app, cpu, sp - 8, bankHandle(app, kSpeechBankCopRadio),
+                                                                 int32_t(chatter), volume, pan, uint8_t(pitchOf));
+    if (!handle)
         return {};
     kLastChatter.set(app, int32_t(chatter));
-    kRadioSound.set(app, player, int32_t(handle));
-    return int32_t(handle);
+    kRadioSound.set(app, player, *handle);
+    return handle;
 }
 
 /* 0x4c8b30's: `player`'s cop radio of `kind` (1 a chase, 2, 3, else), from
@@ -329,7 +303,6 @@ Result radioStarted(App* app, CPU& cpu, reg32 esp, reg32 speaker, int32_t distan
 Result copRadioStarted(App* app, CPU& cpu, reg32 esp, int32_t player, int32_t kind, int32_t distance)
 {
     const reg32 frame = esp - 4 * 4;
-    const HeldEbp ebp(cpu, frame);
     const reg32 sp = frame - 8;
     if (gameSettings(app).replayMode != 0)
         return distance;
@@ -348,23 +321,23 @@ Result copRadioStarted(App* app, CPU& cpu, reg32 esp, int32_t player, int32_t ki
         while (line == kLastCopLine(app))
             line = first + int32_t(nextRandom(app) % reg32(choices));
     const reg32 pan = gameSettings(app).playMode == 1 ? (player != 0 ? kSideRight : kSideLeft) : 0;
-    const reg32 esi = reg32(player), edi = reg32(first);
     const int32_t playing = kPlaying(app, 0);
     kSaid.set(app, player, 1);
-    if (playing != 0 && player == 0 && !setVolume(app, cpu, sp - 4, reg32(kLineSound(app, 0)), 0))
+    if (playing != 0 && player == 0 && !setVolumeFrom(app, cpu, sp - 4, reg32(kLineSound(app, 0)), 0, frame))
         return {};
-    if (kPlaying(app, 1) != 0 && player == 0 && !setVolume(app, cpu, sp - 4, reg32(kLineSound(app, 1)), 0))
+    if (kPlaying(app, 1) != 0 && player == 0 && !setVolumeFrom(app, cpu, sp - 4, reg32(kLineSound(app, 1)), 0, frame))
         return {};
     kLineLock.set(app, 1);
-    reg32 handle;
-    if (!callWith(app, cpu, sp, kPlayEffect, Args{reg32(bankHandle(app, kSpeechBankCopRadio)), reg32(line), pan, reg32(volume)},
-                  {0x40}, esi, edi, handle))
+    cpu.esp = sp;
+    const Result handle = guest::direct<kPlayEffect, bankEffect>(app, cpu, sp - 8, bankHandle(app, kSpeechBankCopRadio),
+                                                                 line, volume, pan, uint8_t(0x40));
+    if (!handle)
         return {};
-    kOtherSound.set(app, player, int32_t(handle));
+    kOtherSound.set(app, player, *handle);
     if (first == 0x20)
         kToClear.set(app, player, 1);
-    reg32 settled;
-    if (!callWith(app, cpu, sp, kSettle, Args{}, {}, esi, edi, settled))
+    cpu.esp = sp;
+    if (!guest::direct<kSettle, musicEventResumed>(app, cpu, sp - 4, 0u, 0u))
         return {};
     kLastCopLine.set(app, line);
     return line;
@@ -375,7 +348,6 @@ Result copRadioStarted(App* app, CPU& cpu, reg32 esp, int32_t player, int32_t ki
 static Result speechLineQueued(App* app, CPU& cpu, reg32 esp, reg32 effect, reg32 delay, reg32 player)
 {
     const reg32 frame = esp - 4 * 4;
-    const HeldEbp ebp(cpu, frame);
     const reg32 line = frame - 0x24, sp = line;
     SpeechLine& l = record<SpeechLine>(app, line);
     l.pitch = 0x40;
@@ -386,18 +358,15 @@ static Result speechLineQueued(App* app, CPU& cpu, reg32 esp, reg32 effect, reg3
     l.delay = int32_t(delay);
     l.bank = bankHandle(app, kSpeechBankSpeech);
     l.kind = 2;
-    cpu.esi = 0x40;
-    cpu.edi = reg32(gameSettings(app).playMode);
     return speechLineSaid(app, cpu, sp - 4, line);
 }
 
 /* 0x4c8370's: the speech set up for the race: each player's lines, radio and
  * description cleared, the co-driver's script of the track (by its number, its
  * direction's file) loaded.  eax: the script, as loaded. */
-static Result speechSetUp(App* app, CPU& cpu, reg32 esp)
+Result speechSetUp(App* app, CPU& cpu, reg32 esp)
 {
     const reg32 frame = esp - 5 * 4;
-    const HeldEbp ebp(cpu, frame);
     const reg32 name = frame - 0x64, sp = name;
     for (int32_t p = 0; p < 2; ++p)
     {
@@ -410,14 +379,16 @@ static Result speechSetUp(App* app, CPU& cpu, reg32 esp)
     kLineLock.set(app, 0);
     kDescriptionLoaded.set(app, 0);
     kDescriptionOn.set(app, 0);
-    reg32 r;
-    if (!callWith(app, cpu, sp, kSprintf, Args{name, 0, 0, 0},
-                  {name, kDescriptionFormat, kScriptFolder, track, track}, cpu.esi, 0, r))
+    cpu.esp = sp;
+    guest::direct<kSprintf, watcom::clib::sprintf>(app, cpu, name, kDescriptionFormat, guest::Words{kScriptFolder, track, track});
+    if (cpu.terminate)
         return {};
     appendText(app, name, gameSettings(app).backwards != 0 ? 0x540320 : 0x540328);
-    Result script = callResult(app, cpu, sp, kLoadQuietly, Args{name, 0, 0, 0}, {}, cpu.esi, name);
-    if (!script)
+    cpu.esp = sp;
+    const std::optional<reg32> loaded = guest::direct<kLoadQuietly, ea::loadQuietly>(app, cpu, name, 0u);
+    if (!loaded)
         return {};
+    const Result script = int32_t(*loaded);
     kScriptStart.set(app, reg32(*script));
     kScript.set(app, 1, reg32(*script));
     kScript.set(app, 0, reg32(*script));
@@ -427,20 +398,20 @@ static Result speechSetUp(App* app, CPU& cpu, reg32 esp)
 }
 
 /* 0x4c8440's: the co-driver's script freed. */
-static Result speechScriptFreed(App* app, CPU& cpu, reg32 esp, reg32 eax)
+Result speechScriptFreed(App* app, CPU& cpu, reg32 esp, reg32 eax)
 {
     const reg32 frame = esp - 3 * 4;
-    const HeldEbp ebp(cpu, frame);
     const reg32 script = kScriptStart(app);
     if (script == 0)
         return int32_t(eax);
-    Result r = callResult(app, cpu, frame, kFree, Args{script, 0, 0, 0}, {}, cpu.esi, cpu.edi);
+    cpu.esp = frame;
+    const std::optional<reg32> r = guest::direct<kFree, ea::purgeBlock>(app, cpu, script);
     if (!r)
         return {};
     kScriptStart.set(app, 0);
     kScript.set(app, 1, 0);
     kScript.set(app, 0, 0);
-    return r;
+    return int32_t(*r);
 }
 
 /* 0x4c8f90's: a line of the race voice's bank queued -- `effect`, `kind`, for
@@ -450,7 +421,6 @@ static Result speechScriptFreed(App* app, CPU& cpu, reg32 esp, reg32 eax)
 Result raceLineQueued(App* app, CPU& cpu, reg32 esp, reg32 effect, reg32 kind, reg32 player)
 {
     const reg32 frame = esp - 4 * 4;
-    const HeldEbp ebp(cpu, frame);
     if (kRaceTime(app) < 0x200)
         return int32_t(effect);
     const reg32 line = frame - 0x24;
@@ -463,8 +433,6 @@ Result raceLineQueued(App* app, CPU& cpu, reg32 esp, reg32 effect, reg32 kind, r
     l.kind = int32_t(kind);
     l.bank = bankHandle(app, kSpeechBankLines);
     kLineKind.set(app, int32_t(player), int32_t(kind));
-    cpu.esi = 0x7f;
-    cpu.edi = reg32(gameSettings(app).playMode);
     return speechLineSaid(app, cpu, line - 4, line);
 }
 
@@ -473,7 +441,6 @@ Result raceLineQueued(App* app, CPU& cpu, reg32 esp, reg32 effect, reg32 kind, r
 Result raceEventLineQueued(App* app, CPU& cpu, reg32 esp, reg32 player, reg32 event)
 {
     const reg32 frame = esp - 3 * 4;
-    const HeldEbp ebp(cpu, frame);
     if (kLineKind(app, int32_t(player)) != 0)
         return int32_t(event);
     reg32 effect;
@@ -498,7 +465,6 @@ Result raceEventLineQueued(App* app, CPU& cpu, reg32 esp, reg32 player, reg32 ev
 Result gapLineQueued(App* app, CPU& cpu, reg32 esp, reg32 car, reg32 player, reg32 toSay, reg32 ecx)
 {
     const reg32 frame = esp - 4 * 4;
-    const HeldEbp ebp(cpu, frame);
     const reg32 sp = frame - 4;
     if ((load<uint8_t>(app, car + 0x200) & 1) != 0 && load<reg32>(app, car + 0x2c4) == 3)
         return 0;
@@ -508,8 +474,10 @@ Result gapLineQueued(App* app, CPU& cpu, reg32 esp, reg32 car, reg32 player, reg
         const reg32 other = kRaceCars(app, i);
         if (load<int32_t>(app, other + 0x2bc) == 1)
         {
-            if (!callWith(app, cpu, sp, kLeaderGap, Args{other, car, 0, 0}, {}, car, player, gap))
+            const Result measured = callAt(app, cpu, sp, kLeaderGap, {other, car});
+            if (!measured)
                 return {};
+            gap = reg32(*measured);
             break;
         }
     }
@@ -550,7 +518,6 @@ Result gapLineQueued(App* app, CPU& cpu, reg32 esp, reg32 car, reg32 player, reg
 Result lapTimeLineQueued(App* app, CPU& cpu, reg32 esp, reg32 player, int32_t seconds)
 {
     const reg32 frame = esp - 4 * 4;
-    const HeldEbp ebp(cpu, frame);
     seconds = int32_t(uint32_t(seconds) + 3);
     if (kLineKind(app, int32_t(player)) != 0 || seconds < 0x32)
         return int32_t(player);
@@ -576,12 +543,11 @@ Result lapTimeLineQueued(App* app, CPU& cpu, reg32 esp, reg32 player, int32_t se
 /* 0x4c8d10's: `player`'s co-driver (the game's option on): along the track's
  * script of calls, as the car comes up to each -- by its speed, a little ahead
  * -- the call queued; the script started over on a new lap, or when the car
- * stops or goes backwards.  `status` is the x87's status word as it is on
- * entry: the code leaves the compare's bits in ax. */
-static Result coDriverTicked(App* app, CPU& cpu, reg32 esp, int32_t player, uint16_t status)
+ * stops or goes backwards.  The code leaves the compare's bits in ax: the x87's
+ * status word, whose other bits nothing sets (0). */
+Result coDriverTicked(App* app, CPU& cpu, reg32 esp, int32_t player)
 {
     const reg32 frame = esp - 6 * 4;
-    const HeldEbp ebp(cpu, frame);
     const reg32 sp = frame - 0x14;
     const reg32 slot = reg32(player) * 4;
     if (kScript(app, player) == 0 || gameSettings(app).raceOptionCopRadio == 0)
@@ -616,7 +582,7 @@ static Result coDriverTicked(App* app, CPU& cpu, reg32 esp, int32_t player, uint
     const reg32 low = reg32(product), high = reg32(uint64_t(product) >> 32);
     const int32_t rounded = int32_t((low >> 16) + (high << 16) + ((low >> 15) & 1));
     int32_t lead = rounded / 0x10000 / 6;
-    const uint16_t compared = comparedStatus(status, 0.0, double(speed));
+    const uint16_t compared = comparedStatus(0, 0.0, double(speed));
     // The speed below 0 (a NaN is not); or the car goes backwards.
     if (double(speed) < 0.0 || load<int32_t>(app, car + 0x998) != 0)
     {
@@ -687,15 +653,22 @@ static Result coDriverTicked(App* app, CPU& cpu, reg32 esp, int32_t player, uint
 static Result descriptionSpoken(App* app, CPU& cpu, reg32 esp, reg32 part)
 {
     const reg32 frame = esp - 5 * 4;
-    const HeldEbp ebp(cpu, frame);
-    reg32 handle;
-    if (!callWith(app, cpu, frame, kPlaySpeech, Args{reg32(kDescriptionBank(app)), part, 0, 0x7f}, {0x40}, part, cpu.edi,
-                  handle))
+    cpu.esp = frame;
+    const Result handle = guest::direct<kPlaySpeech, speechEffect>(app, cpu, frame - 8, kDescriptionBank(app),
+                                                                   int32_t(part), 0x7f, 0u, uint8_t(0x40));
+    if (!handle)
         return {};
-    kSpokenSound.set(app, int32_t(handle));
+    kSpokenSound.set(app, *handle);
     kDescriptionPart.set(app, int32_t(part));
     kDescriptionOn.set(app, 1);
-    return int32_t(handle);
+    return handle;
+}
+
+/* The music's stream to `volume` (0x4e7470's answer), from `sp`. */
+static Result musicTo(App* app, CPU& cpu, reg32 sp, int32_t volume)
+{
+    cpu.esp = sp;
+    return guest::direct<kStreamVolume, stream::fadeStream>(app, cpu, sp - 4, 0x64, volume);
 }
 
 /* The music up to its volume again, as the description ends (0x4e7470's
@@ -703,7 +676,17 @@ static Result descriptionSpoken(App* app, CPU& cpu, reg32 esp, reg32 part)
 static Result musicBackUp(App* app, CPU& cpu, reg32 sp)
 {
     kDescriptionStopped.set(app, 0);
-    return callResult(app, cpu, sp, kStreamVolume, Args{0x64, reg32(gameSettings(app).menuMusicVolume), 0, 0}, {}, cpu.esi, cpu.edi);
+    return musicTo(app, cpu, sp, gameSettings(app).menuMusicVolume);
+}
+
+/* A block of the game's freed (0x4e1890), from `sp`: its answer. */
+static Result blockFreed(App* app, CPU& cpu, reg32 sp, reg32 block)
+{
+    cpu.esp = sp;
+    const std::optional<reg32> r = guest::direct<kFree, ea::purgeBlock>(app, cpu, block);
+    if (!r)
+        return {};
+    return int32_t(*r);
 }
 
 /* 0x4c9380's: the description's tick: the next part spoken when one is done;
@@ -738,7 +721,7 @@ static Result descriptionTicked(App* app, CPU& cpu, reg32 esp, reg32 eax)
         const reg32 header = kDescriptionHeader(app);
         if (header != 0)
         {
-            if (!callResult(app, cpu, frame, kFree, Args{header, 0, 0, 0}, {}, header, 0))
+            if (!blockFreed(app, cpu, frame, header))
                 return {};
             kDescriptionHeader.set(app, 0);
         }
@@ -767,13 +750,12 @@ static Result descriptionTicked(App* app, CPU& cpu, reg32 esp, reg32 eax)
 Result descriptionStopped(App* app, CPU& cpu, reg32 esp, reg32 eax)
 {
     const reg32 frame = esp - 2 * 4;
-    const HeldEbp ebp(cpu, frame);
     if (kDescriptionOn(app) == 0)
         return int32_t(eax);
     kDescriptionStopped.set(app, 1);
     if (!descriptionTicked(app, cpu, frame - 4, eax))
         return {};
-    return callResult(app, cpu, frame, kStreamVolume, Args{0x64, reg32(gameSettings(app).menuMusicVolume), 0, 0}, {}, cpu.esi, cpu.edi);
+    return musicTo(app, cpu, frame, gameSettings(app).menuMusicVolume);
 }
 
 /* 0x4c95f0's: a description spoken -- track `track` of the menus' (kind 0x32)
@@ -782,8 +764,6 @@ Result descriptionStopped(App* app, CPU& cpu, reg32 esp, reg32 eax)
 Result descriptionStarted(App* app, CPU& cpu, reg32 esp, reg32 track, reg32 kind, reg32 language)
 {
     const reg32 frame = esp - 4 * 4;
-    // The code keeps ebp at a base in its frame, its locals at offsets from it.
-    const HeldEbp ebp(cpu, frame - 0x182);
     const reg32 name = frame - 0x104, sp = name;
     reg32 eax = track;
     if (kDescriptionOn(app) != 0)
@@ -795,7 +775,7 @@ Result descriptionStarted(App* app, CPU& cpu, reg32 esp, reg32 track, reg32 kind
     }
     const auto musicDown = [&]() {
         const int32_t volume = gameSettings(app).menuMusicVolume;
-        const Result r = callResult(app, cpu, sp, kStreamVolume, Args{0x64, reg32(volume / 2), 0, 0}, {}, cpu.esi, cpu.edi);
+        const Result r = musicTo(app, cpu, sp, volume / 2);
         if (r)
             kDescriptionKind.set(app, int32_t(kind));
         return r;
@@ -812,19 +792,20 @@ Result descriptionStarted(App* app, CPU& cpu, reg32 esp, reg32 track, reg32 kind
         return int32_t(eax);
     const Table<reg32>& names = kind == 0x32 ? kMenuTracks : kCarTracks;
     copyText(app, name, kCarsFolder);
-    // What the stand-ins log is what the code has in the registers at each call.
-    if (!callResult(app, cpu, sp, kPathEnd, Args{name, 0, 0, 0}, {}, track, name))
+    // 0x4529a0 (port_menus.cpp's, with no typed function yet) by its address: the name in eax.
+    if (!callAt(app, cpu, sp, kPathEnd, {name}))
         return {};
-    const Result trackName = callResult(app, cpu, sp, kTrackName, Args{track, language, language, track}, {}, track, name);
+    cpu.esp = sp;
+    const std::optional<reg32> trackName = guest::direct<kTrackName, load::folderOf>(app, cpu, track);
     if (!trackName)
         return {};
-    appendText(app, name, reg32(*trackName));
-    if (!callResult(app, cpu, sp, kPathEnd, Args{name, 0, 0, 0}, {}, track, name))
+    appendText(app, name, *trackName);
+    if (!callAt(app, cpu, sp, kPathEnd, {name}))
         return {};
     appendText(app, name, load<reg32>(app, names.address(int32_t(language))));
-    // The description bank loaded (0x4c9240, the speech's one register-level native: it
-    // asks SND to add the bank, and the checks stand that in), the language in ebx.
-    const Result loaded = callResult(app, cpu, sp, kDescriptionLoad, Args{name, language, language, track}, {}, track, name);
+    // The description bank loaded (0x4c9240, the speech's one register-level native, with no typed function: it
+    // asks SND to add the bank) by its address, as the code loads the registers.
+    const Result loaded = callAt(app, cpu, sp, kDescriptionLoad, {name, language, language, track});
     if (!loaded)
         return {};
     if (*loaded == 0)
@@ -838,8 +819,10 @@ Result descriptionStarted(App* app, CPU& cpu, reg32 esp, reg32 track, reg32 kind
 Result descriptionServed(App* app, CPU& cpu, reg32 esp)
 {
     const reg32 frame = esp - 4;
+    // The tasks read ebp unset: the code's frame pointer.
     const HeldEbp ebp(cpu, frame);
-    const Result tasks = callResult(app, cpu, frame, kTimersRun, Args{0, 0, 0, 0}, {}, cpu.esi, cpu.edi);
+    cpu.esp = frame;
+    const Result tasks = guest::direct<kTimersRun, stream::runDueTasks>(app, cpu, frame - 4, 0u);
     if (!tasks)
         return {};
     return descriptionTicked(app, cpu, frame - 4, reg32(*tasks));
@@ -851,7 +834,6 @@ Result descriptionServed(App* app, CPU& cpu, reg32 esp)
 Result raceVoiceBankLoaded(App* app, CPU& cpu, reg32 esp, reg32 index)
 {
     const reg32 frame = esp - 6 * 4;
-    const HeldEbp ebp(cpu, frame - 0x17e);
     const reg32 name = frame - 0x100, sp = name;
     const reg32 units = reg32(gameSettings(app).language);
     if (units <= 5)
@@ -860,7 +842,8 @@ Result raceVoiceBankLoaded(App* app, CPU& cpu, reg32 esp, reg32 index)
     if (gameSettings(app).playMode == 1)
         appendText(app, name, kSecondPlayerSuffix);
     const bool second = index != 0;
-    const Result r = callResult(app, cpu, sp, kLoadBank, Args{name, second ? 2u : 1u, 0, 0}, {}, cpu.esi, name);
+    cpu.esp = sp;
+    const Result r = guest::direct<kLoadBank, bankLoaded>(app, cpu, sp - 4, name, second ? 2 : 1, 0u, name);
     if (!r)
         return {};
     if (second)
@@ -873,14 +856,15 @@ Result raceVoiceBankLoaded(App* app, CPU& cpu, reg32 esp, reg32 index)
 Result carLineSpoken(App* app, CPU& cpu, reg32 esp, reg32 index, reg32 group)
 {
     const reg32 frame = esp - 3 * 4;
-    const HeldEbp ebp(cpu, frame);
     const int32_t bank = bankHandle(app, int32_t(index) > 4 ? kSpeechBankCar : kSpeechBankScenery);
-    reg32 handle;
-    if (!callWith(app, cpu, frame, kPlaySpeech, Args{reg32(bank), (group << 4) + index, 0, 0x7f}, {0x40}, cpu.esi,
-                  cpu.edi, handle))
+    cpu.esp = frame;
+    const Result handle = guest::direct<kPlaySpeech, speechEffect>(app, cpu, frame - 8, bank,
+                                                                   int32_t((group << 4) + index), 0x7f, 0u,
+                                                                   uint8_t(0x40));
+    if (!handle)
         return {};
-    kSpokenSound.set(app, int32_t(handle));
-    return int32_t(handle);
+    kSpokenSound.set(app, *handle);
+    return handle;
 }
 
 /* 0x4c9a00's: the race voice banks removed and their header copies freed. */
@@ -895,7 +879,7 @@ Result raceVoiceBanksFreed(App* app, CPU& cpu, reg32 esp)
         const reg32 block = pointer(app);
         if (block != 0)
         {
-            if (!callResult(app, cpu, frame, kFree, Args{block, 0, 0, 0}, {}, block, 0))
+            if (!blockFreed(app, cpu, frame, block))
                 return false;
             pointer.set(app, 0);
         }
@@ -914,176 +898,176 @@ Result raceVoiceBanksFreed(App* app, CPU& cpu, reg32 esp)
     return 0;
 }
 
-/* The speech's entries -- each its adapter (the game's registers and stack in,
+/* The speech's entries -- each its thunk (the game's registers and stack in,
  * the result in eax out) around what it does. */
 
-void speechInit(App* app, CPU& cpu)
+x86::reg32 speechInit(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, speechSetUp(app, cpu, e.esp));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, speechSetUp(app, cpu, e.esp));
 }
 
-void speechFree(App* app, CPU& cpu)
+x86::reg32 speechFree(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, speechScriptFreed(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, speechScriptFreed(app, cpu, e.esp, e.eax));
 }
 
-void speechLine(App* app, CPU& cpu)
+x86::reg32 speechLine(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, speechLineSaid(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, speechLineSaid(app, cpu, e.esp, e.eax));
 }
 
 /* 0x4c8d10: player eax's co-driver. */
-void coDriverTick(App* app, CPU& cpu)
+x86::reg32 coDriverTick(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, coDriverTicked(app, cpu, e.esp, int32_t(e.eax), cpu.fpu.status.word));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, coDriverTicked(app, cpu, e.esp, int32_t(e.eax)));
 }
 
-void descriptionSpeak(App* app, CPU& cpu)
+x86::reg32 descriptionSpeak(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, descriptionSpoken(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, descriptionSpoken(app, cpu, e.esp, e.eax));
 }
 
-void descriptionTick(App* app, CPU& cpu)
+x86::reg32 descriptionTick(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, descriptionTicked(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, descriptionTicked(app, cpu, e.esp, e.eax));
 }
 
-void descriptionStop(App* app, CPU& cpu)
+x86::reg32 descriptionStop(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, descriptionStopped(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, descriptionStopped(app, cpu, e.esp, e.eax));
 }
 
 /* 0x4c95e0's, 0x4c99f0's: the spoken line's status, the game's code's frame
  * (a word pushed) below `esp`. */
 Result spokenStatusOf(App* app, CPU& cpu, reg32 esp)
 {
-    const HeldEbp ebp(cpu, esp - 4);
     return soundStatus(app, cpu, esp - 4 - 4, reg32(kSpokenSound(app)));
 }
 
 /* 0x4c95e0, 0x4c99f0: the spoken line's status. */
-void spokenStatus(App* app, CPU& cpu)
+x86::reg32 spokenStatus(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, spokenStatusOf(app, cpu, e.esp));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, spokenStatusOf(app, cpu, e.esp));
 }
 
-void descriptionStart(App* app, CPU& cpu)
+x86::reg32 descriptionStart(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, descriptionStarted(app, cpu, e.esp, e.eax, e.edx, e.ebx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, descriptionStarted(app, cpu, e.esp, e.eax, e.edx, e.ebx));
 }
 
-void descriptionService(App* app, CPU& cpu)
+x86::reg32 descriptionService(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, descriptionServed(app, cpu, e.esp));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, descriptionServed(app, cpu, e.esp));
 }
 
-void raceVoiceLoad(App* app, CPU& cpu)
+x86::reg32 raceVoiceLoad(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, raceVoiceBankLoaded(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, raceVoiceBankLoaded(app, cpu, e.esp, e.eax));
 }
 
-void carLineSpeak(App* app, CPU& cpu)
+x86::reg32 carLineSpeak(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, carLineSpoken(app, cpu, e.esp, e.eax, e.edx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, carLineSpoken(app, cpu, e.esp, e.eax, e.edx));
 }
 
 /* 0x4c99d0's: the spoken line faded out, the game's code's frame (3 words
  * pushed) below `esp`. */
 Result spokenStopOf(App* app, CPU& cpu, reg32 esp)
 {
-    const HeldEbp ebp(cpu, esp - 3 * 4);
     return fadeSound(app, cpu, esp - 3 * 4 - 4, reg32(kSpokenSound(app)), 0, -1);
 }
 
 /* 0x4c99d0: the spoken line faded out. */
-void spokenStop(App* app, CPU& cpu)
+x86::reg32 spokenStop(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, spokenStopOf(app, cpu, e.esp));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, spokenStopOf(app, cpu, e.esp));
 }
 
-void raceVoiceFree(App* app, CPU& cpu)
+x86::reg32 raceVoiceFree(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, raceVoiceBanksFreed(app, cpu, e.esp));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, raceVoiceBanksFreed(app, cpu, e.esp));
 }
 
-void speechTick(App* app, CPU& cpu)
+x86::reg32 speechTick(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, playerSpeechTicked(app, cpu, e.esp, int32_t(e.eax)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, playerSpeechTicked(app, cpu, e.esp, int32_t(e.eax)));
 }
 
 /* 0x4c8810 (stdcall 4): player [esp+4]'s radio sound. */
-void radioTick(App* app, CPU& cpu)
+x86::reg32 radioTick(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu,
+    const Entry e(cpu, args);
+    return e.finish(cpu, args,
              radioSoundTicked(app, cpu, e.esp, e.eax, e.edx, int32_t(e.ebx), int32_t(e.ecx),
                               int32_t(e.arg(app, 0))),
              4);
+    return args.eax;
 }
 
 /* 0x4c89b0 (stdcall 4): player [esp+4]'s radio started. */
-void radioStart(App* app, CPU& cpu)
+x86::reg32 radioStart(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu,
+    const Entry e(cpu, args);
+    return e.finish(cpu, args,
              radioStarted(app, cpu, e.esp, e.eax, int32_t(e.ecx), int32_t(e.ebx), e.edx, int32_t(e.arg(app, 0))), 4);
+    return args.eax;
 }
 
-void speechSaid(App* app, CPU& cpu)
+x86::reg32 speechSaid(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, linesSaidMarked(app, cpu, e.esp));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, linesSaidMarked(app, cpu, e.esp));
 }
 
-void copRadio(App* app, CPU& cpu)
+x86::reg32 copRadio(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, copRadioStarted(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx), int32_t(e.ebx)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, copRadioStarted(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx), int32_t(e.ebx)));
 }
 
-void queueSpeechLine(App* app, CPU& cpu)
+x86::reg32 queueSpeechLine(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, speechLineQueued(app, cpu, e.esp, e.eax, e.edx, e.ebx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, speechLineQueued(app, cpu, e.esp, e.eax, e.edx, e.ebx));
 }
 
-void queueRaceLine(App* app, CPU& cpu)
+x86::reg32 queueRaceLine(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, raceLineQueued(app, cpu, e.esp, e.eax, e.ebx, e.edx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, raceLineQueued(app, cpu, e.esp, e.eax, e.ebx, e.edx));
 }
 
-void raceEventLine(App* app, CPU& cpu)
+x86::reg32 raceEventLine(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, raceEventLineQueued(app, cpu, e.esp, e.eax, e.edx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, raceEventLineQueued(app, cpu, e.esp, e.eax, e.edx));
 }
 
-void gapLine(App* app, CPU& cpu)
+x86::reg32 gapLine(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, gapLineQueued(app, cpu, e.esp, e.eax, e.edx, e.ebx, e.ecx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, gapLineQueued(app, cpu, e.esp, e.eax, e.edx, e.ebx, e.ecx));
 }
 
-void lapTimeLine(App* app, CPU& cpu)
+x86::reg32 lapTimeLine(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, lapTimeLineQueued(app, cpu, e.esp, e.eax, int32_t(e.edx)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, lapTimeLineQueued(app, cpu, e.esp, e.eax, int32_t(e.edx)));
 }
 
 }  // namespace port

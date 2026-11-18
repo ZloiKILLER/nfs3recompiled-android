@@ -4,9 +4,11 @@
 #include "native_game.h"
 #include "native_ea_memory.h"
 #include "native_frontend.h"
+#include "native_frontend_pcall.h"
 #include "native_frontend_eab.h"
 #include "native_frontend_menz.h"
 #include "native_frontend_rendf.h"
+#include "native_frontend_wata.h"
 #include "native_frontend_watc.h"
 #include "native_windows.h"
 #include "host_threads.h"
@@ -14,44 +16,120 @@
 #include <lib/winapp.h>
 #include <winapi/types.h>
 
+#include <cmath>
+#include <limits>
 #include <optional>
 #include <type_traits>
 #include <utility>
 #include <cstddef>
 
+/* The thunks defined below by qualified name, declared where they are defined. */
 namespace nfs3hp
 {
-namespace
-{
-
-/* A typed core called as C++ (fe::direct) whose function changes no register but eax (as
- * tools/frontend_checks/specs_from_exe.py reads it): the registers left as the call by address
- * leaves them -- `words` in eax, edx, ebx and ecx as that call loads them, the first `Taken` of
- * them the core's arguments -- and its result in eax, which the call by address leaves there. */
-template <x86::reg32 Address, auto Core, std::size_t... I>
-auto directOf(win32::WinApplication* app, x86::CPU& cpu, const x86::reg32* words, std::index_sequence<I...>)
-{
-    return fe::direct<Address, Core>(app, cpu, words[I]...);
-}
-
-template <x86::reg32 Address, auto Core, std::size_t Taken, typename... Words>
-x86::reg32 directKept(win32::WinApplication* app, x86::CPU& cpu, Words... words)
-{
-    const x86::reg32 all[] = { x86::reg32(words)..., 0 };
-    x86::reg32* const into[] = { &cpu.eax, &cpu.edx, &cpu.ebx, &cpu.ecx };
-    for (std::size_t i = 0; i < sizeof...(Words) && i < 4; ++i)
-        *into[i] = all[i];
-    const auto result = directOf<Address, Core>(app, cpu, all, std::make_index_sequence<Taken>{});
-    if constexpr (std::is_same_v<std::remove_cv_t<decltype(result)>, x86::reg32>)
-        cpu.eax = result;
-    else
-        cpu.eax = *result;
-    return cpu.eax;
-}
-
-}  // namespace
+namespace frontend {
+x86::reg32 watbKeyMatches(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbNoMatch(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbSortKey(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbReturnZero(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbNothing4ff620(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbNothing50d6d0(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbNothing50dbf0(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbAllocHandleJump(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbFreeHandleJump(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbInitFloatFormatters(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbInitChipBugHooks(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbInit8087(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbShapeClut(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbDrawFilledRect(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbReadPixel(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbInitVideoWindow(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbShapeTypeForDepth(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbInitRowTable(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbFreeRowTable(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbMakeRow(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbRemoveRow(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbFindBlockHeader(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbCopyNibbles(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbCopyBytes(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbCopyWords(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbCopyDwords(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbCopyTriples(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbBytesToNibbles(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbNibblesToBytes(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watb565ToIndex(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watb8888To1555Keyed(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watb8888To1555(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watb8888To565Keyed(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watb8888To565(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watb8888To4444(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watb1555To4444(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watb8888To8565(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbIndexTo888(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watb565To888(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watb8888To888(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watb1555To8888(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watb565To8888(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watb4444To8888(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watb8555To8888(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watb8565To8888(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watb888To8888(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbSpanTo16Keyed(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbSpanTwoSteps(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbDepthIndex16(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbDepthIndex32(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbDepthIndex15(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbDepthIndex(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbClutPointer(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbClut16aPointer(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbConverterFor(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbConvertShape(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbMoveShape(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbNextByte(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbCharWidthEntry(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbNextChar(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbTextAlpha(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbTextPlotted(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbTextMono(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbBlendTable(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbFadeTable(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbInitTextDraw(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbTextPalette(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbFreeTextDraw(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbPlotMask8(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbPlotMask16(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbPlotMask24(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbPlotMask32(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbColourToArgb(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbDispatchKey(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbRegisterKey(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbCopyBlock(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbBlendSpanIndexed(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbBlendSpan1555(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbBlendSpan565(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbBlendSpan888(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbBlendSpan8888(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbBlendSpanPalette565(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbDrawAlphaShape(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbQueueFetch(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbFreeClosedStreams(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbInitStreams(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbCloseStreams(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbCloseStreamsFrom(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbBuildArgv(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbSplitCommandLine(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbLongDoubleToDigits(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbDigitsLoop(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbAfterEightDigits(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbRoundDigits(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbEndLongDouble(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbEightDigits(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbFourDigits(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbTwoDigits(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbFormatF(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbEndFormat(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watbFormatE(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+}  // frontend
 }  // namespace nfs3hp
-
 
 /* What lies between the C runtime's modules from 0x4fb800 to 0x517200, decompiled.  The
  * rough map called it the runtime; most of it is EA's graphics library:
@@ -68,19 +146,18 @@ x86::reg32 directKept(win32::WinApplication* app, x86::CPU& cpu, Words... words)
  * and these of the runtime: the streams' start and end, the command line split into
  * argv, and __LDcvt (0x5167b3), a long double's digits for %e, %f and %g.
  *
- * The state stays in guest memory.  These run under other code that may go on with what
- * a register holds, so what each leaves in the registers it does not save is left as
- * its code leaves it: that is why the converters' last values appear at their ends.
+ * The state stays in guest memory.
  *
- * Plan step 5: each function a typed core in frontend::watb (native_frontend_watb.h) that takes
- * its arguments into the registers its code reads them from, in a frame of its own (fe::Frame:
- * what it calls runs at the stack addresses it did), and an adapter under the game's name for the
- * calls by address.  A core of this file calls another as C++ (guest::direct) where nothing reads
- * a register the callee leaves, and the typed cores of other files too (fe::direct); the rest of
- * the game still by address, as are the jumps to other functions (memmove, the handles', the
- * streams') and the entries into the middle of __LDcvt and %f's layout (sub_5169ef, sub_516acc,
- * sub_516ae2, sub_516be2, sub_516dfa), which work on their function's frame and registers and have
- * no core. */
+ * Plan step 7: each function a typed core in frontend::watb (native_frontend_watb.h) with its
+ * arguments as parameters and its result as its return value, in a frame of its own on the guest's
+ * stack where it hands the frame's address on (fe::Frame), and a thunk under the game's name for
+ * the calls by address.  What the game's code leaves in the registers it does not save is no
+ * longer kept: no caller reads it.  The cores call one another and the typed cores of other files
+ * as C++ (guest::direct, fe::direct); by address only what is called through a pointer (the span
+ * converters' tables, the blitters, the queues' tests, the keys' handlers), what has no core yet,
+ * and Error where its eax is handed back.  The entries into the middle of __LDcvt and %f's layout
+ * (sub_5169ef, sub_516acc, sub_516ae2, sub_516be2, sub_516dfa) have no core: their thunks take
+ * their function's frame and registers into the same typed parts the core runs. */
 namespace nfs3hp
 {
 
@@ -94,7 +171,6 @@ using x86::sreg32;
 using App = win32::WinApplication;
 using CPU = x86::CPU;
 
-constexpr std::uint8_t kLeavesEbx = fe::kRestoreAll & ~fe::kRestoreEbx;
 constexpr std::uint8_t kLeavesEdx = fe::kRestoreAll & ~fe::kRestoreEdx;
 constexpr std::uint8_t kLeavesEbxEdx = fe::kRestoreAll & ~(fe::kRestoreEbx | fe::kRestoreEdx);
 constexpr std::uint8_t kLeavesEbxEcxEdx = fe::kRestoreAll & ~(fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx);
@@ -159,35 +235,23 @@ reg32 roundedDepth(reg32 depth)
     return (depth + 1) & ~reg32(1);
 }
 
+/* Error as C++, where it is told it was called from first: its format and words as the code pushes
+ * them.  The game ends in it (fe::Terminated): what a function would go on to hand back after it is
+ * no result. */
 void reportError(Guest& guest, reg32 file, reg32 function, reg32 line, const fe::Arguments& arguments)
 {
     guest.setDword(kErrorFile, file);
     guest.setDword(kErrorFunction, function);
     guest.setDword(kErrorLine, line);
-    // Error as C++: the registers as the code loads them for it, which it keeps; its format and words
-    // pushed.
-    x86::CPU& cpu = guest.cpu();
-    x86::reg32* const into[] = { &cpu.eax, &cpu.edx, &cpu.ebx, &cpu.ecx };
-    for (std::size_t i = 0; i < arguments.registerCount; ++i)
-        *into[i] = arguments.registers[i];
     guest::Words words({});
     for (std::size_t i = 1; i < arguments.stackCount; ++i)
         words.word[words.count++] = arguments.stack[i];
-    fe::direct<0x401010, ea::error>(guest.app(), cpu, arguments.stack[0], words);
-}
-
-/* The same by address where what Error leaves in eax is handed back, which ea::error does not give. */
-void reportErrorLeft(Guest& guest, reg32 file, reg32 function, reg32 line, const fe::Arguments& arguments)
-{
-    guest.setDword(kErrorFile, file);
-    guest.setDword(kErrorFunction, function);
-    guest.setDword(kErrorLine, line);
-    guest.call(kLog, arguments);
+    fe::direct<kLog, ea::error>(guest.app(), guest.cpu(), arguments.stack[0], words);
 }
 
 /* A Windows function, its words as the code pushes them: the port's own, called as C++
- * (native_windows.h); in the checks through its import's slot, as a call of the guest's.  Its
- * answer, eax; the game stopped in it ends the stand-in as Guest::call's do. */
+ * (native_windows.h).  Its
+ * answer, eax; the game stopped in it ends the function as Guest::call's do. */
 template <reg32 Slot, auto Function, typename... Words>
 reg32 callImport(Guest& guest, x86::CPU& cpu, Words... words)
 {
@@ -269,16 +333,14 @@ constexpr reg32 kVisibleFrom = 0x10000000;    // less than this much leaves it
 /* sub_4fb820: qfetch's test: whether the element's key at +4 is edx. */
 x86::reg32 frontend::watb::keyMatches(App* app, CPU& cpu, reg32 argEax, reg32 argEdx)
 {
-    cpu.eax = argEax;
-    cpu.edx = argEdx;
     Guest guest(app, cpu);
-    return cpu.edx == guest.dword(cpu.eax + 4) ? 1 : 0;
+    return argEdx == guest.dword(argEax + 4) ? 1 : 0;
 }
 
-void frontend::watbKeyMatches(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbKeyMatches(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_4fb820", 0, 0);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::keyMatches(app, cpu, cpu.eax, cpu.edx); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::keyMatches(app, cpu, args.eax, args.edx); });
 }
 
 /* sub_4fb82b: the end of sub_4fb820, which sub_4fb850 jumps to: no match. */
@@ -287,25 +349,24 @@ x86::reg32 frontend::watb::noMatch(App* app, CPU& cpu)
     return 0;
 }
 
-void frontend::watbNoMatch(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbNoMatch(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_4fb82b", 0, 0);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::noMatch(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::noMatch(app, cpu); });
 }
 
 /* sub_4fb830: an element's sort key: its byte at +0x11 over the upper bits of its dword at +4. */
 x86::reg32 frontend::watb::sortKey(App* app, CPU& cpu, reg32 argEax)
 {
-    cpu.eax = argEax;
     Guest guest(app, cpu);
-    const reg32 record = cpu.eax;
+    const reg32 record = argEax;
     return (reg32(guest.byte(record + 0x11)) << 24) | (sar(guest.dword(record + 4), 5) & 0xffffff);
 }
 
-void frontend::watbSortKey(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbSortKey(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_4fb830", 0, 0);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::sortKey(app, cpu, cpu.eax); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::sortKey(app, cpu, args.eax); });
 }
 
 /* sub_4feffc: a hook of the library's that answers 0. */
@@ -314,10 +375,10 @@ x86::reg32 frontend::watb::returnZero(App* app, CPU& cpu)
     return 0;
 }
 
-void frontend::watbReturnZero(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbReturnZero(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_4feffc", 0, 0);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::returnZero(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::returnZero(app, cpu); });
 }
 
 /* sub_4ff620, sub_50d6d0, sub_50dbf0: hooks that do nothing. */
@@ -325,77 +386,91 @@ void frontend::watb::nothing4ff620(App*, CPU&)
 {
 }
 
-void frontend::watbNothing4ff620(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbNothing4ff620(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     watb::nothing4ff620(app, cpu);
     cpu.esp += 4;
+    return args.eax;
 }
 
 void frontend::watb::nothing50d6d0(App*, CPU&)
 {
 }
 
-void frontend::watbNothing50d6d0(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbNothing50d6d0(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     watb::nothing50d6d0(app, cpu);
     cpu.esp += 4;
+    return args.eax;
 }
 
 void frontend::watb::nothing50dbf0(App*, CPU&)
 {
 }
 
-void frontend::watbNothing50dbf0(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbNothing50dbf0(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     watb::nothing50dbf0(app, cpu);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* sub_4ff0f8, sub_4ff100: __allocPOSIXHandle's and __freePOSIXHandle's jumps, which
- * 0x567770 and 0x567774 point at. */
-/* Entered as the code enters it, the return address's slot under esp: the function it jumps to returns
- * for it. */
-x86::reg32 frontend::watb::allocHandleJump(App* app, CPU& cpu)
+ * 0x567770 and 0x567774 point at: the handle (eax, the one register either reads) on to the
+ * function, its answer back.  They have no typed core yet: by address.  Their thunks pop the
+ * return address the function would have returned through. */
+x86::reg32 frontend::watb::allocHandleJump(App* app, CPU& cpu, reg32 handle)
 {
-    app->dynamic_call(0x51e304, cpu);
-    return cpu.eax;
+    return guest::pointerCall(app, cpu, 0x51e304, { handle }).value_or(0);
 }
 
-void frontend::watbAllocHandleJump(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbAllocHandleJump(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    watb::allocHandleJump(app, cpu);
+    const reg32 result = watb::allocHandleJump(app, cpu, args.eax);
+    if (cpu.terminate)
+        return args.eax;
+    args.eax = result;
+    cpu.esp += 4;
+    return args.eax;
 }
 
-/* Entered as the code enters it, the return address's slot under esp: the function it jumps to returns
- * for it. */
-x86::reg32 frontend::watb::freeHandleJump(App* app, CPU& cpu)
+x86::reg32 frontend::watb::freeHandleJump(App* app, CPU& cpu, reg32 handle)
 {
-    app->dynamic_call(0x51e45c, cpu);
-    return cpu.eax;
+    return guest::pointerCall(app, cpu, 0x51e45c, { handle }).value_or(0);
 }
 
-void frontend::watbFreeHandleJump(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbFreeHandleJump(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    watb::freeHandleJump(app, cpu);
+    const reg32 result = watb::freeHandleJump(app, cpu, args.eax);
+    if (cpu.terminate)
+        return args.eax;
+    args.eax = result;
+    cpu.esp += 4;
+    return args.eax;
 }
 
 // ---------------------------------------------------------------------------
 // The runtime's start-up hooks
 // ---------------------------------------------------------------------------
 
-/* sub_4ff570: printf's and scanf's floats, [__EFG_printf] and [__EFG_scanf]. */
+/* sub_4ff570: printf's and scanf's floats, [__EFG_printf] and [__EFG_scanf].  No result: the
+ * game's code leaves eax as it came, which its thunk does. */
 x86::reg32 frontend::watb::initFloatFormatters(App* app, CPU& cpu)
 {
     Guest guest(app, cpu);
     guest.setDword(0x56ac64, 0x51f140);
     guest.setDword(0x56ac68, 0x51f254);
-    return guest.eax();
+    return 0;
 }
 
-void frontend::watbInitFloatFormatters(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbInitFloatFormatters(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_4ff570", 0, 0);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::initFloatFormatters(app, cpu); });
+    const reg32 previous = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
+        watb::initFloatFormatters(app, cpu);
+        return previous;
+    });
 }
 
 namespace
@@ -405,7 +480,7 @@ constexpr reg32 k8087 = 0x5644c0, kReal87 = 0x5644c1, kNo87Found = 0x567834;
 
 /* sub_4ff59c: where there is a real x87, its state's save and restore for the signal
  * handlers.  Its call of sub_51f272, the test for the Pentium's FDIV bug, is gone in the
- * port (disassemble_nfs3hp.py), which leaves the word it was handed in eax. */
+ * port, which leaves the word it was handed in eax. */
 x86::reg32 frontend::watb::initChipBugHooks(App* app, CPU& cpu)
 {
     Guest guest(app, cpu);
@@ -417,24 +492,25 @@ x86::reg32 frontend::watb::initChipBugHooks(App* app, CPU& cpu)
     return guest.word(0x56acf8);
 }
 
-void frontend::watbInitChipBugHooks(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbInitChipBugHooks(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_4ff59c", 0, 0);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::initChipBugHooks(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::initChipBugHooks(app, cpu); });
 }
 
-/* sub_4ff5dc: an x87 looked for, by what fninit leaves in the control word. */
+/* sub_4ff5dc: an x87 looked for, by what fninit leaves in the control word: the port's x87 starts
+ * with 0x7f (x86::FloatEnv::init), whose high byte is no x87's.  The fninit itself, which empties the x87's
+ * stack, its thunk does. */
 x86::reg32 frontend::watb::init8087(App* app, CPU& cpu, reg32 argEax)
 {
-    cpu.eax = argEax;
+    constexpr reg32 kFninitControl = 0x7f;
     Guest guest(app, cpu);
     const fe::Frame locals(guest, cpu, 4);
     const std::uint8_t found = guest.byte(k8087);
     if (found != 0)
-        return (cpu.eax & 0xffff00ff) | (reg32(found) << 8);
+        return (argEax & 0xffff00ff) | (reg32(found) << 8);
     guest.setByte(kReal87, 0);
-    guest.fpu().init();
-    const reg32 word = guest.fpu().control.word;
+    const reg32 word = kFninitControl;
     const std::uint8_t high = std::uint8_t(word >> 8);
     reg32 result = (word & 0xffffff00) | high;
     std::uint8_t present = 0;
@@ -451,10 +527,14 @@ x86::reg32 frontend::watb::init8087(App* app, CPU& cpu, reg32 argEax)
     return result;
 }
 
-void frontend::watbInit8087(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbInit8087(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_4ff5dc", 0, 0);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::init8087(app, cpu, cpu.eax); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
+        if (guest::byte(app, k8087) == 0)
+            cpu.fenv.init();
+        return watb::init8087(app, cpu, args.eax);
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -464,10 +544,9 @@ void frontend::watbInit8087(win32::WinApplication* app, x86::CPU& cpu)
 /* sub_4fd1c0, getshapeclut: the palette among the records that follow a shape, or 0. */
 x86::reg32 frontend::watb::shapeClut(App* app, CPU& cpu, reg32 argEax)
 {
-    cpu.eax = argEax;
     Guest guest(app, cpu);
     const fe::Frame locals(guest, cpu, 16);
-    reg32 record = cpu.eax;
+    reg32 record = argEax;
     if (record == 0)
         return 0;
     if (shapeDepth(guest, record) == 0)
@@ -484,31 +563,24 @@ x86::reg32 frontend::watb::shapeClut(App* app, CPU& cpu, reg32 argEax)
     return 0;
 }
 
-void frontend::watbShapeClut(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbShapeClut(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_4fd1c0", 0, 0);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::shapeClut(app, cpu, cpu.eax); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::shapeClut(app, cpu, args.eax); });
 }
 
 /* sub_4fd540: a filled rectangle, drawn by movdfl as a shape of the window's type with
  * no pixels: the colour goes in 0x9f4fac, repeated to fill a dword, for the fillers in
- * the table at 0x5676b4.  The shape's header is built in the frame, and what movdfl
- * takes for its pixels is what lies above it there: the saved registers. */
+ * the table at 0x5676b4.  The shape's header is built in the frame; what movdfl would take
+ * for its pixels lies above it there, where the code saves its registers, and the fillers
+ * read none of it. */
 x86::reg32 frontend::watb::drawFilledRect(App* app, CPU& cpu, reg32 argEax, reg32 argEdx, reg32 argEbx, reg32 argEcx,
                                           reg32 colourWord)
 {
-    cpu.eax = argEax;
-    cpu.edx = argEdx;
-    cpu.ebx = argEbx;
-    cpu.ecx = argEcx;
-    const reg32 entryEbp = cpu.ebp, entryEdi = cpu.edi, entryEsi = cpu.esi;
     Guest guest(app, cpu);
     const fe::Frame locals(guest, cpu, 0x20);
     const reg32 frame = guest.frame();
-    guest.setDword(frame + 0x14, entryEbp);
-    guest.setDword(frame + 0x18, entryEdi);
-    guest.setDword(frame + 0x1c, entryEsi);
-    const reg32 x = cpu.eax, y = cpu.edx;
+    const reg32 x = argEax, y = argEdx;
     reg32 colour = colourWord;
     const std::uint8_t depth = guest.byte(kWindowDepth);
     if (depth == 4)
@@ -531,35 +603,32 @@ x86::reg32 frontend::watb::drawFilledRect(App* app, CPU& cpu, reg32 argEax, reg3
     guest.setDword(0x5676cc, 0);
     if (guest.byte(kWindowDepth) == 0x10 && guest.dword(0x5676b0) != 0)
         guest.setDword(0x5676cc, 0x4fd4e0);
-    guest.setWord(frame + 4, std::uint16_t(cpu.ebx));
-    guest.setWord(frame + 6, std::uint16_t(cpu.ecx));
+    guest.setWord(frame + 4, std::uint16_t(argEbx));
+    guest.setWord(frame + 6, std::uint16_t(argEcx));
     guest.setDword(frame, guest.byte(kWindowType));
-    return guest.call(0x50b0b0, args({ frame, x, y, 0x5676b4 }));
+    return fe::direct<0x50b0b0, moveShape>(app, cpu, frame, x, y, reg32(0x5676b4));
 }
 
-void frontend::watbDrawFilledRect(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbDrawFilledRect(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_4fd540", 4, 0, kLeavesEbxEcxEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) {
-        return watb::drawFilledRect(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx, guest::at(app, cpu.esp + 4));
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
+        return watb::drawFilledRect(app, cpu, args.eax, args.edx, args.ebx, args.ecx, guest::at(app, cpu.esp + 4));
     });
 }
 
 /* sub_503bc0, readpixel: the pixel at eax, edx of the current window; 0 outside it. */
 x86::reg32 frontend::watb::readPixel(App* app, CPU& cpu, reg32 argEax, reg32 argEdx)
 {
-    cpu.eax = argEax;
-    cpu.edx = argEdx;
     Guest guest(app, cpu);
     const fe::Frame locals(guest, cpu, 12);
-    const reg32 x = cpu.eax, y = cpu.edx;
+    const reg32 x = argEax, y = argEdx;
     if (sreg32(x) < sreg32(guest.dword(kClipLeft)) || sreg32(x) >= sreg32(guest.dword(kClipRight))
         || sreg32(y) < sreg32(guest.dword(kClipTop)) || sreg32(y) >= sreg32(guest.dword(kClipBottom)))
         return 0;
     const reg32 row = guest.dword(guest.dword(kRowOffsets) + y * 4);
     const reg32 column = guest.dword(guest.dword(kColumnOffsets) + x * 4);
     const reg32 pixel = guest.dword(kWindowPixels) + row + column;
-    guest.leaveEdx(pixel);
     const std::uint8_t depth = guest.byte(kWindowDepth);
     switch (depth)
     {
@@ -581,24 +650,20 @@ x86::reg32 frontend::watb::readPixel(App* app, CPU& cpu, reg32 argEax, reg32 arg
     return (x & 1) != 0 ? (reg32(guest.byte(pixel)) >> 4) & 0xf : reg32(guest.byte(pixel)) & 0xf;
 }
 
-void frontend::watbReadPixel(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbReadPixel(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_503bc0", 0, 0, kLeavesEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::readPixel(app, cpu, cpu.eax, cpu.edx); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::readPixel(app, cpu, args.eax, args.edx); });
 }
 
 /* sub_508b80, initvideowindow: a window's record of 0x38 bytes and its two row tables. */
 x86::reg32 frontend::watb::initVideoWindow(App* app, CPU& cpu, reg32 argEax, reg32 argEdx, reg32 argEbx,
                                            reg32 argEcx, reg32 depthWord, reg32 pixelsWord, reg32 tagWord)
 {
-    cpu.eax = argEax;
-    cpu.edx = argEdx;
-    cpu.ebx = argEbx;
-    cpu.ecx = argEcx;
     Guest guest(app, cpu);
     const fe::Frame locals(guest, cpu, 0x14);
     const reg32 frame = guest.frame();
-    const reg32 window = cpu.eax, width = cpu.edx, height = cpu.ebx, stride = cpu.ecx;
+    const reg32 window = argEax, width = argEdx, height = argEbx, stride = argEcx;
     reg32 depth = depthWord;
     if (depth == 0)
         depth = guest.dword(0x56438c);
@@ -619,21 +684,19 @@ x86::reg32 frontend::watb::initVideoWindow(App* app, CPU& cpu, reg32 argEax, reg
     guest.setDword(window + 0x34, tagWord);
     const reg32 rows = guest::direct<0x509a30, makeRow>(app, cpu, reg32(0), stride, reg32(0), height);
     guest.setDword(window + 0x2c, rows);
-    const reg32 columns = guest.call(0x509a30, args({ 0, bytesStep, 3, width }));
+    const reg32 columns = guest::direct<0x509a30, makeRow>(app, cpu, reg32(0), bytesStep, reg32(3), width);
     guest.setDword(window + 0x30, columns);
-    guest.leaveEdx(rows);
     if (rows != 0 && columns != 0)
         return columns;
-    guest.leaveEbx(0x54f53c);
-    reportErrorLeft(guest, 0x54f53c, 0x54f54c, 0x29, args({}, { 0x54f55c, width, height }));
-    return guest.eax();
+    reportError(guest, 0x54f53c, 0x54f54c, 0x29, args({}, { 0x54f55c, width, height }));
+    return 0;
 }
 
-void frontend::watbInitVideoWindow(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbInitVideoWindow(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_508b80", 12, 0, kLeavesEbxEcxEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) {
-        return watb::initVideoWindow(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx, guest::at(app, cpu.esp + 4),
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
+        return watb::initVideoWindow(app, cpu, args.eax, args.edx, args.ebx, args.ecx, guest::at(app, cpu.esp + 4),
                                      guest::at(app, cpu.esp + 8), guest::at(app, cpu.esp + 12));
     });
 }
@@ -650,8 +713,7 @@ constexpr reg32 kRowSpace = 0x568380, kRowSpaceWords = 0x56837c, kRowSpaceEnd = 
 /* sub_5098d0: the shape type of a window of this many bits a pixel, or 0. */
 x86::reg32 frontend::watb::shapeTypeForDepth(App* app, CPU& cpu, reg32 argEax)
 {
-    cpu.eax = argEax;
-    switch (cpu.eax)
+    switch (argEax)
     {
     case 1: return 0x79;
     case 4: return 0x7a;
@@ -664,10 +726,10 @@ x86::reg32 frontend::watb::shapeTypeForDepth(App* app, CPU& cpu, reg32 argEax)
     }
 }
 
-void frontend::watbShapeTypeForDepth(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbShapeTypeForDepth(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_5098d0", 0, 0);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::shapeTypeForDepth(app, cpu, cpu.eax); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::shapeTypeForDepth(app, cpu, args.eax); });
 }
 
 /* sub_509940, initrow: the space made if it is not there, one free run in it. */
@@ -694,52 +756,52 @@ x86::reg32 frontend::watb::initRowTable(App* app, CPU& cpu)
     return space;
 }
 
-void frontend::watbInitRowTable(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbInitRowTable(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_509940", 0, 0);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::initRowTable(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::initRowTable(app, cpu); });
 }
 
-/* sub_509a00: the space given back. */
+/* sub_509a00: the space given back.  No result: what purgememadr leaves, or with no space eax as
+ * it came, which its thunk does. */
 x86::reg32 frontend::watb::freeRowTable(App* app, CPU& cpu)
 {
     Guest guest(app, cpu);
     const fe::Frame locals(guest, cpu, 8);
     const reg32 space = guest.dword(kRowSpace);
-    reg32 left = guest.eax();
+    reg32 left = 0;
     if (space != 0)
         left = *fe::direct<0x4e1890, ea::purgeBlock>(app, cpu, space);
     guest.setDword(kRowSpace, 0);
     return left;
 }
 
-void frontend::watbFreeRowTable(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbFreeRowTable(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_509a00", 0, 0);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::freeRowTable(app, cpu); });
+    const reg32 previous = args.eax;
+    const bool none = guest::at(app, kRowSpace) == 0;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
+        const reg32 left = watb::freeRowTable(app, cpu);
+        return none ? previous : left;
+    });
 }
 
 /* sub_509a30: a table of ecx offsets from eax, edx apart, each shifted right by ebx: an
  * equal one shared if there is one, else a free run taken; 0 if none is long enough. */
 x86::reg32 frontend::watb::makeRow(App* app, CPU& cpu, reg32 argEax, reg32 argEdx, reg32 argEbx, reg32 argEcx)
 {
-    cpu.eax = argEax;
-    cpu.edx = argEdx;
-    cpu.ebx = argEbx;
-    cpu.ecx = argEcx;
     Guest guest(app, cpu);
-    reg32 offset = cpu.eax;
-    const reg32 step = cpu.edx;
-    reg32 count = cpu.ecx;
-    const unsigned shift = unsigned(cpu.ebx & 0xff);
+    reg32 offset = argEax;
+    const reg32 step = argEdx;
+    reg32 count = argEcx;
+    const unsigned shift = unsigned(argEbx & 0xff);
     reg32 run = guest.dword(kRowSpace);
     const reg32 end = guest.dword(kRowSpaceEnd);
     reg32 freeRun = 0;
-    reg32 leftEcx = count, leftEdx = end;
     if (run < end)
     {
         const reg32 second = sar(step, shift) + offset;
-        leftEdx = second;
         do
         {
             const reg32 size = guest.dword(run);
@@ -754,30 +816,19 @@ x86::reg32 frontend::watb::makeRow(App* app, CPU& cpu, reg32 argEax, reg32 argEd
                 {
                     const reg32 uses = guest.dword(run + 4) + 1;
                     guest.setDword(run + 4, uses);
-                    guest.leaveEbx(freeRun);
-                    guest.leaveEcx(size);
-                    guest.leaveEdx(uses);
                     return run + 8;
                 }
             }
-            leftEcx = (size << 2) + 8;
-            run += leftEcx;
+            run += (size << 2) + 8;
         } while (run < guest.dword(kRowSpaceEnd));
     }
     if (freeRun == 0)
-    {
-        guest.leaveEbx(0);
-        guest.leaveEcx(leftEcx);
-        guest.leaveEdx(leftEdx);
         return 0;
-    }
-    leftEdx = count + 8;
     const reg32 size = guest.dword(freeRun);
-    if (sreg32(size) >= sreg32(leftEdx))
+    if (sreg32(size) >= sreg32(count + 8))
     {
-        leftEdx = size - count - 2;
         guest.setDword(freeRun + count * 4 + 0xc, 0);
-        guest.setDword(freeRun + count * 4 + 8, leftEdx);
+        guest.setDword(freeRun + count * 4 + 8, size - count - 2);
     }
     else
         count = size;
@@ -791,29 +842,23 @@ x86::reg32 frontend::watb::makeRow(App* app, CPU& cpu, reg32 argEax, reg32 argEd
             guest.setDword(table + i * 4, sar(offset, shift));
             offset += step;
         }
-        leftEdx = table + count * 4;
-        leftEcx = step;
     }
-    guest.leaveEbx(table);
-    guest.leaveEcx(leftEcx);
-    guest.leaveEdx(leftEdx);
     return table;
 }
 
-void frontend::watbMakeRow(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbMakeRow(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_509a30", 0, 0, kLeavesEbxEcxEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::makeRow(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::makeRow(app, cpu, args.eax, args.edx, args.ebx, args.ecx); });
 }
 
 /* sub_509b10, removerow: a use of a table dropped; the last, its run joined to free
  * neighbours. */
 x86::reg32 frontend::watb::removeRow(App* app, CPU& cpu, reg32 argEax)
 {
-    cpu.eax = argEax;
     Guest guest(app, cpu);
     const fe::Frame locals(guest, cpu, 20);
-    const reg32 entry = cpu.eax;
+    const reg32 entry = argEax;
     const reg32 run = entry - 8;
     const reg32 uses = guest.dword(run + 4) - 1;
     guest.setDword(run + 4, uses);
@@ -842,21 +887,19 @@ x86::reg32 frontend::watb::removeRow(App* app, CPU& cpu, reg32 argEax)
     return left;
 }
 
-void frontend::watbRemoveRow(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbRemoveRow(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_509b10", 0, 0);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::removeRow(app, cpu, cpu.eax); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::removeRow(app, cpu, args.eax); });
 }
 
 /* sub_509c00: the memory manager's block that eax lies in, by its 16 heaps: the block's
  * pixels, or 0. */
 x86::reg32 frontend::watb::findBlockHeader(App* app, CPU& cpu, reg32 argEax, reg32 argEdx)
 {
-    cpu.eax = argEax;
-    cpu.edx = argEdx;
     Guest guest(app, cpu);
-    const reg32 address = cpu.eax;
-    reg32 data = cpu.edx;
+    const reg32 address = argEax;
+    reg32 data = argEdx;
     for (reg32 heap = 0; sreg32(heap) <= 0xf; ++heap)
     {
         reg32 block = guest.dword((heap & 0xf) * 4 + 0x9ef5c0);
@@ -878,10 +921,10 @@ x86::reg32 frontend::watb::findBlockHeader(App* app, CPU& cpu, reg32 argEax, reg
     return 0;
 }
 
-void frontend::watbFindBlockHeader(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbFindBlockHeader(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_509c00", 0, 0);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::findBlockHeader(app, cpu, cpu.eax, cpu.edx); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::findBlockHeader(app, cpu, args.eax, args.edx); });
 }
 
 // ---------------------------------------------------------------------------
@@ -890,93 +933,95 @@ void frontend::watbFindBlockHeader(win32::WinApplication* app, x86::CPU& cpu)
 // ---------------------------------------------------------------------------
 
 /* sub_509c50, sub_509c60, sub_509eb0, sub_50a510: the same format: a copy, its length
- * in bytes from pixels of 4, 8, 16 and 32 bits.  memmove jumped to, which returns for them:
- * entered as the code enters them, the return address's slot under esp. */
+ * in bytes from pixels of 4, 8, 16 and 32 bits.  The game's code jumps to memmove, which returns
+ * for them: here memmove is called, and their thunks pop the return address.  What memmove leaves
+ * in eax is no result -- these are void, and their callers through the tables read none -- so they
+ * hand back 0.  No throw: the game stopped in it leaves cpu.terminate set. */
 x86::reg32 frontend::watb::copyNibbles(App* app, CPU& cpu, reg32 from, reg32 to, reg32 count)
 {
-    cpu.eax = from;
-    cpu.edx = to;
-    cpu.ebx = count;
-    cpu.ebx = sar(cpu.ebx + 1, 1);
-    app->dynamic_call(kMemmove, cpu);
-    return cpu.eax;
+    guest::direct<kMemmove, ea::moveMemory>(app, cpu, to, from, sar(count + 1, 1));
+    return 0;
 }
 
-void frontend::watbCopyNibbles(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbCopyNibbles(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    watb::copyNibbles(app, cpu, cpu.eax, cpu.edx, cpu.ebx);
+    const reg32 result = watb::copyNibbles(app, cpu, args.eax, args.edx, args.ebx);
+    if (cpu.terminate)
+        return args.eax;
+    args.eax = result;
+    cpu.esp += 4;
+    return args.eax;
 }
 
 x86::reg32 frontend::watb::copyBytes(App* app, CPU& cpu, reg32 from, reg32 to, reg32 count)
 {
-    cpu.eax = from;
-    cpu.edx = to;
-    cpu.ebx = count;
-    app->dynamic_call(kMemmove, cpu);
-    return cpu.eax;
+    guest::direct<kMemmove, ea::moveMemory>(app, cpu, to, from, count);
+    return 0;
 }
 
-void frontend::watbCopyBytes(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbCopyBytes(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    watb::copyBytes(app, cpu, cpu.eax, cpu.edx, cpu.ebx);
+    const reg32 result = watb::copyBytes(app, cpu, args.eax, args.edx, args.ebx);
+    if (cpu.terminate)
+        return args.eax;
+    args.eax = result;
+    cpu.esp += 4;
+    return args.eax;
 }
 
 x86::reg32 frontend::watb::copyWords(App* app, CPU& cpu, reg32 from, reg32 to, reg32 count)
 {
-    cpu.eax = from;
-    cpu.edx = to;
-    cpu.ebx = count;
-    cpu.ebx += cpu.ebx;
-    app->dynamic_call(kMemmove, cpu);
-    return cpu.eax;
+    guest::direct<kMemmove, ea::moveMemory>(app, cpu, to, from, count + count);
+    return 0;
 }
 
-void frontend::watbCopyWords(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbCopyWords(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    watb::copyWords(app, cpu, cpu.eax, cpu.edx, cpu.ebx);
+    const reg32 result = watb::copyWords(app, cpu, args.eax, args.edx, args.ebx);
+    if (cpu.terminate)
+        return args.eax;
+    args.eax = result;
+    cpu.esp += 4;
+    return args.eax;
 }
 
 x86::reg32 frontend::watb::copyDwords(App* app, CPU& cpu, reg32 from, reg32 to, reg32 count)
 {
-    cpu.eax = from;
-    cpu.edx = to;
-    cpu.ebx = count;
-    cpu.ebx <<= 2;
-    app->dynamic_call(kMemmove, cpu);
-    return cpu.eax;
+    guest::direct<kMemmove, ea::moveMemory>(app, cpu, to, from, count << 2);
+    return 0;
 }
 
-void frontend::watbCopyDwords(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbCopyDwords(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    watb::copyDwords(app, cpu, cpu.eax, cpu.edx, cpu.ebx);
+    const reg32 result = watb::copyDwords(app, cpu, args.eax, args.edx, args.ebx);
+    if (cpu.terminate)
+        return args.eax;
+    args.eax = result;
+    cpu.esp += 4;
+    return args.eax;
 }
 
-/* sub_50a1c0: 24 bits. */
+/* sub_50a1c0: 24 bits, memmove called; no result, as the four above. */
 x86::reg32 frontend::watb::copyTriples(App* app, CPU& cpu, reg32 argEax, reg32 argEdx, reg32 argEbx)
 {
-    cpu.eax = argEax;
-    cpu.edx = argEdx;
-    cpu.ebx = argEbx;
     Guest guest(app, cpu);
     const fe::Frame locals(guest, cpu, 4);
-    return guest.call(kMemmove, args({ cpu.eax, cpu.edx, cpu.ebx * 3 }));
+    fe::direct<kMemmove, ea::moveMemory>(app, cpu, argEdx, argEax, argEbx * 3);
+    return 0;
 }
 
-void frontend::watbCopyTriples(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbCopyTriples(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_50a1c0", 0, 0, kLeavesEbxEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::copyTriples(app, cpu, cpu.eax, cpu.edx, cpu.ebx); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::copyTriples(app, cpu, args.eax, args.edx, args.ebx); });
 }
 
 /* sub_509c70: bytes into nibbles, the even pixel in the low one. */
 x86::reg32 frontend::watb::bytesToNibbles(App* app, CPU& cpu, reg32 argEax, reg32 argEdx, reg32 argEbx)
 {
-    cpu.eax = argEax;
-    cpu.edx = argEdx;
-    cpu.ebx = argEbx;
     Guest guest(app, cpu);
-    const reg32 from = cpu.eax, to = cpu.edx;
-    const reg32 count = cpu.ebx;
+    const reg32 from = argEax, to = argEdx;
+    const reg32 count = argEbx;
     if (!positive(count))
         return 0;
     reg32 last = 0;
@@ -988,26 +1033,21 @@ x86::reg32 frontend::watb::bytesToNibbles(App* app, CPU& cpu, reg32 argEax, reg3
         last &= 0xff;
         guest.setByte(at, std::uint8_t(last));
     }
-    guest.leaveEbx(last);
-    guest.leaveEdx(from + count);
     return count;
 }
 
-void frontend::watbBytesToNibbles(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbBytesToNibbles(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_509c70", 0, 0, kLeavesEbxEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::bytesToNibbles(app, cpu, cpu.eax, cpu.edx, cpu.ebx); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::bytesToNibbles(app, cpu, args.eax, args.edx, args.ebx); });
 }
 
 /* sub_509cd0: nibbles into bytes. */
 x86::reg32 frontend::watb::nibblesToBytes(App* app, CPU& cpu, reg32 argEax, reg32 argEdx, reg32 argEbx)
 {
-    cpu.eax = argEax;
-    cpu.edx = argEdx;
-    cpu.ebx = argEbx;
     Guest guest(app, cpu);
-    const reg32 from = cpu.eax, to = cpu.edx;
-    const reg32 count = cpu.ebx;
+    const reg32 from = argEax, to = argEdx;
+    const reg32 count = argEbx;
     if (!positive(count))
         return 0;
     for (reg32 i = 0; sreg32(i) < sreg32(count); ++i)
@@ -1015,31 +1055,26 @@ x86::reg32 frontend::watb::nibblesToBytes(App* app, CPU& cpu, reg32 argEax, reg3
         const reg32 packed = guest.byte(from + sar(i, 1));
         guest.setByte(to + i, std::uint8_t((i & 1) != 0 ? packed >> 4 : packed & 0xf));
     }
-    guest.leaveEdx(to + count);
     return count;
 }
 
-void frontend::watbNibblesToBytes(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbNibblesToBytes(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_509cd0", 0, 0, kLeavesEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::nibblesToBytes(app, cpu, cpu.eax, cpu.edx, cpu.ebx); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::nibblesToBytes(app, cpu, args.eax, args.edx, args.ebx); });
 }
 
 /* sub_509d20: 565 into palette indices: by the inverse table where there is one, else
  * the nearest colour one at a time. */
 x86::reg32 frontend::watb::convert565ToIndex(App* app, CPU& cpu, reg32 argEax, reg32 argEdx, reg32 argEbx)
 {
-    cpu.eax = argEax;
-    cpu.edx = argEdx;
-    cpu.ebx = argEbx;
     Guest guest(app, cpu);
     const fe::Frame locals(guest, cpu, 0x20);
-    reg32 from = cpu.eax;
-    const reg32 to = cpu.edx;
-    const reg32 count = cpu.ebx;
-    reg32 result = cpu.eax;
+    reg32 from = argEax;
+    const reg32 to = argEdx;
+    const reg32 count = argEbx;
+    reg32 result = argEax;
     const reg32 table = guest.dword(kInverseTable);
-    guest.leaveEbx(0);
     if (!positive(count))
         return result;
     for (reg32 i = 0; sreg32(i) < sreg32(count); ++i)
@@ -1060,27 +1095,22 @@ x86::reg32 frontend::watb::convert565ToIndex(App* app, CPU& cpu, reg32 argEax, r
             guest.setByte(to + i, found);
         }
     }
-    guest.leaveEbx(count);
-    guest.leaveEdx(to + count);
     return result;
 }
 
-void frontend::watb565ToIndex(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watb565ToIndex(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_509d20", 0, 0, kLeavesEbxEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::convert565ToIndex(app, cpu, cpu.eax, cpu.edx, cpu.ebx); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::convert565ToIndex(app, cpu, args.eax, args.edx, args.ebx); });
 }
 
 /* sub_509df0: 8888 into 1555, nothing under a quarter of alpha, the top bit set on the rest. */
 x86::reg32 frontend::watb::convert8888To1555Keyed(App* app, CPU& cpu, reg32 argEax, reg32 argEdx, reg32 argEbx)
 {
-    cpu.eax = argEax;
-    cpu.edx = argEdx;
-    cpu.ebx = argEbx;
     Guest guest(app, cpu);
-    reg32 from = cpu.eax, to = cpu.edx;
-    const reg32 count = cpu.ebx;
-    reg32 result = cpu.eax, leftEbx = count, leftEdx = cpu.edx;
+    reg32 from = argEax, to = argEdx;
+    const reg32 count = argEbx;
+    reg32 result = argEax, leftEbx = count, leftEdx = argEdx;
     for (reg32 i = 0; sreg32(i) < sreg32(count); ++i)
     {
         const reg32 pixel = guest.dword(from);
@@ -1096,29 +1126,24 @@ x86::reg32 frontend::watb::convert8888To1555Keyed(App* app, CPU& cpu, reg32 argE
         to += 2;
         from += 4;
     }
-    guest.leaveEbx(leftEbx);
-    guest.leaveEdx(leftEdx);
     return result;
 }
 
-void frontend::watb8888To1555Keyed(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watb8888To1555Keyed(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_509df0", 0, 0, kLeavesEbxEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) {
-        return watb::convert8888To1555Keyed(app, cpu, cpu.eax, cpu.edx, cpu.ebx);
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
+        return watb::convert8888To1555Keyed(app, cpu, args.eax, args.edx, args.ebx);
     });
 }
 
 /* sub_509e50: the same with every pixel but 0 opaque. */
 x86::reg32 frontend::watb::convert8888To1555(App* app, CPU& cpu, reg32 argEax, reg32 argEdx, reg32 argEbx)
 {
-    cpu.eax = argEax;
-    cpu.edx = argEdx;
-    cpu.ebx = argEbx;
     Guest guest(app, cpu);
-    reg32 from = cpu.eax, to = cpu.edx;
-    const reg32 count = cpu.ebx;
-    reg32 result = cpu.eax, leftEbx = count, leftEdx = cpu.edx;
+    reg32 from = argEax, to = argEdx;
+    const reg32 count = argEbx;
+    reg32 result = argEax, leftEbx = count, leftEdx = argEdx;
     for (reg32 i = 0; sreg32(i) < sreg32(count); ++i)
     {
         const reg32 pixel = guest.dword(from);
@@ -1133,27 +1158,22 @@ x86::reg32 frontend::watb::convert8888To1555(App* app, CPU& cpu, reg32 argEax, r
         to += 2;
         from += 4;
     }
-    guest.leaveEbx(leftEbx);
-    guest.leaveEdx(leftEdx);
     return result;
 }
 
-void frontend::watb8888To1555(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watb8888To1555(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_509e50", 0, 0, kLeavesEbxEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::convert8888To1555(app, cpu, cpu.eax, cpu.edx, cpu.ebx); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::convert8888To1555(app, cpu, args.eax, args.edx, args.ebx); });
 }
 
 /* sub_509ef0: 8888 into 565, nothing under a quarter of alpha, and what would come out 0 as 1. */
 x86::reg32 frontend::watb::convert8888To565Keyed(App* app, CPU& cpu, reg32 argEax, reg32 argEdx, reg32 argEbx)
 {
-    cpu.eax = argEax;
-    cpu.edx = argEdx;
-    cpu.ebx = argEbx;
     Guest guest(app, cpu);
-    reg32 from = cpu.eax, to = cpu.edx;
-    const reg32 count = cpu.ebx;
-    reg32 result = cpu.eax, leftEbx = count, leftEdx = cpu.edx;
+    reg32 from = argEax, to = argEdx;
+    const reg32 count = argEbx;
+    reg32 result = argEax, leftEbx = count, leftEdx = argEdx;
     for (reg32 i = 0; sreg32(i) < sreg32(count); ++i)
     {
         const reg32 pixel = guest.dword(from);
@@ -1169,29 +1189,24 @@ x86::reg32 frontend::watb::convert8888To565Keyed(App* app, CPU& cpu, reg32 argEa
         to += 2;
         from += 4;
     }
-    guest.leaveEbx(leftEbx);
-    guest.leaveEdx(leftEdx);
     return result;
 }
 
-void frontend::watb8888To565Keyed(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watb8888To565Keyed(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_509ef0", 0, 0, kLeavesEbxEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) {
-        return watb::convert8888To565Keyed(app, cpu, cpu.eax, cpu.edx, cpu.ebx);
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
+        return watb::convert8888To565Keyed(app, cpu, args.eax, args.edx, args.ebx);
     });
 }
 
 /* sub_509f50: 8888 into 565. */
 x86::reg32 frontend::watb::convert8888To565(App* app, CPU& cpu, reg32 argEax, reg32 argEdx, reg32 argEbx)
 {
-    cpu.eax = argEax;
-    cpu.edx = argEdx;
-    cpu.ebx = argEbx;
     Guest guest(app, cpu);
-    reg32 from = cpu.eax, to = cpu.edx;
-    const reg32 count = cpu.ebx;
-    reg32 result = cpu.eax, leftEbx = count, leftEdx = cpu.edx;
+    reg32 from = argEax, to = argEdx;
+    const reg32 count = argEbx;
+    reg32 result = argEax, leftEbx = count, leftEdx = argEdx;
     for (reg32 i = 0; sreg32(i) < sreg32(count); ++i)
     {
         const reg32 pixel = guest.dword(from);
@@ -1202,26 +1217,21 @@ x86::reg32 frontend::watb::convert8888To565(App* app, CPU& cpu, reg32 argEax, re
         to += 2;
         from += 4;
     }
-    guest.leaveEbx(leftEbx);
-    guest.leaveEdx(leftEdx);
     return result;
 }
 
-void frontend::watb8888To565(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watb8888To565(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_509f50", 0, 0, kLeavesEbxEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::convert8888To565(app, cpu, cpu.eax, cpu.edx, cpu.ebx); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::convert8888To565(app, cpu, args.eax, args.edx, args.ebx); });
 }
 
 /* sub_509fb0: 8888 into 4444. */
 x86::reg32 frontend::watb::convert8888To4444(App* app, CPU& cpu, reg32 argEax, reg32 argEdx, reg32 argEbx)
 {
-    cpu.eax = argEax;
-    cpu.edx = argEdx;
-    cpu.ebx = argEbx;
     Guest guest(app, cpu);
-    reg32 from = cpu.eax, to = cpu.edx;
-    const reg32 count = cpu.ebx;
+    reg32 from = argEax, to = argEdx;
+    const reg32 count = argEbx;
     reg32 leftEbx = count;
     for (reg32 i = 0; sreg32(i) < sreg32(count); ++i)
     {
@@ -1232,15 +1242,13 @@ x86::reg32 frontend::watb::convert8888To4444(App* app, CPU& cpu, reg32 argEax, r
         from += 4;
         to += 2;
     }
-    guest.leaveEbx(leftEbx);
-    guest.leaveEdx(to);
     return from;
 }
 
-void frontend::watb8888To4444(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watb8888To4444(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_509fb0", 0, 0, kLeavesEbxEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::convert8888To4444(app, cpu, cpu.eax, cpu.edx, cpu.ebx); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::convert8888To4444(app, cpu, args.eax, args.edx, args.ebx); });
 }
 
 namespace
@@ -1251,14 +1259,10 @@ constexpr reg32 kKeyColour = 0x568388;        // the 16-bit colour that is no pi
 /* sub_50a020: 1555 into 4444, opaque, the key colour nothing. */
 x86::reg32 frontend::watb::convert1555To4444(App* app, CPU& cpu, reg32 argEax, reg32 argEdx, reg32 argEbx)
 {
-    cpu.eax = argEax;
-    cpu.edx = argEdx;
-    cpu.ebx = argEbx;
     Guest guest(app, cpu);
-    reg32 from = cpu.eax, to = cpu.edx;
-    const reg32 count = cpu.ebx;
-    reg32 result = cpu.eax;
-    guest.leaveEbx(0);
+    reg32 from = argEax, to = argEdx;
+    const reg32 count = argEbx;
+    reg32 result = argEax;
     if (!positive(count))
         return result;
     for (reg32 i = 0; sreg32(i) < sreg32(count); ++i)
@@ -1278,27 +1282,22 @@ x86::reg32 frontend::watb::convert1555To4444(App* app, CPU& cpu, reg32 argEax, r
         from += 2;
         to += 2;
     }
-    guest.leaveEbx(count);
-    guest.leaveEdx(to);
     return result;
 }
 
-void frontend::watb1555To4444(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watb1555To4444(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_50a020", 0, 0, kLeavesEbxEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::convert1555To4444(app, cpu, cpu.eax, cpu.edx, cpu.ebx); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::convert1555To4444(app, cpu, args.eax, args.edx, args.ebx); });
 }
 
 /* sub_50a0a0: 8888's colour into 565 in the low half of a dword, the alpha kept. */
 x86::reg32 frontend::watb::convert8888To8565(App* app, CPU& cpu, reg32 argEax, reg32 argEdx, reg32 argEbx)
 {
-    cpu.eax = argEax;
-    cpu.edx = argEdx;
-    cpu.ebx = argEbx;
     Guest guest(app, cpu);
-    reg32 from = cpu.eax, to = cpu.edx;
-    const reg32 count = cpu.ebx;
-    reg32 result = cpu.eax, leftEbx = count, leftEdx = cpu.edx;
+    reg32 from = argEax, to = argEdx;
+    const reg32 count = argEbx;
+    reg32 result = argEax, leftEbx = count, leftEdx = argEdx;
     for (reg32 i = 0; sreg32(i) < sreg32(count); ++i)
     {
         const reg32 pixel = guest.dword(from);
@@ -1309,15 +1308,13 @@ x86::reg32 frontend::watb::convert8888To8565(App* app, CPU& cpu, reg32 argEax, r
         guest.setDword(to, (pixel & 0xff000000) | leftEbx);
         to += 4;
     }
-    guest.leaveEbx(leftEbx);
-    guest.leaveEdx(leftEdx);
     return result;
 }
 
-void frontend::watb8888To8565(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watb8888To8565(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_50a0a0", 0, 0, kLeavesEbxEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::convert8888To8565(app, cpu, cpu.eax, cpu.edx, cpu.ebx); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::convert8888To8565(app, cpu, args.eax, args.edx, args.ebx); });
 }
 
 namespace
@@ -1328,14 +1325,11 @@ constexpr reg32 kCurrentClut = 0x568390;
 /* sub_50a100: palette indices into 888, by the palette at 0x568390. */
 x86::reg32 frontend::watb::indexTo888(App* app, CPU& cpu, reg32 argEax, reg32 argEdx, reg32 argEbx)
 {
-    cpu.eax = argEax;
-    cpu.edx = argEdx;
-    cpu.ebx = argEbx;
     Guest guest(app, cpu);
-    reg32 from = cpu.eax, to = cpu.edx;
-    const reg32 count = cpu.ebx;
+    reg32 from = argEax, to = argEdx;
+    const reg32 count = argEbx;
     const reg32 clut = guest.dword(kCurrentClut);
-    reg32 result = cpu.eax, leftEbx = count;
+    reg32 result = argEax;
     for (reg32 i = 0; sreg32(i) < sreg32(count); ++i)
     {
         const reg32 scaled = reg32(guest.byte(from)) << 2;
@@ -1348,31 +1342,24 @@ x86::reg32 frontend::watb::indexTo888(App* app, CPU& cpu, reg32 argEax, reg32 ar
         const std::uint8_t zero = guest.byte(colour);
         guest.setByte(to, zero);
         to += 3;
-        leftEbx = (scaled & 0xffffff00) | one;
         result = (colour & 0xffffff00) | zero;
     }
-    guest.leaveEbx(leftEbx);
-    guest.leaveEdx(to);
     return result;
 }
 
-void frontend::watbIndexTo888(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbIndexTo888(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_50a100", 0, 0, kLeavesEbxEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::indexTo888(app, cpu, cpu.eax, cpu.edx, cpu.ebx); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::indexTo888(app, cpu, args.eax, args.edx, args.ebx); });
 }
 
 /* sub_50a150: 565 into 888. */
 x86::reg32 frontend::watb::convert565To888(App* app, CPU& cpu, reg32 argEax, reg32 argEdx, reg32 argEbx)
 {
-    cpu.eax = argEax;
-    cpu.edx = argEdx;
-    cpu.ebx = argEbx;
     Guest guest(app, cpu);
-    reg32 from = cpu.eax, to = cpu.edx;
-    const reg32 count = cpu.ebx;
-    reg32 result = cpu.eax;
-    guest.leaveEbx(0);
+    reg32 from = argEax, to = argEdx;
+    const reg32 count = argEbx;
+    reg32 result = argEax;
     if (!positive(count))
         return result;
     for (reg32 i = 0; sreg32(i) < sreg32(count); ++i)
@@ -1386,59 +1373,46 @@ x86::reg32 frontend::watb::convert565To888(App* app, CPU& cpu, reg32 argEax, reg
         from += 2;
         to += 3;
     }
-    guest.leaveEbx(count);
-    guest.leaveEdx(to);
     return result;
 }
 
-void frontend::watb565To888(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watb565To888(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_50a150", 0, 0, kLeavesEbxEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::convert565To888(app, cpu, cpu.eax, cpu.edx, cpu.ebx); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::convert565To888(app, cpu, args.eax, args.edx, args.ebx); });
 }
 
 /* sub_50a1e0: 8888 into 888. */
 x86::reg32 frontend::watb::convert8888To888(App* app, CPU& cpu, reg32 argEax, reg32 argEdx, reg32 argEbx)
 {
-    cpu.eax = argEax;
-    cpu.edx = argEdx;
-    cpu.ebx = argEbx;
     Guest guest(app, cpu);
-    reg32 from = cpu.eax, to = cpu.edx;
-    const reg32 count = cpu.ebx;
-    reg32 leftEbx = count;
+    reg32 from = argEax, to = argEdx;
+    const reg32 count = argEbx;
     for (reg32 i = 0; sreg32(i) < sreg32(count); ++i)
     {
         const std::uint8_t two = guest.byte(from + 2), one = guest.byte(from + 1), zero = guest.byte(from);
         guest.setByte(to, zero);
         guest.setByte(to + 1, one);
         guest.setByte(to + 2, two);
-        leftEbx = two;
         from += 4;
         to += 3;
     }
-    guest.leaveEbx(leftEbx);
-    guest.leaveEdx(to);
     return from;
 }
 
-void frontend::watb8888To888(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watb8888To888(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_50a1e0", 0, 0, kLeavesEbxEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::convert8888To888(app, cpu, cpu.eax, cpu.edx, cpu.ebx); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::convert8888To888(app, cpu, args.eax, args.edx, args.ebx); });
 }
 
 /* sub_50a240: 1555 into 8888, opaque, the key colour nothing. */
 x86::reg32 frontend::watb::convert1555To8888(App* app, CPU& cpu, reg32 argEax, reg32 argEdx, reg32 argEbx)
 {
-    cpu.eax = argEax;
-    cpu.edx = argEdx;
-    cpu.ebx = argEbx;
     Guest guest(app, cpu);
-    reg32 from = cpu.eax, to = cpu.edx;
-    const reg32 count = cpu.ebx;
-    reg32 result = cpu.eax;
-    guest.leaveEbx(0);
+    reg32 from = argEax, to = argEdx;
+    const reg32 count = argEbx;
+    reg32 result = argEax;
     if (!positive(count))
         return result;
     for (reg32 i = 0; sreg32(i) < sreg32(count); ++i)
@@ -1457,28 +1431,22 @@ x86::reg32 frontend::watb::convert1555To8888(App* app, CPU& cpu, reg32 argEax, r
         from += 2;
         to += 4;
     }
-    guest.leaveEbx(count);
-    guest.leaveEdx(to);
     return result;
 }
 
-void frontend::watb1555To8888(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watb1555To8888(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_50a240", 0, 0, kLeavesEbxEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::convert1555To8888(app, cpu, cpu.eax, cpu.edx, cpu.ebx); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::convert1555To8888(app, cpu, args.eax, args.edx, args.ebx); });
 }
 
 /* sub_50a2b0: 565 into 8888, opaque, the key colour nothing. */
 x86::reg32 frontend::watb::convert565To8888(App* app, CPU& cpu, reg32 argEax, reg32 argEdx, reg32 argEbx)
 {
-    cpu.eax = argEax;
-    cpu.edx = argEdx;
-    cpu.ebx = argEbx;
     Guest guest(app, cpu);
-    reg32 from = cpu.eax, to = cpu.edx;
-    const reg32 count = cpu.ebx;
-    reg32 result = cpu.eax;
-    guest.leaveEbx(0);
+    reg32 from = argEax, to = argEdx;
+    const reg32 count = argEbx;
+    reg32 result = argEax;
     if (!positive(count))
         return result;
     for (reg32 i = 0; sreg32(i) < sreg32(count); ++i)
@@ -1497,29 +1465,23 @@ x86::reg32 frontend::watb::convert565To8888(App* app, CPU& cpu, reg32 argEax, re
         from += 2;
         to += 4;
     }
-    guest.leaveEbx(count);
-    guest.leaveEdx(to);
     return result;
 }
 
-void frontend::watb565To8888(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watb565To8888(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_50a2b0", 0, 0, kLeavesEbxEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::convert565To8888(app, cpu, cpu.eax, cpu.edx, cpu.ebx); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::convert565To8888(app, cpu, args.eax, args.edx, args.ebx); });
 }
 
 /* sub_50a330: 4444 into 8888, each nibble doubled. */
 x86::reg32 frontend::watb::convert4444To8888(App* app, CPU& cpu, reg32 argEax, reg32 argEdx, reg32 argEbx)
 {
-    cpu.eax = argEax;
-    cpu.edx = argEdx;
-    cpu.ebx = argEbx;
     Guest guest(app, cpu);
-    const reg32 count = cpu.ebx;
-    reg32 from = cpu.eax, to = cpu.edx;
-    guest.leaveEdx(0);
+    const reg32 count = argEbx;
+    reg32 from = argEax, to = argEdx;
     if (!positive(count))
-        return cpu.eax;
+        return argEax;
     reg32 red = 0;
     for (reg32 i = 0; sreg32(i) < sreg32(count); ++i)
     {
@@ -1530,31 +1492,24 @@ x86::reg32 frontend::watb::convert4444To8888(App* app, CPU& cpu, reg32 argEax, r
         from += 2;
         to += 4;
     }
-    guest.leaveEbx(red);
-    guest.leaveEdx(count);
     return count;
 }
 
-void frontend::watb4444To8888(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watb4444To8888(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_50a330", 0, 0, kLeavesEbxEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::convert4444To8888(app, cpu, cpu.eax, cpu.edx, cpu.ebx); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::convert4444To8888(app, cpu, args.eax, args.edx, args.ebx); });
 }
 
 /* sub_50a3c0: a dword with a 1555 colour low and the alpha on top, into 8888. */
 x86::reg32 frontend::watb::convert8555To8888(App* app, CPU& cpu, reg32 argEax, reg32 argEdx, reg32 argEbx)
 {
-    cpu.eax = argEax;
-    cpu.edx = argEdx;
-    cpu.ebx = argEbx;
     Guest guest(app, cpu);
-    reg32 from = cpu.eax, to = cpu.edx;
-    const reg32 count = cpu.ebx;
+    reg32 from = argEax, to = argEdx;
+    const reg32 count = argEbx;
     reg32 leftEdx = count;
-    guest.leaveEbx(0);
     if (!positive(count))
     {
-        guest.leaveEdx(leftEdx);
         return from;
     }
     for (reg32 i = 0; sreg32(i) < sreg32(count); ++i)
@@ -1565,31 +1520,24 @@ x86::reg32 frontend::watb::convert8555To8888(App* app, CPU& cpu, reg32 argEax, r
         from += 4;
         to += 4;
     }
-    guest.leaveEbx(count);
-    guest.leaveEdx(leftEdx);
     return from;
 }
 
-void frontend::watb8555To8888(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watb8555To8888(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_50a3c0", 0, 0, kLeavesEbxEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::convert8555To8888(app, cpu, cpu.eax, cpu.edx, cpu.ebx); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::convert8555To8888(app, cpu, args.eax, args.edx, args.ebx); });
 }
 
 /* sub_50a440: a dword with a 565 colour low and the alpha on top, into 8888. */
 x86::reg32 frontend::watb::convert8565To8888(App* app, CPU& cpu, reg32 argEax, reg32 argEdx, reg32 argEbx)
 {
-    cpu.eax = argEax;
-    cpu.edx = argEdx;
-    cpu.ebx = argEbx;
     Guest guest(app, cpu);
-    reg32 from = cpu.eax, to = cpu.edx;
-    const reg32 count = cpu.ebx;
+    reg32 from = argEax, to = argEdx;
+    const reg32 count = argEbx;
     reg32 leftEdx = count;
-    guest.leaveEbx(0);
     if (!positive(count))
     {
-        guest.leaveEdx(leftEdx);
         return from;
     }
     for (reg32 i = 0; sreg32(i) < sreg32(count); ++i)
@@ -1600,26 +1548,21 @@ x86::reg32 frontend::watb::convert8565To8888(App* app, CPU& cpu, reg32 argEax, r
         from += 4;
         to += 4;
     }
-    guest.leaveEbx(count);
-    guest.leaveEdx(leftEdx);
     return from;
 }
 
-void frontend::watb8565To8888(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watb8565To8888(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_50a440", 0, 0, kLeavesEbxEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::convert8565To8888(app, cpu, cpu.eax, cpu.edx, cpu.ebx); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::convert8565To8888(app, cpu, args.eax, args.edx, args.ebx); });
 }
 
 /* sub_50a4c0: 888 into 8888, opaque. */
 x86::reg32 frontend::watb::convert888To8888(App* app, CPU& cpu, reg32 argEax, reg32 argEdx, reg32 argEbx)
 {
-    cpu.eax = argEax;
-    cpu.edx = argEdx;
-    cpu.ebx = argEbx;
     Guest guest(app, cpu);
-    reg32 from = cpu.eax, to = cpu.edx;
-    const reg32 count = cpu.ebx;
+    reg32 from = argEax, to = argEdx;
+    const reg32 count = argEbx;
     reg32 leftEbx = count;
     for (reg32 i = 0; sreg32(i) < sreg32(count); ++i)
     {
@@ -1629,28 +1572,23 @@ x86::reg32 frontend::watb::convert888To8888(App* app, CPU& cpu, reg32 argEax, re
         guest.setDword(to, leftEbx);
         to += 4;
     }
-    guest.leaveEbx(leftEbx);
-    guest.leaveEdx(to);
     return from;
 }
 
-void frontend::watb888To8888(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watb888To8888(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_50a4c0", 0, 0, kLeavesEbxEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::convert888To8888(app, cpu, cpu.eax, cpu.edx, cpu.ebx); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::convert888To8888(app, cpu, args.eax, args.edx, args.ebx); });
 }
 
 /* sub_50afc0: palette indices into 16 bits by the table at [0x9f09b0], index 0xff no
  * pixel; a dword at a time on a dword's boundary. */
 x86::reg32 frontend::watb::spanTo16Keyed(App* app, CPU& cpu, reg32 argEax, reg32 argEdx, reg32 argEbx)
 {
-    cpu.eax = argEax;
-    cpu.edx = argEdx;
-    cpu.ebx = argEbx;
     Guest guest(app, cpu);
-    reg32 from = cpu.eax, to = cpu.edx;
-    sreg32 left = sreg32(cpu.ebx);
-    reg32 last = cpu.ebx;
+    reg32 from = argEax, to = argEdx;
+    sreg32 left = sreg32(argEbx);
+    reg32 last = argEbx;
     const reg32 table = guest.dword(0x9f09b0);
     const auto colourOf = [&](std::uint8_t index) { return guest.dword(table + reg32(index) * 4); };
     // A misaligned start goes a pixel at a time, as far as the first 0xff.
@@ -1710,36 +1648,31 @@ x86::reg32 frontend::watb::spanTo16Keyed(App* app, CPU& cpu, reg32 argEax, reg32
         to += 2;
         --left;
     }
-    guest.leaveEbx(last);
-    guest.leaveEdx(to);
     return from;
 }
 
-void frontend::watbSpanTo16Keyed(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbSpanTo16Keyed(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_50afc0", 0, 0, kLeavesEbxEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::spanTo16Keyed(app, cpu, cpu.eax, cpu.edx, cpu.ebx); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::spanTo16Keyed(app, cpu, args.eax, args.edx, args.ebx); });
 }
 
 /* sub_50b080: a span through two converters, by a buffer in the frame: to the middle
  * format by [0xa0b018], then to the window's by [0xa0b014]. */
 x86::reg32 frontend::watb::spanTwoSteps(App* app, CPU& cpu, reg32 argEax, reg32 argEdx, reg32 argEbx)
 {
-    cpu.eax = argEax;
-    cpu.edx = argEdx;
-    cpu.ebx = argEbx;
     Guest guest(app, cpu);
     const fe::Frame locals(guest, cpu, 0x1908);
     const reg32 frame = guest.frame();
-    const reg32 to = cpu.edx, count = cpu.ebx;
-    guest.call(guest.dword(0xa0b018), args({ cpu.eax, frame, count }));
-    return guest.call(guest.dword(0xa0b014), args({ frame, to, count }));
+    const reg32 to = argEdx, count = argEbx;
+    fe::pointerCall(guest, guest.dword(0xa0b018), args({ argEax, frame, count }));
+    return fe::pointerCall(guest, guest.dword(0xa0b014), args({ frame, to, count }));
 }
 
-void frontend::watbSpanTwoSteps(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbSpanTwoSteps(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_50b080", 0, 0, kLeavesEbxEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::spanTwoSteps(app, cpu, cpu.eax, cpu.edx, cpu.ebx); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::spanTwoSteps(app, cpu, args.eax, args.edx, args.ebx); });
 }
 
 // ---------------------------------------------------------------------------
@@ -1756,50 +1689,70 @@ constexpr reg32 kExpand1555 = 0x50a240, kExpand565 = 0x50a2b0, kExpand8565 = 0x5
 constexpr reg32 kExpand8888To8565 = 0x50a0a0;
 constexpr reg32 kExpandTable24 = 0x51df60, kExpandTable18 = 0x51de60;
 constexpr reg32 k8888To4444 = 0x509fb0, kTo1555Keyed = 0x509df0, kTo1555 = 0x509e50, kTo565Keyed = 0x509ef0, kTo565 = 0x509f50;
+
+/* A palette's colours through the converter the code picks among these of this file, as C++. */
+void convertColours(App* app, CPU& cpu, reg32 converter, reg32 from, reg32 to, reg32 count)
+{
+    switch (converter)
+    {
+    case kExpand1555: fe::direct<kExpand1555, frontend::watb::convert1555To8888>(app, cpu, from, to, count); break;
+    case kExpand565: fe::direct<kExpand565, frontend::watb::convert565To8888>(app, cpu, from, to, count); break;
+    case kExpand8565: fe::direct<kExpand8565, frontend::watb::convert8565To8888>(app, cpu, from, to, count); break;
+    case kExpand8555: fe::direct<kExpand8555, frontend::watb::convert8555To8888>(app, cpu, from, to, count); break;
+    case kExpand8888To8565:
+        fe::direct<kExpand8888To8565, frontend::watb::convert8888To8565>(app, cpu, from, to, count);
+        break;
+    case k8888To4444: fe::direct<k8888To4444, frontend::watb::convert8888To4444>(app, cpu, from, to, count); break;
+    case kTo1555Keyed: fe::direct<kTo1555Keyed, frontend::watb::convert8888To1555Keyed>(app, cpu, from, to, count); break;
+    case kTo1555: fe::direct<kTo1555, frontend::watb::convert8888To1555>(app, cpu, from, to, count); break;
+    case kTo565Keyed: fe::direct<kTo565Keyed, frontend::watb::convert8888To565Keyed>(app, cpu, from, to, count); break;
+    case kTo565: fe::direct<kTo565, frontend::watb::convert8888To565>(app, cpu, from, to, count); break;
+    default: break;
+    }
+}
 }
 
 /* The answers of sub_50a570's three ends, which it jumps to. */
-x86::reg32 frontend::watb::depthIndex16(App*, CPU& cpu)
+x86::reg32 frontend::watb::depthIndex16(App*, CPU&)
 {
-    cpu.eax = 3;
-    return cpu.eax;
+    return 3;
 }
 
-void frontend::watbDepthIndex16(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbDepthIndex16(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    watb::depthIndex16(app, cpu);
+    args.eax = watb::depthIndex16(app, cpu);
     cpu.esp += 4;
+    return args.eax;
 }
 
-x86::reg32 frontend::watb::depthIndex32(App*, CPU& cpu)
+x86::reg32 frontend::watb::depthIndex32(App*, CPU&)
 {
-    cpu.eax = 5;
-    return cpu.eax;
+    return 5;
 }
 
-void frontend::watbDepthIndex32(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbDepthIndex32(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    watb::depthIndex32(app, cpu);
+    args.eax = watb::depthIndex32(app, cpu);
     cpu.esp += 4;
+    return args.eax;
 }
 
-x86::reg32 frontend::watb::depthIndex15(App*, CPU& cpu)
+x86::reg32 frontend::watb::depthIndex15(App*, CPU&)
 {
-    cpu.eax = 2;
-    return cpu.eax;
+    return 2;
 }
 
-void frontend::watbDepthIndex15(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbDepthIndex15(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    watb::depthIndex15(app, cpu);
+    args.eax = watb::depthIndex15(app, cpu);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* sub_50a570: a pixel format's index in the converters' tables, by its shape type; -1 for none. */
 x86::reg32 frontend::watb::depthIndex(App* app, CPU& cpu, reg32 argEax)
 {
-    cpu.eax = argEax;
-    switch (cpu.eax)
+    switch (argEax)
     {
     case 0x40: case 0x7a: return 0;
     case 0x41: case 0x7b: return 1;
@@ -1813,24 +1766,21 @@ x86::reg32 frontend::watb::depthIndex(App* app, CPU& cpu, reg32 argEax)
     }
 }
 
-void frontend::watbDepthIndex(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbDepthIndex(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_50a570", 0, 0);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::depthIndex(app, cpu, cpu.eax); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::depthIndex(app, cpu, args.eax); });
 }
 
 /* sub_50a5d0, getclutptr: a shape's palette as 8888, made at edx from whatever its
  * record holds; the neutral palette for a shape with none. */
 x86::reg32 frontend::watb::clutPointer(App* app, CPU& cpu, reg32 argEax, reg32 argEdx)
 {
-    cpu.eax = argEax;
-    cpu.edx = argEdx;
     Guest guest(app, cpu);
     const fe::Frame locals(guest, cpu, 0x210);
     const reg32 frame = guest.frame();
-    const reg32 out = cpu.edx;
-    const reg32 record = guest::direct<0x4fd1c0, shapeClut>(app, cpu, cpu.eax);
-    guest.leaveEdx(record);
+    const reg32 out = argEdx;
+    const reg32 record = guest::direct<0x4fd1c0, shapeClut>(app, cpu, argEax);
     if (record == 0)
         return kNeutralClut;
     const reg32 data = record + kShapePixels;
@@ -1842,55 +1792,51 @@ x86::reg32 frontend::watb::clutPointer(App* app, CPU& cpu, reg32 argEax, reg32 a
     switch (type)
     {
     case 0x24:
-        guest.call(kExpandTable24, args({ count, data, out }));
+        fe::direct<kExpandTable24, frontend::menz::paletteFrom8Bits>(app, cpu, count, data, out);
         break;
     case 0x29:
-        guest.call(kExpand565, args({ data, out, count }));
+        convertColours(app, cpu, kExpand565, data, out, count);
         break;
     case 0x2d:
-        guest.call(kExpand1555, args({ data, out, count }));
+        convertColours(app, cpu, kExpand1555, data, out, count);
         break;
     case 0x2c:
-        guest.call(kExpand8565, args({ data, out, count }));
+        convertColours(app, cpu, kExpand8565, data, out, count);
         break;
     case 0x2e:
-        guest.call(kExpand8555, args({ data, out, count }));
+        convertColours(app, cpu, kExpand8555, data, out, count);
         break;
     case 0x22:
-        guest.call(kExpandTable18, args({ count, data, out }));
+        fe::direct<kExpandTable18, frontend::menz::paletteFrom6Bits>(app, cpu, count, data, out);
         break;
     case 0x23:
         fe::direct<0x5042c4, frontend::rendf::rowSwapRedBlue>(app, cpu, data, frame, reg32(0x100));
-        guest.call(kExpand1555, args({ frame, out, 0x100 }));
+        convertColours(app, cpu, kExpand1555, frame, out, reg32(0x100));
         break;
     default:
-        guest.leaveEdx(type);
         reportError(guest, 0x54f7a8, 0x54f7b8, 0x313, args({}, { 0x54f7c4, type }));
         break;
     }
     return out;
 }
 
-void frontend::watbClutPointer(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbClutPointer(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_50a5d0", 0, 0, kLeavesEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::clutPointer(app, cpu, cpu.eax, cpu.edx); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::clutPointer(app, cpu, args.eax, args.edx); });
 }
 
 /* sub_50a830, getclut16aptr: the same with the colours in 565, the alpha kept. */
 x86::reg32 frontend::watb::clut16aPointer(App* app, CPU& cpu, reg32 argEax, reg32 argEdx)
 {
-    cpu.eax = argEax;
-    cpu.edx = argEdx;
     Guest guest(app, cpu);
     const fe::Frame locals(guest, cpu, 0x410);
     const reg32 frame = guest.frame();
-    const reg32 out = cpu.edx;
-    const reg32 record = guest::direct<0x4fd1c0, shapeClut>(app, cpu, cpu.eax);
-    guest.leaveEdx(record);
+    const reg32 out = argEdx;
+    const reg32 record = guest::direct<0x4fd1c0, shapeClut>(app, cpu, argEax);
     if (record == 0)
     {
-        guest.call(kExpand8888To8565, args({ kNeutralClut, out, 0x100 }));
+        convertColours(app, cpu, kExpand8888To8565, kNeutralClut, out, reg32(0x100));
         return out;
     }
     const reg32 data = record + kShapePixels;
@@ -1902,40 +1848,39 @@ x86::reg32 frontend::watb::clut16aPointer(App* app, CPU& cpu, reg32 argEax, reg3
     switch (type)
     {
     case 0x24:
-        guest.call(kExpandTable24, args({ count, data, frame }));
+        fe::direct<kExpandTable24, frontend::menz::paletteFrom8Bits>(app, cpu, count, data, frame);
         break;
     case 0x29:
-        guest.call(kExpand565, args({ data, frame, count }));
+        convertColours(app, cpu, kExpand565, data, frame, count);
         break;
     case 0x2d:
-        guest.call(kExpand1555, args({ data, frame, count }));
+        convertColours(app, cpu, kExpand1555, data, frame, count);
         break;
     case 0x2e:
-        guest.call(kExpand8555, args({ data, frame, count }));
+        convertColours(app, cpu, kExpand8555, data, frame, count);
         break;
     case 0x2a:
-        guest.call(kExpand8888To8565, args({ data, out, count }));
+        convertColours(app, cpu, kExpand8888To8565, data, out, count);
         return out;
     case 0x22:
-        guest.call(kExpandTable18, args({ count, data, frame }));
+        fe::direct<kExpandTable18, frontend::menz::paletteFrom6Bits>(app, cpu, count, data, frame);
         break;
     case 0x23:
         fe::direct<0x5042c4, frontend::rendf::rowSwapRedBlue>(app, cpu, data, out, count);
-        guest.call(kExpand565, args({ out, frame, count }));
+        convertColours(app, cpu, kExpand565, out, frame, count);
         break;
     default:
-        guest.leaveEdx(type);
         reportError(guest, 0x54f7a8, 0x54f82c, 0x397, args({}, { 0x54f83c, type }));
         return out;
     }
-    guest.call(kExpand8888To8565, args({ frame, out, count }));
+    convertColours(app, cpu, kExpand8888To8565, frame, out, count);
     return out;
 }
 
-void frontend::watbClut16aPointer(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbClut16aPointer(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_50a830", 0, 0, kLeavesEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::clut16aPointer(app, cpu, cpu.eax, cpu.edx); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::clut16aPointer(app, cpu, args.eax, args.edx); });
 }
 
 /* sub_50a960: the converter from a shape's type straight to edx, or 0 where there is
@@ -1943,18 +1888,13 @@ void frontend::watbClut16aPointer(win32::WinApplication* app, x86::CPU& cpu)
  * in 0xa0ac14 at the target's depth. */
 x86::reg32 frontend::watb::converterFor(App* app, CPU& cpu, reg32 argEax, reg32 argEdx, reg32 argEbx)
 {
-    cpu.eax = argEax;
-    cpu.edx = argEdx;
-    cpu.ebx = argEbx;
     Guest guest(app, cpu);
     const fe::Frame locals(guest, cpu, 0x1c);
-    const reg32 shape = cpu.eax, target = cpu.edx, keyed = cpu.ebx;
+    const reg32 shape = argEax, target = argEdx, keyed = argEbx;
     const reg32 type = guest.dword(shape) & 0xff;
-    guest.leaveEbx(type);
     const reg32 fromIndex = guest::direct<0x50a570, depthIndex>(app, cpu, type);
     const reg32 slot = fromIndex * 8 + guest::direct<0x50a570, depthIndex>(app, cpu, target);
     const reg32 between = guest.byte(kBetweenTypes + slot);
-    guest.leaveEdx(0);
     if (target != between)
         return 0;
     const reg32 from = guest::direct<0x50a570, depthIndex>(app, cpu, type) * 8;
@@ -1964,10 +1904,9 @@ x86::reg32 frontend::watb::converterFor(App* app, CPU& cpu, reg32 argEax, reg32 
     const reg32 toDepth = guest.byte(kDepthOfType + (between & 0x7f));
     if (sreg32(fromDepth) > 8 || sreg32(toDepth) <= 8)
         return converter;
-    const reg32 clut = guest.call(0x50a5d0, args({ shape, kClutBuffer }));
+    const reg32 clut = fe::direct<0x50a5d0, clutPointer>(app, cpu, shape, kClutBuffer);
     guest.setDword(kCurrentClut, clut);
     const reg32 colours = reg32(1) << (fromDepth & 31);
-    guest.leaveEbx(colours);
     reg32 convert = 0;
     if (target == 0x6d)
         convert = k8888To4444;
@@ -1976,14 +1915,14 @@ x86::reg32 frontend::watb::converterFor(App* app, CPU& cpu, reg32 argEax, reg32 
     else if (toDepth == 0x10)
         convert = keyed != 0 ? kTo565Keyed : kTo565;
     if (convert != 0)
-        guest.call(convert, args({ clut, kClutBuffer, colours }));
+        convertColours(app, cpu, convert, clut, kClutBuffer, colours);
     return converter;
 }
 
-void frontend::watbConverterFor(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbConverterFor(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_50a960", 0, 0, kLeavesEbxEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::converterFor(app, cpu, cpu.eax, cpu.edx, cpu.ebx); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::converterFor(app, cpu, args.eax, args.edx, args.ebx); });
 }
 
 /* sub_50aad0, convertshapetype: a new shape of the type edx, from the shape at eax,
@@ -1992,18 +1931,14 @@ void frontend::watbConverterFor(win32::WinApplication* app, x86::CPU& cpu)
  * table of converters.  What is at the end of each is checked: 'PHSC'. */
 x86::reg32 frontend::watb::convertShape(App* app, CPU& cpu, reg32 argEax, reg32 argEdx, reg32 argEbx, reg32 argEcx)
 {
-    cpu.eax = argEax;
-    cpu.edx = argEdx;
-    cpu.ebx = argEbx;
-    cpu.ecx = argEcx;
     Guest guest(app, cpu);
     const fe::Frame locals(guest, cpu, 0x64);
     constexpr reg32 kSentinel = 0x50485343;
     const reg32 frame = guest.frame();
     const reg32 kBetweenSlot = frame + 0x20;      // read by the second report before it is set
-    const reg32 target = cpu.edx, mode = cpu.ecx;
-    reg32 keyed = cpu.ebx;
-    reg32 shape = cpu.eax;
+    const reg32 target = argEdx, mode = argEcx;
+    reg32 keyed = argEbx;
+    reg32 shape = argEax;
     const reg32 firstClut = guest::direct<0x4fd1c0, shapeClut>(app, cpu, shape);
     reg32 previous = 0;
     for (reg32 tries = 10;;)
@@ -2051,7 +1986,7 @@ x86::reg32 frontend::watb::convertShape(App* app, CPU& cpu, reg32 argEax, reg32 
             else if (toDepth == 0x10)
                 step = mode != 0 ? kTo565Keyed : kTo565;
             if (step != 0)
-                guest.call(step, args({ guest.dword(kCurrentClut), kClutBuffer, colours }));
+                convertColours(app, cpu, step, guest.dword(kCurrentClut), kClutBuffer, colours);
             keyed = 0;
         }
 
@@ -2078,21 +2013,14 @@ x86::reg32 frontend::watb::convertShape(App* app, CPU& cpu, reg32 argEax, reg32 
         guest.setDword(made + 0xc, header);
 
         reg32 from = shape + kShapePixels, to = made + kShapePixels;
-        guest.leaveEbx(height);
-        guest.leaveEdx(header);
         for (reg32 row = 0; sreg32(row) < sreg32(height); ++row)
         {
-            guest.call(convert, args({ from, to, width }));
-            guest.leaveEdx(height);
+            fe::pointerCall(guest, convert, args({ from, to, width }));
             to += rowBytes;
             from += stride;
         }
-        guest.leaveEcx(0);
         if (guest.dword(made + pixelBytes + 0x10) != kSentinel)
         {
-            guest.leaveEbx(0x54f7a8);
-            guest.leaveEcx(fromDepth);
-            guest.leaveEdx(width);
             reportError(guest, 0x54f7a8, 0x54f868, 0x461,
                         args({}, { 0x54f978, width, height, fromDepth, width, height, toDepth }));
         }
@@ -2105,11 +2033,11 @@ x86::reg32 frontend::watb::convertShape(App* app, CPU& cpu, reg32 argEax, reg32 
     }
 }
 
-void frontend::watbConvertShape(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbConvertShape(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_50aad0", 0, 0, kLeavesEbxEcxEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) {
-        return watb::convertShape(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx);
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
+        return watb::convertShape(app, cpu, args.eax, args.edx, args.ebx, args.ecx);
     });
 }
 
@@ -2123,18 +2051,14 @@ void frontend::watbConvertShape(win32::WinApplication* app, x86::CPU& cpu)
  * where there is not. */
 x86::reg32 frontend::watb::moveShape(App* app, CPU& cpu, reg32 argEax, reg32 argEdx, reg32 argEbx, reg32 argEcx)
 {
-    cpu.eax = argEax;
-    cpu.edx = argEdx;
-    cpu.ebx = argEbx;
-    cpu.ecx = argEcx;
     Guest guest(app, cpu);
     const fe::Frame locals(guest, cpu, 0x4c);
     constexpr reg32 kSpanTwoSteps = 0x50b080;
     constexpr reg32 kFirstStep = 0xa0b018, kSecondStep = 0xa0b014;
     const reg32 frame = guest.frame();
     const reg32 kBlitterSlot = frame + 0x38;      // kept where it is: a depth not in the table leaves what was there
-    reg32 shape = cpu.eax, x = cpu.edx, y = cpu.ebx;
-    const reg32 blitters = cpu.ecx;
+    reg32 shape = argEax, x = argEdx, y = argEbx;
+    const reg32 blitters = argEcx;
     if (shapeDepth(guest, shape) == 0)
         reportError(guest, 0x54f9ac, 0x54f9bc, 0x26, args({}, { 0x54f9c4, guest.dword(shape) & 0xff }));
     reg32 fixed = guest.dword(blitters + 0x18);
@@ -2148,12 +2072,12 @@ x86::reg32 frontend::watb::moveShape(App* app, CPU& cpu, reg32 argEax, reg32 arg
     if (fixed == 0 && (guest.dword(shape) & 0xff) != wanted)
     {
         const reg32 keyedConverter = guest.dword(blitters + 0x1c) == 2 ? 0 : 1;
-        fixed = guest.call(0x50a960, args({ shape, wanted, keyedConverter }));
+        fixed = fe::direct<0x50a960, converterFor>(app, cpu, shape, wanted, keyedConverter);
         if (fixed == 0)
         {
             const reg32 mode = guest.dword(blitters + 0x1c) == 2 ? 0 : 1;
             const reg32 keyed = guest.dword(blitters + 0x1c) == 1 ? 1 : 0;
-            converted = guest.call(0x50aad0, args({ shape, wanted, keyed, mode }));
+            converted = fe::direct<0x50aad0, convertShape>(app, cpu, shape, wanted, keyed, mode);
             shape = converted;
         }
         else if (guest.dword(blitters + 0x1c) != 2)
@@ -2234,20 +2158,16 @@ x86::reg32 frontend::watb::moveShape(App* app, CPU& cpu, reg32 argEax, reg32 arg
             reg32 sinceLast = 0;
             for (reg32 rows = height; rows != 0; --rows)
             {
-                guest.call(blitter, args({ from, pixels + to, width }));
+                fe::pointerCall(guest, blitter, args({ from, pixels + to, width }));
                 result = fromStep;
                 to += toStep;
                 from += fromStep;
                 sinceLast += width;
                 const reg32 every = guest.dword(0x5643ec);
-                guest.leaveEbx(every);
                 if (sreg32(sinceLast) > sreg32(every))
                 {
-                    guest.leaveEcx(from);
-                    guest.leaveEdx(sinceLast);
-                    cpu.eax = 0;
                     sinceLast = 0;
-                    result = guest.call(0x4f90e0);
+                    result = fe::direct<0x4f90e0, frontend::wata::windowReshow>(app, cpu);
                     if (result == 0)
                         return 0;
                 }
@@ -2256,7 +2176,7 @@ x86::reg32 frontend::watb::moveShape(App* app, CPU& cpu, reg32 argEax, reg32 arg
         else if (toSkip == 0 && fromSkip == 0 && blitter != kSpanTwoSteps)
         {
             // Without gaps: one long span.
-            guest.call(blitter, args({ from, pixels + to, width * height }));
+            fe::pointerCall(guest, blitter, args({ from, pixels + to, width * height }));
             result = toBytes * height;
             from += height * fromBytes;
         }
@@ -2264,27 +2184,23 @@ x86::reg32 frontend::watb::moveShape(App* app, CPU& cpu, reg32 argEax, reg32 arg
         {
             for (reg32 rows = height; rows != 0; --rows)
             {
-                guest.call(blitter, args({ from, pixels + to, width }));
+                fe::pointerCall(guest, blitter, args({ from, pixels + to, width }));
                 result = toStep;
                 to += toStep;
                 from += fromStep;
             }
         }
     }
-    else
-        guest.leaveEbx(depth);
 
-    guest.leaveEcx(from);
-    guest.leaveEdx(converted);
     if (converted != 0)
         result = *fe::direct<0x4e1890, ea::purgeBlock>(app, cpu, converted);
     return result;
 }
 
-void frontend::watbMoveShape(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbMoveShape(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_50b0b0", 0, 0, kLeavesEbxEcxEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::moveShape(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::moveShape(app, cpu, args.eax, args.edx, args.ebx, args.ecx); });
 }
 
 // ---------------------------------------------------------------------------
@@ -2294,46 +2210,43 @@ void frontend::watbMoveShape(win32::WinApplication* app, x86::CPU& cpu)
 /* sub_50b540: a string's next byte: eax the place of the pointer. */
 x86::reg32 frontend::watb::nextByte(App* app, CPU& cpu, reg32 argEax)
 {
-    cpu.eax = argEax;
     Guest guest(app, cpu);
-    const reg32 place = cpu.eax;
+    const reg32 place = argEax;
     const reg32 at = guest.dword(place) + 1;
     const reg32 value = guest.byte(at - 1);
     guest.setDword(place, at);
     return value;
 }
 
-void frontend::watbNextByte(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbNextByte(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_50b540", 0, 0);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::nextByte(app, cpu, cpu.eax); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::nextByte(app, cpu, args.eax); });
 }
 
 /* sub_50b560: a character's glyph number by the font's table, for ' ' to 0x7f. */
 x86::reg32 frontend::watb::charWidthEntry(App* app, CPU& cpu, reg32 argEax)
 {
-    cpu.eax = argEax;
     Guest guest(app, cpu);
-    const reg32 character = cpu.eax;
+    const reg32 character = argEax;
     if (sreg32(character) < 0x20 || sreg32(character) > 0x7f)
         return character;
     return guest.word(character * 2 + 0x568594);
 }
 
-void frontend::watbCharWidthEntry(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbCharWidthEntry(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_50b560", 0, 0);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::charWidthEntry(app, cpu, cpu.eax); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::charWidthEntry(app, cpu, args.eax); });
 }
 
 /* sub_50b580: a string's next character: two bytes with the top bit of the first set,
  * else one, through sub_50b560. */
 x86::reg32 frontend::watb::nextChar(App* app, CPU& cpu, reg32 argEax)
 {
-    cpu.eax = argEax;
     Guest guest(app, cpu);
     const fe::Frame locals(guest, cpu, 8);
-    const reg32 place = cpu.eax;
+    const reg32 place = argEax;
     reg32 at = guest.dword(place);
     const reg32 first = guest.byte(at);
     ++at;
@@ -2349,10 +2262,10 @@ x86::reg32 frontend::watb::nextChar(App* app, CPU& cpu, reg32 argEax)
     return result;
 }
 
-void frontend::watbNextChar(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbNextChar(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_50b580", 0, 0);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::nextChar(app, cpu, cpu.eax); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::nextChar(app, cpu, args.eax); });
 }
 
 namespace
@@ -2368,23 +2281,19 @@ constexpr reg32 kFontColour = 0x567220;
 x86::reg32 frontend::watb::textAlpha(App* app, CPU& cpu, reg32 argEax, reg32 argEdx, reg32 argEbx, reg32 argEcx,
                                      reg32 rowWord, reg32 widthWord, reg32 heightWord, reg32 strideWord)
 {
-    cpu.eax = argEax;
-    cpu.edx = argEdx;
-    cpu.ebx = argEbx;
-    cpu.ecx = argEcx;
     Guest guest(app, cpu);
     const fe::Frame locals(guest, cpu, 0x40);
     const reg32 frame = guest.frame();
-    const reg32 x = cpu.eax, y = cpu.edx, xOffset = cpu.ecx;
+    const reg32 x = argEax, y = argEdx, xOffset = argEcx;
     const reg32 stride = strideWord;
     const reg32 width = widthWord, height = heightWord;
-    reg32 font = cpu.ebx + kShapePixels + rowWord * stride + sar(xOffset - sar(xOffset, 31), 1);
+    reg32 font = argEbx + kShapePixels + rowWord * stride + sar(xOffset - sar(xOffset, 31), 1);
     const reg32 rowBytes = sar(width + 1, 1);
     const reg32 palette = guest.dword(kFontPalette);
     const auto colourOf = [&](reg32 nibble) { return guest.dword(palette + nibble * 4); };
 
-    // What the tests leave for a slow loop that has no rows to draw.
-    reg32 leftEax = rowBytes, leftEcx = xOffset, leftEdx = sar(xOffset, 31);
+    // What the tests leave in eax for a slow loop that has no rows to draw.
+    reg32 leftEax = rowBytes;
     const auto inside = [&] {
         const std::uint8_t locked = guest.byte(kWindowLocked);
         leftEax = (leftEax & 0xffff00ff) | (reg32(locked) << 8);
@@ -2397,11 +2306,9 @@ x86::reg32 frontend::watb::textAlpha(App* app, CPU& cpu, reg32 argEax, reg32 arg
         if (sreg32(y) < sreg32(guest.dword(kClipTop)) || sreg32(y) >= sreg32(guest.dword(kClipBottom)))
             return false;
         leftEax = x + width;
-        leftEcx = width;
         if (sreg32(leftEax) < sreg32(guest.dword(kClipLeft)) || sreg32(leftEax) >= sreg32(guest.dword(kClipRight)))
             return false;
         leftEax = y + height;
-        leftEcx = height;
         if (sreg32(leftEax) < sreg32(guest.dword(kClipTop)) || sreg32(leftEax) >= sreg32(guest.dword(kClipBottom)))
             return false;
         return true;
@@ -2412,8 +2319,6 @@ x86::reg32 frontend::watb::textAlpha(App* app, CPU& cpu, reg32 argEax, reg32 arg
         const reg32 skip = stride - rowBytes;
         const std::uint8_t depth = guest.byte(kWindowDepth);
         leftEax = skip;
-        leftEcx = rowBytes;
-        leftEdx = (leftEdx & 0xffffff00) | depth;
         if (depth == 0x10 || depth == 0xf)
         {
             const bool is565 = depth == 0x10;
@@ -2449,14 +2354,8 @@ x86::reg32 frontend::watb::textAlpha(App* app, CPU& cpu, reg32 argEax, reg32 arg
             } while (--rows != 0);
             if (is565)
             {
-                guest.leaveEbx(0);
-                guest.leaveEcx(row);
-                guest.leaveEdx(skip);
                 return left.eax;
             }
-            guest.leaveEbx(lastEbx);
-            guest.leaveEcx(0);
-            guest.leaveEdx(0);
             return row;
         }
         if (depth == 8)
@@ -2464,18 +2363,19 @@ x86::reg32 frontend::watb::textAlpha(App* app, CPU& cpu, reg32 argEax, reg32 arg
             const reg32 toSkip = guest.dword(kWindowStride) - rowBytes * 2;
             const reg32 rowAt = guest.dword(guest.dword(kRowOffsets) + (y << 2));
             const reg32 to = guest.dword(kWindowPixels) + rowAt + x;
-            guest.leaveEbx(toSkip);
-            guest.leaveEcx(x);
-            guest.leaveEdx(rowAt);
-            return guest.call(0x5239ec, args({ to }, { palette + 0x40, font, to, rowBytes, height, skip, toSkip }));
+            // sub_5239ec reads its seven words above its return address, where the code pushes them.
+            const fe::Frame pushed(guest, cpu, 7 * 4);
+            const reg32 words = guest.frame();
+            const reg32 values[] = { palette + 0x40, font, to, rowBytes, height, skip, toSkip };
+            for (reg32 i = 0; i != 7; ++i)
+                guest.setDword(words + 4 * i, values[i]);
+            // eax `to`, as the code's call has it: blend4To8 hands it back when it writes no pixels.
+            return fe::direct<0x5239ec, frontend::watc::blend4To8>(app, cpu, words, to);
         }
     }
 
     if (!positive(height))
     {
-        guest.leaveEbx(height);
-        guest.leaveEcx(leftEcx);
-        guest.leaveEdx(leftEdx);
         return leftEax;
     }
     const reg32 skip = stride - rowBytes, lastRow = y + height;
@@ -2499,17 +2399,14 @@ x86::reg32 frontend::watb::textAlpha(App* app, CPU& cpu, reg32 argEax, reg32 arg
         }
         font += skip;
     }
-    guest.leaveEbx(skip);
-    guest.leaveEcx(column);
-    guest.leaveEdx(lastRow);
     return positive(width) ? width : lastRow;
 }
 
-void frontend::watbTextAlpha(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbTextAlpha(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_50b5c0", 16, 0, kLeavesEbxEcxEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) {
-        return watb::textAlpha(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx, guest::at(app, cpu.esp + 4),
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
+        return watb::textAlpha(app, cpu, args.eax, args.edx, args.ebx, args.ecx, guest::at(app, cpu.esp + 4),
                                guest::at(app, cpu.esp + 8), guest::at(app, cpu.esp + 12), guest::at(app,
                                cpu.esp + 16));
     });
@@ -2519,20 +2416,16 @@ void frontend::watbTextAlpha(win32::WinApplication* app, x86::CPU& cpu)
 x86::reg32 frontend::watb::textPlotted(App* app, CPU& cpu, reg32 argEax, reg32 argEdx, reg32 argEbx, reg32 argEcx,
                                        reg32 rowWord, reg32 widthWord, reg32 heightWord, reg32 strideWord)
 {
-    cpu.eax = argEax;
-    cpu.edx = argEdx;
-    cpu.ebx = argEbx;
-    cpu.ecx = argEcx;
     Guest guest(app, cpu);
     const fe::Frame locals(guest, cpu, 0x2c);
     const reg32 frame = guest.frame();
-    const reg32 x = cpu.eax, y = cpu.edx, xOffset = cpu.ecx;
+    const reg32 x = argEax, y = argEdx, xOffset = argEcx;
     const reg32 stride = strideWord;
     const reg32 width = widthWord, height = heightWord;
     if (!positive(height))
         return x;
     const reg32 half = sar(xOffset - sar(xOffset, 31), 1);
-    reg32 line = cpu.ebx + kShapePixels + stride * rowWord;
+    reg32 line = argEbx + kShapePixels + stride * rowWord;
     const reg32 lastRow = y + height;
     reg32 row = y;
     do
@@ -2558,17 +2451,14 @@ x86::reg32 frontend::watb::textPlotted(App* app, CPU& cpu, reg32 argEax, reg32 a
         line += stride;
         ++row;
     } while (sreg32(row) < sreg32(lastRow));
-    guest.leaveEbx(lastRow);
-    guest.leaveEcx(row);
-    guest.leaveEdx(line);
     return stride;
 }
 
-void frontend::watbTextPlotted(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbTextPlotted(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_50ba90", 16, 0, kLeavesEbxEcxEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) {
-        return watb::textPlotted(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx, guest::at(app, cpu.esp + 4),
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
+        return watb::textPlotted(app, cpu, args.eax, args.edx, args.ebx, args.ecx, guest::at(app, cpu.esp + 4),
                                  guest::at(app, cpu.esp + 8), guest::at(app, cpu.esp + 12), guest::at(app,
                                  cpu.esp + 16));
     });
@@ -2580,56 +2470,47 @@ void frontend::watbTextPlotted(win32::WinApplication* app, x86::CPU& cpu)
 x86::reg32 frontend::watb::textMono(App* app, CPU& cpu, reg32 argEax, reg32 argEdx, reg32 argEbx, reg32 argEcx,
                                     reg32 rowWord, reg32 widthWord, reg32 heightWord, reg32 strideWord)
 {
-    cpu.eax = argEax;
-    cpu.edx = argEdx;
-    cpu.ebx = argEbx;
-    cpu.ecx = argEcx;
     Guest guest(app, cpu);
     const fe::Frame locals(guest, cpu, 0x38);
     const reg32 frame = guest.frame();
-    reg32 x = cpu.eax;
-    const reg32 y = cpu.edx, font = cpu.ebx, bitOffset = cpu.ecx;
+    reg32 x = argEax;
+    const reg32 y = argEdx, font = argEbx, bitOffset = argEcx;
     reg32 width = widthWord;
     reg32 height = heightWord;
-    reg32 plot = 0;
+    // What plots eight pixels at the window's depth (sub_50c220, sub_50c270, sub_50c2c0, sub_50c350):
+    // the next eight's place.
+    std::uint8_t plotDepth = 0;
     switch (guest.byte(kWindowDepth))
     {
-    case 8: plot = 0x50c220; break;
+    case 8: plotDepth = 8; break;
     case 0xf:
-    case 0x10: plot = 0x50c270; break;
-    case 0x18: plot = 0x50c2c0; break;
-    case 0x20: plot = 0x50c350; break;
+    case 0x10: plotDepth = 16; break;
+    case 0x18: plotDepth = 24; break;
+    case 0x20: plotDepth = 32; break;
     default:
-        guest.leaveEbx(0x54fa18);
-        reportErrorLeft(guest, 0x54fa18, 0x54fa28, 0xf1, args({}, { 0x54fa34, guest.byte(kWindowDepth) }));
-        return guest.eax();
+        reportError(guest, 0x54fa18, 0x54fa28, 0xf1, args({}, { 0x54fa34, guest.byte(kWindowDepth) }));
+        return 0;
     }
+    const auto plot = [&](reg32 bits, reg32 colour, reg32 to) -> reg32 {
+        switch (plotDepth)
+        {
+        case 8: return fe::direct<0x50c220, plotMask8>(app, cpu, bits, colour, to);
+        case 16: return fe::direct<0x50c270, plotMask16>(app, cpu, bits, colour, to);
+        case 24: return fe::direct<0x50c2c0, plotMask24>(app, cpu, bits, colour, to);
+        default: return fe::direct<0x50c350, plotMask32>(app, cpu, bits, colour, to);
+        }
+    };
     const reg32 clipLeft = guest.dword(kClipLeft);
     const reg32 leftClip = sreg32(x) < sreg32(clipLeft) ? clipLeft - x : 0;
     reg32 row = sreg32(y) < sreg32(guest.dword(kClipTop)) ? guest.dword(kClipTop) - y : 0;
     if (sreg32(x + width) > sreg32(guest.dword(kClipRight)))
         width = guest.dword(kClipRight) - x;
-    reg32 leftEcx = height + y;
-    if (sreg32(leftEcx) > sreg32(guest.dword(kClipBottom)))
-    {
-        leftEcx = guest.dword(kClipBottom) - y;
-        height = leftEcx;
-    }
-    const auto leave = [&](reg32 ebx, reg32 ecx, reg32 edx) {
-        guest.leaveEbx(ebx);
-        guest.leaveEcx(ecx);
-        guest.leaveEdx(edx);
-    };
+    if (sreg32(height + y) > sreg32(guest.dword(kClipBottom)))
+        height = guest.dword(kClipBottom) - y;
     if (sreg32(width) < 0 || sreg32(height) < 0 || sreg32(leftClip) >= sreg32(width))
-    {
-        leave(width, leftEcx, y);
         return leftClip;
-    }
     if (sreg32(row) >= sreg32(height))
-    {
-        leave(width, row, y);
         return leftClip;
-    }
     const reg32 stride = strideWord;
     const reg32 aligned = leftClip & ~reg32(7);
     reg32 line = font + kShapePixels + (rowWord + row) * stride + sar(bitOffset + aligned, 3);
@@ -2647,8 +2528,6 @@ x86::reg32 frontend::watb::textMono(App* app, CPU& cpu, reg32 argEax, reg32 argE
         ++row;
         if (sreg32(thisRow) >= sreg32(height))
         {
-            guest.leaveEcx(height);
-            guest.leaveEdx(row);
             return thisRow;
         }
         std::uint8_t mask = firstMask;
@@ -2656,29 +2535,28 @@ x86::reg32 frontend::watb::textMono(App* app, CPU& cpu, reg32 argEax, reg32 argE
         reg32 at = to;
         if (wholeBytes != 0)
         {
-            at = guest.call(plot, args({ reg32(guest.byte(source) & firstMask), guest.dword(kFontColour), at }));
+            at = plot(reg32(guest.byte(source) & firstMask), guest.dword(kFontColour), at);
             mask = 0xff;
             ++source;
             for (reg32 bytes = wholeBytes - 1; bytes != 0; --bytes)
             {
                 const reg32 bits = guest.byte(source);
                 ++source;
-                at = guest.call(plot, args({ bits, guest.dword(kFontColour), at }));
+                at = plot(bits, guest.dword(kFontColour), at);
             }
         }
         if (restBits != 0)
-            guest.call(plot, args({ reg32(guest.byte(source) & mask & lastMask), guest.dword(kFontColour), at }));
+            plot(reg32(guest.byte(source) & mask & lastMask), guest.dword(kFontColour), at);
         line += stride;
-        guest.leaveEbx(guest.dword(kWindowStride));
         to += guest.dword(kWindowStride);
     }
 }
 
-void frontend::watbTextMono(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbTextMono(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_50bb80", 16, 0, kLeavesEbxEcxEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) {
-        return watb::textMono(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx, guest::at(app, cpu.esp + 4),
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
+        return watb::textMono(app, cpu, args.eax, args.edx, args.ebx, args.ecx, guest::at(app, cpu.esp + 4),
                               guest::at(app, cpu.esp + 8), guest::at(app, cpu.esp + 12), guest::at(app,
                               cpu.esp + 16));
     });
@@ -2688,11 +2566,9 @@ void frontend::watbTextMono(win32::WinApplication* app, x86::CPU& cpu)
  * over that colour: the table the 8-bit blitter works from. */
 x86::reg32 frontend::watb::blendTable(App* app, CPU& cpu, reg32 argEax, reg32 argEdx)
 {
-    cpu.eax = argEax;
-    cpu.edx = argEdx;
     Guest guest(app, cpu);
     const fe::Frame locals(guest, cpu, 0x344);
-    const reg32 colours = cpu.eax, table = cpu.edx;
+    const reg32 colours = argEax, table = argEdx;
     std::uint8_t red[256], green[256], blue[256];
     for (reg32 i = 0; i != 256; ++i)
     {
@@ -2720,27 +2596,25 @@ x86::reg32 frontend::watb::blendTable(App* app, CPU& cpu, reg32 argEax, reg32 ar
                 const std::int32_t b = over(blue[index], show, guest.byte(colour));
                 nearest = fe::direct<0x4ef760, frontend::eab::colourPack>(app, cpu, (reg32(alpha) << 24) | (reg32(r) << 16) | (reg32(g) << 8) | reg32(b));
             }
-            guest.leaveEdx(((k << 8) | index) + table);
             guest.setByte(table + ((k << 8) | index), std::uint8_t(nearest));
         }
     }
     return 3 * 256;
 }
 
-void frontend::watbBlendTable(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbBlendTable(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_50bdf0", 0, 0, kLeavesEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::blendTable(app, cpu, cpu.eax, cpu.edx); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::blendTable(app, cpu, args.eax, args.edx); });
 }
 
 /* sub_50bfd0: the font's 16 ARGBs, a colour faded in over alpha; the blend table for 8 bits. */
 x86::reg32 frontend::watb::fadeTable(App* app, CPU& cpu, reg32 argEax)
 {
-    cpu.eax = argEax;
     Guest guest(app, cpu);
     const fe::Frame locals(guest, cpu, 0x30);
     const reg32 table = guest.dword(kFontPalette);
-    const reg32 argb = guest::direct<0x50c3a0, colourToArgb>(app, cpu, cpu.eax);
+    const reg32 argb = guest::direct<0x50c3a0, colourToArgb>(app, cpu, argEax);
     const std::int32_t blue = argb & 0xff, green = (argb >> 8) & 0xff, red = (argb >> 16) & 0xff;
     for (std::int32_t i = 0; i != 16; ++i)
     {
@@ -2755,17 +2629,29 @@ x86::reg32 frontend::watb::fadeTable(App* app, CPU& cpu, reg32 argEax)
     return guest::direct<0x50bdf0, blendTable>(app, cpu, table, guest.dword(kFontPalette) + 0x40);
 }
 
-void frontend::watbFadeTable(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbFadeTable(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_50bfd0", 0, 0);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::fadeTable(app, cpu, cpu.eax); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::fadeTable(app, cpu, args.eax); });
 }
 
-/* sub_50c0d0, inittextdraw: the font's tables made and filled, its blitter chosen. */
+namespace
+{
+/* Whether sub_50c180 calls nothing and leaves eax as it came: neither colours given nor a fade. */
+bool textPaletteLeavesEax(App* app)
+{
+    return guest::at(app, 0x5672a4) == 0 && !(guest::at(app, 0x56720c) != 0 && guest::at(app, 0x567208) == 4);
+}
+}
+
+/* sub_50c0d0, inittextdraw: the font's tables made and filled, its blitter chosen.  No result:
+ * what sub_50c180 leaves, which where it leaves eax as it came is the block just made, or this
+ * function's own eax as it came, which its thunk does. */
 x86::reg32 frontend::watb::initTextDraw(App* app, CPU& cpu)
 {
     Guest guest(app, cpu);
     const fe::Frame locals(guest, cpu, 4);
+    reg32 made = 0;
     if (guest.dword(kFontPalette) == 0)
     {
         constexpr reg32 kBytes = 0x1040;
@@ -2773,11 +2659,12 @@ x86::reg32 frontend::watb::initTextDraw(App* app, CPU& cpu)
         guest.setDword(kErrorFile, 0x54fa18);
         guest.setDword(kErrorFunction, 0x54fa60);
         guest.setDword(kErrorLine, 0x150);
-        const reg32 block = *fe::direct<0x4e1620, ea::reserved>(app, cpu, reg32(0x54fa70), kBytes, guest.dword(kMemoryPool));
-        guest.setDword(kFontPalette, block);
-        cpu.eax = block;  // what sub_50c180 hands back as it came, on one of its ways
+        made = *fe::direct<0x4e1620, ea::reserved>(app, cpu, reg32(0x54fa70), kBytes, guest.dword(kMemoryPool));
+        guest.setDword(kFontPalette, made);
     }
-    const reg32 result = guest::direct<0x50c180, textPalette>(app, cpu);
+    const bool passedOn = textPaletteLeavesEax(app);
+    const reg32 coloured = guest::direct<0x50c180, textPalette>(app, cpu);
+    const reg32 result = passedOn ? made : coloured;
     reg32 blitter = 0x50b5c0;
     if (guest.dword(0x567208) == 1)
         blitter = 0x50bb80;
@@ -2789,43 +2676,56 @@ x86::reg32 frontend::watb::initTextDraw(App* app, CPU& cpu)
     return result;
 }
 
-void frontend::watbInitTextDraw(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbInitTextDraw(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_50c0d0", 0, 0);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::initTextDraw(app, cpu); });
+    const reg32 previous = args.eax;
+    const bool passedOn = guest::at(app, kFontPalette) != 0 && textPaletteLeavesEax(app);
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
+        const reg32 result = watb::initTextDraw(app, cpu);
+        return passedOn ? previous : result;
+    });
 }
 
-/* sub_50c180: the font's colours for its kind: copied where they are given, faded where not. */
+/* sub_50c180: the font's colours for its kind: copied where they are given, faded where not.  No
+ * result: what memmove, sub_50bdf0 or sub_50bfd0 leaves -- memmove's is none, 0 here -- or eax as
+ * it came where it calls nothing, which its thunk does. */
 x86::reg32 frontend::watb::textPalette(App* app, CPU& cpu)
 {
     Guest guest(app, cpu);
     const fe::Frame locals(guest, cpu, 8);
     if (guest.dword(0x5672a4) != 0)
     {
-        guest.call(kMemmove, args({ kFontColours, guest.dword(kFontPalette), 0x40 }));
+        fe::direct<kMemmove, ea::moveMemory>(app, cpu, guest.dword(kFontPalette), kFontColours, reg32(0x40));
         if (guest.byte(kWindowDepth) > 8)
-            return guest.eax();
+            return 0;
         const reg32 table = guest.dword(kFontPalette);
         return guest::direct<0x50bdf0, blendTable>(app, cpu, table, table + 0x40);
     }
     if (guest.dword(0x56720c) != 0 && guest.dword(0x567208) == 4)
         return guest::direct<0x50bfd0, fadeTable>(app, cpu, guest.dword(kFontColour));
-    return guest.eax();
+    return 0;
 }
 
-void frontend::watbTextPalette(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbTextPalette(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_50c180", 0, 0);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::textPalette(app, cpu); });
+    const reg32 previous = args.eax;
+    const bool passedOn = textPaletteLeavesEax(app);
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
+        const reg32 result = watb::textPalette(app, cpu);
+        return passedOn ? previous : result;
+    });
 }
 
-/* sub_50c1e0: the font's tables given back. */
+/* sub_50c1e0: the font's tables given back.  No result: purgememadr's, or with no tables eax as
+ * it came, which its thunk does. */
 x86::reg32 frontend::watb::freeTextDraw(App* app, CPU& cpu)
 {
     Guest guest(app, cpu);
     const fe::Frame locals(guest, cpu, 8);
     const reg32 table = guest.dword(kFontPalette);
-    reg32 left = guest.eax();
+    reg32 left = 0;
     if (table != 0)
     {
         left = *fe::direct<0x4e1890, ea::purgeBlock>(app, cpu, table);
@@ -2836,102 +2736,93 @@ x86::reg32 frontend::watb::freeTextDraw(App* app, CPU& cpu)
     return left;
 }
 
-void frontend::watbFreeTextDraw(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbFreeTextDraw(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_50c1e0", 0, 0);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::freeTextDraw(app, cpu); });
+    const reg32 previous = args.eax;
+    const bool none = guest::at(app, kFontPalette) == 0;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
+        const reg32 left = watb::freeTextDraw(app, cpu);
+        return none ? previous : left;
+    });
 }
 
 /* sub_50c220, sub_50c270, sub_50c2c0, sub_50c350: the set bits of al's eight pixels at
  * ebx in the colour edx, at 8, 16, 24 and 32 bits; the next eight's place. */
 x86::reg32 frontend::watb::plotMask8(App* app, CPU& cpu, reg32 argEax, reg32 argEdx, reg32 argEbx)
 {
-    cpu.eax = argEax;
-    cpu.edx = argEdx;
-    cpu.ebx = argEbx;
     Guest guest(app, cpu);
-    const reg32 to = cpu.ebx;
+    const reg32 to = argEbx;
     for (reg32 pixel = 0; pixel != 8; ++pixel)
-        if ((cpu.eax & (0x80 >> pixel)) != 0)
-            guest.setByte(to + pixel, std::uint8_t(cpu.edx));
+        if ((argEax & (0x80 >> pixel)) != 0)
+            guest.setByte(to + pixel, std::uint8_t(argEdx));
     return to + 8;
 }
 
-void frontend::watbPlotMask8(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbPlotMask8(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_50c220", 0, 0);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::plotMask8(app, cpu, cpu.eax, cpu.edx, cpu.ebx); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::plotMask8(app, cpu, args.eax, args.edx, args.ebx); });
 }
 
 x86::reg32 frontend::watb::plotMask16(App* app, CPU& cpu, reg32 argEax, reg32 argEdx, reg32 argEbx)
 {
-    cpu.eax = argEax;
-    cpu.edx = argEdx;
-    cpu.ebx = argEbx;
     Guest guest(app, cpu);
-    const reg32 to = cpu.ebx;
+    const reg32 to = argEbx;
     for (reg32 pixel = 0; pixel != 8; ++pixel)
-        if ((cpu.eax & (0x80 >> pixel)) != 0)
-            guest.setWord(to + pixel * 2, std::uint16_t(cpu.edx));
+        if ((argEax & (0x80 >> pixel)) != 0)
+            guest.setWord(to + pixel * 2, std::uint16_t(argEdx));
     return to + 0x10;
 }
 
-void frontend::watbPlotMask16(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbPlotMask16(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_50c270", 0, 0);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::plotMask16(app, cpu, cpu.eax, cpu.edx, cpu.ebx); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::plotMask16(app, cpu, args.eax, args.edx, args.ebx); });
 }
 
 x86::reg32 frontend::watb::plotMask24(App* app, CPU& cpu, reg32 argEax, reg32 argEdx, reg32 argEbx)
 {
-    cpu.eax = argEax;
-    cpu.edx = argEdx;
-    cpu.ebx = argEbx;
     Guest guest(app, cpu);
-    const reg32 to = cpu.ebx, colour = cpu.edx;
+    const reg32 to = argEbx, colour = argEdx;
     for (reg32 pixel = 0; pixel != 8; ++pixel)
-        if ((cpu.eax & (0x80 >> pixel)) != 0)
+        if ((argEax & (0x80 >> pixel)) != 0)
         {
             guest.setByte(to + pixel * 3 + 1, std::uint8_t(colour >> 8));
             guest.setByte(to + pixel * 3 + 2, std::uint8_t(colour));
             guest.setByte(to + pixel * 3, std::uint8_t(colour >> 16));
         }
-    guest.leaveEdx((sar(colour, 16) & 0xffff00ff) | ((colour & 0xff) << 8));
     return to + 0x18;
 }
 
-void frontend::watbPlotMask24(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbPlotMask24(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_50c2c0", 0, 0, kLeavesEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::plotMask24(app, cpu, cpu.eax, cpu.edx, cpu.ebx); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::plotMask24(app, cpu, args.eax, args.edx, args.ebx); });
 }
 
 x86::reg32 frontend::watb::plotMask32(App* app, CPU& cpu, reg32 argEax, reg32 argEdx, reg32 argEbx)
 {
-    cpu.eax = argEax;
-    cpu.edx = argEdx;
-    cpu.ebx = argEbx;
     Guest guest(app, cpu);
-    const reg32 to = cpu.ebx;
+    const reg32 to = argEbx;
     for (reg32 pixel = 0; pixel != 8; ++pixel)
-        if ((cpu.eax & (0x80 >> pixel)) != 0)
-            guest.setDword(to + pixel * 4, cpu.edx);
+        if ((argEax & (0x80 >> pixel)) != 0)
+            guest.setDword(to + pixel * 4, argEdx);
     return to + 0x20;
 }
 
-void frontend::watbPlotMask32(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbPlotMask32(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_50c350", 0, 0);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::plotMask32(app, cpu, cpu.eax, cpu.edx, cpu.ebx); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::plotMask32(app, cpu, args.eax, args.edx, args.ebx); });
 }
 
 /* sub_50c3a0, getargb: a colour of the current window's depth as an ARGB. */
 x86::reg32 frontend::watb::colourToArgb(App* app, CPU& cpu, reg32 argEax)
 {
-    cpu.eax = argEax;
     Guest guest(app, cpu);
     const fe::Frame locals(guest, cpu, 24);
-    const reg32 colour = cpu.eax;
+    const reg32 colour = argEax;
     const std::uint8_t depth = guest.byte(kWindowDepth);
     if (depth == 0xf)
     {
@@ -2954,21 +2845,20 @@ x86::reg32 frontend::watb::colourToArgb(App* app, CPU& cpu, reg32 argEax)
     return guest.dword(colour * 4 + kNeutralClut);
 }
 
-void frontend::watbColourToArgb(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbColourToArgb(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_50c3a0", 0, 0);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::colourToArgb(app, cpu, cpu.eax); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::colourToArgb(app, cpu, args.eax); });
 }
 
 /* sub_50c584: a key's handler called, at most one at a time, by the code in al or, with
  * al 0, the scan code in ah; the tables hold the handler's number, 0 for none. */
 x86::reg32 frontend::watb::dispatchKey(App* app, CPU& cpu, reg32 argEax)
 {
-    cpu.eax = argEax;
     constexpr reg32 kNotInHandler = 0x56879a;
     Guest guest(app, cpu);
     const fe::Frame locals(guest, cpu, 0xc);
-    const reg32 key = cpu.eax;
+    const reg32 key = argEax;
     const reg32 free = guest.dword(kNotInHandler) - 1;
     guest.setDword(kNotInHandler, free);
     reg32 number = 0;
@@ -2985,7 +2875,7 @@ x86::reg32 frontend::watb::dispatchKey(App* app, CPU& cpu, reg32 argEax)
         }
         if (number != 0)
         {
-            guest.call(guest.dword((number - 1) * 4 + 0x56879e), args({ key, number - 1 }));
+            fe::pointerCall(guest, guest.dword((number - 1) * 4 + 0x56879e), args({ key, number - 1 }));
             guest.setDword(kNotInHandler, guest.dword(kNotInHandler) + 1);
             return 0;
         }
@@ -2994,20 +2884,18 @@ x86::reg32 frontend::watb::dispatchKey(App* app, CPU& cpu, reg32 argEax)
     return key;
 }
 
-void frontend::watbDispatchKey(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbDispatchKey(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_50c584", 0, 0, fe::kRestoreEdx | fe::kRestoreEsi | fe::kRestoreEdi);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::dispatchKey(app, cpu, cpu.eax); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::dispatchKey(app, cpu, args.eax); });
 }
 
 /* sub_50c5d4: a handler given a number, a free one or its own, and the key eax set to it. */
 x86::reg32 frontend::watb::registerKey(App* app, CPU& cpu, reg32 argEax, reg32 argEdx)
 {
-    cpu.eax = argEax;
-    cpu.edx = argEdx;
     Guest guest(app, cpu);
     constexpr reg32 kHandlers = 0x56879e;
-    const reg32 key = cpu.eax, handler = cpu.edx;
+    const reg32 key = argEax, handler = argEdx;
     reg32 number = 0;
     for (reg32 i = 0; i != 0x40; ++i)
     {
@@ -3026,29 +2914,26 @@ x86::reg32 frontend::watb::registerKey(App* app, CPU& cpu, reg32 argEax, reg32 a
     }
     if (number == 0)
     {
-        guest.leaveEdx(kHandlers + 0x100);
         return handler;
     }
     if (std::uint8_t(key) != 0)
     {
-        guest.leaveEdx(key);
         if (sreg32(key) <= 0x7f)
             guest.setByte(key + 0x568694, std::uint8_t(number));
     }
     else
     {
         const reg32 scan = (key >> 8) & 0xff;
-        guest.leaveEdx(scan);
         if (sreg32(scan) <= 0x84)
             guest.setByte(scan + 0x568714, std::uint8_t(number));
     }
     return number;
 }
 
-void frontend::watbRegisterKey(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbRegisterKey(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_50c5d4", 0, 0, kLeavesEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::registerKey(app, cpu, cpu.eax, cpu.edx); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::registerKey(app, cpu, args.eax, args.edx); });
 }
 
 // ---------------------------------------------------------------------------
@@ -3056,16 +2941,13 @@ void frontend::watbRegisterKey(win32::WinApplication* app, x86::CPU& cpu)
 // ---------------------------------------------------------------------------
 
 /* sub_50d560: a memory copy, 32 bytes at a time through the x87 where it can.  fld and
- * fstp qword only move the bits, as the generated code's doubles do, in this order
+ * fstp qword only move the bits, as the game's code's doubles do, in this order
  * (which shows where the two overlap). */
 x86::reg32 frontend::watb::copyBlock(App* app, CPU& cpu, reg32 argEax, reg32 argEdx, reg32 argEbx)
 {
-    cpu.eax = argEax;
-    cpu.edx = argEdx;
-    cpu.ebx = argEbx;
     Guest guest(app, cpu);
-    reg32 to = cpu.edx, from = cpu.eax;
-    reg32 left = cpu.ebx;
+    reg32 to = argEdx, from = argEax;
+    reg32 left = argEbx;
     const auto copy1 = [&] {
         guest.setByte(to, guest.byte(from));
         from += 1;
@@ -3154,28 +3036,23 @@ x86::reg32 frontend::watb::copyBlock(App* app, CPU& cpu, reg32 argEax, reg32 arg
         if (left >= 1)
             copy1();
     }
-    guest.leaveEbx(left);
-    guest.leaveEdx(from);
     return to;
 }
 
-void frontend::watbCopyBlock(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbCopyBlock(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_50d560", 0, 0, kLeavesEbxEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::copyBlock(app, cpu, cpu.eax, cpu.edx, cpu.ebx); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::copyBlock(app, cpu, args.eax, args.edx, args.ebx); });
 }
 
 /* sub_50d6e0: ARGBs over palette indices, each result the nearest index. */
 x86::reg32 frontend::watb::blendSpanIndexed(App* app, CPU& cpu, reg32 argEax, reg32 argEdx, reg32 argEbx)
 {
-    cpu.eax = argEax;
-    cpu.edx = argEdx;
-    cpu.ebx = argEbx;
     Guest guest(app, cpu);
     const fe::Frame locals(guest, cpu, 0x24);
-    reg32 from = cpu.eax, to = cpu.edx;
-    reg32 count = cpu.ebx;
-    reg32 result = cpu.eax, leftEbx = cpu.ebx, leftEdx = cpu.edx;
+    reg32 from = argEax, to = argEdx;
+    reg32 count = argEbx;
+    reg32 result = argEax, leftEbx = argEbx, leftEdx = argEdx;
     do
     {
         const std::uint8_t alpha = guest.byte(from + 3);
@@ -3198,28 +3075,23 @@ x86::reg32 frontend::watb::blendSpanIndexed(App* app, CPU& cpu, reg32 argEax, re
         ++to;
         from += 4;
     } while (--count != 0);
-    guest.leaveEbx(leftEbx);
-    guest.leaveEdx(leftEdx);
     return result;
 }
 
-void frontend::watbBlendSpanIndexed(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbBlendSpanIndexed(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_50d6e0", 0, 0, kLeavesEbxEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::blendSpanIndexed(app, cpu, cpu.eax, cpu.edx, cpu.ebx); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::blendSpanIndexed(app, cpu, args.eax, args.edx, args.ebx); });
 }
 
 /* sub_50d7e0: ARGBs over 1555 pixels. */
 x86::reg32 frontend::watb::blendSpan1555(App* app, CPU& cpu, reg32 argEax, reg32 argEdx, reg32 argEbx)
 {
-    cpu.eax = argEax;
-    cpu.edx = argEdx;
-    cpu.ebx = argEbx;
     Guest guest(app, cpu);
-    reg32 from = cpu.eax, to = cpu.edx;
-    reg32 count = cpu.ebx;
-    Scratch left{ cpu.eax, cpu.edx };
-    reg32 lastEbx = cpu.ebx;
+    reg32 from = argEax, to = argEdx;
+    reg32 count = argEbx;
+    Scratch left{ argEax, argEdx };
+    reg32 lastEbx = argEbx;
     do
     {
         reg32 argb = guest.dword(from);
@@ -3234,28 +3106,23 @@ x86::reg32 frontend::watb::blendSpan1555(App* app, CPU& cpu, reg32 argEax, reg32
         to += 2;
         from += 4;
     } while (--count != 0);
-    guest.leaveEbx(lastEbx);
-    guest.leaveEdx(left.edx);
     return left.eax;
 }
 
-void frontend::watbBlendSpan1555(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbBlendSpan1555(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_50d7e0", 0, 0, kLeavesEbxEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::blendSpan1555(app, cpu, cpu.eax, cpu.edx, cpu.ebx); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::blendSpan1555(app, cpu, args.eax, args.edx, args.ebx); });
 }
 
 /* sub_50d880: ARGBs over 565 pixels. */
 x86::reg32 frontend::watb::blendSpan565(App* app, CPU& cpu, reg32 argEax, reg32 argEdx, reg32 argEbx)
 {
-    cpu.eax = argEax;
-    cpu.edx = argEdx;
-    cpu.ebx = argEbx;
     Guest guest(app, cpu);
-    reg32 from = cpu.eax, to = cpu.edx;
-    reg32 count = cpu.ebx;
-    Scratch left{ cpu.eax, cpu.edx };
-    reg32 lastEbx = cpu.ebx;
+    reg32 from = argEax, to = argEdx;
+    reg32 count = argEbx;
+    Scratch left{ argEax, argEdx };
+    reg32 lastEbx = argEbx;
     do
     {
         reg32 argb = guest.dword(from);
@@ -3270,27 +3137,22 @@ x86::reg32 frontend::watb::blendSpan565(App* app, CPU& cpu, reg32 argEax, reg32 
         to += 2;
         from += 4;
     } while (--count != 0);
-    guest.leaveEbx(lastEbx);
-    guest.leaveEdx(left.edx);
     return left.eax;
 }
 
-void frontend::watbBlendSpan565(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbBlendSpan565(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_50d880", 0, 0, kLeavesEbxEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::blendSpan565(app, cpu, cpu.eax, cpu.edx, cpu.ebx); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::blendSpan565(app, cpu, args.eax, args.edx, args.ebx); });
 }
 
 /* sub_50d910: ARGBs over 888 pixels. */
 x86::reg32 frontend::watb::blendSpan888(App* app, CPU& cpu, reg32 argEax, reg32 argEdx, reg32 argEbx)
 {
-    cpu.eax = argEax;
-    cpu.edx = argEdx;
-    cpu.ebx = argEbx;
     Guest guest(app, cpu);
-    reg32 from = cpu.eax, to = cpu.edx;
-    reg32 count = cpu.ebx;
-    reg32 lastEbx = cpu.ebx;
+    reg32 from = argEax, to = argEdx;
+    reg32 count = argEbx;
+    reg32 lastEbx = argEbx;
     do
     {
         const std::uint8_t alpha = guest.byte(from + 3);
@@ -3308,27 +3170,22 @@ x86::reg32 frontend::watb::blendSpan888(App* app, CPU& cpu, reg32 argEax, reg32 
         to += 3;
         from += 4;
     } while (--count != 0);
-    guest.leaveEbx(lastEbx);
-    guest.leaveEdx(to);
     return from;
 }
 
-void frontend::watbBlendSpan888(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbBlendSpan888(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_50d910", 0, 0, kLeavesEbxEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::blendSpan888(app, cpu, cpu.eax, cpu.edx, cpu.ebx); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::blendSpan888(app, cpu, args.eax, args.edx, args.ebx); });
 }
 
 /* sub_50d9c0: ARGBs over ARGBs; over nothing, the ARGB as it is. */
 x86::reg32 frontend::watb::blendSpan8888(App* app, CPU& cpu, reg32 argEax, reg32 argEdx, reg32 argEbx)
 {
-    cpu.eax = argEax;
-    cpu.edx = argEdx;
-    cpu.ebx = argEbx;
     Guest guest(app, cpu);
-    reg32 from = cpu.eax, to = cpu.edx;
-    reg32 count = cpu.ebx;
-    reg32 lastEbx = cpu.ebx;
+    reg32 from = argEax, to = argEdx;
+    reg32 count = argEbx;
+    reg32 lastEbx = argEbx;
     do
     {
         const std::uint8_t alpha = guest.byte(from + 3);
@@ -3354,28 +3211,23 @@ x86::reg32 frontend::watb::blendSpan8888(App* app, CPU& cpu, reg32 argEax, reg32
         to += 4;
         from += 4;
     } while (--count != 0);
-    guest.leaveEbx(lastEbx);
-    guest.leaveEdx(to);
     return from;
 }
 
-void frontend::watbBlendSpan8888(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbBlendSpan8888(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_50d9c0", 0, 0, kLeavesEbxEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::blendSpan8888(app, cpu, cpu.eax, cpu.edx, cpu.ebx); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::blendSpan8888(app, cpu, args.eax, args.edx, args.ebx); });
 }
 
 /* sub_50daa0: palette indices over 565 pixels, by a palette of the alpha over 565 at
  * [0xa0b020] (sub_50a830's). */
 x86::reg32 frontend::watb::blendSpanPalette565(App* app, CPU& cpu, reg32 argEax, reg32 argEdx, reg32 argEbx)
 {
-    cpu.eax = argEax;
-    cpu.edx = argEdx;
-    cpu.ebx = argEbx;
     Guest guest(app, cpu);
-    reg32 from = cpu.eax, to = cpu.edx;
-    reg32 count = cpu.ebx;
-    reg32 result = cpu.eax, lastEbx = cpu.ebx, leftEdx = cpu.edx;
+    reg32 from = argEax, to = argEdx;
+    reg32 count = argEbx;
+    reg32 result = argEax, lastEbx = argEbx, leftEdx = argEdx;
     do
     {
         const reg32 scaled = reg32(guest.byte(from)) * 4;
@@ -3399,16 +3251,14 @@ x86::reg32 frontend::watb::blendSpanPalette565(App* app, CPU& cpu, reg32 argEax,
         }
         to += 2;
     } while (--count != 0);
-    guest.leaveEbx(lastEbx);
-    guest.leaveEdx(leftEdx);
     return result;
 }
 
-void frontend::watbBlendSpanPalette565(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbBlendSpanPalette565(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_50daa0", 0, 0, kLeavesEbxEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) {
-        return watb::blendSpanPalette565(app, cpu, cpu.eax, cpu.edx, cpu.ebx);
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
+        return watb::blendSpanPalette565(app, cpu, args.eax, args.edx, args.ebx);
     });
 }
 
@@ -3416,14 +3266,11 @@ void frontend::watbBlendSpanPalette565(win32::WinApplication* app, x86::CPU& cpu
  * 16-bit window through its palette and sub_50daa0. */
 x86::reg32 frontend::watb::drawAlphaShape(App* app, CPU& cpu, reg32 argEax, reg32 argEdx, reg32 argEbx)
 {
-    cpu.eax = argEax;
-    cpu.edx = argEdx;
-    cpu.ebx = argEbx;
     Guest guest(app, cpu);
     const fe::Frame locals(guest, cpu, 0x410);
     constexpr reg32 kBlitter16 = 0x5688c0, kType = 0x5688c8;
     const reg32 frame = guest.frame();
-    const reg32 shape = cpu.eax, x = cpu.edx, y = cpu.ebx;
+    const reg32 shape = argEax, x = argEdx, y = argEbx;
     guest.setDword(kBlitter16, 0);
     guest.setDword(kType, 0x7d);
     if (shapeDepth(guest, shape) == 8 && guest.byte(kWindowDepth) == 0x10)
@@ -3432,59 +3279,53 @@ x86::reg32 frontend::watb::drawAlphaShape(App* app, CPU& cpu, reg32 argEax, reg3
         guest.setDword(kBlitter16, 0x50daa0);
         guest.setDword(kType, 0x7b);
     }
-    return guest.call(0x50b0b0, args({ shape, x, y, 0x5688a8 }));
+    return fe::direct<0x50b0b0, moveShape>(app, cpu, shape, x, y, reg32(0x5688a8));
 }
 
-void frontend::watbDrawAlphaShape(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbDrawAlphaShape(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_50db30", 0, 0, kLeavesEbxEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::drawAlphaShape(app, cpu, cpu.eax, cpu.edx, cpu.ebx); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::drawAlphaShape(app, cpu, args.eax, args.edx, args.ebx); });
 }
 
 /* sub_50e5a0, qfetch: under the queue's lock, the first element edx's test says yes to,
  * taken off the queue. */
 x86::reg32 frontend::watb::queueFetch(App* app, CPU& cpu, reg32 argEax, reg32 argEdx, reg32 argEbx)
 {
-    cpu.eax = argEax;
-    cpu.edx = argEdx;
-    cpu.ebx = argEbx;
     Guest guest(app, cpu);
     const fe::Frame locals(guest, cpu, 0x10);
     constexpr reg32 kEnterLock = 0x5344b8, kLeaveLock = 0x534588;
-    const reg32 queue = cpu.eax, test = cpu.edx, argument = cpu.ebx;
+    const reg32 queue = argEax, test = argEdx, argument = argEbx;
     const reg32 lock = guest.dword(queue + 0x18);
-    guest.leaveEdx(lock);
     callImport<kEnterLock, &host::enterLock>(guest, cpu, lock);
     if (guest.dword(queue + 0x18) == 0)
     {
-        guest.leaveEdx(0x36a);
         reportError(guest, 0x54fbb8, 0x54fc94, 0x36a, args({}, { 0x54fbcc, 0x54fc94, queue }));
     }
     reg32 element = guest.dword(queue + 8);
     while (element != 0 && test != 0)
     {
-        guest.leaveEbx(element);
-        if (guest.call(test, args({ element, argument })) != 0)
+        // The element in ebx too, as the code has it there, for a test that would read it.
+        if (fe::pointerCall(guest, test, args({ element, argument, element })) != 0)
             break;
         element = guest.dword(element);
     }
     if (element != 0)
     {
-        if (directKept<0x50dc20, ea::queueUnlinked, 2>(guest.app(), guest.cpu(), queue, element) == 0)
+        if (fe::direct<0x50dc20, ea::queueUnlinked>(app, cpu, queue, element) == 0)
         {
             reportError(guest, 0x54fbb8, 0x54fc94, 0x373, args({}, { 0x54fc9c }));
             element = 0;
         }
     }
-    guest.leaveEbx(element);
     callImport<kLeaveLock, &host::leaveLock>(guest, cpu, guest.dword(queue + 0x18));
     return element;
 }
 
-void frontend::watbQueueFetch(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbQueueFetch(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_50e5a0", 0, 0, kLeavesEbxEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::queueFetch(app, cpu, cpu.eax, cpu.edx, cpu.ebx); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::queueFetch(app, cpu, args.eax, args.edx, args.ebx); });
 }
 
 // ---------------------------------------------------------------------------
@@ -3499,7 +3340,8 @@ constexpr reg32 kNmalloc = 0x4f7900, kNfree = 0x4f79f0;
 constexpr reg32 kLinkBytes = 0x1d;
 }
 
-/* sub_509350: the closed streams' links freed. */
+/* sub_509350: the closed streams' links freed.  No result: what _nfree leaves -- none, 0 here --
+ * or with none to free eax as it came, which its thunk does. */
 x86::reg32 frontend::watb::freeClosedStreams(App* app, CPU& cpu)
 {
     Guest guest(app, cpu);
@@ -3513,25 +3355,29 @@ x86::reg32 frontend::watb::freeClosedStreams(App* app, CPU& cpu)
         if (next == 0)
             break;
     }
-    return guest.eax();
+    return 0;
 }
 
-void frontend::watbFreeClosedStreams(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbFreeClosedStreams(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_509350", 0, 0);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::freeClosedStreams(app, cpu); });
+    const reg32 previous = args.eax;
+    const bool none = guest::at(app, kClosedStreams) == 0;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
+        const reg32 left = watb::freeClosedStreams(app, cpu);
+        return none ? previous : left;
+    });
 }
 
 /* sub_515740, __InitFiles: a link for each FILE of __iob in use, stderr's flags first. */
 x86::reg32 frontend::watb::initStreams(App* app, CPU& cpu, reg32 argEax)
 {
-    cpu.eax = argEax;
     Guest guest(app, cpu);
     const fe::Frame locals(guest, cpu, 0x10);
     constexpr reg32 kStderrFlags = 0x566f99;
     const std::uint8_t flags = guest.byte(kStderrFlags) & 0xf8;
     guest.setByte(kStderrFlags, flags | 4);
-    reg32 result = (cpu.eax & 0xffff00ff) | (reg32(flags) << 8);
+    reg32 result = (argEax & 0xffff00ff) | (reg32(flags) << 8);
     reg32 file = kIob;
     reg32 inUse = guest.dword(kIob + 0xc);
     while (inUse != 0)
@@ -3541,7 +3387,7 @@ x86::reg32 frontend::watb::initStreams(App* app, CPU& cpu, reg32 argEax)
         {
             link = fe::direct<kNmalloc, watcom::clib::malloc>(guest.app(), guest.cpu(), kLinkBytes);
             if (link == 0)
-                guest.call(0x511d0c, args({ 0x55057c, 1 }));
+                fe::direct<0x511d0c, watcom::clib::fatalRuntimeError>(guest.app(), guest.cpu(), 0x55057cu, 1u);
         }
         guest.setDword(link + 4, file);
         guest.setDword(link, guest.dword(kOpenStreams));
@@ -3558,43 +3404,50 @@ x86::reg32 frontend::watb::initStreams(App* app, CPU& cpu, reg32 argEax)
     return result;
 }
 
-void frontend::watbInitStreams(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbInitStreams(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_515740", 0, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx | fe::kRestoreEsi);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::initStreams(app, cpu, cpu.eax); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::initStreams(app, cpu, args.eax); });
 }
 
-/* sub_5157e0, __full_io_exit: every stream closed, the links freed. */
+/* sub_5157e0, __full_io_exit: every stream closed, then the links freed by sub_509350, which the
+ * code jumps to and which hands back what sub_5157f4 left in eax, the streams closed, when there
+ * are none to free.  Here sub_509350 is called, and the thunk pops the return address. */
 x86::reg32 frontend::watb::closeStreams(App* app, CPU& cpu)
 {
     try
     {
-        // eax its result: sub_509350 hands it back as it came when no stream is closed.
-        cpu.eax = guest::direct<0x5157f4, closeStreamsFrom>(app, cpu, 0);
+        const reg32 closed = guest::direct<0x5157f4, closeStreamsFrom>(app, cpu, 0);
+        if (cpu.terminate)
+            return 0;
+        const bool none = guest::at(app, kClosedStreams) == 0;
+        const reg32 freed = guest::direct<0x509350, freeClosedStreams>(app, cpu);
+        return none ? closed : freed;
     }
     catch (const fe::Terminated&)
     {
-        return cpu.eax;
+        return 0;
     }
-    // Jumped to, by address: it returns for this one.
-    app->dynamic_call(0x509350, cpu);
-    return cpu.eax;
 }
 
-void frontend::watbCloseStreams(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbCloseStreams(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    watb::closeStreams(app, cpu);
+    const reg32 result = watb::closeStreams(app, cpu);
+    if (cpu.terminate)
+        return args.eax;
+    args.eax = result;
+    cpu.esp += 4;
+    return args.eax;
 }
 
 /* sub_5157f4: the open streams from the eax'th of __iob on shut down; __iob's first
  * three only if they are not those. */
 x86::reg32 frontend::watb::closeStreamsFrom(App* app, CPU& cpu, reg32 argEax)
 {
-    cpu.eax = argEax;
     Guest guest(app, cpu);
     const fe::Frame locals(guest, cpu, 0x10);
     constexpr reg32 kIobStandardEnd = 0x566fa6;
-    const reg32 first = kIob + cpu.eax * kFileBytes;
+    const reg32 first = kIob + argEax * kFileBytes;
     reg32 closed = 0;
     reg32 link = guest.dword(kOpenStreams);
     while (link != 0)
@@ -3613,7 +3466,7 @@ x86::reg32 frontend::watb::closeStreamsFrom(App* app, CPU& cpu, reg32 argEax)
         }
         if (!skip)
         {
-            guest.call(0x4ee144, args({ file, close }));
+            fe::direct<0x4ee144, watcom::clib::streamShutdown>(guest.app(), guest.cpu(), file, close);
             ++closed;
         }
         link = next;
@@ -3621,10 +3474,10 @@ x86::reg32 frontend::watb::closeStreamsFrom(App* app, CPU& cpu, reg32 argEax)
     return closed;
 }
 
-void frontend::watbCloseStreamsFrom(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbCloseStreamsFrom(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_5157f4", 0, 0);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::closeStreamsFrom(app, cpu, cpu.eax); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::closeStreamsFrom(app, cpu, args.eax); });
 }
 
 /* sub_515900: the command line at [0x5677fc] split into argv: counted, copied, split again. */
@@ -3662,10 +3515,10 @@ x86::reg32 frontend::watb::buildArgv(App* app, CPU& cpu)
     return last;
 }
 
-void frontend::watbBuildArgv(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbBuildArgv(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_515900", 0, 0);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::buildArgv(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::buildArgv(app, cpu); });
 }
 
 /* sub_5159e4: the command line at eax split into words: their starts at edx if it is
@@ -3673,16 +3526,13 @@ void frontend::watbBuildArgv(win32::WinApplication* app, x86::CPU& cpu)
  * quoted or not, with Microsoft's backslashes, or Watcom's where [0xa18218] says. */
 x86::reg32 frontend::watb::splitCommandLine(App* app, CPU& cpu, reg32 argEax, reg32 argEdx, reg32 argEbx)
 {
-    cpu.eax = argEax;
-    cpu.edx = argEdx;
-    cpu.ebx = argEbx;
     Guest guest(app, cpu);
     constexpr reg32 kBackslashStyle = 0xa18218;
-    reg32 text = cpu.eax;
-    const reg32 words = cpu.edx, endPlace = cpu.ebx;
+    reg32 text = argEax;
+    const reg32 words = argEdx, endPlace = argEbx;
     const reg32 style = guest.dword(kBackslashStyle);
     reg32 count = 0;
-    reg32 out = cpu.ebx;
+    reg32 out = argEbx;
     for (;;)
     {
         while (guest.byte(text) == ' ' || guest.byte(text) == '\t')
@@ -3758,22 +3608,20 @@ x86::reg32 frontend::watb::splitCommandLine(App* app, CPU& cpu, reg32 argEax, re
     }
     guest.setDword(endPlace, text);
     guest.setDword(kBackslashStyle, style);
-    guest.leaveEbx(out);
-    guest.leaveEdx(endPlace);
     return count;
 }
 
-void frontend::watbSplitCommandLine(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbSplitCommandLine(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_5159e4", 0, 0, kLeavesEbxEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watb::splitCommandLine(app, cpu, cpu.eax, cpu.edx, cpu.ebx); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watb::splitCommandLine(app, cpu, args.eax, args.edx, args.ebx); });
 }
 
 // ---------------------------------------------------------------------------
 // __LDcvt: a long double's digits, for printf's %e, %f and %g (0x5167b3).  Its parts
-// lean on the frame ebp holds, and are entered at their own addresses too, so it keeps
-// its registers and its frame as they are: esi the CVT, ecx the decimal point, edi what
-// is yet to be written as digits.
+// lean on the frame ebp holds, and are entered at their own addresses too: what its code
+// keeps in registers across them (ebp the frame, esi the CVT, ecx the decimal point, edi
+// what is yet to be written as digits) goes from part to part as a LongDouble.
 // ---------------------------------------------------------------------------
 
 namespace
@@ -3786,12 +3634,6 @@ constexpr reg32 kCvtN1 = 0x18, kCvtNZ1 = 0x1c, kCvtN2 = 0x20, kCvtNZ2 = 0x24, kC
 constexpr reg32 kFrameControl = 0x14, kFrameWanted = 0x18, kFrameBuffer = 0x20;
 constexpr reg32 kFrameCount = 0x24, kFrameWrite = 0x28, kFrameRoundTo = 0x10;
 constexpr reg32 kFrameValue = 0x34, kFrameTemp = 0x4c, kFrameQuotient = 0x58, kFrameDigits = 0x98;
-
-void pushDword(Guest& guest, x86::CPU& cpu, reg32 value)
-{
-    cpu.esp -= 4;
-    guest.setDword(cpu.esp, value);
-}
 
 reg32 popDword(Guest& guest, x86::CPU& cpu)
 {
@@ -3818,21 +3660,25 @@ void hundredMillion(Guest& guest, reg32 address)
     guest.setDword(address, 0);
 }
 
-/* fistp with the rounding towards zero its code sets round it. */
-reg32 truncatedToInteger(x86::CPU& cpu, x86::Float value)
+/* fistp with the rounding towards zero its code sets round it: the integer, or fistp's integer
+ * indefinite for a NaN or a value past it, as x86::FloatEnv::toInteger stores them. */
+reg32 truncatedToInteger(x86::Float value)
 {
-    const x86::reg16 word = cpu.fpu.control.word;
-    cpu.fpu.setControl(x86::reg16(word | 0xc00));
-    const reg32 integer = reg32(cpu.fpu.toInteger<sreg32>(value));
-    cpu.fpu.setControl(word);
-    return integer;
+    const x86::Float rounded = std::trunc(value);
+    const x86::Float lowest = x86::Float(std::numeric_limits<sreg32>::min());
+    if (!(rounded >= lowest && rounded < -lowest))
+    {
+        ++x86::FloatEnv::s_indefinite;
+        return reg32(std::numeric_limits<sreg32>::min());
+    }
+    return reg32(sreg32(rounded));
 }
 
-/* sub_516ab4: two digits of ax at ebx. */
-void writeTwoDigits(Guest& guest, x86::CPU& cpu)
+/* sub_516ab4: the two decimal digits of `value`'s ax at `at`, which moves past them; eax as the
+ * code leaves it. */
+reg32 writeTwoDigits(Guest& guest, reg32 value, reg32& at)
 {
-    cpu.ecx = (cpu.ecx & 0xffffff00) | 10;
-    const std::uint8_t low = std::uint8_t(cpu.eax), high = std::uint8_t(cpu.eax >> 8);
+    const std::uint8_t low = std::uint8_t(value), high = std::uint8_t(value >> 8);
     std::uint8_t tens, ones;
     if (low < 10)
     {
@@ -3841,64 +3687,57 @@ void writeTwoDigits(Guest& guest, x86::CPU& cpu)
     }
     else
     {
-        const std::uint16_t value = std::uint16_t(cpu.eax);
-        tens = std::uint8_t(value / 10);
-        ones = std::uint8_t(value % 10);
+        const std::uint16_t whole = std::uint16_t(value);
+        tens = std::uint8_t(whole / 10);
+        ones = std::uint8_t(whole % 10);
     }
     tens = std::uint8_t(tens + '0');
     ones = std::uint8_t(ones + '0');
-    cpu.eax = (cpu.eax & 0xffff0000) | (reg32(ones) << 8) | tens;
-    guest.setByte(cpu.ebx, tens);
-    guest.setByte(cpu.ebx + 1, ones);
-    cpu.ebx += 2;
+    guest.setByte(at, tens);
+    guest.setByte(at + 1, ones);
+    at += 2;
+    return (value & 0xffff0000) | (reg32(ones) << 8) | tens;
 }
 
 /* sub_516a9d: four. */
-void writeFourDigits(Guest& guest, x86::CPU& cpu)
+reg32 writeFourDigits(Guest& guest, reg32 value, reg32& at)
 {
-    cpu.ecx = 100;
-    const reg32 value = cpu.eax;
-    cpu.eax = value / 100;
-    cpu.edx = value % 100;
-    const reg32 rest = cpu.edx;
-    writeTwoDigits(guest, cpu);
-    cpu.eax = rest;
-    writeTwoDigits(guest, cpu);
+    writeTwoDigits(guest, value / 100, at);
+    return writeTwoDigits(guest, value % 100, at);
 }
 
 /* sub_516a87: eight. */
-void writeEightDigits(Guest& guest, x86::CPU& cpu)
+reg32 writeEightDigits(Guest& guest, reg32 value, reg32& at)
 {
-    const reg32 value = cpu.eax;
-    cpu.eax = value / 10000;
-    writeFourDigits(guest, cpu);
-    cpu.eax = value % 10000;
-    writeFourDigits(guest, cpu);
+    writeFourDigits(guest, value / 10000, at);
+    return writeFourDigits(guest, value % 10000, at);
 }
 
-/* sub_516be2: the control word as it was, and out. */
-void endLongDouble(Guest& guest, x86::CPU& cpu)
+/* What __LDcvt's code keeps in registers across its parts: its frame (ebp), the CVT (esi), where
+ * the decimal point goes (ecx), and the digits yet to be written eight at a time (edi). */
+struct LongDouble
 {
-    const reg32 word = guest.word(cpu.ebp - kFrameControl);
-    cpu.fpu.setControl(x86::reg16(word));
-    cpu.eax = word;
-    cpu.esp = cpu.ebp - 0xc;
-    cpu.edi = popDword(guest, cpu);
-    cpu.esi = popDword(guest, cpu);
-    cpu.ecx = popDword(guest, cpu);
-    cpu.ebp = popDword(guest, cpu);
-    cpu.esp += 4;
+    reg32 frame;
+    reg32 cvt;
+    reg32 point;
+    reg32 pending;
+};
+
+/* sub_516be2's eax: the control word the code saved in its frame. */
+reg32 savedControl(Guest& guest, const LongDouble& state)
+{
+    return guest.word(state.frame - kFrameControl);
 }
 
-/* sub_516ae2: the digits rounded to what is asked, sub_516bf5 or sub_516e13 to lay them out. */
-void roundAndLayOut(Guest& guest, x86::CPU& cpu)
+/* sub_516ae2: the digits rounded to what is asked, sub_516bf5 or sub_516e13 to lay them out; the
+ * end's eax. */
+reg32 roundAndLayOut(Guest& guest, win32::WinApplication* app, x86::CPU& cpu, LongDouble& state)
 {
-    constexpr reg32 kFormatF = 0x516bf5, kFormatE = 0x516e13;
-    const reg32 frame = cpu.ebp;
-    const reg32 cvt = cpu.esi;
+    const reg32 frame = state.frame;
+    const reg32 cvt = state.cvt;
     reg32 available = guest.dword(frame - kFrameCount);
     reg32 digits = frame - kFrameDigits + 1;
-    reg32 point = cpu.ecx + 7;
+    reg32 point = state.point + 7;
     while (guest.byte(digits) == '0')
     {
         --available;
@@ -3969,7 +3808,7 @@ void roundAndLayOut(Guest& guest, x86::CPU& cpu)
         digits = frame - kFrameDigits;
         guest.setDword(cvt + kCvtSign, 0);
     }
-    cpu.edi = keep;
+    state.pending = keep;
     const std::uint8_t flags = guest.byte(cvt + kCvtFlags);
     bool plain = true;
     if ((flags & 2) == 0)
@@ -3984,15 +3823,19 @@ void roundAndLayOut(Guest& guest, x86::CPU& cpu)
         }
     }
     const reg32 buffer = guest.dword(frame - kFrameBuffer);
-    guest.call(plain ? kFormatF : kFormatE, args({ cvt, digits, keep, point }, { buffer }));
-    endLongDouble(guest, cpu);
+    if (plain)
+        fe::direct<0x516bf5, frontend::watb::formatF>(app, cpu, cvt, digits, keep, point, buffer);
+    else
+        fe::direct<0x516e13, frontend::watb::formatE>(app, cpu, cvt, digits, keep, point, buffer);
+    return savedControl(guest, state);
 }
 
-/* sub_5169ef: eight digits at a time while more are wanted and any are left. */
-void writeDigits(Guest& guest, win32::WinApplication* app, x86::CPU& cpu)
+/* sub_5169ef: eight digits at a time while more are wanted and any are left; then the rounding
+ * and the layout, and the end's eax.  The arithmetic at the x87's 64 bits, which __LDcvt sets for
+ * it: a double's own sums and products, as the x87 emulation gave them with that word. */
+reg32 writeDigits(Guest& guest, win32::WinApplication* app, x86::CPU& cpu, LongDouble& state)
 {
-    constexpr reg32 kEightDigits = 0x516a87;
-    const reg32 frame = cpu.ebp;
+    const reg32 frame = state.frame;
     for (;;)
     {
         const reg32 wanted = guest.dword(frame - kFrameWanted);
@@ -4000,276 +3843,283 @@ void writeDigits(Guest& guest, win32::WinApplication* app, x86::CPU& cpu)
             break;
         const reg32 more = wanted - 8;
         guest.setDword(frame - kFrameWanted, more);
-        if (cpu.edi == 0)
+        if (state.pending == 0)
         {
             if ((guest.word(frame - kFrameValue + 8) & 0x7fff) == 0)
                 break;
             const reg32 value = frame - kFrameValue;
-            cpu.edi = truncatedToInteger(cpu, load80(app, value));
+            state.pending = truncatedToInteger(load80(app, value));
             if (positive(more))
             {
                 const reg32 temp = frame - 0x40;
-                store80(app, temp, x86::Float(sreg32(cpu.edi)));
-                store80(app, value, cpu.fpu.sub(load80(app, value), load80(app, temp)));
+                store80(app, temp, x86::Float(sreg32(state.pending)));
+                store80(app, value, load80(app, value) - load80(app, temp));
                 hundredMillion(guest, temp);
-                store80(app, value, cpu.fpu.mul(load80(app, value), load80(app, temp)));
+                store80(app, value, load80(app, value) * load80(app, temp));
             }
         }
         const reg32 count = guest.dword(frame - kFrameCount);
-        cpu.ebx = guest.dword(frame - kFrameWrite);
-        pushDword(guest, cpu, cpu.ecx);
-        pushDword(guest, cpu, count);
-        guest.call(kEightDigits, args({ cpu.edi }));
-        const reg32 kept = popDword(guest, cpu);
-        cpu.ecx = popDword(guest, cpu);
-        guest.setByte(cpu.ebx, 0);
-        guest.setDword(frame - kFrameWrite, cpu.ebx);
-        guest.setDword(frame - kFrameCount, kept + 8);
-        cpu.edi = 0;
+        reg32 write = guest.dword(frame - kFrameWrite);
+        {
+            // The code pushes ecx and the count round sub_516a87: their room kept, nothing written.
+            const fe::Frame pushed(guest, cpu, 8);
+            fe::direct<0x516a87, frontend::watb::eightDigits>(app, cpu, state.pending, write);
+        }
+        write += 8;  // where sub_516a87 leaves ebx: past the eight
+        guest.setByte(write, 0);
+        guest.setDword(frame - kFrameWrite, write);
+        guest.setDword(frame - kFrameCount, count + 8);
+        state.pending = 0;
     }
-    roundAndLayOut(guest, cpu);
+    return roundAndLayOut(guest, app, cpu, state);
 }
 
 }
 
-/* sub_5167b3, __LDcvt: the long double at eax into the CVT at edx, its digits for the
- * layouts in the buffer at ebx. */
+/* sub_5167b3, __LDcvt: the long double at `argEax` into the CVT at `argEdx`, its digits for the
+ * layouts in the buffer at `argEbx`.  Its frame as the code's: ebp pushed (the frame from there),
+ * then ecx, esi and edi -- their room kept, nothing written -- and its locals.  The control word it
+ * saves there and hands back at its end is the port's x87's, 0x7f (x86::FloatEnv::init); the 64 bits
+ * it asks for meanwhile are a double's own arithmetic. */
 x86::reg32 frontend::watb::longDoubleToDigits(App* app, CPU& cpu, reg32 argEax, reg32 argEdx, reg32 argEbx)
 {
-    cpu.eax = argEax;
-    cpu.edx = argEdx;
-    cpu.ebx = argEbx;
     constexpr reg32 kScale = 0x516759;
+    constexpr reg32 kControlWord = 0x7f;
     Guest guest(app, cpu);
-    try
-    {
-        pushDword(guest, cpu, cpu.ebp);
-        cpu.ebp = cpu.esp;
-        pushDword(guest, cpu, cpu.ecx);
-        pushDword(guest, cpu, cpu.esi);
-        pushDword(guest, cpu, cpu.edi);
-        cpu.esp -= 0x8c;
-        const reg32 frame = cpu.ebp;
-        const reg32 from = cpu.eax;
-        cpu.esi = cpu.edx;
-        const reg32 cvt = cpu.esi;
-        guest.setDword(frame - kFrameBuffer, cpu.ebx);
-        const reg32 word = cpu.fpu.control.word;
-        guest.setDword(frame - kFrameControl, word);
-        cpu.fpu.setControl(x86::reg16(word | 0x300));
+    const fe::Frame locals(guest, cpu, 4 + 3 * 4 + 0x8c);
+    LongDouble state{ guest.frame() + 3 * 4 + 0x8c, argEdx, 0, 0 };
+    const reg32 frame = state.frame;
+    const reg32 from = argEax;
+    const reg32 cvt = state.cvt;
+    guest.setDword(frame - kFrameBuffer, argEbx);
+    guest.setDword(frame - kFrameControl, kControlWord);
 
+    guest.setDword(cvt + kCvtSign, 0);
+    const reg32 value = frame - kFrameValue;
+    guest.setWord(value + 8, guest.word(from + 8));
+    guest.setDword(value + 4, guest.dword(from + 4));
+    guest.setDword(value, guest.dword(from));
+    if ((guest.byte(value + 9) & 0x80) != 0)
+        guest.setDword(cvt + kCvtSign, 0xffffffff);
+    guest.setByte(value + 9, guest.byte(value + 9) & 0x7f);
+    guest.setDword(cvt + kCvtNZ1, 0);
+    guest.setDword(cvt + kCvtN2, 0);
+    guest.setDword(cvt + kCvtNZ2, 0);
+    guest.setDword(cvt + kCvtExtra, 0);
+    guest.setDword(cvt + kCvtN1, 0);
+
+    const reg32 kind = fe::direct<0x52448c, frontend::menz::longDoubleKind>(app, cpu, value);
+    const auto writeWord = [&](char a, char b, char c) {
+        const reg32 buffer = guest.dword(frame - kFrameBuffer);
+        guest.setByte(buffer, std::uint8_t(a));
+        guest.setByte(buffer + 1, std::uint8_t(b));
+        guest.setByte(buffer + 2, std::uint8_t(c));
+        guest.setByte(buffer + 3, 0);
+        guest.setDword(cvt + kCvtNZ1, 3);
+        return savedControl(guest, state);
+    };
+    switch (kind)
+    {
+    case 0:
+    case 4:
+        // Zero.
         guest.setDword(cvt + kCvtSign, 0);
-        const reg32 value = frame - kFrameValue;
-        guest.setWord(value + 8, guest.word(from + 8));
-        guest.setDword(value + 4, guest.dword(from + 4));
-        guest.setDword(value, guest.dword(from));
-        if ((guest.byte(value + 9) & 0x80) != 0)
-            guest.setDword(cvt + kCvtSign, 0xffffffff);
-        guest.setByte(value + 9, guest.byte(value + 9) & 0x7f);
-        guest.setDword(cvt + kCvtNZ1, 0);
-        guest.setDword(cvt + kCvtN2, 0);
-        guest.setDword(cvt + kCvtNZ2, 0);
-        guest.setDword(cvt + kCvtExtra, 0);
-        guest.setDword(cvt + kCvtN1, 0);
-        cpu.edi = 0;
-
-        const reg32 kind = fe::direct<0x52448c, frontend::menz::longDoubleKind>(app, cpu, value);
-        const auto writeWord = [&](char a, char b, char c) {
-            const reg32 buffer = guest.dword(frame - kFrameBuffer);
-            guest.setByte(buffer, std::uint8_t(a));
-            guest.setByte(buffer + 1, std::uint8_t(b));
-            guest.setByte(buffer + 2, std::uint8_t(c));
-            guest.setByte(buffer + 3, 0);
-            guest.setDword(cvt + kCvtNZ1, 3);
-            endLongDouble(guest, cpu);
-        };
-        switch (kind)
-        {
-        case 0:
-        case 4:
-            // Zero.
-            guest.setDword(cvt + kCvtSign, 0);
-            cpu.ecx = 0;
-            break;
-        case 2:
-            writeWord('n', 'a', 'n');
-            return cpu.eax;
-        case 3:
-            writeWord('i', 'n', 'f');
-            return cpu.eax;
-        case 1:
-        {
-            // Scaled by powers of ten to about eight digits before the point.
-            const std::uint16_t exponent = guest.word(value + 8);
-            const sreg32 guess = sreg32(reg32(exponent) - 0x3ffe) * 0x7597 / 0x186a0;
-            cpu.ecx = reg32(guess - 4);
-            if (cpu.ecx == 0)
-                break;
-            if (sreg32(cpu.ecx) < 0)
-            {
-                cpu.ecx = reg32(0) - ((reg32(0) - cpu.ecx + 3) & ~reg32(3));
-                guest.call(kScale, args({ value, reg32(0) - cpu.ecx }));
-                break;
-            }
-            const reg32 high = guest.dword(value + 4);
-            if (exponent < 0x4019 || (exponent == 0x4019 && high < 0xbebc2000))
-            {
-                cpu.ecx = 0;
-                break;
-            }
-            const bool below = exponent < 0x4034
-                || (exponent == 0x4034
-                    && (high < 0x8e1bc9bf || (high == 0x8e1bc9bf && guest.dword(value) < 0x4000000)));
-            if (below)
-            {
-                // Under 1e16: the first eight digits by a division, the rest by what is left.
-                const reg32 temp = frame - kFrameTemp, quotient = frame - kFrameQuotient;
-                hundredMillion(guest, temp);
-                store80(app, quotient, cpu.fpu.div(load80(app, value), load80(app, temp)));
-                cpu.edi = truncatedToInteger(cpu, load80(app, quotient));
-                store80(app, quotient, x86::Float(sreg32(cpu.edi)));
-                store80(app, temp, cpu.fpu.mul(load80(app, quotient), load80(app, temp)));
-                store80(app, value, cpu.fpu.sub(load80(app, value), load80(app, temp)));
-                cpu.ecx = 8;
-                break;
-            }
-            cpu.ecx &= ~reg32(3);
-            guest.call(kScale, args({ value, reg32(0) - cpu.ecx }));
-            break;
-        }
-        default:
-            break;
-        }
-
-        reg32 wanted;
-        const std::uint8_t mode = guest.byte(cvt + kCvtFlags);
-        if ((mode & 2) != 0)
-        {
-            wanted = guest.dword(cvt + kCvtDigits) + cpu.ecx + 0xa;
-            const reg32 scale = guest.dword(cvt + kCvtScale);
-            if (positive(scale))
-                wanted += scale;
-        }
-        else
-            wanted = guest.dword(cvt + kCvtDigits) + 7;
-        reg32 most = (guest.byte(cvt + kCvtFlags) & 0x20) != 0 ? 0x14 : 0xf;
-        if ((guest.byte(cvt + kCvtFlags) & 0x40) != 0)
-            most += most;
-        most += 4;
-        if (sreg32(most) < sreg32(wanted))
-            wanted = most;
-        guest.setDword(frame - kFrameWanted, wanted);
-        guest.setByte(frame - kFrameDigits, '0');
-        guest.setByte(frame - kFrameDigits + 1, 0);
-        guest.setDword(frame - kFrameWrite, frame - kFrameDigits + 1);
-        guest.setDword(frame - kFrameCount, 0);
-        writeDigits(guest, app, cpu);
-    }
-    catch (const fe::Terminated&)
+        state.point = 0;
+        break;
+    case 2:
+        return writeWord('n', 'a', 'n');
+    case 3:
+        return writeWord('i', 'n', 'f');
+    case 1:
     {
+        // Scaled by powers of ten to about eight digits before the point.
+        const std::uint16_t exponent = guest.word(value + 8);
+        const sreg32 guess = sreg32(reg32(exponent) - 0x3ffe) * 0x7597 / 0x186a0;
+        state.point = reg32(guess - 4);
+        if (state.point == 0)
+            break;
+        if (sreg32(state.point) < 0)
+        {
+            state.point = reg32(0) - ((reg32(0) - state.point + 3) & ~reg32(3));
+            fe::direct<kScale, watcom::clib::ldScale10x>(app, cpu, value, reg32(0) - state.point);
+            break;
+        }
+        const reg32 high = guest.dword(value + 4);
+        if (exponent < 0x4019 || (exponent == 0x4019 && high < 0xbebc2000))
+        {
+            state.point = 0;
+            break;
+        }
+        const bool below = exponent < 0x4034
+            || (exponent == 0x4034
+                && (high < 0x8e1bc9bf || (high == 0x8e1bc9bf && guest.dword(value) < 0x4000000)));
+        if (below)
+        {
+            // Under 1e16: the first eight digits by a division, the rest by what is left.
+            const reg32 temp = frame - kFrameTemp, quotient = frame - kFrameQuotient;
+            hundredMillion(guest, temp);
+            store80(app, quotient, load80(app, value) / load80(app, temp));
+            state.pending = truncatedToInteger(load80(app, quotient));
+            store80(app, quotient, x86::Float(sreg32(state.pending)));
+            store80(app, temp, load80(app, quotient) * load80(app, temp));
+            store80(app, value, load80(app, value) - load80(app, temp));
+            state.point = 8;
+            break;
+        }
+        state.point &= ~reg32(3);
+        fe::direct<kScale, watcom::clib::ldScale10x>(app, cpu, value, reg32(0) - state.point);
+        break;
     }
-    return cpu.eax;
+    default:
+        // No class sub_52448c gives: the code goes on with ecx as it came, 0 here.
+        break;
+    }
+
+    reg32 wanted;
+    const std::uint8_t mode = guest.byte(cvt + kCvtFlags);
+    if ((mode & 2) != 0)
+    {
+        wanted = guest.dword(cvt + kCvtDigits) + state.point + 0xa;
+        const reg32 scale = guest.dword(cvt + kCvtScale);
+        if (positive(scale))
+            wanted += scale;
+    }
+    else
+        wanted = guest.dword(cvt + kCvtDigits) + 7;
+    reg32 most = (guest.byte(cvt + kCvtFlags) & 0x20) != 0 ? 0x14 : 0xf;
+    if ((guest.byte(cvt + kCvtFlags) & 0x40) != 0)
+        most += most;
+    most += 4;
+    if (sreg32(most) < sreg32(wanted))
+        wanted = most;
+    guest.setDword(frame - kFrameWanted, wanted);
+    guest.setByte(frame - kFrameDigits, '0');
+    guest.setByte(frame - kFrameDigits + 1, 0);
+    guest.setDword(frame - kFrameWrite, frame - kFrameDigits + 1);
+    guest.setDword(frame - kFrameCount, 0);
+    return writeDigits(guest, app, cpu, state);
 }
 
-void frontend::watbLongDoubleToDigits(win32::WinApplication* app, x86::CPU& cpu)
+/* The code keeps ecx, esi, edi and ebp (it pushes them) and the control word (its end loads the
+ * saved one again). */
+x86::reg32 frontend::watbLongDoubleToDigits(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    watb::longDoubleToDigits(app, cpu, cpu.eax, cpu.edx, cpu.ebx);
+    static fe::Site site = makeSite("sub_5167b3", 0, 0, fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi);
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
+        return watb::longDoubleToDigits(app, cpu, args.eax, args.edx, args.ebx);
+    });
 }
 
-/* The parts of it: entered with its frame. */
-void frontend::watbDigitsLoop(win32::WinApplication* app, x86::CPU& cpu)
+/* The parts of it: entered with its frame (ebp) and its registers, each runs on to the end
+ * (sub_516be2, watbEndLongDouble). */
+x86::reg32 frontend::watbDigitsLoop(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     Guest guest(app, cpu);
     try
     {
-        writeDigits(guest, app, cpu);
+        LongDouble state{ args.ebp, args.esi, args.ecx, args.edi };
+        writeDigits(guest, app, cpu, state);
+        frontend::watbEndLongDouble(app, cpu, args);
     }
     catch (const fe::Terminated&)
     {
     }
+    return args.eax;
 }
 
-void frontend::watbAfterEightDigits(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbAfterEightDigits(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     Guest guest(app, cpu);
     try
     {
         const reg32 count = popDword(guest, cpu);
-        cpu.ecx = popDword(guest, cpu);
-        guest.setByte(cpu.ebx, 0);
-        guest.setDword(cpu.ebp - kFrameWrite, cpu.ebx);
-        guest.setDword(cpu.ebp - kFrameCount, count + 8);
-        cpu.edi = 0;
-        writeDigits(guest, app, cpu);
+        args.ecx = popDword(guest, cpu);
+        guest.setByte(args.ebx, 0);
+        guest.setDword(args.ebp - kFrameWrite, args.ebx);
+        guest.setDword(args.ebp - kFrameCount, count + 8);
+        LongDouble state{ args.ebp, args.esi, args.ecx, 0 };
+        writeDigits(guest, app, cpu, state);
+        frontend::watbEndLongDouble(app, cpu, args);
     }
     catch (const fe::Terminated&)
     {
     }
+    return args.eax;
 }
 
-void frontend::watbRoundDigits(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbRoundDigits(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     Guest guest(app, cpu);
     try
     {
-        roundAndLayOut(guest, cpu);
+        LongDouble state{ args.ebp, args.esi, args.ecx, args.edi };
+        roundAndLayOut(guest, app, cpu, state);
+        frontend::watbEndLongDouble(app, cpu, args);
     }
     catch (const fe::Terminated&)
     {
     }
+    return args.eax;
 }
 
-void frontend::watbEndLongDouble(win32::WinApplication* app, x86::CPU& cpu)
+/* sub_516be2: the control word as it was, the registers popped, and out. */
+x86::reg32 frontend::watbEndLongDouble(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     Guest guest(app, cpu);
-    endLongDouble(guest, cpu);
+    const reg32 word = guest.word(args.ebp - kFrameControl);
+    cpu.fenv.setControl(x86::reg16(word));
+    args.eax = word;
+    cpu.esp = args.ebp - 0xc;
+    args.edi = popDword(guest, cpu);
+    args.esi = popDword(guest, cpu);
+    args.ecx = popDword(guest, cpu);
+    args.ebp = popDword(guest, cpu);
+    cpu.esp += 4;
+    return args.eax;
 }
 
-/* sub_516a87, sub_516a9d, sub_516ab4: eax's last eight, four and two decimal digits at
- * ebx, which they move on. */
+/* sub_516a87, sub_516a9d, sub_516ab4: `value`'s last eight, four and two decimal digits at `at`;
+ * eax as the code leaves it.  Their thunks leave ebx past the digits, where the code does. */
 x86::reg32 frontend::watb::eightDigits(App* app, CPU& cpu, reg32 value, reg32 at)
 {
-    cpu.eax = value;
-    cpu.ebx = at;
     Guest guest(app, cpu);
-    writeEightDigits(guest, cpu);
-    return cpu.eax;
+    return writeEightDigits(guest, value, at);
 }
 
-void frontend::watbEightDigits(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbEightDigits(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    watb::eightDigits(app, cpu, cpu.eax, cpu.ebx);
+    args.eax = watb::eightDigits(app, cpu, args.eax, args.ebx);
+    args.ebx += 8;
     cpu.esp += 4;
+    return args.eax;
 }
 
 x86::reg32 frontend::watb::fourDigits(App* app, CPU& cpu, reg32 value, reg32 at)
 {
-    cpu.eax = value;
-    cpu.ebx = at;
     Guest guest(app, cpu);
-    writeFourDigits(guest, cpu);
-    return cpu.eax;
+    return writeFourDigits(guest, value, at);
 }
 
-void frontend::watbFourDigits(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbFourDigits(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    watb::fourDigits(app, cpu, cpu.eax, cpu.ebx);
+    args.eax = watb::fourDigits(app, cpu, args.eax, args.ebx);
+    args.ebx += 4;
     cpu.esp += 4;
+    return args.eax;
 }
 
 x86::reg32 frontend::watb::twoDigits(App* app, CPU& cpu, reg32 value, reg32 at)
 {
-    cpu.eax = value;
-    cpu.ebx = at;
     Guest guest(app, cpu);
-    writeTwoDigits(guest, cpu);
-    return cpu.eax;
+    return writeTwoDigits(guest, value, at);
 }
 
-void frontend::watbTwoDigits(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbTwoDigits(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    watb::twoDigits(app, cpu, cpu.eax, cpu.ebx);
+    args.eax = watb::twoDigits(app, cpu, args.eax, args.ebx);
+    args.ebx += 2;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* sub_516bf5: %f's layout in the buffer on the stack: digits at edx, ebx of them, the
@@ -4277,19 +4127,15 @@ void frontend::watbTwoDigits(win32::WinApplication* app, x86::CPU& cpu)
 x86::reg32 frontend::watb::formatF(App* app, CPU& cpu, reg32 argEax, reg32 argEdx, reg32 argEbx, reg32 argEcx,
                                    reg32 bufferWord)
 {
-    cpu.eax = argEax;
-    cpu.edx = argEdx;
-    cpu.ebx = argEbx;
-    cpu.ecx = argEcx;
     Guest guest(app, cpu);
     const fe::Frame locals(guest, cpu, 0x1c);
-    const reg32 cvt = cpu.eax, digits = cpu.edx;
-    reg32 count = cpu.ebx;
-    reg32 point = cpu.ecx + 1;
+    const reg32 cvt = argEax, digits = argEdx;
+    reg32 count = argEbx;
+    reg32 point = argEcx + 1;
     const reg32 buffer = bufferWord;
     reg32 precision = guest.dword(cvt + kCvtDigits);
     reg32 out = 0;
-    reg32 leftEbx = cvt, leftEcx = 0, leftEax = 0;
+    reg32 leftEax = 0;
     const std::uint8_t flags = guest.byte(cvt + kCvtFlags);
     if ((flags & 4) != 0)
     {
@@ -4332,17 +4178,15 @@ x86::reg32 frontend::watb::formatF(App* app, CPU& cpu, reg32 argEax, reg32 argEd
         guest.setDword(cvt + kCvtNZ1, count);
         out = count;
         guest.setDword(cvt + kCvtN2, point - count);
-        leftEcx = guest.byte(cvt + kCvtFlags);
+        const std::uint8_t now = guest.byte(cvt + kCvtFlags);
         guest.setDword(cvt + kCvtN1, point);
-        if ((leftEcx & 8) == 0 && (positive(precision) || (leftEcx & 0x10) != 0))
+        if ((now & 8) == 0 && (positive(precision) || (now & 0x10) != 0))
         {
-            leftEcx = buffer;
             guest.setByte(buffer + out, '.');
             ++out;
             guest.setDword(cvt + kCvtNZ2, 1);
         }
         guest.setDword(cvt + kCvtExtra, precision);
-        leftEbx = precision;
     }
     else
     {
@@ -4370,29 +4214,27 @@ x86::reg32 frontend::watb::formatF(App* app, CPU& cpu, reg32 argEax, reg32 argEd
         guest.setDword(cvt + kCvtN2, precision - count);
     }
     guest.setByte(buffer + out, 0);
-    guest.leaveEbx(leftEbx);
-    guest.leaveEcx(leftEcx);
-    guest.leaveEdx(buffer + out);
     return leftEax;
 }
 
-void frontend::watbFormatF(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbFormatF(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_516bf5", 4, 0, kLeavesEbxEcxEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) {
-        return watb::formatF(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx, guest::at(app, cpu.esp + 4));
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
+        return watb::formatF(app, cpu, args.eax, args.edx, args.ebx, args.ecx, guest::at(app, cpu.esp + 4));
     });
 }
 
 /* sub_516dfa: the end of sub_516bf5, which sub_516e13 jumps to. */
-void frontend::watbEndFormat(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbEndFormat(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     Guest guest(app, cpu);
-    cpu.esp = cpu.ebp - 8;
-    cpu.edi = popDword(guest, cpu);
-    cpu.esi = popDword(guest, cpu);
-    cpu.ebp = popDword(guest, cpu);
+    cpu.esp = args.ebp - 8;
+    args.edi = popDword(guest, cpu);
+    args.esi = popDword(guest, cpu);
+    args.ebp = popDword(guest, cpu);
     cpu.esp += 4 + 4;
+    return args.eax;
 }
 
 /* sub_516e13: %e's layout: digits, zeros, the point, more, the letter, the exponent's
@@ -4400,26 +4242,20 @@ void frontend::watbEndFormat(win32::WinApplication* app, x86::CPU& cpu)
 x86::reg32 frontend::watb::formatE(App* app, CPU& cpu, reg32 argEax, reg32 argEdx, reg32 argEbx, reg32 argEcx,
                                    reg32 bufferWord)
 {
-    cpu.eax = argEax;
-    cpu.edx = argEdx;
-    cpu.ebx = argEbx;
-    cpu.ecx = argEcx;
     Guest guest(app, cpu);
     const fe::Frame locals(guest, cpu, 0x28);
     constexpr reg32 kMemset = 0x4e0640;
-    const reg32 cvt = cpu.eax;
-    reg32 digits = cpu.edx, count = cpu.ebx, exponent = cpu.ecx;
+    const reg32 cvt = argEax;
+    reg32 digits = argEdx, count = argEbx, exponent = argEcx;
     const reg32 buffer = bufferWord;
     reg32 precision = guest.dword(cvt + kCvtDigits);
     reg32 out = 0;
-    reg32 leftEcx = cpu.ecx;
     const reg32 scale = guest.dword(cvt + kCvtScale);
     if (!positive(scale))
         precision += scale;
     else
     {
         precision = precision - scale + 1;
-        leftEcx = precision;
     }
     if ((guest.byte(cvt + kCvtFlags) & 4) != 0)
     {
@@ -4442,7 +4278,6 @@ x86::reg32 frontend::watb::formatE(App* app, CPU& cpu, reg32 argEax, reg32 argEd
         digits += taken;
         count -= taken;
         out = taken;
-        leftEcx = taken;
         const reg32 scaleNow = guest.dword(cvt + kCvtScale);
         if (sreg32(taken) < sreg32(scaleNow))
         {
@@ -4461,7 +4296,6 @@ x86::reg32 frontend::watb::formatE(App* app, CPU& cpu, reg32 argEax, reg32 argEd
     if (sreg32(scaleNow) < 0)
     {
         const reg32 zeros = reg32(0) - scaleNow;
-        leftEcx = out;
         fe::direct<kMemset, watcom::clib::memset>(guest.app(), guest.cpu(), buffer + out, '0', zeros);
         out += zeros;
     }
@@ -4472,7 +4306,6 @@ x86::reg32 frontend::watb::formatE(App* app, CPU& cpu, reg32 argEax, reg32 argEd
         if (count != 0)
         {
             copyRep(guest, buffer + out, digits, count);
-            leftEcx = 0;
             out += count;
         }
         guest.setDword(cvt + kCvtNZ1, out);
@@ -4480,7 +4313,6 @@ x86::reg32 frontend::watb::formatE(App* app, CPU& cpu, reg32 argEax, reg32 argEd
     }
     if (guest.dword(cvt + 0xc) != 0)
     {
-        leftEcx = buffer;
         guest.setByte(buffer + out, guest.byte(cvt + 0xc));
         ++out;
     }
@@ -4513,7 +4345,6 @@ x86::reg32 frontend::watb::formatE(App* app, CPU& cpu, reg32 argEax, reg32 argEd
         break;
     }
     guest.setDword(cvt + kCvtExpWidth, width);
-    reg32 leftEbx = width;
     const auto digit = [&](reg32 unit) {
         reg32 quotient = 0;
         if (sreg32(exponent) >= sreg32(unit))
@@ -4523,7 +4354,6 @@ x86::reg32 frontend::watb::formatE(App* app, CPU& cpu, reg32 argEax, reg32 argEd
         }
         guest.setByte(buffer + out, std::uint8_t(quotient + '0'));
         ++out;
-        leftEcx = out;
     };
     if (sreg32(width) >= 4)
         digit(1000);
@@ -4532,25 +4362,20 @@ x86::reg32 frontend::watb::formatE(App* app, CPU& cpu, reg32 argEax, reg32 argEd
     if (sreg32(width) >= 2)
     {
         digit(10);
-        leftEbx = out;
-        leftEcx = buffer;
     }
     guest.setByte(buffer + out, std::uint8_t(exponent + '0'));
     ++out;
     const reg32 written = out - guest.dword(cvt + kCvtNZ1);
     guest.setDword(cvt + kCvtNZ2, written);
     guest.setByte(buffer + out, 0);
-    guest.leaveEbx(leftEbx);
-    guest.leaveEcx(leftEcx);
-    guest.leaveEdx(written);
     return buffer + out;
 }
 
-void frontend::watbFormatE(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watbFormatE(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_516e13", 4, 0, kLeavesEbxEcxEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) {
-        return watb::formatE(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx, guest::at(app, cpu.esp + 4));
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
+        return watb::formatE(app, cpu, args.eax, args.edx, args.ebx, args.ecx, guest::at(app, cpu.esp + 4));
     });
 }
 

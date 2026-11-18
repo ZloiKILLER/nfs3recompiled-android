@@ -1,11 +1,20 @@
 #include "native_frontend_loopa.h"
+#include "native_load_saves.h"
+#include "native_load_track.h"
+#include "native_aiplan.h"
+#include "native_track.h"
+#include "native_carstate.h"
 #include "native_watcom.h"
 #include "native_game.h"
 #include "game_settings.h"
 #include "native_controls_input.h"
 #include "native_ea_memory.h"
+#include "native_ea_net.h"
 #include "native_ea_support.h"
+#include "native_ea_formats.h"
+#include "native_ea_threads.h"
 #include "native_frontend.h"
+#include "native_frontend_fx.h"
 #include "native_frontend_eaa.h"
 #include "native_frontend_eab.h"
 #include "native_frontend_inpa.h"
@@ -14,6 +23,7 @@
 #include "native_frontend_menua.h"
 #include "native_frontend_menub.h"
 #include "native_frontend_menuc.h"
+#include "native_frontend_menz.h"
 #include "native_frontend_neta.h"
 #include "native_frontend_pause.h"
 #include "native_frontend_rendd.h"
@@ -24,11 +34,16 @@
 #include "native_frontend_wata.h"
 #include "native_frontend_wina.h"
 #include "native_graphics.h"
+#include "port_sound_calls.h"
 #include "native_load_cardb.h"
 #include "port_hud.h"
+#include "port_text.h"
+#include "native_vertices.h"
 #include "port_snd_stream_calls.h"
 #include "port_sound_music.h"
 #include "port_sound_racesetup.h"
+#include "native_render.h"
+#include "port_timer.h"
 #include <nfs3hp.h>
 #include <fpu.h>
 #include <cstdint>
@@ -63,7 +78,7 @@
  *
  * Plan step 5: each function a typed core in frontend::loopa (native_frontend_loopa.h), in a
  * frame of its own where the game's function has one and calls anything (fe::Frame: what it calls
- * runs at the stack addresses it did), and an adapter under the game's name for the calls by
+ * runs at the stack addresses it did), and a thunk under the game's name for the calls by
  * address.  A core of this file calls another, and native_frontend_loopb.cpp's, as C++
  * (guest::direct), and the typed cores of other files too (fe::direct); the rest of the game still
  * by address.  Before such a call the registers the call by address would load and leave are set
@@ -77,8 +92,8 @@
 namespace nfs3hp
 {
 
-/* The port's own, by the patches of tools/apply_race_state.py and
- * tools/apply_loading_screen.py: the mark of a race, the end of the 4:3 loading screen
+/* The port's own, by the patches of the port's race state change and
+ * the port's loading screen change: the mark of a race, the end of the 4:3 loading screen
  * (nfs3hp_main.cpp). */
 void raceRunning(bool running);
 void loadingScreenFit(win32::WinApplication* app, x86::CPU& cpu, bool on);
@@ -118,13 +133,12 @@ constexpr reg32 kSessionMenus = 0xb, kSessionRestart = 0xa, kSessionNext = 0xc;
 
 // A session's calls.
 constexpr reg32 kTakeDownRace = 0x4a35d0, kCloseNetwork = 0x4a65e0;
-constexpr reg32 kLoadConfig = 0x472980, kRaceMusicStart = 0x4107c0;
+constexpr reg32 kRaceMusicStart = 0x4107c0;
 
 // A load's calls.
 constexpr reg32 kScreenMode = 0x4bef50, kViewport = 0x4beb80;
-constexpr reg32 kLoadingScreen = 0x494fa0;
 constexpr reg32 kFlushKeys = 0x4f0240;
-constexpr reg32 kLoadWeather = 0x4dcd20, kInitCameras = 0x422cf0;
+constexpr reg32 kInitCameras = 0x422cf0;
 
 // The loading bar's steps, floats' bits, on its way to 100.
 constexpr reg32 kProgress5 = 0x40a00000, kProgress10 = 0x41200000, kProgress35 = 0x420c0000;
@@ -154,7 +168,7 @@ constexpr reg32 kPoseRotation = 0xa;
 constexpr reg32 kGhostLoaded = 0x55d000;       // 1: a ghost's poses are there to read
 constexpr reg32 kKeptDwords = 0x5db;           // the settings a loaded ghost's leave as they were
 
-constexpr reg32 kFillZero = 0x4e070c, kSaveFile = 0x4eeae0;
+constexpr reg32 kFillZero = 0x4e070c;
 
 // A car's pose.
 constexpr reg32 kCarWord = 6, kCarSlice = 0x1a;  // dwords whose upper half is the word
@@ -267,7 +281,8 @@ reg32 clipAndDraw(Guest& guest, reg32 frame)
 {
     for (reg32 i = 0; i < 4; ++i)
         guest.setByte(frame + i * kVertexBytes + kVertexCode, clipCode(guest, frame + i * kVertexBytes));
-    return guest.call(0x4c12e0, args({ frame, frame + kVertexBytes, frame + 2 * kVertexBytes, frame + 3 * kVertexBytes }));
+    return fe::direct<0x4c12e0, vertices::quadClippedAt>(guest.app(), guest.cpu(), guest.cpu().esp - 4, frame, frame + kVertexBytes,
+                                                       frame + 2 * kVertexBytes, frame + 3 * kVertexBytes);
 }
 
 constexpr GuestString kInitStrings[] = {
@@ -275,7 +290,7 @@ constexpr GuestString kInitStrings[] = {
     { 0x53fe1c, "Out of memory! %d" },
 };
 
-/* A generated function's stack arguments, before its frame. */
+/* A game function's stack arguments, before its frame. */
 reg32 stackArguments(const x86::CPU& cpu)
 {
     return cpu.esp + 4;
@@ -311,14 +326,10 @@ x86::reg32 frontend::loopa::blend(App* app, CPU& cpu, reg32 rotationFrom, reg32 
 
     guest.setDword(positionOut, part(sreg32(guest.dword(positionFrom)), sreg32(guest.dword(positionTo))));
     guest.setDword(positionOut + 4, part(sreg32(guest.dword(positionFrom + 4)), sreg32(guest.dword(positionTo + 4))));
-    // The last, for what it leaves: ecx the sum, edx the product's high half shifted, ebx the fraction.
     const reg32 first = fixedProduct(sreg32(guest.dword(positionFrom + 8)), from);
     reg32 shiftedHigh;
     const reg32 sum = first + fixedProduct(sreg32(guest.dword(positionTo + 8)), to, shiftedHigh);
     guest.setDword(positionOut + 8, sum);
-    guest.leaveEbx(fraction);
-    guest.leaveEcx(sum);
-    guest.leaveEdx(shiftedHigh);
     return positionOut;
 }
 
@@ -429,8 +440,6 @@ x86::reg32 frontend::loopa::poseSetRotation(App* app, CPU& cpu, reg32 pose, reg3
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 8);
-    // edx as the call by address loads it, which sub_4b6e80 keeps: the function leaves it.
-    guest.leaveEdx(pose + kPoseRotation);
     return guest::direct<0x4b6e80, rotationOfMatrix>(app, cpu, matrix, pose + kPoseRotation);
 }
 
@@ -488,7 +497,6 @@ x86::reg32 frontend::loopa::posePosition(App* app, CPU& cpu, reg32 pose, reg32 o
     guest.setDword(out, x);
     guest.setDword(out + 4, y);
     guest.setDword(out + 8, z);
-    guest.setEsi(guest.frame() + 12);
     return out;
 }
 
@@ -505,8 +513,6 @@ x86::reg32 frontend::loopa::poseBetween(App* app, CPU& cpu, reg32 from, reg32 to
     // What sub_4b6a30 leaves in ebx and ecx its only caller (sub_477d90, as C++) does not read.
     guest::direct<0x4b6a30, blend>(app, cpu, from + kPoseRotation, to + kPoseRotation, positionFrom, positionTo,
                                    fraction, rotation, positionOut);
-    // edx as the call by address loads it, which sub_4b6ca0 keeps: the function leaves it.
-    guest.leaveEdx(matrixOut);
     return guest::direct<0x4b6ca0, matrixOfRotation>(app, cpu, rotation, matrixOut);
 }
 
@@ -536,8 +542,8 @@ x86::reg32 frontend::loopa::recordingStart(App* app, CPU& cpu)
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 20);
     if (gameSettings(guest).replayMode != 0)
-        return guest.eax();
-    const reg32 result = guest.call(kFillZero, args({ kRecording, kGhostBytes }));
+        return 0;
+    const reg32 result = fe::direct<kFillZero, ea::clearBytes>(guest.app(), guest.cpu(), kRecording, kGhostBytes);
     copyDwords(guest, kRecording, SETTINGS_ADDRESS(fileSize), kSettingsDwords);
     return result;
 }
@@ -584,14 +590,11 @@ x86::reg32 frontend::loopa::playbackPose(App* app, CPU& cpu, reg32 positionOut, 
     const reg32 index = poseIndex(guest.dword(kTick));
     if (guest.dword(kGhostLoaded) != 1)
     {
-        guest.leaveEdx(index);
         return 0;
     }
     const reg32 from = guest::direct<0x477a10, loadedAt>(app, cpu, index);
     const reg32 to = guest::direct<0x477a10, loadedAt>(app, cpu, index + 1);
     const reg32 fraction = (guest.dword(kTick) & 7) << 13;
-    // edx as the call by address leaves it (sub_477990 loads the matrix's place there last): the function leaves it.
-    guest.leaveEdx(matrixOut);
     guest::direct<0x477990, poseBetween>(app, cpu, from, to, fraction, positionOut, matrixOut);
     return 1;
 }
@@ -610,7 +613,7 @@ x86::reg32 frontend::loopa::saveGhost(App* app, CPU& cpu, reg32 name)
     const reg32 kind = gameSettings(guest).raceType;
     if (kind == 1 || kind == 2)
         return 0;
-    guest.call(kSaveFile, args({ name, kRecording, ticks * kPoseBytes + kGhostHeaderBytes }));
+    fe::direct<0x4eeae0, load::blockSaved>(app, cpu, name, kRecording, ticks * kPoseBytes + kGhostHeaderBytes);
     return 0;
 }
 
@@ -695,7 +698,7 @@ x86::reg32 frontend::loopa::panelDraw(App* app, CPU& cpu)
     constexpr reg32 kBody = 0x3f10063f, kDark = 0x20000000, kLight = 0x20ffffff, kBar = 0xafffffff;
     constexpr reg32 kBarTop = 0x3f440000, kBarBottom = 0x3f630000;
     const reg32 ebp = guest.frame() + 0x18;
-    guest.call(kViewport, args({ ebp - 0x18, ebp - 0x14, ebp - 0x10, ebp - 0xc }));
+    fe::direct<kViewport, port::text::viewportOf>(app, cpu, ebp - 0x18, ebp - 0x14, ebp - 0x10, ebp - 0xc);
     const reg32 viewX = guest.dword(ebp - 0x18), viewY = guest.dword(ebp - 0x14);
     const reg32 viewWidth = guest.dword(ebp - 0x10), viewHeight = guest.dword(ebp - 0xc);
     const auto divided = [](reg32 value, sreg32 by) { return reg32(sreg32(value) / by); };
@@ -761,23 +764,19 @@ x86::reg32 frontend::loopa::raceLoad(App* app, CPU& cpu)
     const reg32 width = fe::direct<0x4482f0, frontend::menua::chosenModeWidth>(app, cpu);
     guest.setDword(kChosenWidth, width);
     // The width in eax, where sub_4482f0 leaves it for the game's code.
-    guest.call(kScreenMode, args({ width }));
+    fe::direct<0x4bef50, render::screenModeSet>(app, cpu, width);
     guest::direct<0x4be5e0, loopb::viewsLayout>(
         app, cpu, (std::uint8_t(gameSettings(guest).entries[0].kind) & 8) != 0 ? reg32(1) : reg32(0));
-    guest.call(kViewport, args({ ebp - 8, ebp - 4, ebp - 0x10, ebp - 0xc }));
-    // ebx and ecx as the call by address loads them: sub_4c62a0 below reads ebx as it is left.
-    guest.leaveEbx(guest.dword(ebp - 0x10));
-    guest.leaveEcx(guest.dword(ebp - 0xc));
+    reg32 eax = fe::direct<kViewport, port::text::viewportOf>(app, cpu, ebp - 8, ebp - 4, ebp - 0x10, ebp - 0xc);
     fe::direct<0x4352d0, controls::boundPointer>(app, cpu, 0, 0, guest.dword(ebp - 0x10), guest.dword(ebp - 0xc));
     // The HUD's loading text and scales as C++, eax as the calls by address leave it for the next.
-    cpu.eax = reg32(*fe::direct<0x484040, port::hud::loadingTextOf>(app, cpu, cpu.esp - 4, cpu.eax));
-    cpu.eax = reg32(*fe::direct<0x484b70, port::hud::screenScalesOf>(app, cpu, cpu.esp - 4));
-    guest.call(kLoadingScreen);
-    cpu.eax = reg32(*fe::direct<0x484040, port::hud::loadingTextOf>(app, cpu, cpu.esp - 4, cpu.eax));
+    eax = reg32(*fe::direct<0x484040, port::hud::loadingTextOf>(app, cpu, cpu.esp - 4, eax));
+    eax = reg32(*fe::direct<0x484b70, port::hud::screenScalesOf>(app, cpu, cpu.esp - 4));
+    eax = *fe::direct<0x494fa0, graphics::loadingScreenAnswer>(app, cpu, eax);
+    eax = reg32(*fe::direct<0x484040, port::hud::loadingTextOf>(app, cpu, cpu.esp - 4, eax));
     guest::direct<0x477a50, recordingStart>(app, cpu);
-    // By address: sub_4f0240 reads the eax sub_495230 leaves.
-    guest.call(0x495230, args({}, { kProgress5 }));
-    guest.call(kFlushKeys);
+    progress(kProgress5);
+    fe::direct<kFlushKeys, ea::menuKeysFlushed>(app, cpu);
     fe::direct<0x477f60, frontend::neta::raceLoadStep>(app, cpu);
     if (stopped())
     {
@@ -796,14 +795,14 @@ x86::reg32 frontend::loopa::raceLoad(App* app, CPU& cpu)
     if (fe::direct<0x4dbbf0, frontend::sime::loadTrackPieces>(app, cpu, gameSettings(guest).track) != 0)
         return 1;
     progress(kProgress70);
-    guest.call(kLoadWeather);
+    fe::direct<0x4dcd20, load::weatherLoaded>(app, cpu);
     if (stopped())
         return 1;
     progress(kProgress75);
     if (fe::direct<0x4283d0, frontend::loada::raceCarSteps>(app, cpu) != 0)
         return 1;
     progress(kProgress90);
-    guest.call(kInitCameras);
+    fe::direct<kInitCameras, carstate::camerasSetUp>(guest.app(), guest.cpu());
     progress(kProgress93);
     fe::direct<0x4bc830, frontend::loada::raceSteps>(app, cpu);
     if (stopped())
@@ -828,13 +827,7 @@ x86::reg32 frontend::loopa::raceSession(App* app, CPU& cpu, reg32 mode, reg32 re
     const reg32 savedEnd = saved + kSettingsDwords * 4;
 
     copyDwords(guest, saved, SETTINGS_ADDRESS(fileSize), kSettingsDwords);
-    cpu.ebx = mode;
-    cpu.ecx = 0;
-    cpu.esi = SETTINGS_ADDRESS(fileSize) + kSettingsDwords * 4;
-    cpu.edi = savedEnd;
     guest.setDword(kRaceAbort, 0);
-    // The game's code hands it 0 in edx too, which it does not read; the 0 stays there.
-    guest.leaveEdx(0);
     fe::direct<0x4e0dee, ea::randomSeeded>(app, cpu, gameSettings(guest).raceSeed);
     guest.setDword(kRaceToggle, guest.dword(kRaceToggle) == 0 ? 1 : 0);
     if (gameSettings(guest).replayMode != 2 && guest.dword(kGhostLoaded) != 1)
@@ -844,42 +837,33 @@ x86::reg32 frontend::loopa::raceSession(App* app, CPU& cpu, reg32 mode, reg32 re
     guest.setDword(kRaceAbort, stopped);
     if (stopped != 0)
     {
-        cpu.ecx = kSettingsDwords;
-        cpu.esi = saved;
-        cpu.edi = SETTINGS_ADDRESS(fileSize);
-        guest.call(kTakeDownRace, args({ 1 }));
+        fe::direct<0x4a35d0, graphics::raceTakenDown>(app, cpu, 1);
         copyDwords(guest, SETTINGS_ADDRESS(fileSize), saved, kSettingsDwords);
-        cpu.ecx = 0;
-        cpu.esi = savedEnd;
-        cpu.edi = SETTINGS_ADDRESS(fileSize) + kSettingsDwords * 4;
         if (sreg32(gameSettings(guest).playMode) > 1 && guest.dword(kNetworkHost) != 0)
         {
-            guest.call(kCloseNetwork);
-            guest.leaveEdx(1);
+            fe::direct<kCloseNetwork, ea::networkClosed>(app, cpu);
             guest.setWord(kNetworkClosed, 1);
             return kSessionMenus;
         }
         if (replay != 0)
-            guest.call(kLoadConfig);
+            fe::direct<0x472980, load::configLoaded>(app, cpu);
         return mode != 0 ? kSessionNext : kSessionMenus;
     }
 
     guest.setDword(kRaceEnd, mode == 1 ? 0 : 2);
     while (guest.dword(kRaceLooping) != 0)
     {
-        cpu.edi = 0;
         guest.setDword(kRaceLooping, 0);
         guest::direct<0x4a33b0, raceRestart>(app, cpu);
         const reg32 music = gameSettings(guest).raceMusicVolume;
         if (music != 0)
         {
             const reg32 byMode = sreg32(gameSettings(guest).musicMode) > 2 ? 1 : 0;
-            guest.call(kRaceMusicStart, args({ gameSettings(guest).track, music, byMode }));
+            fx::callAt(guest, kRaceMusicStart, args({ gameSettings(guest).track, music, byMode }));
             guest.setByte(kMusicOn, 1);
         }
         else
         {
-            guest.leaveEdx(guest.edx() & 0xffffff00);
             guest.setByte(kMusicOn, 0);
         }
         fe::direct<0x4e7630, port::stream::runDueTasks>(app, cpu, cpu.esp - 4, 0);
@@ -890,16 +874,15 @@ x86::reg32 frontend::loopa::raceSession(App* app, CPU& cpu, reg32 mode, reg32 re
     if (guest.dword(kRaceEnd) != 1 && replay == 0 && sreg32(gameSettings(guest).playMode) > 1
         && (guest.word(kNetworkSpoken) != 0 || guest.dword(kNetworkHost) == 0))
         guest.setDword(kRaceEnd, 2);
-    cpu.eax = reg32(*fe::direct<0x412b50, port::raceSoundEndOf>(app, cpu, cpu.esp - 4));
-    fe::direct<0x4109d0, port::musicStopped>(app, cpu, cpu.esp - 4, cpu.eax);
-    guest.call(kTakeDownRace, args({ guest.dword(kRaceEnd) != 1 ? reg32(1) : reg32(0) }));
-    fe::direct<0x410aa0, port::musicStreamEndOf>(app, cpu, cpu.esp - 4, cpu.eax, cpu.ebx, cpu.ecx);
-    cpu.ecx = replay;
-    cpu.eax = reg32(*fe::direct<0x410370, port::musicStreamOf>(app, cpu, cpu.esp - 4, 0x12cu, replay));
+    const reg32 soundEnd = reg32(*fe::direct<0x412b50, port::raceSoundEndOf>(app, cpu, cpu.esp - 4));
+    fe::direct<0x4109d0, port::musicStopped>(app, cpu, cpu.esp - 4, soundEnd);
+    const reg32 takenDown = *fe::direct<0x4a35d0, graphics::raceTakenDown>(app, cpu, guest.dword(kRaceEnd) != 1 ? reg32(1) : reg32(0));
+    fe::direct<0x410aa0, port::musicStreamEndOf>(app, cpu, cpu.esp - 4, takenDown, 0, 0);
+    fe::direct<0x410370, port::musicStreamOf>(app, cpu, cpu.esp - 4, 0x12cu, replay);
     if (replay == 0 && guest.dword(kRaceEnd) == 0)
         fe::direct<0x455410, frontend::menub::resultsBuild>(app, cpu);
     if (replay != 0)
-        guest.call(kLoadConfig);
+        fe::direct<0x472980, load::configLoaded>(app, cpu);
     const reg32 end = guest.dword(kRaceEnd);
     return end == 0 ? kSessionNext : end == 1 ? kSessionRestart : kSessionMenus;
 }
@@ -911,7 +894,7 @@ x86::reg32 frontend::loopa::raceSession(App* app, CPU& cpu, reg32 mode, reg32 re
 /* sub_4b6020: the game started: its screen's first mode, the driver chosen and started, the
  * heap, the timer, the keys, the cars' list and the config, sound and music, the network's
  * reset and thread, the tables.  The x87 last, its word asking for what the race has.  The
- * heap's budget is the port's (tools/apply_heap_budget.py). */
+ * heap's budget is the port's (the port's heap budget change). */
 x86::reg32 frontend::loopa::gameInit(App* app, CPU& cpu)
 {
     Guest guest(app, cpu);
@@ -922,23 +905,17 @@ x86::reg32 frontend::loopa::gameInit(App* app, CPU& cpu)
     constexpr reg32 kHeapBudget = 64u * 1024u * 1024u;
     constexpr reg32 kControlWord = 0x79f3ec, kControlWordKept = 0x79f3f4;
 
-    cpu.edx = 0x280;
-    cpu.ecx = 0x1e0;
-    cpu.ebx = 0x10;
-    cpu.esi = 1;
     guest.setDword(0x564384, 0x280);
     guest.setDword(0x564388, 0x1e0);
     guest.setDword(0x56438c, 0x10);
     guest.setDword(0x564390, 1);
-    // By address: sub_4f91d0 leaves edi changed, which sub_4b59c0 below reads.
-    guest.call(0x4f91d0, args({ kWindowName }));
+    fe::direct<0x4f91d0, frontend::menz::singleInstanceCheck>(app, cpu, kWindowName);
     guest.setDword(kChosenWidth, 1);
     guest.setDword(0x55fec8, 1);
     guest.setDword(0x55fec0, 1);
     fe::direct<0x4b5720, frontend::rendd::chooseDriver>(app, cpu, kDriverType);
 
     const reg32 driver = guest.dword(kDriverType);
-    cpu.ecx = (cpu.ecx & 0xffffff00) | (driver & 0xff);
     guest.setDword(kDriverBit, reg32(1) << ((driver & 0xff) % 32));
     // The game's code hands it 0 in edx too, which it does not take.
     fe::direct<0x4b5f10, frontend::wina::checkMemory>(app, cpu, guest.dword(kLanguage));
@@ -949,63 +926,52 @@ x86::reg32 frontend::loopa::gameInit(App* app, CPU& cpu)
         fe::direct<0x401010, ea::error>(app, cpu, kOutOfMemory, guest::Words{ heap });
 
     fe::direct<0x4b5860, frontend::wina::checkLibrary>(app, cpu, guest.dword(kDriverType), guest.dword(kLanguage));
-    guest.call(0x4b59c0, args({ guest.dword(kDriverType), guest.dword(kLanguage) }));
+    fe::direct<0x4b59c0, render::driverStarted>(app, cpu, guest.dword(kDriverType), guest.dword(kLanguage));
     fe::direct<0x4f9360, frontend::wina::videoClose>(app, cpu);
-    cpu.ecx = guest.dword(kDriverType);
-    if (cpu.ecx != 1)
-        guest.call(0x4b5ea0, args({ cpu.ecx, guest.dword(kLanguage) }));
-    guest.call(kScreenMode, args({ guest.dword(0x55fec8) }));
-    // The game's code hands it 0x5a in edx too, which it does not read; sub_4bed50 below reads it there.
-    guest.leaveEdx(0x5a);
+    const reg32 driverType = guest.dword(kDriverType);
+    if (driverType != 1)
+        fe::direct<0x4b5ea0, graphics::textureMemoryWarned>(app, cpu, driverType, guest.dword(kLanguage));
+    fe::direct<0x4bef50, render::screenModeSet>(app, cpu, guest.dword(0x55fec8));
     guest.setDword(kChosenWidth, *fe::direct<0x4bee80, graphics::screenModeFor>(app, cpu, guest.dword(0x55fecc)));
-    cpu.ebx = 0;
     guest::direct<0x4be5e0, loopb::viewsLayout>(app, cpu, 0);
-    // Its angle (0x5a) and last (0) where the code above left them in edx and ebx.  What sub_4bed50
-    // leaves in ebx, ecx and edx nothing below reads: ebx is set again, sub_4cc6d0 changes ecx and edx.
     guest::direct<0x4bed50, loopb::projectionOnly>(app, cpu, 0x7cdb68, 0x5a, 0);
-    // eax as the call by address leaves it: sub_4cc6d0 reads it.
-    cpu.eax = guest::direct<0x4bed70, loopb::useClip>(app, cpu, 0x7cdb68);
+    guest::direct<0x4bed70, loopb::useClip>(app, cpu, 0x7cdb68);
 
-    cpu.esi = 0;
-    cpu.ebx = 0x3f800000;
     guest.setDword(0x560094, 0x3f800000);
     guest.setDword(0x560098, 0);
     fe::direct<0x4cc6d0, frontend::wina::handlerSet>(app, cpu, kPowerMessage, kPowerHandler);
     guest.setDword(0x564810, 0);
-    guest.call(0x48eff0, args({ 0x80 }));
+    fe::direct<0x48eff0, port::timerStarted>(app, cpu, 0x80);
     guest.setDword(0x5643d8, 0x80);
-    cpu.ebx = 0;
     fe::direct<0x4cdc90, frontend::wina::hookOn>(app, cpu, 1, 0);
-    // By address: sub_4b5e50 below reads the ebx sub_4f0da0 leaves.
-    guest.call(0x4f0da0, args({ 0x14, 0x2000 }));
-    guest.call(0x4d5cc0, args({ 1, 1 }));
-    guest.call(0x434f20);
+    fe::direct<0x4f0da0, frontend::wata::asyncInit>(app, cpu, 0x14, 0);
+    fe::direct<0x4d5cc0, graphics::drawingBegun>(app, cpu, 1, 1);
+    fe::direct<0x434f20, controls::startInputCore>(app, cpu);
     if ((guest.byte(0x55eb2e) & 0x20) != 0)
         fe::direct<0x472fc0, frontend::menuc::titleWait>(app, cpu);
     fe::direct<0x43bcf0, frontend::sime::removeNumberedFolders>(app, cpu);
-    // By address: the second sub_4b5e50 below reads the ebx the first leaves.
     if (*fe::direct<0x439d90, load::loadCars>(app, cpu) != 0)
-        guest.call(0x4b5e50, args({ guest.dword(kLanguage) }));
-    if (guest.call(0x438bd0) == 0)
         fe::direct<0x4b5e50, frontend::wina::fatalMessage>(app, cpu, guest.dword(kLanguage));
-    guest.call(kLoadConfig);
-    guest.call(0x40fb10);
-    fe::direct<0x410330, port::musicStreamMade>(app, cpu, cpu.esp - 4, cpu.eax, cpu.ecx);
-    cpu.ecx = 0xffffffff;
-    cpu.ebx = 1;
-    guest.call(0x4a6390, args({ 1 }));
-    guest.call(0x4df7a0, args({ 0x42dc20, 0 }, { 0x7a3aac }));
+    if (fe::direct<0x438bd0, load::carsListed>(app, cpu) == 0)
+        fe::direct<0x4b5e50, frontend::wina::fatalMessage>(app, cpu, guest.dword(kLanguage));
+    fe::direct<0x472980, load::configLoaded>(app, cpu);
+    fe::direct<0x40fb10, aiplan::bringUpSound>(app, cpu, 0);
+    // eax as the sound's bring-up left it; musicStreamMade gives it back only with the music off, and
+    // nothing here reads that.
+    const reg32 started = 0;
+    fe::direct<0x410330, port::musicStreamMade>(app, cpu, cpu.esp - 4, started, 0);
+    fe::direct<0x4a6390, ea::networkReset>(app, cpu, 1);
+    fe::direct<0x4df7a0, ea::threadStarted>(app, cpu, 0x42dc20u, 0u, 1u, 0x7a3aacu);
     fe::direct<0x496310, frontend::sime::makeRootTable>(app, cpu);
     guest::direct<0x497430, fillRootBytes>(app, cpu);
     fe::direct<0x4bf110, frontend::rendd::fillReciprocals>(app, cpu);
 
-    guest.fpu().init();
-    guest.setWord(kControlWord, guest.fpu().control.word);
+    // fninit's control word, as fnstcw stores it (single precision, 0x7f); fldcw changes nothing here.
+    guest.setWord(kControlWord, 0x7f);
     const reg32 word = guest.dword(kControlWord);
     guest.setDword(kControlWordKept, word);
     const reg32 single = word & 0xfffff0ff;
     guest.setDword(kControlWord, single);
-    guest.fpu().setControl(guest.word(kControlWord));
     return single;
 }
 
@@ -1053,9 +1019,6 @@ x86::reg32 frontend::loopa::barScale(App* app, CPU& cpu, reg32 corner0, reg32 co
     const reg32 ebp = guest.frame() + 0x24;
     // ebx and ecx as the call by address loads them and edx as it leaves it (sub_4beb20 its last place there):
     // the function leaves them.
-    guest.leaveEbx(ebp - 0x18);
-    guest.leaveEcx(ebp - 0x14);
-    guest.leaveEdx(ebp - 0x10);
     fe::direct<0x4beb20, frontend::pause::readRect>(app, cpu, 0x7cdac0, ebp - 0x1c, ebp - 0x18, ebp - 0x14, ebp - 0x10);
 
     const Float scaleX = fp::mul(Float(sreg32(guest.dword(ebp - 0x14))), Float(guest.floatAt(0x53be28)));
@@ -1095,7 +1058,7 @@ x86::reg32 frontend::loopa::itemFrame(App* app, CPU& cpu, reg32 item, reg32 colo
     const fe::Frame frame(guest, cpu, 12);
     const reg32 height = guest.dword(item + 0x64), width = guest.dword(item + 0x60);
     const reg32 y = reg32(upperWord(guest, item + 6)), x = reg32(upperWord(guest, item + 4));
-    return guest.call(0x459350, args({ x, y, width, height }, { colour }));
+    return *fe::direct<0x459350, graphics::flatRectangle>(app, cpu, x, y, width, height, colour);
 }
 
 /* sub_475b10: the 3D font at 0x679010 let go. */
@@ -1106,7 +1069,7 @@ x86::reg32 frontend::loopa::freeLoadedBlock(App* app, CPU& cpu)
     constexpr reg32 kBlock = 0x679010;
     const reg32 block = guest.dword(kBlock);
     if (block == 0)
-        return guest.eax();
+        return 0;
     const reg32 result = *fe::direct<0x4e1890, ea::purgeBlock>(app, cpu, block);
     guest.setDword(kBlock, 0);
     return result;
@@ -1117,9 +1080,7 @@ x86::reg32 frontend::loopa::gameStart(App* app, CPU& cpu)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 4);
-    // The edi sub_4b6020 leaves (sub_4f91d0's) the function's caller (sub_4a39f0) does not read; its eax
-    // sub_4bc980 hands on, there as the call by address leaves it.
-    cpu.eax = guest::direct<0x4b6020, gameInit>(app, cpu);
+    guest::direct<0x4b6020, gameInit>(app, cpu);
     return guest::direct<0x4bc980, loopb::drawStart>(app, cpu);
 }
 
@@ -1129,7 +1090,7 @@ x86::reg32 frontend::loopa::gameEnd(App* app, CPU& cpu)
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 4);
     guest::direct<0x4bc990, loopb::drawEnd>(app, cpu);
-    return guest.call(0x4b6250);
+    return *fe::direct<0x4b6250, graphics::gameEnded>(app, cpu);
 }
 
 /* sub_4a33b0: what a race's loop does each time it goes round. */
@@ -1139,242 +1100,242 @@ x86::reg32 frontend::loopa::raceRestart(App* app, CPU& cpu)
     const fe::Frame frame(guest, cpu, 4);
     guest::direct<0x4bcb90, loopb::replayStart>(app, cpu);
     fe::direct<0x4c4740, frontend::simd::raceRestart>(app, cpu);
-    guest.call(0x41de80);
-    guest.call(kInitCameras);
-    return guest.call(0x411680);
+    fe::direct<0x41de80, track::startTrackViews>(guest.app(), guest.cpu());
+    fe::direct<kInitCameras, carstate::camerasSetUp>(guest.app(), guest.cpu());
+    return reg32(*fe::direct<0x411680, port::sourcesResetOf>(app, cpu));
 }
 
 /* sub_4a6f70: nothing, called as the game ends. */
-x86::reg32 frontend::loopa::nothingToEnd(App*, CPU& cpu)
+x86::reg32 frontend::loopa::nothingToEnd(App*, CPU&)
 {
-    return cpu.eax;
+    return 0;
 }
 
-/* The adapters, under the game's names. */
+/* The thunks, under the game's names. */
 
-void frontend::loopLoadingScreenFlag(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loopLoadingScreenFlag(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_43bcb0", 0, 0, nullptr, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loopa::loadingScreenFlag(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loopa::loadingScreenFlag(app, cpu); });
 }
 
-void frontend::loopItemFrame(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loopItemFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_459410", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx };
-    const reg32 item = cpu.eax, colour = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loopa::itemFrame(app, cpu, item, colour); });
+    const reg32 item = args.eax, colour = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loopa::itemFrame(app, cpu, item, colour); });
 }
 
-void frontend::loopFreeLoadedBlock(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loopFreeLoadedBlock(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_475b10", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loopa::freeLoadedBlock(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loopa::freeLoadedBlock(app, cpu); });
 }
 
-void frontend::ghostSaveFile(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::ghostSaveFile(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4777d0", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx | fe::kRestoreEsi };
-    const reg32 name = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loopa::saveGhost(app, cpu, name); });
+    const reg32 name = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loopa::saveGhost(app, cpu, name); });
 }
 
-void frontend::ghostPoseSetRotation(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::ghostPoseSetRotation(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_477830", 0, 0, nullptr, 0, fe::kRestoreEcx };
-    const reg32 pose = cpu.eax, matrix = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loopa::poseSetRotation(app, cpu, pose, matrix); });
+    const reg32 pose = args.eax, matrix = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loopa::poseSetRotation(app, cpu, pose, matrix); });
 }
 
-void frontend::ghostPosePosition(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::ghostPosePosition(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_477850", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEdx | fe::kRestoreEdi };
-    const reg32 pose = cpu.eax, out = cpu.esi;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loopa::posePosition(app, cpu, pose, out); });
+    const reg32 pose = args.eax, out = args.esi;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loopa::posePosition(app, cpu, pose, out); });
 }
 
-void frontend::ghostPoseSetPosition(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::ghostPoseSetPosition(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4778c0", 0x14, 0, nullptr, 0 };
-    const reg32 pose = cpu.eax;
+    const reg32 pose = args.eax;
     const reg32 x = stackArgument(app, cpu, 0), y = stackArgument(app, cpu, 1), z = stackArgument(app, cpu, 2);
     const reg32 slice = stackArgument(app, cpu, 3), car = stackArgument(app, cpu, 4);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loopa::poseSetPosition(app, cpu, pose, x, y, z, slice, car); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loopa::poseSetPosition(app, cpu, pose, x, y, z, slice, car); });
 }
 
-void frontend::ghostPoseBetween(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::ghostPoseBetween(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_477990", 4, 0, nullptr, 0, fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 from = cpu.eax, to = cpu.edx, fraction = cpu.ebx, positionOut = cpu.ecx;
+    const reg32 from = args.eax, to = args.edx, fraction = args.ebx, positionOut = args.ecx;
     const reg32 matrixOut = stackArgument(app, cpu, 0);
-    fe::runWhole(app, cpu, site, [&](Guest&) {
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
         return loopa::poseBetween(app, cpu, from, to, fraction, positionOut, matrixOut);
     });
 }
 
-void frontend::ghostRecordedAt(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::ghostRecordedAt(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4779e0", 0, 0, nullptr, 0 };
-    const reg32 index = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loopa::recordedAt(app, cpu, index); });
+    const reg32 index = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loopa::recordedAt(app, cpu, index); });
 }
 
-void frontend::ghostLoadedAt(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::ghostLoadedAt(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_477a10", 0, 0, nullptr, 0 };
-    const reg32 index = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loopa::loadedAt(app, cpu, index); });
+    const reg32 index = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loopa::loadedAt(app, cpu, index); });
 }
 
-void frontend::ghostRecordingStart(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::ghostRecordingStart(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_477a50", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEdx | fe::kRestoreEsi | fe::kRestoreEdi };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loopa::recordingStart(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loopa::recordingStart(app, cpu); });
 }
 
-void frontend::ghostLoadFile(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::ghostLoadFile(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_477b50", 0, 0, nullptr, 0 };
-    const reg32 name = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loopa::loadGhost(app, cpu, name); });
+    const reg32 name = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loopa::loadGhost(app, cpu, name); });
 }
 
-void frontend::ghostRecordCar(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::ghostRecordCar(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_477c20", 0, 0, nullptr, 0 };
-    const reg32 car = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loopa::recordCar(app, cpu, car); });
+    const reg32 car = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loopa::recordCar(app, cpu, car); });
 }
 
-void frontend::ghostPlaybackPose(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::ghostPlaybackPose(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_477d90", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi };
-    const reg32 positionOut = cpu.eax, matrixOut = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loopa::playbackPose(app, cpu, positionOut, matrixOut); });
+    const reg32 positionOut = args.eax, matrixOut = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loopa::playbackPose(app, cpu, positionOut, matrixOut); });
 }
 
-void frontend::loopBarScale(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loopBarScale(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_495190", 0, 0, nullptr, 0, fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 corner0 = cpu.eax, corner1 = cpu.edx, corner2 = cpu.ebx, corner3 = cpu.ecx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loopa::barScale(app, cpu, corner0, corner1, corner2, corner3); });
+    const reg32 corner0 = args.eax, corner1 = args.edx, corner2 = args.ebx, corner3 = args.ecx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loopa::barScale(app, cpu, corner0, corner1, corner2, corner3); });
 }
 
-void frontend::loopFillRootBytes(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loopFillRootBytes(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_497430", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loopa::fillRootBytes(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loopa::fillRootBytes(app, cpu); });
 }
 
-void frontend::loopGameStart(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loopGameStart(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4a3390", 0, 0, nullptr, 0, kSavesNone };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loopa::gameStart(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loopa::gameStart(app, cpu); });
 }
 
-void frontend::loopGameEnd(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loopGameEnd(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4a33a0", 0, 0, nullptr, 0, kSavesNone };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loopa::gameEnd(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loopa::gameEnd(app, cpu); });
 }
 
-void frontend::loopRaceRestart(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loopRaceRestart(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4a33b0", 0, 0, nullptr, 0, kSavesNone };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loopa::raceRestart(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loopa::raceRestart(app, cpu); });
 }
 
-void frontend::loopRaceLoad(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loopRaceLoad(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4a3400", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loopa::raceLoad(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loopa::raceLoad(app, cpu); });
 }
 
-void frontend::loopRaceSession(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loopRaceSession(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4a3690", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 mode = cpu.eax, replay = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loopa::raceSession(app, cpu, mode, replay); });
+    const reg32 mode = args.eax, replay = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loopa::raceSession(app, cpu, mode, replay); });
 }
 
-void frontend::loopNothingToEnd(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loopNothingToEnd(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4a6f70", 0, 0, nullptr, 0, kSavesNone };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loopa::nothingToEnd(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loopa::nothingToEnd(app, cpu); });
 }
 
-void frontend::loopPanelQuad(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loopPanelQuad(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4a7080", 0x14, 0, nullptr, 0, fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 x0 = cpu.eax, y0 = cpu.edx, x1 = cpu.ebx, y1 = cpu.ecx;
+    const reg32 x0 = args.eax, y0 = args.edx, x1 = args.ebx, y1 = args.ecx;
     reg32 s[5];
     for (reg32 i = 0; i < 5; ++i)
         s[i] = stackArgument(app, cpu, i);
-    fe::runWhole(app, cpu, site, [&](Guest&) {
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
         return loopa::panelQuad(app, cpu, x0, y0, x1, y1, s[0], s[1], s[2], s[3], s[4]);
     });
 }
 
-void frontend::loopPanelTexturedQuad(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loopPanelTexturedQuad(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4a7310", 0x38, 0, nullptr, 0, fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 x0 = cpu.eax, y0 = cpu.edx, x1 = cpu.ebx, y1 = cpu.ecx;
+    const reg32 x0 = args.eax, y0 = args.edx, x1 = args.ebx, y1 = args.ecx;
     reg32 s[14];
     for (reg32 i = 0; i < 14; ++i)
         s[i] = stackArgument(app, cpu, i);
-    fe::runWhole(app, cpu, site, [&](Guest&) {
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
         return loopa::panelTexturedQuad(app, cpu, x0, y0, x1, y1, s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7], s[8],
                                         s[9], s[10], s[11], s[12], s[13]);
     });
 }
 
-void frontend::loopPanelDraw(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loopPanelDraw(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4a75e0", 0, 0, nullptr, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loopa::panelDraw(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loopa::panelDraw(app, cpu); });
 }
 
-void frontend::loopGameInit(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loopGameInit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4b6020", 0, 0, kInitStrings, std::size(kInitStrings), fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx | fe::kRestoreEsi };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loopa::gameInit(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loopa::gameInit(app, cpu); });
 }
 
-void frontend::loopInstallIsRemote(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loopInstallIsRemote(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4b62a0", 0, 0, nullptr, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loopa::installIsRemote(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loopa::installIsRemote(app, cpu); });
 }
 
-void frontend::poseBlend(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::poseBlend(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4b6a30", 0xc, 0, nullptr, 0, fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 rotationFrom = cpu.eax, rotationTo = cpu.edx, positionFrom = cpu.ebx, positionTo = cpu.ecx;
+    const reg32 rotationFrom = args.eax, rotationTo = args.edx, positionFrom = args.ebx, positionTo = args.ecx;
     const reg32 fraction = stackArgument(app, cpu, 0), rotationOut = stackArgument(app, cpu, 1);
     const reg32 positionOut = stackArgument(app, cpu, 2);
-    fe::runWhole(app, cpu, site, [&](Guest&) {
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
         return loopa::blend(app, cpu, rotationFrom, rotationTo, positionFrom, positionTo, fraction, rotationOut, positionOut);
     });
 }
 
-void frontend::poseMatrixOfRotation(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::poseMatrixOfRotation(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4b6ca0", 0, 0, nullptr, 0 };
-    const reg32 rotation = cpu.eax, out = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loopa::matrixOfRotation(app, cpu, rotation, out); });
+    const reg32 rotation = args.eax, out = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loopa::matrixOfRotation(app, cpu, rotation, out); });
 }
 
-void frontend::poseRotationNearest(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::poseRotationNearest(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4b6d90", 0, 0, nullptr, 0 };
-    const reg32 rotation = cpu.eax, other = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loopa::rotationNearest(app, cpu, rotation, other); });
+    const reg32 rotation = args.eax, other = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loopa::rotationNearest(app, cpu, rotation, other); });
 }
 
-void frontend::poseRotationOfMatrix(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::poseRotationOfMatrix(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4b6e80", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 matrix = cpu.eax, out = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loopa::rotationOfMatrix(app, cpu, matrix, out); });
+    const reg32 matrix = args.eax, out = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loopa::rotationOfMatrix(app, cpu, matrix, out); });
 }
 
 }

@@ -9,7 +9,9 @@
 #include "native_frontend_loada.h"
 #include "native_frontend_loopb.h"
 #include "native_frontend_rendc.h"
+#include "native_frontend_rende.h"
 #include "native_frontend_simb.h"
+#include "native_frontend_simc.h"
 #include "native_frontend_simd.h"
 #include "native_frontend_sime.h"
 #include "native_game.h"
@@ -20,6 +22,7 @@
 #include "native_trackdata.h"
 #include "native_vertices.h"
 #include "native_watcom.h"
+#include "port_conv.h"
 
 #include <cstdint>
 #include <cstring>
@@ -35,9 +38,7 @@
  * updateShake), a crash's jolt, sounds and effects (crashEffects), and the
  * grid: the start's places, from TRKnnn\start.dat or worked out, and a car
  * put on its place with its race state cleared (loadStartGrid, placeOnGrid).
- * disassemble_nfs3hp.py binds each address to the function of that name here
- * (RACESTART_NATIVES), and the generated code calls it by name.
- * tools/game_checks holds each against its generated code.
+ * The game's code calls each by the name it has here.
  *
  * The car is the record at eax on entry (0x9a4 bytes and more); what these
  * functions read of it, as their code uses it: +0x1c its slice of the track,
@@ -54,7 +55,7 @@
  * +0x99c what the wheels hit.  The surfaces' table at 0x553080 is the
  * game's own: 0x240 bytes a track, 0x24 a surface (kSurfaces on).
  *
- * Each is a typed core (respawnCarOf, wheelSlipOf...) with an adapter under the game's name for
+ * Each is a typed core (respawnCarOf, wheelSlipOf...) with a thunk under the game's name for
  * the callers on registers and the dispatch: it leaves eax (and edx, ebx where the code does not
  * keep them) and the x87's stack as the game's code does -- a compare's status word among them,
  * which is why a core returns what the code leaves (Left) besides what it works out.  A core
@@ -273,38 +274,15 @@ reg16 half(App* app, reg32 a) { return app->getMemory<reg16>(a); }
 x86::Float f32(App* app, reg32 a) { return x86::Float(app->getMemory<float>(a)); }
 x86::Float f64(App* app, reg32 a) { return x86::Float(app->getMemory<double>(a)); }
 
-/* A call by address as the code makes it: the return address's slot, and esp as the callee
- * leaves it.  False when the game stopped in it. */
-bool byAddress(App* app, CPU& cpu, reg32 target)
-{
-    cpu.esp -= 4;
-    app->dynamic_call(target, cpu);
-    return !cpu.terminate;
-}
-
 /* A native_frontend_* file's typed core called as C++ (guest::direct): nothing (false) when the
- * game stopped in it (its calls into the game throw fe::Terminated).  tools/game_checks does not
- * build those files: there it goes by address, through its ByAddress, as the game's code calls it,
- * every register but eax kept.  A reg32 result is the eax the function leaves: eax set to it (in the
- * game too); after any other, eax spoilt there, so that code still reading what the callee left in
- * eax differs there. */
+ * game stopped in it (its calls into the game throw fe::Terminated), every register but eax kept.  Its result is the core's: nothing reads a register after it. */
 template <reg32 Address, auto Core, typename... Args>
 auto feCore(App* app, CPU& cpu, Args... args)
 {
     const auto run = [&] {
-#ifdef NFS_GAME_CHECKS
-        const guest::KeptRegisters kept(cpu);
-        return guest::ByAddress<Core>::template call<Address>(app, cpu, args...);
-#else
         return guest::direct<Address, Core>(app, cpu, args...);
-#endif
     };
     using Result = decltype(run());
-    const auto spoil = [&] {
-#ifdef NFS_GAME_CHECKS
-        cpu.eax = 0x5b0115edu;
-#endif
-    };
     if constexpr (std::is_void_v<Result>)
     {
         try
@@ -315,7 +293,6 @@ auto feCore(App* app, CPU& cpu, Args... args)
         {
             return false;
         }
-        spoil();
         return !cpu.terminate;
     }
     else
@@ -323,10 +300,6 @@ auto feCore(App* app, CPU& cpu, Args... args)
         try
         {
             const Result result = run();
-            if constexpr (std::is_same_v<Result, x86::reg32>)
-                cpu.eax = result;  // a menu core's result: the eax it leaves, as the call by address does
-            else
-                spoil();
             return cpu.terminate ? std::optional<Result>() : std::optional<Result>(result);
         }
         catch (const fe::Terminated&)
@@ -335,6 +308,48 @@ auto feCore(App* app, CPU& cpu, Args... args)
         }
     }
 }
+
+/* A thunk's core run with every register but eax as the thunk was handed it, whatever the
+ * calls by address it makes leave: the registers the game's function saves among them. */
+template <typename Body>
+auto keeping(CPU& cpu, Body body)
+{
+    struct Restore
+    {
+        CPU& cpu;
+        reg32 esp;
+        ~Restore() { cpu.esp = esp; }
+    } restore{cpu, cpu.esp};
+    return body();
+}
+
+/* Words the game's code pushes for a callee that takes their address (a menu file's core, through
+ * feCore): put where those pushes put them, below esp, and esp below them while this lives, so the
+ * callee's frame lies where the game's does. */
+class Pushed
+{
+public:
+    Pushed(App* app, CPU& cpu, std::initializer_list<reg32> words)
+        : cpu_(cpu), esp_(cpu.esp), address_(cpu.esp - 4 * reg32(words.size()))
+    {
+        reg32 at = address_;
+        for (const reg32 word : words)
+        {
+            guest::put(app, at, word);
+            at += 4;
+        }
+        cpu.esp = address_;
+    }
+    ~Pushed() { cpu_.esp = esp_; }
+    Pushed(const Pushed&) = delete;
+    Pushed& operator=(const Pushed&) = delete;
+    reg32 address() const { return address_; }
+
+private:
+    CPU& cpu_;
+    const reg32 esp_;
+    const reg32 address_;
+};
 
 using x86::Float;
 
@@ -368,41 +383,6 @@ bool fAbove(const Float& a, const Float& b) { return fp::compare(a, b) == 0; }
 bool fBelow(const Float& a, const Float& b) { return (fp::compare(a, b) & 0x100) != 0; }
 bool fBelowOrEqual(const Float& a, const Float& b) { return fp::compare(a, b) != 0; }
 
-// The registers a function's code saves (pushes and pops).
-constexpr reg32 kSaveEbx = 1, kSaveEcx = 2, kSaveEdx = 4, kSaveEsi = 8, kSaveEdi = 0x10, kSaveEbp = 0x20;
-
-/* The registers a function's code saves and restores, as they were on entry whatever its callees
- * leave; the others left as its callees leave them. */
-class Kept
-{
-public:
-    Kept(CPU& cpu, reg32 saved)
-        : cpu_(cpu), saved_(saved), ebx_(cpu.ebx), ecx_(cpu.ecx), edx_(cpu.edx), esi_(cpu.esi), edi_(cpu.edi),
-          ebp_(cpu.ebp)
-    {
-    }
-    ~Kept()
-    {
-        if (saved_ & kSaveEbx)
-            cpu_.ebx = ebx_;
-        if (saved_ & kSaveEcx)
-            cpu_.ecx = ecx_;
-        if (saved_ & kSaveEdx)
-            cpu_.edx = edx_;
-        if (saved_ & kSaveEsi)
-            cpu_.esi = esi_;
-        if (saved_ & kSaveEdi)
-            cpu_.edi = edi_;
-        if (saved_ & kSaveEbp)
-            cpu_.ebp = ebp_;
-    }
-
-private:
-    CPU& cpu_;
-    const reg32 saved_;
-    const reg32 ebx_, ecx_, edx_, esi_, edi_, ebp_;
-};
-
 /* Room on the guest's stack for what a callee is handed the address of: the game's frame
  * (`pushed` bytes of registers under esp on entry, then `bytes`), esp under it while the core
  * runs and back after.  On entry esp is at the return address's slot, as the code's is. */
@@ -435,51 +415,14 @@ private:
     const reg32 esp_;
 };
 
-/* The game's functions called by address, their arguments in registers as the code hands them:
- * eax as the callee leaves it, nullopt when the game stopped in one. */
-std::optional<reg32> call(App* app, CPU& cpu, reg32 target, reg32 eax)
+/* A dot product (0x4e01f0) of the vectors at `a` and `b`, as C++; nullopt when the game stopped.
+ * Its code leaves eax as it came, `a`. */
+std::optional<Float> dot(App* app, CPU& cpu, reg32 a, reg32 b)
 {
-    cpu.eax = eax;
-    if (!byAddress(app, cpu, target))
+    const double product = guest::direct<0x4e01f0, vertices::dotProduct>(app, cpu, a, b);
+    if (cpu.terminate)
         return std::nullopt;
-    return cpu.eax;
-}
-
-std::optional<reg32> call(App* app, CPU& cpu, reg32 target, reg32 eax, reg32 edx)
-{
-    cpu.edx = edx;
-    return call(app, cpu, target, eax);
-}
-
-std::optional<reg32> call(App* app, CPU& cpu, reg32 target, reg32 eax, reg32 edx, reg32 ebx)
-{
-    cpu.ebx = ebx;
-    return call(app, cpu, target, eax, edx);
-}
-
-std::optional<reg32> call(App* app, CPU& cpu, reg32 target, reg32 eax, reg32 edx, reg32 ebx, reg32 ecx)
-{
-    cpu.ecx = ecx;
-    return call(app, cpu, target, eax, edx, ebx);
-}
-
-/* As call, with words pushed for it too, the first lowest (where the code's last push leaves it),
- * esp back after it. */
-std::optional<reg32> callPushing(App* app, CPU& cpu, reg32 target, std::initializer_list<reg32> words)
-{
-    if (!guest::call(app, cpu, target, words))
-        return std::nullopt;
-    return cpu.eax;
-}
-
-/* A dot product (0x4e01f0) of the vectors at `a` and `b`, by address: eax as the callee leaves it
- * is the caller's to read in cpu (vertices::dotProduct does not give it back, and the check's row
- * for it models it).  Nullopt when the game stopped. */
-std::optional<Float> dotLeavingEax(App* app, CPU& cpu, reg32 a, reg32 b)
-{
-    if (!call(app, cpu, kDot, a, b))
-        return std::nullopt;
-    return cpu.fpu.take();
+    return Float(product);
 }
 
 /* The game's sine of a float (0x4ea930, simd's; it leaves eax as it was). */
@@ -499,36 +442,36 @@ std::optional<i32> rand(App* app, CPU& cpu)
 
 }  // namespace
 
-void respawnCar(App* app, CPU& cpu);
-void resetCar(App* app, CPU& cpu);
-void stuckCheck(App* app, CPU& cpu);
-void clearRespawn(App* app, CPU& cpu);
-void shakeAmplitude(App* app, CPU& cpu);
-void startShake(App* app, CPU& cpu);
-void startIdleShake(App* app, CPU& cpu);
-void shakeWave(App* app, CPU& cpu);
-void objectContacts(App* app, CPU& cpu);
-void wheelSlip(App* app, CPU& cpu);
-void wheelCells(App* app, CPU& cpu);
-void wheelSurface(App* app, CPU& cpu);
-void endSkidMark(App* app, CPU& cpu);
-void extendSkidMark(App* app, CPU& cpu);
-void skidSounds(App* app, CPU& cpu);
-void wheelSpray(App* app, CPU& cpu);
-void surfaceEffects(App* app, CPU& cpu);
-void wheelSkid(App* app, CPU& cpu);
-void wheelEffects(App* app, CPU& cpu);
-void updateShake(App* app, CPU& cpu);
-void crashEffects(App* app, CPU& cpu);
-void respawnEffects(App* app, CPU& cpu);
-void stopCarEffects(App* app, CPU& cpu);
-void carEffects(App* app, CPU& cpu);
-void airborneSpin(App* app, CPU& cpu);
-void updateCar(App* app, CPU& cpu);
-void defaultGridPlace(App* app, CPU& cpu);
-void loadStartGrid(App* app, CPU& cpu);
-void gridPlace(App* app, CPU& cpu);
-void placeOnGrid(App* app, CPU& cpu);
+x86::reg32 respawnCar(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 resetCar(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 stuckCheck(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 clearRespawn(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 shakeAmplitude(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 startShake(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 startIdleShake(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 shakeWave(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 objectContacts(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 wheelSlip(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 wheelCells(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 wheelSurface(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 endSkidMark(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 extendSkidMark(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 skidSounds(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 wheelSpray(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 surfaceEffects(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 wheelSkid(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 wheelEffects(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 updateShake(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 crashEffects(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 respawnEffects(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 stopCarEffects(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 carEffects(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 airborneSpin(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 updateCar(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 defaultGridPlace(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 loadStartGrid(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 gridPlace(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 placeOnGrid(App* app, x86::CPU& cpu, x86::Args& args);
 
 /* The slice `by` slices on from `slice`, wrapped round the track's: past the last when going on,
  * under 0 when going back, as the code wraps it. */
@@ -547,25 +490,13 @@ reg32 slicesOn(App* app, reg32 slice, reg32 by)
 }
 
 /* The car put on slice `slice` (0x428d60), lifted by kRespawnHeight -- by `tunnelScale` in a
- * tunnel (0x420bf0 of its place and slice; eax, edx and ebx at the call as each code leaves them
- * there, `resetting` 0x429100's) -- at rest and settled (0x428970), 0x40 at +0x174.  eax as the
- * settling leaves it; nullopt when the game stopped. */
-std::optional<reg32> putBackOn(App* app, CPU& cpu, reg32 car, reg32 slice, reg32 tunnelScale, bool resetting)
+ * tunnel (0x420bf0 of its place and slice) -- at rest and settled (0x428970), 0x40 at +0x174.  eax
+ * as the settling leaves it; nullopt when the game stopped. */
+std::optional<reg32> putBackOn(App* app, CPU& cpu, reg32 car, reg32 slice, reg32 tunnelScale)
 {
     if (!feCore<0x428d60, frontend::loada::carPlaceOnRoad>(app, cpu, car, slice))
         return std::nullopt;
     float height = f32At(app, kRespawnHeight);
-    if (resetting)
-    {
-        cpu.eax = at(app, car + kCarPlace + 8);
-        cpu.edx = at(app, car + kCarPlace + 4);
-        cpu.ebx = at(app, car + kCarPlace);
-    }
-    else
-    {
-        cpu.eax = at(app, car + kCarPlace + 4);
-        cpu.edx = at(app, car + kCarPlace);
-    }
     const std::optional<reg32> tunnel =
         guest::direct<0x420bf0, trackdata::placeInTunnel>(app, cpu, car + kCarPlace, at(app, car + kCarSlice));
     if (!tunnel)
@@ -584,6 +515,39 @@ std::optional<reg32> putBackOn(App* app, CPU& cpu, reg32 car, reg32 slice, reg32
     return settled;
 }
 
+/* Where the game's fill (0x4e070c, native_game.cpp's fillCore) leaves eax after `count` bytes at
+ * `at`: past them, but on a last odd byte -- its alignment's steps, its blocks of 8, its tail's. */
+reg32 fillEnd(reg32 at, i32 left)
+{
+    if ((at & 7) != 0)
+    {
+        if ((at & 1) != 0 && left >= 1)
+        {
+            at += 1;
+            left -= 1;
+        }
+        if ((at & 2) != 0 && left >= 2)
+        {
+            at += 2;
+            left -= 2;
+        }
+        if ((at & 4) != 0 && left >= 4)
+        {
+            at += 4;
+            left -= 4;
+        }
+    }
+    if (left >= 0)
+    {
+        at += reg32(left) & ~reg32(7);
+        if ((left & 4) != 0)
+            at += 4;
+        if ((left & 2) != 0)
+            at += 2;
+    }
+    return at;
+}
+
 /* The way the race runs: 1, or -1 backwards. */
 reg32 raceDirection(App* app)
 {
@@ -599,7 +563,6 @@ reg32 raceDirection(App* app)
  * as the settling leaves it); nullopt when the game stopped. */
 std::optional<reg32> respawnCarOf(App* app, CPU& cpu, reg32 car)
 {
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEdx | kSaveEsi | kSaveEdi | kSaveEbp);
     const reg32 direction = raceDirection(app);
     const reg32 times = at(app, car + kCarRespawns) + 1;
     put(app, car + kCarSinceRespawn, 0);
@@ -619,17 +582,18 @@ std::optional<reg32> respawnCarOf(App* app, CPU& cpu, reg32 car)
     const reg32 from = asked != 0 ? asked : at(app, car + kCarSlice);
     const reg32 by = direction * at(app, kRespawnStep);
     put(app, car + kCarRespawnSlice, 0);
-    return putBackOn(app, cpu, car, slicesOn(app, from, by), kHalfHeight, false);
+    return putBackOn(app, cpu, car, slicesOn(app, from, by), kHalfHeight);
 }
 
 /* 0x428f90: respawnCarOf car eax. */
-void respawnCar(App* app, CPU& cpu)
+x86::reg32 respawnCar(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const std::optional<reg32> left = respawnCarOf(app, cpu, cpu.eax);
+    const std::optional<reg32> left = keeping(cpu, [&] { return respawnCarOf(app, cpu, args.eax); });
     if (!left)
-        return;
-    cpu.eax = *left;
+        return args.eax;
+    args.eax = *left;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x429100's: the car put back on the road when the player asks: kRespawnStep slices on from its
@@ -639,7 +603,6 @@ void respawnCar(App* app, CPU& cpu)
  * eax as the code leaves it; nullopt when the game stopped. */
 std::optional<reg32> resetCarOf(App* app, CPU& cpu, reg32 car)
 {
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEdx | kSaveEsi | kSaveEdi | kSaveEbp);
     const reg32 direction = raceDirection(app);
     if (at(app, car + kCarResetWait) != 0
         || ((byte(app, car + kCarFlags) & kPlayersCar) != 0 && at(app, car + kCarState) == kFinished)
@@ -648,24 +611,27 @@ std::optional<reg32> resetCarOf(App* app, CPU& cpu, reg32 car)
     if (gameSettings(app).raceType == kHotPursuit)
     {
         const reg32 pursuer = at(app, car + kCarPursuer);
-        // By address: what the callee leaves in eax is what this leaves (airace::isPulledOver gives
-        // back only whether).
+        // What the callee leaves in eax is what this leaves.
         if ((byte(app, car + kCarFlags) & kChased) != 0 && pursuer != 0)
         {
-            const std::optional<reg32> out = call(app, cpu, kPursuitOut, pursuer);
-            if (!out || *out != 0)
+            const reg32 out = guest::direct<kPursuitOut, airace::pulledOverOf>(app, cpu, pursuer);
+            if (cpu.terminate)
+                return std::nullopt;
+            if (out != 0)
                 return out;
         }
         if ((byte(app, car + kCarFlags) & kPlayersCar) != 0)
         {
-            const std::optional<reg32> out = call(app, cpu, kPursuitOut, car);
-            if (!out || *out != 0)
+            const reg32 out = guest::direct<kPursuitOut, airace::pulledOverOf>(app, cpu, car);
+            if (cpu.terminate)
+                return std::nullopt;
+            if (out != 0)
                 return out;
         }
     }
     const reg32 by = direction * at(app, kRespawnStep);
     const std::optional<reg32> left =
-        putBackOn(app, cpu, car, slicesOn(app, at(app, car + kCarSlice), by), kResetHeight, true);
+        putBackOn(app, cpu, car, slicesOn(app, at(app, car + kCarSlice), by), kResetHeight);
     if (!left)
         return std::nullopt;
     put(app, car + kCarResetWait, 0x20);
@@ -673,13 +639,14 @@ std::optional<reg32> resetCarOf(App* app, CPU& cpu, reg32 car)
 }
 
 /* 0x429100: resetCarOf car eax. */
-void resetCar(App* app, CPU& cpu)
+x86::reg32 resetCar(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const std::optional<reg32> left = resetCarOf(app, cpu, cpu.eax);
+    const std::optional<reg32> left = keeping(cpu, [&] { return resetCarOf(app, cpu, args.eax); });
     if (!left)
-        return;
-    cpu.eax = *left;
+        return args.eax;
+    args.eax = *left;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x429260's: the car's stuck count run down while it is above 0: by one unless the player's car
@@ -694,7 +661,6 @@ void resetCar(App* app, CPU& cpu)
  * its own.  eax as the code leaves it; nullopt when the game stopped. */
 std::optional<reg32> stuckCheckOf(App* app, CPU& cpu, reg32 car)
 {
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEdx | kSaveEsi | kSaveEdi | kSaveEbp);
     const auto bits = [&](reg32 field) { return i32(at(app, car + field)); };
     const auto countDown = [&](reg32 by) { put(app, car + kCarStuck, at(app, car + kCarStuck) - by); };
     const auto asked = [&] { return at(app, car + kCarRespawnSlice) != 0; };
@@ -744,13 +710,15 @@ std::optional<reg32> stuckCheckOf(App* app, CPU& cpu, reg32 car)
             put(app, car + kCarStuck, 0);
         }
     }
-    const std::optional<Float> uprightDot = dotLeavingEax(app, cpu, car + kCarGroundUp, car + kCarUp);
+    const std::optional<Float> uprightDot = dot(app, cpu, car + kCarGroundUp, car + kCarUp);
     if (!uprightDot)
         return std::nullopt;
     const float upright = float(*uprightDot);
+    // eax as the dot product leaves it: its first vector.
+    const reg32 dotted = car + kCarGroundUp;
     if (bits(kCarStuck) > 0)
-        return cpu.eax;
-    const reg32 status = statusInto(cpu.eax, Float(upright), f32(app, kUpright));
+        return dotted;
+    const reg32 status = statusInto(dotted, Float(upright), f32(app, kUpright));
     if (!fBelow(Float(upright), f32(app, kUpright)))
     {
         const reg32 surface = at(app, car + kCarSurface);
@@ -772,13 +740,14 @@ std::optional<reg32> stuckCheckOf(App* app, CPU& cpu, reg32 car)
 }
 
 /* 0x429260: stuckCheckOf car eax. */
-void stuckCheck(App* app, CPU& cpu)
+x86::reg32 stuckCheck(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const std::optional<reg32> left = stuckCheckOf(app, cpu, cpu.eax);
+    const std::optional<reg32> left = keeping(cpu, [&] { return stuckCheckOf(app, cpu, args.eax); });
     if (!left)
-        return;
-    cpu.eax = *left;
+        return args.eax;
+    args.eax = *left;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4294c0's: the car's slice to be put back on and the frames since, cleared. */
@@ -789,10 +758,11 @@ void clearRespawnOf(App* app, reg32 car)
 }
 
 /* 0x4294c0: clearRespawnOf car eax. */
-void clearRespawn(App* app, CPU& cpu)
+x86::reg32 clearRespawn(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    clearRespawnOf(app, cpu.eax);
+    clearRespawnOf(app, args.eax);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* The car's surface's record in the surfaces' table (kSurfaces on). */
@@ -807,7 +777,6 @@ reg32 surfaceRecord(App* app, reg32 car)
  * nullopt when the game stopped. */
 std::optional<reg32> shakeAmplitudeOf(App* app, CPU& cpu, reg32 car)
 {
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEdx | kSaveEbp);
     const Float speed = fp::mul(f32(app, car + kCarSpeed), f32(app, kSixtyFourth));
     const reg32 surface = surfaceRecord(app, car);
     const reg32 handling = at(app, car + kCarHandling);
@@ -831,13 +800,14 @@ std::optional<reg32> shakeAmplitudeOf(App* app, CPU& cpu, reg32 car)
 }
 
 /* 0x4294e0: shakeAmplitudeOf car eax. */
-void shakeAmplitude(App* app, CPU& cpu)
+x86::reg32 shakeAmplitude(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const std::optional<reg32> left = shakeAmplitudeOf(app, cpu, cpu.eax);
+    const std::optional<reg32> left = keeping(cpu, [&] { return shakeAmplitudeOf(app, cpu, args.eax); });
     if (!left)
-        return;
-    cpu.eax = *left;
+        return args.eax;
+    args.eax = *left;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* What startShakeOf leaves in eax, edx and ebx, none of which its code keeps. */
@@ -853,7 +823,6 @@ struct ShakeLeft
  * nullopt when the game stopped. */
 std::optional<ShakeLeft> startShakeOf(App* app, CPU& cpu, reg32 car, reg32 acrossFrames, reg32 upFrames)
 {
-    const Kept kept(cpu, kSaveEcx | kSaveEsi | kSaveEdi | kSaveEbp);
     const reg32 handling = at(app, car + kCarHandling);
     const float across = float(fp::mul(f32(app, kShakeAcross), f32(app, handling + kHandlingShake)));
     const float up = float(fp::mul(f32(app, kShakeUp), f32(app, handling + kHandlingShake)));
@@ -889,15 +858,17 @@ std::optional<ShakeLeft> startShakeOf(App* app, CPU& cpu, reg32 car, reg32 acros
 }
 
 /* 0x4295a0: startShakeOf car eax, for edx and ebx frames. */
-void startShake(App* app, CPU& cpu)
+x86::reg32 startShake(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const std::optional<ShakeLeft> left = startShakeOf(app, cpu, cpu.eax, cpu.edx, cpu.ebx);
+    const std::optional<ShakeLeft> left =
+        keeping(cpu, [&] { return startShakeOf(app, cpu, args.eax, args.edx, args.ebx); });
     if (!left)
-        return;
-    cpu.eax = left->eax;
-    cpu.edx = left->edx;
-    cpu.ebx = left->ebx;
+        return args.eax;
+    args.eax = left->eax;
+    args.edx = left->edx;
+    args.ebx = left->ebx;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4296c0's: the car's little shake, leaning -0.9 or less (or a NaN) and racing: two small
@@ -909,7 +880,6 @@ std::optional<reg32> startIdleShakeOf(App* app, CPU& cpu, reg32 car)
     const reg32 status = statusInto(car, f32(app, car + kCarLean), f64(app, kIdleLean));
     if (fAbove(f32(app, car + kCarLean), f64(app, kIdleLean)) || half(app, car + kCarStage) != 0)
         return status;
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEdx | kSaveEbp);
     i32 last = 0;
     for (const reg32 wave : {car + kCarWaves, car + kCarWaves + kWaveSize})
     {
@@ -929,13 +899,14 @@ std::optional<reg32> startIdleShakeOf(App* app, CPU& cpu, reg32 car)
 }
 
 /* 0x4296c0: startIdleShakeOf car eax. */
-void startIdleShake(App* app, CPU& cpu)
+x86::reg32 startIdleShake(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const std::optional<reg32> left = startIdleShakeOf(app, cpu, cpu.eax);
+    const std::optional<reg32> left = keeping(cpu, [&] { return startIdleShakeOf(app, cpu, args.eax); });
     if (!left)
-        return;
-    cpu.eax = *left;
+        return args.eax;
+    args.eax = *left;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x429790's: a shake's wave `frames` from its end: sin(frames / 12) (0x4ea930) by the
@@ -952,15 +923,18 @@ std::optional<Float> shakeWaveOf(App* app, CPU& cpu, float amplitude, i32 frames
 
 /* 0x429790 (stdcall: the amplitude, the frames left): shakeWaveOf, onto the x87's stack; eax
  * kept, as the code keeps it. */
-void shakeWave(App* app, CPU& cpu)
+x86::reg32 shakeWave(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const reg32 eax = cpu.eax;
-    const std::optional<Float> wave = shakeWaveOf(app, cpu, f32At(app, cpu.esp + 4), i32(at(app, cpu.esp + 8)));
+    const reg32 eax = args.eax;
+    const std::optional<Float> wave =
+        keeping(cpu, [&] { return shakeWaveOf(app, cpu, f32At(app, cpu.esp + 4), i32(at(app, cpu.esp + 8))); });
     if (!wave)
-        return;
-    cpu.fpu.push(*wave);
-    cpu.eax = eax;
+        return args.eax;
+    args.floatSet = true;
+    args.floatResult = double(*wave);
+    args.eax = eax;
     cpu.esp += 4 + 8;
+    return args.eax;
 }
 
 /* 0x4297d0's: the car against the scenery's objects: the player's first (0x493ad0); then, a
@@ -971,7 +945,6 @@ void shakeWave(App* app, CPU& cpu)
 std::optional<reg32> objectContactsOf(App* app, CPU& cpu, reg32 car)
 {
     const GuestFrame frame(cpu, 0x10, 4);
-    const Kept kept(cpu, kSaveEcx | kSaveEdx | kSaveEsi | kSaveEbp);
     const reg32 handle = frame - 4;
     reg32 left = car;
     if ((byte(app, car + kCarFlags) & kThisMachines) != 0)
@@ -990,23 +963,25 @@ std::optional<reg32> objectContactsOf(App* app, CPU& cpu, reg32 car)
         return std::nullopt;
     if (*against == 0)
         return reg32(0);
-    // The hit's flags as the handing over leaves them in edx.
-    if (!call(app, cpu, kObjectHit, at(app, handle), *against))
+    // The hit's flags as the handing over leaves them in edx: as it came, the object found (its
+    // code keeps edx).
+    if (!feCore<kObjectHit, frontend::simc::sirenOff>(app, cpu, at(app, handle)))
         return std::nullopt;
-    const reg32 hit = cpu.edx;
+    const reg32 hit = *against;
     putByte(app, car + kCarObjectFlags, byte(app, car + kCarObjectFlags) | kHitObject);
     put(app, car + kCarHits, at(app, car + kCarHits) | hit);
-    return call(app, cpu, kCarHitObject, car, at(app, handle));
+    return guest::direct<kCarHitObject, airace::stopForCopLeaving>(app, cpu, car, at(app, handle));
 }
 
 /* 0x4297d0: objectContactsOf car eax. */
-void objectContacts(App* app, CPU& cpu)
+x86::reg32 objectContacts(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const std::optional<reg32> left = objectContactsOf(app, cpu, cpu.eax);
+    const std::optional<reg32> left = keeping(cpu, [&] { return objectContactsOf(app, cpu, args.eax); });
     if (!left)
-        return;
-    cpu.eax = *left;
+        return args.eax;
+    args.eax = *left;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* What wheelSlipOf works out, and what the code leaves in eax and edx. */
@@ -1025,7 +1000,6 @@ struct Slip
 std::optional<Slip> wheelSlipOf(App* app, CPU& cpu, reg32 car, reg32 front)
 {
     const GuestFrame frame(cpu, 0x14, 0x50);
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEsi | kSaveEdi | kSaveEbp);
     const reg32 velocity = frame - 0x50, forward = frame - 0x44;
     for (reg32 k = 0; k < 0xc; k += 4)
         put(app, velocity + k, at(app, car + kCarVelocity + k));
@@ -1070,15 +1044,17 @@ std::optional<Slip> wheelSlipOf(App* app, CPU& cpu, reg32 car, reg32 front)
 }
 
 /* 0x429880: wheelSlipOf car eax, a front wheel's when edx is not 0, onto the x87's stack. */
-void wheelSlip(App* app, CPU& cpu)
+x86::reg32 wheelSlip(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const std::optional<Slip> slip = wheelSlipOf(app, cpu, cpu.eax, cpu.edx);
+    const std::optional<Slip> slip = keeping(cpu, [&] { return wheelSlipOf(app, cpu, args.eax, args.edx); });
     if (!slip)
-        return;
-    cpu.fpu.push(slip->value);
-    cpu.eax = slip->left.eax;
-    cpu.edx = slip->left.edx;
+        return args.eax;
+    args.floatSet = true;
+    args.floatResult = double(slip->value);
+    args.eax = slip->left.eax;
+    args.edx = slip->left.edx;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4299a0's: the car's four wheels on the track: its corners -- across 0.75 of its half size
@@ -1090,7 +1066,6 @@ void wheelSlip(App* app, CPU& cpu)
 bool wheelCellsOf(App* app, CPU& cpu, reg32 car)
 {
     const GuestFrame frame(cpu, 0x18, 0x104);
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEdx | kSaveEsi | kSaveEdi | kSaveEbp);
     const reg32 record = frame - 0x104, turned = frame - 0x8c, corners = frame - 0x5c, moved = frame - 0x2c;
     const reg32 place = frame - 0x20;
     const float across = f32At(app, car + kCarHalfSizes), down = f32At(app, car + kCarHalfSizes + 4);
@@ -1132,13 +1107,14 @@ bool wheelCellsOf(App* app, CPU& cpu, reg32 car)
 
 /* 0x4299a0: wheelCellsOf car eax; eax left as the code leaves it, at the last wheel's cell less
  * 0x300. */
-void wheelCells(App* app, CPU& cpu)
+x86::reg32 wheelCells(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const reg32 car = cpu.eax;
-    if (!wheelCellsOf(app, cpu, car))
-        return;
-    cpu.eax = car + 3 * kWheelSize;
+    const reg32 car = args.eax;
+    if (!keeping(cpu, [&] { return wheelCellsOf(app, cpu, car); }))
+        return args.eax;
+    args.eax = car + 3 * kWheelSize;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x429b40's: what wheel `wheel` of the car is on: the car's surface, or, on a piece of track of
@@ -1148,7 +1124,6 @@ std::optional<reg32> wheelSurfaceOf(App* app, CPU& cpu, reg32 car, reg32 wheel)
     const reg32 cell = car + kCarWheels + wheel * kWheelSize;
     if (half(app, car + kCarStage) != 0 || at(app, cell + kWheelPiece) == 0 || at(app, cell + kWheelPieceToo) == 0)
         return at(app, car + kCarSurface);
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEsi | kSaveEbp);
     const reg32 kind = guest::direct<0x4207e0, trackdata::placeSurface>(app, cpu, cell, 1);
     if (cpu.terminate)
         return std::nullopt;
@@ -1156,14 +1131,15 @@ std::optional<reg32> wheelSurfaceOf(App* app, CPU& cpu, reg32 car, reg32 wheel)
 }
 
 /* 0x429b40: wheelSurfaceOf car eax's wheel edx, in eax and edx both. */
-void wheelSurface(App* app, CPU& cpu)
+x86::reg32 wheelSurface(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const std::optional<reg32> surface = wheelSurfaceOf(app, cpu, cpu.eax, cpu.edx);
+    const std::optional<reg32> surface = keeping(cpu, [&] { return wheelSurfaceOf(app, cpu, args.eax, args.edx); });
     if (!surface)
-        return;
-    cpu.eax = *surface;
-    cpu.edx = *surface;
+        return args.eax;
+    args.eax = *surface;
+    args.edx = *surface;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* A wheel's cell's height under it, axis `k` (0 to 2): on a piece of its own its heights' 16-bit
@@ -1177,30 +1153,23 @@ reg32 cellHeight(App* app, reg32 cell, reg32 k)
 }
 
 /* A mark's point drawn (0x4db940): the car's number and the wheel, the point and the heights
- * under it (frame words), the stack's `ending` and the slip.  edx as the callee leaves it;
- * nullopt when the game stopped. */
-std::optional<reg32> markPoint(App* app, CPU& cpu, reg32 car, reg32 wheel, reg32 point, reg32 heights, reg32 ending,
-                               float slip)
+ * under it (frame words), the stack's `ending` and the slip.  False when the game stopped. */
+bool markPoint(App* app, CPU& cpu, reg32 car, reg32 wheel, reg32 point, reg32 heights, reg32 ending, float slip)
 {
-    cpu.eax = at(app, car + kCarNumber);
-    cpu.edx = wheel;
-    cpu.ebx = point;
-    cpu.ecx = heights;
-    if (!callPushing(app, cpu, kMarkPoint, {ending, bitsOf(slip)}))
-        return std::nullopt;
-    return cpu.edx;
+    return feCore<kMarkPoint, frontend::rende::skidWheel>(app, cpu, at(app, car + kCarNumber), wheel, point,
+                                                           heights, ending, bitsOf(slip))
+        .has_value();
 }
 
 /* 0x429ba0's: wheel `wheel`'s skid mark ended, if it has one: its last point, the heights under
  * it, how much it slips (wheelSlipOf, the front's slide for wheels 0 and 1) -- 0x4db940 with 1
- * -- and the mark and its sound off.  What the code leaves in eax and edx; nullopt when the game
- * stopped. */
-std::optional<Left> endSkidMarkOf(App* app, CPU& cpu, reg32 car, reg32 wheel)
+ * -- and the mark and its sound off.  What the code leaves in eax (edx, which its code does not
+ * keep, is no caller's); nullopt when the game stopped. */
+std::optional<reg32> endSkidMarkOf(App* app, CPU& cpu, reg32 car, reg32 wheel)
 {
     const GuestFrame frame(cpu, 0x14, 0x24);
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEsi | kSaveEdi | kSaveEbp);
     if (byte(app, car + wheel + kCarMarks) == 0)
-        return Left{car + wheel, wheel};
+        return car + wheel;
     std::optional<Slip> slip;
     {
         const Calling calling(cpu);
@@ -1215,33 +1184,32 @@ std::optional<Left> endSkidMarkOf(App* app, CPU& cpu, reg32 car, reg32 wheel)
     const reg32 cell = car + kCarWheels + wheel * kWheelSize;
     for (reg32 k = 0; k < 3; ++k)
         put(app, heights + 4 * k, cellHeight(app, cell, k));
-    const std::optional<reg32> left = markPoint(app, cpu, car, wheel, point, heights, 1, slipped);
-    if (!left)
+    if (!markPoint(app, cpu, car, wheel, point, heights, 1, slipped))
         return std::nullopt;
     putByte(app, car + wheel + kCarMarks, 0);
     putByte(app, car + wheel + kCarMarkSounds, 0);
-    return Left{car + wheel, *left};
+    return car + wheel;
 }
 
 /* 0x429ba0: endSkidMarkOf car eax's wheel edx. */
-void endSkidMark(App* app, CPU& cpu)
+x86::reg32 endSkidMark(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const std::optional<Left> left = endSkidMarkOf(app, cpu, cpu.eax, cpu.edx);
+    const std::optional<reg32> left = keeping(cpu, [&] { return endSkidMarkOf(app, cpu, args.eax, args.edx); });
     if (!left)
-        return;
-    cpu.eax = left->eax;
-    cpu.edx = left->edx;
+        return args.eax;
+    args.eax = *left;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x429d20's: wheel `wheel`'s skid mark drawn on to where it is: off the track's pieces, ended
  * (0x4db860); else a point (0x4db940 with 0) -- its place, the heights under it, how much it
  * slips (wheelSlipOf) -- kept as the last, the mark on and its sound the surface's (wheelSurfaceOf).
- * What the code leaves in eax and edx; nullopt when the game stopped. */
+ * What the code leaves in eax and edx (the wheel where the cut leaves it: edx is no caller's);
+ * nullopt when the game stopped. */
 std::optional<Left> extendSkidMarkOf(App* app, CPU& cpu, reg32 car, reg32 wheel)
 {
     const GuestFrame frame(cpu, 0x14, 0x28);
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEsi | kSaveEdi | kSaveEbp);
     std::optional<Slip> slip;
     {
         const Calling calling(cpu);
@@ -1263,11 +1231,11 @@ std::optional<Left> extendSkidMarkOf(App* app, CPU& cpu, reg32 car, reg32 wheel)
         return std::nullopt;
     if (at(app, cell + kWheelPiece) == 0 || at(app, cell + kWheelPieceToo) == 0)
     {
-        if (!call(app, cpu, kCutMark, at(app, car + kCarNumber), wheel))
+        if (!feCore<kCutMark, frontend::sime::wheelMarkCut>(app, cpu, at(app, car + kCarNumber), wheel))
             return std::nullopt;
         putByte(app, car + wheel + kCarMarks, 0);
         putByte(app, car + wheel + kCarMarkSounds, 0);
-        return Left{car + wheel, cpu.edx};
+        return Left{car + wheel, wheel};
     }
     for (reg32 k = 0; k < 3; ++k)
         put(app, heights + 4 * k, cellHeight(app, cell, k));
@@ -1283,30 +1251,20 @@ std::optional<Left> extendSkidMarkOf(App* app, CPU& cpu, reg32 car, reg32 wheel)
 }
 
 /* 0x429d20: extendSkidMarkOf car eax's wheel edx. */
-void extendSkidMark(App* app, CPU& cpu)
+x86::reg32 extendSkidMark(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const std::optional<Left> left = extendSkidMarkOf(app, cpu, cpu.eax, cpu.edx);
+    const std::optional<Left> left = keeping(cpu, [&] { return extendSkidMarkOf(app, cpu, args.eax, args.edx); });
     if (!left)
-        return;
-    cpu.eax = left->eax;
-    cpu.edx = left->edx;
+        return args.eax;
+    args.eax = left->eax;
+    args.edx = left->edx;
     cpu.esp += 4;
+    return args.eax;
 }
 
-/* An event added to the car (0x4284e0) by address: edx, ebx and ecx its fields, the stack's three
- * words (the first a field, the second a time of 0 to 10, the third the last field).  eax as the
- * callee leaves it, and the other registers; nullopt when the game stopped. */
-std::optional<reg32> carEventLeavingEdx(App* app, CPU& cpu, reg32 car, reg32 first, reg32 second, reg32 third,
-                                        std::initializer_list<reg32> words)
-{
-    cpu.eax = car;
-    cpu.edx = first;
-    cpu.ebx = second;
-    cpu.ecx = third;
-    return callPushing(app, cpu, kCarEvent, words);
-}
-
-/* The same as C++ (loada's), for the callers that keep none of the registers it leaves. */
+/* An event added to the car (0x4284e0, loada's) as C++: edx, ebx and ecx its fields, the stack's
+ * three words (the first a field, the second a time of 0 to 10, the third the last field).  eax as
+ * the callee leaves it; nullopt when the game stopped. */
 std::optional<reg32> carEvent(App* app, CPU& cpu, reg32 car, reg32 first, reg32 second, reg32 third,
                               std::initializer_list<reg32> words)
 {
@@ -1321,7 +1279,6 @@ std::optional<reg32> carEvent(App* app, CPU& cpu, reg32 car, reg32 first, reg32 
  * eax as the code leaves it; nullopt when the game stopped. */
 std::optional<reg32> skidSoundsOf(App* app, CPU& cpu, reg32 car)
 {
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEdx | kSaveEsi | kSaveEbp);
     const auto sound = [&](reg32 wheel) { return reg32(byte(app, car + kCarMarkSounds + wheel)); };
     const auto skid = [&](reg32 wheel) { return car + kCarSkids + 4 * wheel; };
     const auto both = [&](reg32 wheel) {
@@ -1379,52 +1336,50 @@ std::optional<reg32> skidSoundsOf(App* app, CPU& cpu, reg32 car)
 }
 
 /* 0x429f10: skidSoundsOf car eax. */
-void skidSounds(App* app, CPU& cpu)
+x86::reg32 skidSounds(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const std::optional<reg32> left = skidSoundsOf(app, cpu, cpu.eax);
+    const std::optional<reg32> left = keeping(cpu, [&] { return skidSoundsOf(app, cpu, args.eax); });
     if (!left)
-        return;
-    cpu.eax = *left;
+        return args.eax;
+    args.eax = *left;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* An effect where wheel `wheel` of the car is (0x4cb010, stdcall: its place's three words and the
- * kind).  What the callee leaves in eax and edx; nullopt when the game stopped. */
-std::optional<Left> wheelEffect(App* app, CPU& cpu, reg32 car, reg32 wheel, reg32 kind)
+ * kind, pushed).  What the callee leaves in eax; nullopt when the game stopped. */
+std::optional<reg32> wheelEffect(App* app, CPU& cpu, reg32 car, reg32 wheel, reg32 kind)
 {
     const reg32 cell = car + kCarWheels + wheel * kWheelSize;
-    cpu.eax = car;
-    cpu.edx = wheel;
-    if (!callPushing(app, cpu, kWheelSmoke,
-                     {at(app, cell + kWheelPlace), at(app, cell + kWheelPlace + 4), at(app, cell + kWheelPlace + 8), kind}))
-        return std::nullopt;
-    return Left{cpu.eax, cpu.edx};
+    const Pushed pushed(app, cpu,
+                        {at(app, cell + kWheelPlace), at(app, cell + kWheelPlace + 4), at(app, cell + kWheelPlace + 8), kind});
+    return feCore<kWheelSmoke, frontend::sime::wheelParticles>(app, cpu, car, wheel, pushed.address());
 }
 
 /* 0x42a130's: wheel `wheel` of the car hitting something (its bit of what the wheels hit), the
  * race on: dust past 5 (0x4cb010, 6), more past 20 (9), past 10 the sparks (0x4cac20) where the
  * wheel is (its 16.16 place as floats), by its speed, and their event (0x4284e0).  What the code
- * leaves in eax and edx; nullopt when the game stopped. */
-std::optional<Left> wheelSprayOf(App* app, CPU& cpu, reg32 car, reg32 wheel)
+ * leaves in eax (edx, which its code does not keep, is no caller's); nullopt when the game
+ * stopped. */
+std::optional<reg32> wheelSprayOf(App* app, CPU& cpu, reg32 car, reg32 wheel)
 {
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEsi | kSaveEdi | kSaveEbp);
     const reg32 bit = reg32(1) << (wheel & 31);
     const reg32 hits = at(app, car + kCarHits);
     if ((bit & hits) == 0 || half(app, car + kCarStage) != 0)
-        return Left{bit, hits};
-    Left left{bit, hits};
+        return bit;
+    reg32 left = bit;
     for (const auto& [past, kind] : {std::pair<reg32, reg32>{kDustSpeed, 6}, {kMoreDustSpeed, 9}})
     {
-        left.eax = statusInto(left.eax, f32(app, car + kCarSpeed), f64(app, past));
+        left = statusInto(left, f32(app, car + kCarSpeed), f64(app, past));
         if (!fAbove(f32(app, car + kCarSpeed), f64(app, past)))
             continue;
-        const std::optional<Left> dusted = wheelEffect(app, cpu, car, wheel, kind);
+        const std::optional<reg32> dusted = wheelEffect(app, cpu, car, wheel, kind);
         if (!dusted)
             return std::nullopt;
         left = *dusted;
     }
     const float speed = f32At(app, car + kCarSpeed);
-    left.eax = statusInto(left.eax, Float(speed), f64(app, kSparksSpeed));
+    left = statusInto(left, Float(speed), f64(app, kSparksSpeed));
     if (fBelowOrEqual(Float(speed), f64(app, kSparksSpeed)))
         return left;
     const reg32 cell = car + kCarWheels + wheel * kWheelSize;
@@ -1433,24 +1388,23 @@ std::optional<Left> wheelSprayOf(App* app, CPU& cpu, reg32 car, reg32 wheel)
     const Float x = fp::mul(Float(i32(at(app, cell + kWheelPlace))), scale);
     const Float y = fp::mul(Float(i32(at(app, cell + kWheelPlace + 4))), scale);
     const Float z = fp::mul(scale, Float(i32(at(app, cell + kWheelPlace + 8))));
-    cpu.eax = car;
-    if (!callPushing(app, cpu, kSparks, {bitsOf(float(x)), bitsOf(float(y)), bitsOf(float(z)), bitsOf(float(bySpeed))}))
-        return std::nullopt;
-    const std::optional<reg32> heard = carEventLeavingEdx(app, cpu, car, 1, 0xffffffff, 5, {0x12, 0, 0});
-    if (!heard)
-        return std::nullopt;
-    return Left{*heard, cpu.edx};
+    {
+        const Pushed pushed(app, cpu, {bitsOf(float(x)), bitsOf(float(y)), bitsOf(float(z)), bitsOf(float(bySpeed))});
+        if (!feCore<kSparks, frontend::sime::sparks>(app, cpu, car, pushed.address()))
+            return std::nullopt;
+    }
+    return carEvent(app, cpu, car, 1, 0xffffffff, 5, {0x12, 0, 0});
 }
 
 /* 0x42a130: wheelSprayOf car eax's wheel edx. */
-void wheelSpray(App* app, CPU& cpu)
+x86::reg32 wheelSpray(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const std::optional<Left> left = wheelSprayOf(app, cpu, cpu.eax, cpu.edx);
+    const std::optional<reg32> left = keeping(cpu, [&] { return wheelSprayOf(app, cpu, args.eax, args.edx); });
     if (!left)
-        return;
-    cpu.eax = left->eax;
-    cpu.edx = left->edx;
+        return args.eax;
+    args.eax = *left;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x42a280's: wheel `wheel`'s effect from its surface's record (wheelSurfaceOf; kSurfaces on, by
@@ -1461,7 +1415,6 @@ void wheelSpray(App* app, CPU& cpu)
  * eax and edx; nullopt when the game stopped. */
 std::optional<Left> surfaceEffectsOf(App* app, CPU& cpu, reg32 car, reg32 wheel)
 {
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEsi | kSaveEdi | kSaveEbp);
     std::optional<reg32> surface;
     {
         const Calling calling(cpu);
@@ -1495,10 +1448,10 @@ std::optional<Left> surfaceEffectsOf(App* app, CPU& cpu, reg32 car, reg32 wheel)
     status = statusInto(status, f32(app, car + kCarSpeed), Float(floatOf(from)));
     if (fBelowOrEqual(f32(app, car + kCarSpeed), Float(floatOf(from))))
         return Left{status, wheelRecord};
-    const std::optional<Left> shown = wheelEffect(app, cpu, car, wheel, effect);
+    const std::optional<reg32> shown = wheelEffect(app, cpu, car, wheel, effect);
     if (!shown)
         return std::nullopt;
-    reg32 left = shown->eax;
+    reg32 left = *shown;
     if (!front)
     {
         const reg32 tracks = at(app, car + kCarTrackSurfaces) * kTrackSurfacesSize;
@@ -1523,24 +1476,24 @@ std::optional<Left> surfaceEffectsOf(App* app, CPU& cpu, reg32 car, reg32 wheel)
 }
 
 /* 0x42a280: surfaceEffectsOf car eax's wheel edx. */
-void surfaceEffects(App* app, CPU& cpu)
+x86::reg32 surfaceEffects(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const std::optional<Left> left = surfaceEffectsOf(app, cpu, cpu.eax, cpu.edx);
+    const std::optional<Left> left = keeping(cpu, [&] { return surfaceEffectsOf(app, cpu, args.eax, args.edx); });
     if (!left)
-        return;
-    cpu.eax = left->eax;
-    cpu.edx = left->edx;
+        return args.eax;
+    args.eax = left->eax;
+    args.edx = left->edx;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x42a480's: wheel `wheel`'s skid mark: drawn on while it skids on a surface that marks
  * (extendSkidMarkOf; the surface's low 4 bits) -- a back wheel skidding past 5 smokes (0x4cb010
- * at its place, 6) -- else ended (endSkidMarkOf).  What the code leaves in eax and edx; nullopt
- * when the game stopped. */
+ * at its place, 6) -- else ended (endSkidMarkOf).  What the code leaves in eax and edx (the wheel
+ * where a callee leaves it: edx is no caller's); nullopt when the game stopped. */
 std::optional<Left> wheelSkidOf(App* app, CPU& cpu, reg32 car, reg32 wheel)
 {
     const GuestFrame frame(cpu, 0x14, 0xc);  // as deep as the code's, for its callees' frames
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEsi | kSaveEdi | kSaveEbp);
     const bool front = i32(wheel) < 2;
     std::optional<reg32> surface;
     {
@@ -1562,29 +1515,28 @@ std::optional<Left> wheelSkidOf(App* app, CPU& cpu, reg32 car, reg32 wheel)
             return left;
         if (fBelowOrEqual(f32(app, skid), f64(app, kSmokingSkid)))
             return Left{statusInto(left->eax, f32(app, skid), f64(app, kSmokingSkid)), left->edx};
-        const reg32 cell = car + kCarWheels + wheel * kWheelSize;
-        cpu.eax = car;
-        cpu.edx = wheel;
-        const std::optional<reg32> smoked = callPushing(
-            app, cpu, kWheelSmoke,
-            {at(app, cell + kWheelPlace), at(app, cell + kWheelPlace + 4), at(app, cell + kWheelPlace + 8), kSmoke});
+        const std::optional<reg32> smoked = wheelEffect(app, cpu, car, wheel, kSmoke);
         if (!smoked)
             return std::nullopt;
-        return Left{*smoked, cpu.edx};
+        return Left{*smoked, wheel};
     }
     const Calling calling(cpu);
-    return endSkidMarkOf(app, cpu, car, wheel);
+    const std::optional<reg32> ended = endSkidMarkOf(app, cpu, car, wheel);
+    if (!ended)
+        return std::nullopt;
+    return Left{*ended, wheel};
 }
 
 /* 0x42a480: wheelSkidOf car eax's wheel edx. */
-void wheelSkid(App* app, CPU& cpu)
+x86::reg32 wheelSkid(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const std::optional<Left> left = wheelSkidOf(app, cpu, cpu.eax, cpu.edx);
+    const std::optional<Left> left = keeping(cpu, [&] { return wheelSkidOf(app, cpu, args.eax, args.edx); });
     if (!left)
-        return;
-    cpu.eax = left->eax;
-    cpu.edx = left->edx;
+        return args.eax;
+    args.eax = left->eax;
+    args.edx = left->edx;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* A wheel's skid by its slide: 0 under 0, 10 over. */
@@ -1605,7 +1557,6 @@ Float heldSkid(App* app, const Float& slide)
 std::optional<reg32> wheelEffectsOf(App* app, CPU& cpu, reg32 car)
 {
     const GuestFrame frame(cpu, 0x18, 0x30);  // as deep as the code's, for its callees' frames
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEdx | kSaveEsi | kSaveEdi | kSaveEbp);
     if ((byte(app, car + kCarObjectFlags) & kHitObject) == 0)
     {
         put(app, car + kCarHitFrames, 0);
@@ -1651,13 +1602,14 @@ std::optional<reg32> wheelEffectsOf(App* app, CPU& cpu, reg32 car)
 }
 
 /* 0x42a560: wheelEffectsOf car eax. */
-void wheelEffects(App* app, CPU& cpu)
+x86::reg32 wheelEffects(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const std::optional<reg32> left = wheelEffectsOf(app, cpu, cpu.eax);
+    const std::optional<reg32> left = keeping(cpu, [&] { return wheelEffectsOf(app, cpu, args.eax); });
     if (!left)
-        return;
-    cpu.eax = *left;
+        return args.eax;
+    args.eax = *left;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* A shake's spring at `field` held to `limit` either way, as the code holds it: under -limit (or
@@ -1704,7 +1656,6 @@ bool rumbleOn(App* app, CPU& cpu, reg32 car, reg32 field, reg32 share, bool byDr
  * leaves it; nullopt when the game stopped. */
 std::optional<reg32> updateShakeOf(App* app, CPU& cpu, reg32 car)
 {
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEdx | kSaveEsi | kSaveEdi | kSaveEbp);
     const reg32 across = car + kCarShake, up = across + 4, acrossSpring = across + 8, upSpring = across + 0xc;
     reg32 left = 0;
     bool shaking = false;
@@ -1809,13 +1760,14 @@ std::optional<reg32> updateShakeOf(App* app, CPU& cpu, reg32 car)
 }
 
 /* 0x42a7d0: updateShakeOf car eax. */
-void updateShake(App* app, CPU& cpu)
+x86::reg32 updateShake(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const std::optional<reg32> left = updateShakeOf(app, cpu, cpu.eax);
+    const std::optional<reg32> left = keeping(cpu, [&] { return updateShakeOf(app, cpu, args.eax); });
     if (!left)
-        return;
-    cpu.eax = *left;
+        return args.eax;
+    args.eax = *left;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* A burst at a place (0x4cae00, stdcall: the place's three words read from `place`, eax its
@@ -1828,8 +1780,8 @@ std::optional<reg32> burstAt(App* app, CPU& cpu, reg32 kind, reg32 place)
 
 std::optional<reg32> sparksAt(App* app, CPU& cpu, reg32 car, reg32 place, reg32 size)
 {
-    cpu.eax = car;
-    return callPushing(app, cpu, kSparks, {at(app, place), at(app, place + 4), at(app, place + 8), size});
+    const Pushed pushed(app, cpu, {at(app, place), at(app, place + 4), at(app, place + 8), size});
+    return feCore<kSparks, frontend::sime::sparks>(app, cpu, car, pushed.address());
 }
 
 /* A crash's shake (startShakeOf) for rand's low 3 bits and `from` frames one way, 35 the other
@@ -1869,7 +1821,6 @@ std::optional<reg32> crashNoise(App* app, CPU& cpu, reg32 car, reg32 kind)
 std::optional<reg32> crashEffectsOf(App* app, CPU& cpu, reg32 car)
 {
     const GuestFrame frame(cpu, 0x18, 0x70);
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEdx | kSaveEsi | kSaveEdi | kSaveEbp);
     const reg32 kind = at(app, car + kCarCrash) & 0xefff0000;
     const reg32 other = at(app, car + kCarCrash) & 0xff;
     const reg32 point = car + kCarCrashPoint;
@@ -1879,7 +1830,6 @@ std::optional<reg32> crashEffectsOf(App* app, CPU& cpu, reg32 car)
         return std::nullopt;
     if (forced && (hit() & 0x7fffffff) != 0 && kind != 0x60000)
     {
-        cpu.edx = hit();  // as the code holds it at the call: the jolt's frame keeps it
         if (!guest::direct<0x471270, controls::crashWith>(app, cpu, car, at(app, point), at(app, point + 4),
                                                           at(app, point + 8), hit()))
             return std::nullopt;
@@ -1921,8 +1871,6 @@ std::optional<reg32> crashEffectsOf(App* app, CPU& cpu, reg32 car)
             }
             for (reg32 k = 0; k < 3; ++k)
                 putFloat(app, offset + 4 * k, float(seen[k]));
-            cpu.ebx = offset;  // as the code holds them at the call
-            cpu.ecx = offset;
             guest::direct<0x4e0050, vertices::scaleVectorsBy>(app, cpu, 1, offset, floatOf(kPushScale), offset);
             if (cpu.terminate)
                 return std::nullopt;
@@ -1969,7 +1917,6 @@ std::optional<reg32> crashEffectsOf(App* app, CPU& cpu, reg32 car)
                 || !burstAt(app, cpu, 2, point))
                 return std::nullopt;
             sound = other;
-            cpu.ecx = other;
             if (!crashNoise(app, cpu, car, 4))
                 return std::nullopt;
             break;
@@ -2005,10 +1952,7 @@ std::optional<reg32> crashEffectsOf(App* app, CPU& cpu, reg32 car)
                         shown = carEvent(app, cpu, car, 1, 0xffffffff, 5, {0x12, 0, 0});
                 }
                 else
-                {
-                    cpu.edx = car;
                     shown = burstAt(app, cpu, effect, point);
-                }
             }
             else
                 shown = burstAt(app, cpu, 2, point);
@@ -2073,13 +2017,14 @@ std::optional<reg32> crashEffectsOf(App* app, CPU& cpu, reg32 car)
 }
 
 /* 0x42ac40: crashEffectsOf car eax. */
-void crashEffects(App* app, CPU& cpu)
+x86::reg32 crashEffects(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const std::optional<reg32> left = crashEffectsOf(app, cpu, cpu.eax);
+    const std::optional<reg32> left = keeping(cpu, [&] { return crashEffectsOf(app, cpu, args.eax); });
     if (!left)
-        return;
-    cpu.eax = *left;
+        return args.eax;
+    args.eax = *left;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x42b480's: the car just put back (the frames since counting up from 1): a sparkle where it is
@@ -2089,7 +2034,6 @@ void crashEffects(App* app, CPU& cpu)
  * 0x537310.  eax as the code leaves it; nullopt when the game stopped. */
 std::optional<reg32> respawnEffectsOf(App* app, CPU& cpu, reg32 car)
 {
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEdx | kSaveEsi | kSaveEdi | kSaveEbp);
     const reg32 since = at(app, car + kCarSinceRespawn);
     if (i32(since) > 0)
         put(app, car + kCarSinceRespawn, since + 1);
@@ -2128,15 +2072,13 @@ std::optional<reg32> respawnEffectsOf(App* app, CPU& cpu, reg32 car)
                 where[k] = bitsOf(float(fp::add(Float(float(turned[k])), f32(app, car + kCarPlace + 4 * k))));
             const reg32 frames = at(app, car + kCarSinceRespawn);
             std::optional<reg32> sparkled;
-            if (i32(frames) > 0x40)
             {
-                cpu.eax = car;
-                sparkled = callPushing(app, cpu, kSparkle, {where[0], where[1], where[2]});
-            }
-            else
-            {
-                cpu.eax = i32(frames) > 0x10 ? 9 : 6;
-                sparkled = callPushing(app, cpu, kSparkleBurst, {where[0], where[1], where[2]});
+                const Pushed pushed(app, cpu, {where[0], where[1], where[2]});
+                if (i32(frames) > 0x40)
+                    sparkled = feCore<kSparkle, frontend::sime::respawnSparkle>(app, cpu, car, pushed.address());
+                else
+                    sparkled = feCore<kSparkleBurst, frontend::sime::crashPuff>(app, cpu, i32(frames) > 0x10 ? 9u : 6u,
+                                                                               pushed.address());
             }
             if (!sparkled)
                 return std::nullopt;
@@ -2161,13 +2103,14 @@ std::optional<reg32> respawnEffectsOf(App* app, CPU& cpu, reg32 car)
 }
 
 /* 0x42b480: respawnEffectsOf car eax. */
-void respawnEffects(App* app, CPU& cpu)
+x86::reg32 respawnEffects(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const std::optional<reg32> left = respawnEffectsOf(app, cpu, cpu.eax);
+    const std::optional<reg32> left = keeping(cpu, [&] { return respawnEffectsOf(app, cpu, args.eax); });
     if (!left)
-        return;
-    cpu.eax = *left;
+        return args.eax;
+    args.eax = *left;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x42b660's: the car's wheels' marks cut (0x4db860), its skid and scrape sounds stopped (0x4284e0
@@ -2175,7 +2118,6 @@ void respawnEffects(App* app, CPU& cpu)
  * nullopt when the game stopped. */
 std::optional<reg32> stopCarEffectsOf(App* app, CPU& cpu, reg32 car)
 {
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEdx | kSaveEsi | kSaveEbp);
     for (reg32 wheel = 0; wheel < 4; ++wheel)
     {
         if (!feCore<0x4db860, frontend::sime::wheelMarkCut>(app, cpu, at(app, car + kCarNumber), wheel))
@@ -2211,13 +2153,14 @@ std::optional<reg32> stopCarEffectsOf(App* app, CPU& cpu, reg32 car)
 }
 
 /* 0x42b660: stopCarEffectsOf car eax. */
-void stopCarEffects(App* app, CPU& cpu)
+x86::reg32 stopCarEffects(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const std::optional<reg32> left = stopCarEffectsOf(app, cpu, cpu.eax);
+    const std::optional<reg32> left = keeping(cpu, [&] { return stopCarEffectsOf(app, cpu, args.eax); });
     if (!left)
-        return;
-    cpu.eax = *left;
+        return args.eax;
+    args.eax = *left;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x42b780's: the car's effects a frame: respawnEffectsOf, crashEffectsOf, wheelEffectsOf,
@@ -2225,7 +2168,6 @@ void stopCarEffects(App* app, CPU& cpu)
 std::optional<reg32> carEffectsOf(App* app, CPU& cpu, reg32 car)
 {
     const GuestFrame frame(cpu, 8, 0);  // as deep as the code's, for its callees' frames
-    const Kept kept(cpu, kSaveEdx | kSaveEbp);
     const Calling calling(cpu);
     if (!respawnEffectsOf(app, cpu, car))
         return std::nullopt;
@@ -2235,22 +2177,14 @@ std::optional<reg32> carEffectsOf(App* app, CPU& cpu, reg32 car)
 }
 
 /* 0x42b780: carEffectsOf car eax. */
-void carEffects(App* app, CPU& cpu)
+x86::reg32 carEffects(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const std::optional<reg32> left = carEffectsOf(app, cpu, cpu.eax);
+    const std::optional<reg32> left = keeping(cpu, [&] { return carEffectsOf(app, cpu, args.eax); });
     if (!left)
-        return;
-    cpu.eax = *left;
+        return args.eax;
+    args.eax = *left;
     cpu.esp += 4;
-}
-
-/* The same as C++ (guest::direct), where nothing reads eax after it. */
-std::optional<Float> dot(App* app, CPU& cpu, reg32 a, reg32 b)
-{
-    const double product = guest::direct<0x4e01f0, vertices::dotProduct>(app, cpu, a, b);
-    if (cpu.terminate)
-        return std::nullopt;
-    return Float(product);
+    return args.eax;
 }
 
 /* 0x42b7b0's: the car in the air (+0x8b), not to be put back, not crashing, falling (its
@@ -2261,15 +2195,15 @@ std::optional<Float> dot(App* app, CPU& cpu, reg32 a, reg32 b)
 std::optional<reg32> airborneSpinOf(App* app, CPU& cpu, reg32 car)
 {
     const GuestFrame frame(cpu, 0x10, 0x24);
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEdx | kSaveEbp);
     if (byte(app, car + kCarInAir) == 0 || at(app, car + kCarRespawnSlice) != 0
         || (at(app, car + kCarHit) & 0x7fffffff) != 0)
         return car;
-    const std::optional<Float> falling = dotLeavingEax(app, cpu, car + kCarVelocity, car + kCarGroundUp);
+    const std::optional<Float> falling = dot(app, cpu, car + kCarVelocity, car + kCarGroundUp);
     if (!falling)
         return std::nullopt;
+    // eax as the dot product leaves it: its first vector.
     if (!fBelow(0.0, *falling))
-        return statusInto(cpu.eax, 0.0, *falling);
+        return statusInto(car + kCarVelocity, 0.0, *falling);
     const reg32 spin = car + kCarSpin, seen = car + kCarSpinSeen;
     for (reg32 k = 0; k < 8; k += 4)
     {
@@ -2299,26 +2233,26 @@ std::optional<reg32> airborneSpinOf(App* app, CPU& cpu, reg32 car)
     const reg32 axes = frame - 0x24;
     if (!feCore<0x4e0110, frontend::simd::transpose>(app, cpu, car + kCarAxes, axes))
         return std::nullopt;
-    // The last one's eax is what the code leaves.
+    // The last one's eax is what the code leaves: its first vector.
     for (reg32 k = 0; k < 0xc; k += 4)
     {
-        const std::optional<Float> part = k < 8 ? dot(app, cpu, seen, axes + 3 * k)
-                                                : dotLeavingEax(app, cpu, seen, axes + 3 * k);
+        const std::optional<Float> part = dot(app, cpu, seen, axes + 3 * k);
         if (!part)
             return std::nullopt;
         putFloat(app, spin + k, float(*part));
     }
-    return cpu.eax;
+    return seen;
 }
 
 /* 0x42b7b0: airborneSpinOf car eax. */
-void airborneSpin(App* app, CPU& cpu)
+x86::reg32 airborneSpin(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const std::optional<reg32> left = airborneSpinOf(app, cpu, cpu.eax);
+    const std::optional<reg32> left = keeping(cpu, [&] { return airborneSpinOf(app, cpu, args.eax); });
     if (!left)
-        return;
-    cpu.eax = *left;
+        return args.eax;
+    args.eax = *left;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x42b900's: the car's frame of race state: its reset's wait run down; while it is waiting to
@@ -2329,7 +2263,6 @@ void airborneSpin(App* app, CPU& cpu)
 std::optional<reg32> updateCarOf(App* app, CPU& cpu, reg32 car)
 {
     const GuestFrame frame(cpu, 0x10, 0);  // as deep as the code's, for its callees' frames
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEdx | kSaveEbp);
     const reg32 wait = at(app, car + kCarResetWait);
     put(app, car + 0x7dc, 0);
     if (wait != 0)
@@ -2350,7 +2283,10 @@ std::optional<reg32> updateCarOf(App* app, CPU& cpu, reg32 car)
                 return std::nullopt;
         }
         put(app, car + kCarResetWait, 0);
-        return call(app, cpu, kFill, car + kCarHit, 0x20);
+        guest::direct<kFill, ea::clearBytes>(app, cpu, car + kCarHit, 0x20u);
+        if (cpu.terminate)
+            return std::nullopt;
+        return fillEnd(car + kCarHit, 0x20);
     }
     {
         const Calling calling(cpu);
@@ -2376,13 +2312,14 @@ std::optional<reg32> updateCarOf(App* app, CPU& cpu, reg32 car)
 }
 
 /* 0x42b900: updateCarOf car eax. */
-void updateCar(App* app, CPU& cpu)
+x86::reg32 updateCar(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const std::optional<reg32> left = updateCarOf(app, cpu, cpu.eax);
+    const std::optional<reg32> left = keeping(cpu, [&] { return updateCarOf(app, cpu, args.eax); });
     if (!left)
-        return;
-    cpu.eax = *left;
+        return args.eax;
+    args.eax = *left;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* A slice's half width across (a byte at +0x17 the one side's, at +0x1b the other's, as 16.16
@@ -2401,7 +2338,6 @@ reg32 halfWidth(App* app, reg32 slicePointer, reg32 field)
  * stopped. */
 std::optional<Left> defaultGridPlaceOf(App* app, CPU& cpu, reg32 place, reg32 slice, reg32 where)
 {
-    const Kept kept(cpu, kSaveEcx | kSaveEsi | kSaveEdi | kSaveEbp);
     const reg32 backwards = gameSettings(app).backwards;
     reg32 row;
     if (backwards != 0)
@@ -2415,8 +2351,6 @@ std::optional<Left> defaultGridPlaceOf(App* app, CPU& cpu, reg32 place, reg32 sl
     reg32 side = place & 1;
     if (backwards != 0)
         side = side == 0 ? 1 : 0;
-    // eax at the call as the code leaves it there: a stand-in of the check's hands it back now and then.
-    cpu.eax = backwards;
     const reg32 wide = guest::direct<0x40eca0, aiplan::trackRoadWide>(app, cpu);
     if (cpu.terminate)
         return std::nullopt;
@@ -2457,14 +2391,16 @@ std::optional<Left> defaultGridPlaceOf(App* app, CPU& cpu, reg32 place, reg32 sl
 }
 
 /* 0x42ba00: defaultGridPlaceOf place eax, to [edx] and [ebx]. */
-void defaultGridPlace(App* app, CPU& cpu)
+x86::reg32 defaultGridPlace(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const std::optional<Left> left = defaultGridPlaceOf(app, cpu, cpu.eax, cpu.edx, cpu.ebx);
+    const std::optional<Left> left =
+        keeping(cpu, [&] { return defaultGridPlaceOf(app, cpu, args.eax, args.edx, args.ebx); });
     if (!left)
-        return;
-    cpu.eax = left->eax;
-    cpu.edx = left->edx;
+        return args.eax;
+    args.eax = left->eax;
+    args.edx = left->edx;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x42bb80's: the start's grid, 12 places of 3 words at kGrid: from the track's start.dat
@@ -2475,7 +2411,6 @@ void defaultGridPlace(App* app, CPU& cpu)
 std::optional<reg32> loadStartGridOf(App* app, CPU& cpu)
 {
     const GuestFrame frame(cpu, 0x14, 0x210);
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEdx | kSaveEsi | kSaveEbp);
     const reg32 path = frame - 0x210;
     const reg32 track = gameSettings(app).track;
     guest::direct<0x4df690, watcom::clib::sprintf>(app, cpu, path, kStartFile, guest::Words{kTrackFolder, track});
@@ -2519,13 +2454,14 @@ std::optional<reg32> loadStartGridOf(App* app, CPU& cpu)
 }
 
 /* 0x42bb80: loadStartGridOf. */
-void loadStartGrid(App* app, CPU& cpu)
+x86::reg32 loadStartGrid(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const std::optional<reg32> left = loadStartGridOf(app, cpu);
+    const std::optional<reg32> left = keeping(cpu, [&] { return loadStartGridOf(app, cpu); });
     if (!left)
-        return;
-    cpu.eax = *left;
+        return args.eax;
+    args.eax = *left;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x42bc70's: grid place `place`: its slice to [slice], its place to `where` -- across, 0x8000
@@ -2546,12 +2482,13 @@ Left gridPlaceOf(App* app, reg32 place, reg32 slice, reg32 where)
 }
 
 /* 0x42bc70: gridPlaceOf place eax, to [edx] and [ebx]. */
-void gridPlace(App* app, CPU& cpu)
+x86::reg32 gridPlace(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Left left = gridPlaceOf(app, cpu.eax, cpu.edx, cpu.ebx);
-    cpu.eax = left.eax;
-    cpu.edx = left.edx;
+    const Left left = gridPlaceOf(app, args.eax, args.edx, args.ebx);
+    args.eax = left.eax;
+    args.edx = left.edx;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x42bcb0's: the car put on its grid place and its race state set to the start's: its handling
@@ -2567,7 +2504,6 @@ void gridPlace(App* app, CPU& cpu)
 bool placeOnGridOf(App* app, CPU& cpu, reg32 car, reg32 number)
 {
     const GuestFrame frame(cpu, 0x14, 0x2c);
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEsi | kSaveEdi | kSaveEbp);
     const reg32 place = frame - 0x2c, slice = frame - 0x14;
     reg32 words[3];
     float scaled;
@@ -2597,10 +2533,11 @@ bool placeOnGridOf(App* app, CPU& cpu, reg32 car, reg32 number)
             words[k] = at(app, record + kRecordStart + 4 * k);
         scaled = float(fp::mul(f32(app, at(app, car + kCarHandling) + kHandlingScaled), Float(scale)));
     }
-    cpu.eax = car;
-    cpu.edx = number;
-    if (!callPushing(app, cpu, kScaleHandling, {bitsOf(scaled), words[0], words[1], words[2]}))
-        return false;
+    {
+        const Pushed pushed(app, cpu, {bitsOf(scaled), words[0], words[1], words[2]});
+        if (!guest::direct<kScaleHandling, port::conv::scaleHandling>(app, cpu, car, number, pushed.address()))
+            return false;
+    }
     const reg8 flags = byte(app, car + kCarFlags);
     if ((flags & kThisMachines) != 0 && (flags & kChased) != 0)
     {
@@ -2697,14 +2634,15 @@ bool placeOnGridOf(App* app, CPU& cpu, reg32 car, reg32 number)
 }
 
 /* 0x42bcb0: placeOnGridOf car eax, edx its number; eax and edx left as the car. */
-void placeOnGrid(App* app, CPU& cpu)
+x86::reg32 placeOnGrid(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const reg32 car = cpu.eax;
-    if (!placeOnGridOf(app, cpu, car, cpu.edx))
-        return;
-    cpu.eax = car;
-    cpu.edx = car;
+    const reg32 car = args.eax;
+    if (!keeping(cpu, [&] { return placeOnGridOf(app, cpu, car, args.edx); }))
+        return args.eax;
+    args.eax = car;
+    args.edx = car;
     cpu.esp += 4;
+    return args.eax;
 }
 
 }  // namespace racestart

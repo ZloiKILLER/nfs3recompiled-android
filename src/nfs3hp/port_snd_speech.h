@@ -12,8 +12,7 @@
  *
  * Their data stays at the game's addresses (port.h says why); the lines and
  * names the code builds on its stack lie on the game's stack where its frames
- * have them, so that what the callees read -- and what the stand-ins that the
- * checks put in the place of the game's functions log -- is the same. */
+ * have them, so that what the callees read is the same. */
 namespace nfs3hp
 {
 namespace port
@@ -57,23 +56,25 @@ enum SpeechBank : int32_t
     kSpeechBankLines = 10,      // 0x57119c
 };
 
-/* A call into the game's code as the rewrite makes it, with esi and edi as the
- * original code has them there (SND's code reads them: its errors push them
- * as arguments). */
-inline bool callWith(App* app, CPU& cpu, reg32 esp, reg32 target, Args a, std::initializer_list<reg32> stack,
-                     reg32 esi, reg32 edi, reg32& result)
+/* A call of the game's code that has no typed function yet, by its address:
+ * esp as the code has it at the call, the register arguments as the code
+ * loads them (eax, edx, ebx and ecx in turn), the others as they are.  Its eax
+ * (empty when the game stopped). */
+inline Result callAt(App* app, CPU& cpu, reg32 esp, reg32 target, std::initializer_list<reg32> registers)
 {
-    cpu.esi = esi;
-    cpu.edi = edi;
-    return callGame(app, cpu, esp, target, a, stack, result);
+    cpu.esp = esp;
+    const std::optional<reg32> eax = guest::pointerCall(app, cpu, target, registers);
+    if (!eax)
+        return {};
+    return int32_t(*eax);
 }
 
-/* The same for the answer as a Result (empty when the game stopped). */
-inline Result callResult(App* app, CPU& cpu, reg32 esp, reg32 target, Args a, std::initializer_list<reg32> stack,
-                         reg32 esi, reg32 edi)
+/* The same with words pushed: the register arguments `a` (0 for those not
+ * given), `stack` pushed. */
+inline Result callPushing(App* app, CPU& cpu, reg32 esp, reg32 target, Args a, std::initializer_list<reg32> stack)
 {
     reg32 r;
-    if (!callWith(app, cpu, esp, target, a, stack, esi, edi, r))
+    if (!pointerGame(app, cpu, esp, target, a, stack, r))
         return {};
     return int32_t(r);
 }

@@ -2,6 +2,7 @@
 #define NFS3HP_PORT_SOUND_SLICE_H
 
 #include "port_snd.h"
+#include "port_sound_calls.h"
 
 #include <cstdint>
 #include <initializer_list>
@@ -11,161 +12,51 @@
  * port_sound_player.cpp, port_sound_pursuit.cpp) share, besides port_snd.h's
  * library: how they call the game's code that is not rewritten yet, the
  * game's strings, and the functions of one that another calls as C++ (each
- * is also the game's entry, an adapter under the game's name).
+ * is also the game's entry, a thunk under the game's name).
  *
- * A rewrite of these keeps esi and edi as the game's code that calls the
- * next function has them, where that code sets them for its own use -- the
- * library, the effects and the streams read them unset (port.h says why):
- * Game holds both, calls with them, and gives them back as they were. */
+ * The rewrites call each other, the library and the other files' typed
+ * functions as C++ (guest::direct); what has no typed function yet is called
+ * by its address, with the register arguments it takes. */
 namespace nfs3hp
 {
 
 // nfs3hp_main.cpp's: the track's index file as the game opens it, and its own
-// stream file in place of the copy's (tools/apply_music_stream.py).
+// stream file in place of the copy's (the port's music stream change).
 void musicIndexOpened(win32::WinApplication* app, x86::reg32 path);
 void musicStreamFile(win32::WinApplication* app, x86::reg32 path);
 
 namespace port
 {
 
-// The adapters of the other rewrites this group calls (port_snd_voices.cpp, port_snd_play.cpp,
-// port_sound_effects.cpp), by the names the game's code knows them.
-void SNDstatus(App* app, CPU& cpu);
-void SNDstopall(App* app, CPU& cpu);
-void SNDvol(App* app, CPU& cpu);
-void SNDpitchbend(App* app, CPU& cpu);
-void SNDpan(App* app, CPU& cpu);
-void SNDmastervol(App* app, CPU& cpu);
-void SNDbankadd(App* app, CPU& cpu);
-void SNDbankheadersize(App* app, CPU& cpu);
-void SNDbankheadercopy(App* app, CPU& cpu);
-void removeAllBanks(App* app, CPU& cpu);
-void slotStop(App* app, CPU& cpu);
-void playCarEffectFive(App* app, CPU& cpu);
-void playEffect(App* app, CPU& cpu);
-void busUp(App* app, CPU& cpu);
-void busDown(App* app, CPU& cpu);
-
-/* A call into the game's code from a rewrite, with esi and edi (the rewrite's
- * own for the callee) as the game's code that makes the call has them and
- * `esp` as it has it there; the callee's eax, or nothing when the game
- * stopped.  esi and edi go back as they were with the Game. */
+/* Where a rewrite calls the game's code from: `esp` as the game's code has it
+ * at the call. */
 class Game
 {
 public:
     App* app;
     CPU& cpu;
     reg32 esp;
-    reg32 esi, edi;
 
-    Game(App* a, CPU& c, reg32 stack) : app(a), cpu(c), esp(stack), esi(c.esi), edi(c.edi), savedEsi(c.esi), savedEdi(c.edi) {}
-    ~Game()
-    {
-        cpu.esi = savedEsi;
-        cpu.edi = savedEdi;
-    }
+    Game(App* a, CPU& c, reg32 stack) : app(a), cpu(c), esp(stack) {}
     Game(const Game&) = delete;
     Game& operator=(const Game&) = delete;
 
-    /* `target` called with the register arguments `a` and `stack` pushed;
+    /* `target`, which has no typed function yet, called by its address with the
+     * register arguments `a` (those it does not read 0) and `stack` pushed;
      * `eax` is set to what it gives back. */
     bool call(reg32 target, Args a, std::initializer_list<reg32> stack, reg32& eax)
     {
-        cpu.esi = esi;
-        cpu.edi = edi;
-        if (const guest::Native rewrite = rewriteAt(target))
-            return callGame(app, cpu, esp, rewrite, a, stack, eax);
-        return callGame(app, cpu, esp, target, a, stack, eax);
+        return pointerGame(app, cpu, esp, target, a, stack, eax);
     }
     bool call(reg32 target, Args a, reg32& eax) { return call(target, a, {}, eax); }
-    /* esi and edi into the cpu, for a rewrite called as C++ (it finds them
-     * there). */
-    void sync()
-    {
-        cpu.esi = esi;
-        cpu.edi = edi;
-    }
-    /* esi, edi and esp into the cpu as the game's code has them at a call, for
-     * a typed core called as C++ in its place (guest::direct; the words the
-     * call pushes its ByAddress pushes in the checks). */
-    void atCall()
-    {
-        cpu.esi = esi;
-        cpu.edi = edi;
-        cpu.esp = esp;
-    }
-
-private:
-    reg32 savedEsi, savedEdi;
-
-    /* The adapter of a function that is a rewrite too (SND's, the effects'),
-     * to be run as C++ and not found through the game's address -- as the
-     * game's code calls it, but where a stand-in stands at the address (the
-     * checks') it is the rewrite that must run. */
-    static guest::Native rewriteAt(reg32 target)
-    {
-        switch (target)
-        {
-        case 0x4e8fd0: return SNDstatus;
-        case 0x4e9010: return SNDstopall;
-        case 0x4e95fc: return SNDvol;
-        case 0x4e97e4: return SNDpitchbend;
-        case 0x4e9950: return SNDpan;
-        case 0x4e73d0: return SNDmastervol;
-        // 0x4e8d20, 0x4e8db0 and 0x4e8e20 (SND's bank add and header calls) are called by
-        // address: the checks stand in for them on both sides (generate.py STOOD_IN).
-        case 0x4e8c1c: return removeAllBanks;
-        case 0x416f60: return slotStop;
-        case 0x418280: return playCarEffectFive;
-        case 0x4182b0: return playEffect;
-        case 0x418770: return busUp;
-        case 0x418790: return busDown;
-        default: return nullptr;
-        }
-    }
+    /* esp into the cpu as the game's code has it at a call, for a typed core
+     * called as C++ in its place (guest::direct). */
+    void atCall() { cpu.esp = esp; }
 };
 
-// port_sound_pursuit.cpp's: the game's 0x418930, player `player`'s beeps started (`count` of them, the first
-// high): the beep's handle; esp the frame base.
-Result beepsStarted(App* app, CPU& cpu, reg32 esp, int32_t count, int32_t player);
-// port_sound_pursuit.cpp's: the game's 0x418c60, the music's event back after an interruption (`edx` handed on to
-// the interruption's end): eax as the code leaves it; esp the frame base.
-Result musicEventResumed(App* app, CPU& cpu, reg32 esp, reg32 eax, reg32 edx);
+// port_sound_pursuit.cpp's beepsStarted (0x418930) and musicEventResumed (0x418c60) are port_sound_calls.h's.
 
-}  // namespace port
-
-namespace guest
-{
-
-// The count in eax, the player in edx; eax back.
-template <>
-struct ByAddress<port::beepsStarted>
-{
-    template <x86::reg32 Address>
-    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, std::int32_t count,
-                             std::int32_t player)
-    {
-        return watcomEax(app, cpu, Address, {x86::reg32(count), x86::reg32(player)});
-    }
-};
-
-// `eax` in eax, `edx` in edx; eax back.
-template <>
-struct ByAddress<port::musicEventResumed>
-{
-    template <x86::reg32 Address>
-    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, x86::reg32 eax, x86::reg32 edx)
-    {
-        return watcomEax(app, cpu, Address, {eax, edx});
-    }
-};
-
-}  // namespace guest
-
-namespace port
-{
-
-/* A loop's safepoint, as the game's generated code has one at each loop's
+/* A loop's safepoint, as the game's the game's code has one at each loop's
  * head: the guest's context handed over when another thread waits for it. */
 inline void safepoint(App* app, CPU& cpu)
 {

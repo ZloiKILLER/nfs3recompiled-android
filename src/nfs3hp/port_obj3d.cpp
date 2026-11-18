@@ -1,12 +1,21 @@
 #include "game_settings.h"
+#include "native_load_carmodels.h"
 #include "port_obj3d.h"
+#include "native_frontend_loop.h"
 #include "port_draw2d.h"
 #include "port_fields.h"
 #include "port_snd_stream_calls.h"
 #include "native_collide.h"
+#include "native_decompiled.h"
 #include "native_ea_memory.h"
 #include "native_ea_threads.h"
 #include "native_frontend_rendc.h"
+#include "native_frontend_rendd.h"
+#include "native_frontend_rende.h"
+#include "native_render.h"
+#include "native_frontend_wata.h"
+#include "native_frontend_glue.h"
+#include "port_snd.h"
 #include "native_frontend_simd.h"
 #include "native_graphics.h"
 #include "native_load_cardb.h"
@@ -15,6 +24,43 @@
 #include "native_watcom.h"
 
 #include <cstring>
+#include "native_guest.h"
+
+namespace nfs3hp
+{
+namespace port
+{
+namespace
+{
+
+/* A call into the game's code through guest::pointerCall: the register arguments of `a`, `stack` pushed, from the
+ * game's stack at esp.  Its eax; false when the game stops. */
+inline bool callPointer(App* app, CPU& cpu, reg32 esp, reg32 target, Args a, std::initializer_list<reg32> stack,
+                        reg32& result)
+{
+    cpu.esp = esp;
+    x86::Args registers;
+    registers.eax = a.eax;
+    registers.edx = a.edx;
+    registers.ebx = a.ebx;
+    registers.ecx = a.ecx;
+    const std::optional<reg32> value = guest::pointerCall(app, cpu, target, registers, stack);
+    if (!value)
+        return false;
+    result = *value;
+    return true;
+}
+
+inline bool callPointer(App* app, CPU& cpu, reg32 esp, reg32 target, Args a = {},
+                        std::initializer_list<reg32> stack = {})
+{
+    reg32 ignored;
+    return callPointer(app, cpu, esp, target, a, stack, ignored);
+}
+
+}  // namespace
+}  // namespace port
+}  // namespace nfs3hp
 
 /* Each sum and product rounds as the x87 code rounds it: none fused. */
 #if defined(__clang__)
@@ -33,9 +79,7 @@
  * flares (0x465eb0-0x466740); a car's .viv path (0x439360); the logo's quad
  * (0x4d79b0).
  *
- * tools/game_checks holds each adapter against the game's code made afresh
- * (obj3d.inc): memory, the calls out with their arguments, eax, esi, edi, ebp
- * and esp, the x87's stack, control and status words.  The registers the
+ * The registers the
  * game's code leaves otherwise than the caller had them, and which a caller
  * reads (lib_boundary's reading of each call site, the widget table's
  * callers -- the menus' loop -- included): edx after a key (0x4675b0 leaves
@@ -43,7 +87,7 @@
  * after the logo's quad (0x4d79b0 leaves them as the clipped quad's draw
  * does, and render::loadingScreen hands edx on to 0x4ead90), esi after the
  * flares (0x466740 leaves it at its frame; its one caller, 0x466cf0, sets it
- * again first).  Those the adapters leave as the game's code does.
+ * again first).  Those the thunks leave as the game's code does.
  *
  * What the game's code leaves in esi and edi on the way into a callee is
  * kept too where the callee reads it (the renderer's lists' functions take
@@ -57,13 +101,6 @@ namespace nfs3hp
 {
 namespace port
 {
-
-/* EA's random number (port_snd_voices.cpp, 0x4e0d88): another rewrite's
- * adapter, called as the game's code calls its address -- declared by its
- * type, as tools/game_checks/generate.py would take `void eaRandom(` for
- * its definition. */
-using Adapter = void(App* app, CPU& cpu);
-Adapter eaRandom;
 
 namespace obj3d
 {
@@ -197,13 +234,13 @@ constexpr reg32 kTwice = 0x53ac60, kDegrees = 0x53ac70, kHalfBack = 0x53ac78;
 
 /* What is not rewritten. */
 constexpr reg32 kMenuShownNow = 0x44a660, kMouseKey = 0x49c080, kTrace = 0x42d500;
-constexpr reg32 kCarRecord = 0x439a50, kEndWithSlash = 0x438340, kCarFilePrefix = 0x439300, kCarCount = 0x438bd0;
-constexpr reg32 kCarColourIndex = 0x439790, kCarColourRgb = 0x439810, kRgbToHsv = 0x49c880;
+constexpr reg32 kCarRecord = 0x439a50, kCarFilePrefix = 0x439300;
+constexpr reg32 kCarColourIndex = 0x439790, kCarColourRgb = 0x439810;
 constexpr reg32 kSprintf = 0x4df690, kMemset = 0x4e0640, kMemmove = 0x4ea4f0;
 constexpr reg32 kAllocate = 0x4e1620, kFree = 0x4e1890, kRunTasks = 0x4e7630;
 constexpr reg32 kReadClose = 0x4f1370, kRead = 0x4f15d0, kReadDone = 0x4f1790, kVivEntry = 0x4679f0;
 constexpr reg32 kLocateShape = 0x4ef270, kShapeIntoTexture = 0x4d5ed0, kAllocTexture = 0x49c600;
-constexpr reg32 kModelReady = 0x49cfa0, kFreeModel = 0x49d5a0, kLoadTga = 0x49d320;
+constexpr reg32 kModelReady = 0x49cfa0, kFreeModel = 0x49d5a0;
 constexpr reg32 kRoom = 0x4bbde0, kSine = 0x4ea930, kCosine = 0x4ea950;
 constexpr reg32 kSubtract = 0x4e0000, kUnit = 0x4e01c0, kRotate = 0x4e03b0, kTransform = 0x4e0430;
 constexpr reg32 kXRotation = 0x4dfd80, kYRotation = 0x4eaab0, kZRotation = 0x4eab80;
@@ -213,8 +250,8 @@ constexpr reg32 kSetRenderState = 0x431900, kStatesForHud = 0x431b40, kStatesFor
 constexpr reg32 kSunLighting = 0x49d640, kLightFrom = 0x49d750, kLightDirectionSet = 0x49d760;
 constexpr reg32 kAmbient = 0x49d8f0, kLightAlpha = 0x49d720, kGlareColours = 0x49d800, kDrawModel = 0x49de20;
 constexpr reg32 kFrameDone = 0x4bbd70, kClipQuad = 0x4c12e0;
-constexpr guest::Native kRandom = port::eaRandom;                    // 0x4e0d88
-constexpr guest::Native kFilledRectangle = draw2d::filledRectangle;  // 0x4d8910
+constexpr reg32 kRandom = 0x4e0d88;                              // EA's random number (port::nextRandom)
+constexpr reg32 kFilledRectangle = 0x4d8910;
 
 /* The light types of a model's lights. */
 constexpr uint8_t kHeadlight = 0x48, kTaillight = 0x54;
@@ -277,29 +314,6 @@ void copyWords(App* app, reg32 to, reg32 from, reg32 count)
         setWord(app, to + 4 * i, word(app, from + 4 * i));
 }
 
-/* The registers pushed at a function's entry, where the game's code has them
- * (what a logged call reads above its arguments). */
-void pushed(App* app, reg32 esp, std::initializer_list<reg32> registers)
-{
-    for (const reg32 r : registers)
-        setWord(app, esp -= 4, r);
-}
-
-/* esi and edi as the caller had them, on the way out -- the pops. */
-struct Kept
-{
-    CPU& cpu;
-    reg32 esi, edi;
-    explicit Kept(CPU& c) : cpu(c), esi(c.esi), edi(c.edi) {}
-    ~Kept()
-    {
-        cpu.esi = esi;
-        cpu.edi = edi;
-    }
-    Kept(const Kept&) = delete;
-    Kept& operator=(const Kept&) = delete;
-};
-
 /* Where a callee's esp is (its return address) when the game's code calls it
  * from `frame` with `words` on the stack. */
 reg32 callee(reg32 frame, reg32 words)
@@ -307,18 +321,13 @@ reg32 callee(reg32 frame, reg32 words)
     return frame - 4 * words - 4;
 }
 
-/* callGame's call of a function with a typed core made as C++ (guest::direct): esp and the
- * registers set as callGame sets them -- what the code after it reads of them is what the callee,
- * which keeps them, leaves -- and the core given its own arguments; its result as the core gives it.
- * A port core's `esp` is the frame base, callee(frame, words). */
+/* A function with a typed core called as C++ (guest::direct) from the game's stack at `esp` (the caller's,
+ * the stack words pushed under it counted off), the core given its own arguments; its result as the core
+ * gives it.  A port core's `esp` is the frame base, callee(frame, words). */
 template <reg32 Address, auto Core, typename... Values>
-auto callCore(App* app, CPU& cpu, reg32 esp, const Args& a, Values... values)
+auto callCore(App* app, CPU& cpu, reg32 esp, Values... values)
 {
     cpu.esp = esp;
-    cpu.eax = a.eax;
-    cpu.edx = a.edx;
-    cpu.ebx = a.ebx;
-    cpu.ecx = a.ecx;
     return guest::direct<Address, Core>(app, cpu, values...);
 }
 
@@ -328,7 +337,6 @@ inline bool taken(CPU& cpu, const std::optional<reg32>& value, reg32& result)
     if (!value || cpu.terminate)
         return false;
     result = *value;
-    cpu.eax = *value;
     return true;
 }
 
@@ -337,7 +345,6 @@ inline bool taken(CPU& cpu, const Result& value, reg32& result)
     if (!value || cpu.terminate)
         return false;
     result = reg32(*value);
-    cpu.eax = result;
     return true;
 }
 
@@ -346,7 +353,6 @@ inline bool taken(CPU& cpu, reg32 value, reg32& result)
     if (cpu.terminate)
         return false;
     result = value;
-    cpu.eax = value;
     return true;
 }
 
@@ -363,34 +369,26 @@ inline bool ran(CPU& cpu)
 }
 
 /* sub_4ea930 or sub_4ea950 as callGame calls them, the angle pushed: simd's sineValue or cosineValue,
- * which leave every register as it was.  In the checks (NFS_GAME_CHECKS, which do not build the menus'
- * files) the call by address, its result taken off the x87's stack.  nullopt when the game stopped. */
+ * which leave every register as it was.  nullopt when the game stopped. */
 template <reg32 Address, auto Core>
 std::optional<double> turnValue(App* app, CPU& cpu, reg32 frame, const Args& a, reg32 angle)
 {
-#ifdef NFS_GAME_CHECKS
-    if (!callGame(app, cpu, frame, Address, a, {angle}))
-        return std::nullopt;
-    return double(cpu.fpu.take());
-#else
-    const double value = callCore<Address, Core>(app, cpu, frame, a, angle);
+    const double value = callCore<Address, Core>(app, cpu, frame, angle);
     if (cpu.terminate)
         return std::nullopt;
     return value;
-#endif
 }
 
 /* A rotation's angle pushed as the code pushes it, the core handed its slot (ea's rotateAbout* read
  * the angle there): the call's esp and the slot one word below `frame`. */
 template <reg32 Address, auto Core>
-bool rotated(App* app, CPU& cpu, reg32 frame, const Args& a, reg32 matrix, reg32 angleBits)
+bool rotated(App* app, CPU& cpu, reg32 frame, reg32 matrix, reg32 angleBits)
 {
     app->getMemory<reg32>(frame - 4) = angleBits;
-    const std::optional<reg32> done = callCore<Address, Core>(app, cpu, frame - 4, a, matrix, frame - 4);
+    const std::optional<reg32> done = callCore<Address, Core>(app, cpu, frame - 4, matrix, frame - 4);
     cpu.esp = frame;
     if (!done || cpu.terminate)
         return false;
-    cpu.eax = *done;
     return true;
 }
 
@@ -398,20 +396,21 @@ bool rotated(App* app, CPU& cpu, reg32 frame, const Args& a, reg32 matrix, reg32
 struct Compared
 {
     bool cf, zf;
+    x86::reg16 word;
     bool above() const { return !cf && !zf; }
     bool belowOrEqual() const { return cf || zf; }
 };
 
-Compared fcom(CPU& cpu, const Float& a, const Float& b)
+Compared fcom(const Float& a, const Float& b)
 {
-    cpu.fpu.compare(a, b);
-    return {cpu.fpu.status.c0 != 0, cpu.fpu.status.c3 != 0};
+    const x86::reg16 word = fp::compare(double(a), double(b));
+    return {(word & 0x100) != 0, (word & 0x4000) != 0, word};
 }
 
 /* eax with the x87's status word in ax (fnstsw ax). */
-reg32 withStatus(CPU& cpu, reg32 eax)
+reg32 withStatus(const Compared& compared, reg32 eax)
 {
-    return (eax & 0xffff0000u) | cpu.fpu.status.word;
+    return (eax & 0xffff0000u) | compared.word;
 }
 
 /* The clip code of a vertex: 0x10 behind the eye or past the far clip, else
@@ -509,31 +508,17 @@ void appendString(App* app, reg32 to, reg32 from)
  * The call as callGame makes it -- the registers, the five words pushed, the
  * frame where the game's lies, the registers as it leaves them -- with
  * rendc's modelTransformPartCalled run as C++ in place of the jump by
- * address.  In the checks (NFS_GAME_CHECKS, which stand in for it and do not
- * link the menus' files) the call by address itself, the depth taken off the
- * x87's stack.  False when the game stopped in it. */
+ * address.  False when the game stopped in it. */
 bool drawModel(App* app, CPU& cpu, reg32 frame, reg32 model, reg32 light, reg32 lights, reg32 part, reg32 matrix,
                reg32 place, reg32 tail)
 {
-#ifdef NFS_GAME_CHECKS
-    if (!callGame(app, cpu, frame, kDrawModel, {model, light, lights, part}, {matrix, place, 0, kLights, tail}))
-        return false;
-    cpu.fpu.take();
-    return true;
-#else
-    cpu.eax = model;
-    cpu.edx = light;
-    cpu.ebx = lights;
-    cpu.ecx = part;
-    const reg32 words[] = {matrix, place, 0, kLights, tail};
-    for (reg32 i = 0; i < 5; ++i)
-        app->getMemory<reg32>(frame - 20 + 4 * i) = words[i];
-    cpu.esp = frame - 20 - 4;  // the return address's slot, left unwritten as the call leaves it
-    if (!frontend::rendc::modelTransformPartCalled(app, cpu))
+        // The five words the call pushes (the matrix and place, a zero, the lights, the tail) under `frame`.
+    callCore<kDrawModel, frontend::rendc::modelTransformPart>(app, cpu, frame - 20, model, light, lights, part, matrix,
+                                                              place, 0u, reg32(kLights), tail);
+    if (cpu.terminate)
         return false;
     cpu.esp = frame;
     return true;
-#endif
 }
 
 }  // namespace
@@ -543,21 +528,17 @@ bool drawModel(App* app, CPU& cpu, reg32 frame, reg32 model, reg32 light, reg32 
 Result carVivPathOf(App* app, CPU& cpu, reg32 esp, int32_t car, reg32 buffer)
 {
     const reg32 frame = esp - 0x14;
-    HeldEbp held(cpu, frame);
-    Kept kept(cpu);
     reg32 record, prefix;
-    if (!taken(cpu, callCore<kCarRecord, load::recordAt>(app, cpu, frame, {reg32(car), buffer, reg32(car)}, reg32(car)),
+    if (!taken(cpu, callCore<kCarRecord, load::recordAt>(app, cpu, frame, reg32(car)),
                record))
         return {};
     app->getMemory<uint8_t>(buffer) = 0;
     copyString(app, buffer, kCarsFolder);
-    cpu.esi = record + 0x110;
-    cpu.edi = buffer;
-    if (!callGame(app, cpu, frame, kEndWithSlash, {buffer, buffer, reg32(car), record}))
+    if (!callCore<0x438340, load::slashAdded>(app, cpu, frame, buffer))
         return {};
     appendString(app, buffer, record + 0x110);
     appendString(app, buffer, kBackslash);
-    if (!taken(cpu, callCore<kCarFilePrefix, load::prefixOf>(app, cpu, frame, {reg32(car), buffer, reg32(car), record},
+    if (!taken(cpu, callCore<kCarFilePrefix, load::prefixOf>(app, cpu, frame,
                                                              reg32(car)),
                prefix))
         return {};
@@ -567,10 +548,10 @@ Result carVivPathOf(App* app, CPU& cpu, reg32 esp, int32_t car, reg32 buffer)
 }
 
 /* 0x439360: car eax's .viv path into edx. */
-void carVivPath(App* app, CPU& cpu)
+x86::reg32 carVivPath(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, carVivPathOf(app, cpu, e.esp, int32_t(e.eax), e.edx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, carVivPathOf(app, cpu, e.esp, int32_t(e.eax), e.edx));
 }
 
 /* ---- 0x467bc0, 0x467be0, 0x467c00, 0x467c20 ---- */
@@ -581,15 +562,14 @@ namespace
 /* sprintf from a function that pushes ebp alone. */
 Result printed(App* app, CPU& cpu, reg32 esp, reg32 eax, std::initializer_list<reg32> words)
 {
-    pushed(app, esp, {cpu.ebp});
-    HeldEbp held(cpu, esp - 4);
+    // (the ebp the code pushes here is not written: nothing reads it)
     // sprintf's buffer and format, then the words after them.
     const reg32* const word = words.begin();
     guest::Words rest({});
     for (const reg32* w = word + 2; w != words.end(); ++w)
         rest.word[rest.count++] = *w;
     reg32 r;
-    if (!taken(cpu, callCore<kSprintf, watcom::clib::sprintf>(app, cpu, esp - 4, {eax}, word[0], word[1], rest), r))
+    if (!taken(cpu, callCore<kSprintf, watcom::clib::sprintf>(app, cpu, esp - 4, word[0], word[1], rest), r))
         return {};
     return int32_t(r);
 }
@@ -621,31 +601,31 @@ Result trackModelNameOf(App* app, CPU& cpu, reg32 esp, int32_t n)
 }
 
 /* 0x467bc0: the generic car's .viv path into eax. */
-void genericVivPath(App* app, CPU& cpu)
+x86::reg32 genericVivPath(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, genericVivPathOf(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, genericVivPathOf(app, cpu, e.esp, e.eax));
 }
 
 /* 0x467be0: the generic model's name of number eax. */
-void genericModelName(App* app, CPU& cpu)
+x86::reg32 genericModelName(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, genericModelNameOf(app, cpu, e.esp, int32_t(e.eax)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, genericModelNameOf(app, cpu, e.esp, int32_t(e.eax)));
 }
 
 /* 0x467c00: the track's .viv path into eax. */
-void trackVivPath(App* app, CPU& cpu)
+x86::reg32 trackVivPath(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, trackVivPathOf(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, trackVivPathOf(app, cpu, e.esp, e.eax));
 }
 
 /* 0x467c20: the track model's name of number eax. */
-void trackModelName(App* app, CPU& cpu)
+x86::reg32 trackModelName(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, trackModelNameOf(app, cpu, e.esp, int32_t(e.eax)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, trackModelNameOf(app, cpu, e.esp, int32_t(e.eax)));
 }
 
 /* ---- 0x465eb0 ---- */
@@ -653,15 +633,13 @@ void trackModelName(App* app, CPU& cpu)
 Result flare(App* app, CPU& cpu, reg32 esp, reg32 x, reg32 y, reg32 z, uint32_t colour, reg32 size, reg32 zSlot)
 {
     const reg32 ebp = esp - 0x18, frame = ebp - 0x48;
-    HeldEbp held(cpu, ebp);
-    Kept kept(cpu);
     const reg32 roomAt = ebp - 0x28, vertexAt = ebp - 0x48;
     setWord(app, roomAt, 0);
     if (kFlareTexture(app) == 0)
         return 0;
-    if (!fcom(cpu, Float(0.0), bitsF(size)).cf)
+    if (!fcom(Float(0.0), bitsF(size)).cf)
         return 0;
-    if (!fcom(cpu, Float(0.0), bitsF(z)).cf)
+    if (!fcom(Float(0.0), bitsF(z)).cf)
         return 0;
     if ((z & 0x7fffffff) == 0)
     {
@@ -682,7 +660,7 @@ Result flare(App* app, CPU& cpu, reg32 esp, reg32 x, reg32 y, reg32 z, uint32_t 
         return 0;
     v.colour = colour;
     reg32 r;
-    if (!callGame(app, cpu, frame, kRoom, {roomAt, 0xa0}, {}, r))
+    if (!taken(cpu, callCore<kRoom, frontend::rendd::arenaTake>(app, cpu, frame, roomAt, 0xa0u), r))
         return {};
     if (r == 0)
         return 0;
@@ -751,10 +729,10 @@ Result flare(App* app, CPU& cpu, reg32 esp, reg32 x, reg32 y, reg32 z, uint32_t 
 
 /* 0x465eb0 (stdcall 0x14): a flare at the point of the stack's three floats,
  * its colour and size after them. */
-void flareQuad(App* app, CPU& cpu)
+x86::reg32 flareQuad(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu,
+    const Entry e(cpu, args);
+    return e.finish(cpu, args,
              flare(app, cpu, e.esp, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2), e.arg(app, 3), e.arg(app, 4),
                    e.esp + 0xc),
              0x14);
@@ -766,15 +744,11 @@ Result lightPlace(App* app, CPU& cpu, reg32 esp, reg32 model, int32_t index, reg
                   const reg32 offset[3])
 {
     const reg32 ebp = esp - 0xc, frame = ebp - 0x1c;
-    HeldEbp held(cpu, ebp);
-    Kept kept(cpu);
     if (index >= int32_t(word(app, model + 0x34)))
         return 0;
     const reg32 from = ebp - 0x10, turned = ebp - 0x1c;
     copyWords(app, from, model + 0x38 + 12 * reg32(index), 3);
-    cpu.esi = model + 0x38 + 12 * reg32(index) + 12;
-    cpu.edi = from + 12;
-    callCore<kRotate, vertices::turnVectors>(app, cpu, frame, {1, from, matrix, turned}, 1, from, matrix, turned);
+    callCore<kRotate, vertices::turnVectors>(app, cpu, frame, 1, from, matrix, turned);
     if (!ran(cpu))
         return {};
     putF(app, out, fp::add(F(app, turned), bitsF(offset[0])));
@@ -785,11 +759,11 @@ Result lightPlace(App* app, CPU& cpu, reg32 esp, reg32 model, int32_t index, reg
 
 /* 0x466330 (stdcall 0xc): light edx of model eax turned by the matrix at
  * ecx, moved by the stack's three floats, into ebx. */
-void lightPlaced(App* app, CPU& cpu)
+x86::reg32 lightPlaced(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     const reg32 offset[3] = {e.arg(app, 0), e.arg(app, 1), e.arg(app, 2)};
-    e.finish(cpu, lightPlace(app, cpu, e.esp, e.eax, int32_t(e.edx), e.ebx, e.ecx, offset), 0xc);
+    return e.finish(cpu, args, lightPlace(app, cpu, e.esp, e.eax, int32_t(e.edx), e.ebx, e.ecx, offset), 0xc);
 }
 
 /* ---- 0x4663a0, 0x466580 ---- */
@@ -807,18 +781,17 @@ Result flareJoined(App* app, CPU& cpu, reg32 frame, reg32 pair, reg32 place, uin
                               word(app, place + 8), colour, size, frame - 0xc);
     if (!room || *room == 0)
         return room;
-    cpu.esi = list;
-    if (!callGame(app, cpu, frame, kListOf, {reg32(*room)}))
+    if (!ran(cpu, callCore<kListOf, frontend::rendd::listOfOne>(app, cpu, frame, reg32(*room), list)))
         return {};
-    cpu.esi = joined;
+    // The list joined into `joined`: the pair's two words first, the list's after them, on the stack.
     reg32 r;
-    if (!callGame(app, cpu, frame, kListJoined, {word(app, list + 4), word(app, list), word(app, pair),
-                                                 word(app, pair + 4)},
-                  {word(app, pair), word(app, pair + 4), word(app, list), word(app, list + 4)}, r))
+    if (!taken(cpu,
+               callCore<kListJoined, frontend::rendd::joinLists>(app, cpu, frame - 4 * 4, joined, word(app, pair),
+                                                                 word(app, pair + 4), word(app, list),
+                                                                 word(app, list + 4)),
+               r))
         return {};
     copyWords(app, pair, joined, 2);
-    cpu.esi = joined + 8;
-    cpu.edi = pair + 8;
     return int32_t(r);
 }
 
@@ -833,10 +806,13 @@ Result lightFacing(App* app, CPU& cpu, reg32 frame, reg32 ebp, reg32 model, reg3
     const Result placed = lightPlace(app, cpu, callee(frame, 3), model, index, place, matrix, offset);
     if (!placed || *placed == 0)
         return placed;
-    if (!callGame(app, cpu, frame, kSubtract, {1, place, position, toward}))
+    callCore<kSubtract, vertices::offsetVectorList<false>>(app, cpu, frame, 1, place, position, toward);
+    if (!ran(cpu))
         return {};
-    if (!callGame(app, cpu, frame, kUnit, {toward, toward}, {}, afterUnit))
+    callCore<kUnit, vertices::makeUnitVector>(app, cpu, frame, toward, toward);
+    if (!ran(cpu))
         return {};
+    afterUnit = toward;  // eax as the unit vector's code leaves it: the vector's address it was given
     return 1;
 }
 
@@ -846,8 +822,6 @@ Result headlightFlare(App* app, CPU& cpu, reg32 esp, reg32 pair, reg32 model, re
                       int32_t index, reg32 alpha)
 {
     const reg32 ebp = esp - 0xc, frame = ebp - 0x54;
-    HeldEbp held(cpu, ebp);
-    Kept kept(cpu);
     reg32 afterUnit = 0;
     const Result facing = lightFacing(app, cpu, frame, ebp, model, matrix, position, index, afterUnit);
     if (!facing || *facing == 0)
@@ -861,15 +835,16 @@ Result headlightFlare(App* app, CPU& cpu, reg32 esp, reg32 pair, reg32 model, re
         scale = 0x3fa00000;
         threshold = 0x3e4ccccd;
     }
-    if (fcom(cpu, Float(faced), bitsF(threshold)).belowOrEqual())
-        return int32_t(withStatus(cpu, model));
+    const Compared facedCompared = fcom(Float(faced), bitsF(threshold));
+    if (facedCompared.belowOrEqual())
+        return int32_t(withStatus(facedCompared, model));
     const float strength = float(fp::mul(fp::sub(Float(faced), bitsF(threshold)), bitsF(scale)));
-    const reg32 least = fcom(cpu, F(app, kQuarterB), Float(strength)).belowOrEqual() ? bitsOf(strength) : 0x3e800000;
+    const reg32 least = fcom(F(app, kQuarterB), Float(strength)).belowOrEqual() ? bitsOf(strength) : 0x3e800000;
     const Float size = fp::mul(fp::mul(bitsF(least), D(app, kHeadA)), D(app, kHeadB));
     const double strong = double(Float(strength));
     const float sizeF = float(size);
     double brightness = 1.0;
-    if (!fcom(cpu, Float(strength), D(app, kHeadNear)).above())
+    if (!fcom(Float(strength), D(app, kHeadNear)).above())
         brightness = double(fp::mul(Float(strong), D(app, kHeadFour)));
     const Float a = fp::mul(fp::mul(Float(brightness), F(app, kWhite)), F(app, kHeadAlpha));
     const int32_t opacity = flareAlpha(cpu, a, float(a));
@@ -881,24 +856,23 @@ Result taillightFlare(App* app, CPU& cpu, reg32 esp, reg32 pair, reg32 model, re
                       int32_t index, reg32 alpha)
 {
     const reg32 ebp = esp - 0xc, frame = ebp - 0x54;
-    HeldEbp held(cpu, ebp);
-    Kept kept(cpu);
     reg32 afterUnit = 0;
     const Result facing = lightFacing(app, cpu, frame, ebp, model, matrix, position, index, afterUnit);
     if (!facing || *facing == 0)
         return facing;
     const Float faced = -F(app, ebp - 0x40);
     const float facedF = float(faced);
-    if (fcom(cpu, faced, F(app, kTailFacing)).belowOrEqual())
-        return int32_t(withStatus(cpu, afterUnit));
+    const Compared facedCompared = fcom(faced, F(app, kTailFacing));
+    if (facedCompared.belowOrEqual())
+        return int32_t(withStatus(facedCompared, afterUnit));
     const Float over = fp::mul(fp::add(Float(facedF), D(app, kTailMinus)), D(app, kTailOver));
     const float overF = float(over);
     const double overD = double(over);
     double brightness = 1.0;
-    if (!fcom(cpu, over, D(app, kTailNear)).above())
+    if (!fcom(over, D(app, kTailNear)).above())
         brightness = double(fp::mul(Float(overD), D(app, kTailFour)));
     const float brightF = float(Float(brightness));
-    const reg32 least = fcom(cpu, F(app, kQuarterC), Float(overF)).belowOrEqual() ? bitsOf(overF) : 0x3e800000;
+    const reg32 least = fcom(F(app, kQuarterC), Float(overF)).belowOrEqual() ? bitsOf(overF) : 0x3e800000;
     const Float p = fp::mul(bitsF(least), D(app, kTailA));
     const Float q = fp::mul(Float(brightF), F(app, kTailScale));
     const Float size = fp::mul(p, D(app, kTailB));
@@ -912,19 +886,19 @@ Result taillightFlare(App* app, CPU& cpu, reg32 esp, reg32 pair, reg32 model, re
 /* 0x4663a0 (stdcall 8): a headlight's flare -- the list's pair at eax, the
  * model at edx, the matrix at ebx, the place at ecx, the light's number and
  * the alpha on the stack. */
-void headlightGlare(App* app, CPU& cpu)
+x86::reg32 headlightGlare(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu,
+    const Entry e(cpu, args);
+    return e.finish(cpu, args,
              headlightFlare(app, cpu, e.esp, e.eax, e.edx, e.ebx, e.ecx, int32_t(e.arg(app, 0)), e.arg(app, 1)),
              8);
 }
 
 /* 0x466580 (stdcall 8): a taillight's, so. */
-void taillightGlare(App* app, CPU& cpu)
+x86::reg32 taillightGlare(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu,
+    const Entry e(cpu, args);
+    return e.finish(cpu, args,
              taillightFlare(app, cpu, e.esp, e.eax, e.edx, e.ebx, e.ecx, int32_t(e.arg(app, 0)), e.arg(app, 1)),
              8);
 }
@@ -935,16 +909,11 @@ Result lightFlares(App* app, CPU& cpu, reg32 esp, reg32 model, reg32 matrix, reg
                    reg32 out)
 {
     const reg32 ebp = esp - 8, frame = ebp - 0x18;
-    HeldEbp held(cpu, ebp);
-    const reg32 edi = cpu.edi;
     const reg32 pair = ebp - 0x18;
-    cpu.esi = pair;
-    if (!callGame(app, cpu, frame, kListEmpty, {model, matrix, position, alpha}))
+    if (!ran(cpu, callCore<kListEmpty, frontend::rendd::emptyList>(app, cpu, frame, pair)))
         return {};
     for (int32_t i = 0; i < int32_t(word(app, model + 0x34)); ++i)
     {
-        cpu.esi = reg32(i);
-        cpu.edi = model;
         if (app->getMemory<uint8_t>(model + 0xa04 + 64 * reg32(i)) == kHeadlight
             && !headlightFlare(app, cpu, callee(frame, 2), pair, model, matrix, position, i, alpha & 0xff))
             return {};
@@ -953,21 +922,20 @@ Result lightFlares(App* app, CPU& cpu, reg32 esp, reg32 model, reg32 matrix, reg
             return {};
     }
     copyWords(app, out, pair, 2);
-    cpu.esi = pair + 8;
-    cpu.edi = edi;
     return int32_t(out);
 }
 
 /* 0x466740: the flares of model eax's lights (matrix edx, place ebx, alpha
  * cl) into the list's pair at esi.  esi is left at the frame, as the game's
  * code leaves it (its caller sets it again before it reads it). */
-void objectLights(App* app, CPU& cpu)
+x86::reg32 objectLights(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     const Result r = lightFlares(app, cpu, e.esp, e.eax, e.edx, e.ebx, e.ecx & 0xff, e.esi);
-    e.finish(cpu, r);
+    const reg32 result = e.finish(cpu, args, r);
     if (r)
-        cpu.esi = e.esp - 0x18;
+        args.esi = e.esp - 0x18;
+    return result;
 }
 
 /* ---- 0x4667d0 ---- */
@@ -975,14 +943,13 @@ void objectLights(App* app, CPU& cpu)
 Result dragSpin(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 edx)
 {
     const reg32 ebp = esp - 0xc, frame = ebp - 8;
-    HeldEbp held(cpu, ebp);
     Object& o = record<Object>(app, item);
     const int32_t clock = kClock(app);
     if (clock < int32_t(uint32_t(o.mouseClock) + 4))
         return clock;
     o.mouseClock = clock;
     reg32 key;
-    if (!callGame(app, cpu, frame, kMouseKey, {reg32(clock), edx, 0, item}, {}, key))
+    if (!taken(cpu, callCore<kMouseKey, frontend::glue::mouseKey>(app, cpu, frame), key))
         return {};
     if (key != 0xd || o.loading != 0)
     {
@@ -1021,10 +988,10 @@ Result dragSpin(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 edx)
 
 /* 0x4667d0: the object at eax dragged round by the mouse (edx: it may take
  * hold now). */
-void objectDragged(App* app, CPU& cpu)
+x86::reg32 objectDragged(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, dragSpin(app, cpu, e.esp, e.eax, e.edx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, dragSpin(app, cpu, e.esp, e.eax, e.edx));
 }
 
 /* ---- 0x4668b0 ---- */
@@ -1032,8 +999,6 @@ void objectDragged(App* app, CPU& cpu)
 Result screenBounds(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 rect)
 {
     const reg32 B = esp - 0x14 - 0x82, frame = esp - 0x14 - 0x240;
-    HeldEbp held(cpu, B);
-    Kept kept(cpu);
     Object& o = record<Object>(app, item);
     const reg32 model = o.model;
     const reg32 centre = B + 0x46, matrix = B + 2, corners = B - 0x5e, turned = B - 0xbe;
@@ -1044,9 +1009,9 @@ Result screenBounds(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 rect)
     project(app, cpu, word(app, centre), word(app, centre + 4), word(app, centre + 8), v);
     v.code = clipCode(app, v);
     uint32_t maxX = bitsOf(v.x), minX = maxX, maxY = bitsOf(v.y), minY = maxY;
-    if (!rotated<kXRotation, ea::rotateAboutX>(app, cpu, frame, {matrix}, matrix, bitsOf(o.turn[0]))
-        || !callGame(app, cpu, frame, kYRotation, {matrix}, {bitsOf(o.turn[1]), matrix})
-        || !callGame(app, cpu, frame, kZRotation, {matrix}, {bitsOf(o.turn[2]), matrix}))
+    if (!rotated<kXRotation, ea::rotateAboutX>(app, cpu, frame, matrix, bitsOf(o.turn[0]))
+        || (callCore<kYRotation, frontend::simd::rotateY>(app, cpu, frame, matrix, bitsOf(o.turn[1]), matrix), !ran(cpu))
+        || (callCore<kZRotation, frontend::simd::rotateZ>(app, cpu, frame, matrix, bitsOf(o.turn[2]), matrix), !ran(cpu)))
         return {};
     // The model's box: its half sizes, each corner's signs.
     const reg32 hx = word(app, model + 0x28), hy = word(app, model + 0x2c), hz = word(app, model + 0x30);
@@ -1056,7 +1021,7 @@ Result screenBounds(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 rect)
                            nx, ny, hz, hx, ny, hz, hx, ny, nz, nx, ny, nz};
     for (reg32 i = 0; i < 24; ++i)
         setWord(app, corners + 4 * i, box[i]);
-    callCore<kTransform, vertices::transformPointList>(app, cpu, frame, {8, corners, matrix, centre}, 8, corners, matrix,
+    callCore<kTransform, vertices::transformPointList>(app, cpu, frame, 8, corners, matrix,
                                                        centre, turned);
     if (!ran(cpu))
         return {};
@@ -1073,13 +1038,13 @@ Result screenBounds(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 rect)
     for (reg32 i = 0; i < 8; ++i)
     {
         const float x = corner[i].x, y = corner[i].y;
-        if (fcom(cpu, Float(x), Float(fromBits(maxX))).above())
+        if (fcom(Float(x), Float(fromBits(maxX))).above())
             maxX = bitsOf(x);
-        if (fcom(cpu, Float(x), Float(fromBits(minX))).cf)
+        if (fcom(Float(x), Float(fromBits(minX))).cf)
             minX = bitsOf(x);
-        if (fcom(cpu, Float(y), Float(fromBits(maxY))).above())
+        if (fcom(Float(y), Float(fromBits(maxY))).above())
             maxY = bitsOf(y);
-        if (fcom(cpu, Float(y), Float(fromBits(minY))).cf)
+        if (fcom(Float(y), Float(fromBits(minY))).cf)
             minY = bitsOf(y);
     }
     const Float top = Float(fromBits(minY)), left = Float(fromBits(minX));
@@ -1095,10 +1060,10 @@ Result screenBounds(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 rect)
 }
 
 /* 0x4668b0: the object at eax's rectangle on the screen into edx. */
-void objectBounds(App* app, CPU& cpu)
+x86::reg32 objectBounds(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, screenBounds(app, cpu, e.esp, e.eax, e.edx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, screenBounds(app, cpu, e.esp, e.eax, e.edx));
 }
 
 /* ---- 0x4d79b0 ---- */
@@ -1107,8 +1072,6 @@ Result drawLogoOf(App* app, CPU& cpu, reg32 esp, reg32 texture, int32_t x, int32
                   uint32_t colour)
 {
     const reg32 ebp = esp - 0xc, frame = ebp - 0xc;
-    HeldEbp held(cpu, ebp);
-    Kept kept(cpu);
     const float depth = kScreenDepth(app), w = kScreenW(app);
     for (int32_t corner = 0; corner < 4; ++corner)
     {
@@ -1128,15 +1091,13 @@ Result drawLogoOf(App* app, CPU& cpu, reg32 esp, reg32 texture, int32_t x, int32
     kQuad(app, 3).y = float(bottom);
     kQuad(app, 1).x = right;
     kQuad(app, 2).y = float(bottom);
-    callCore<kSetRenderState, graphics::sendState>(app, cpu, frame, {1, texture, reg32(y), reg32(width)}, 1u, texture);
+    callCore<kSetRenderState, graphics::sendState>(app, cpu, frame, 1u, texture);
     if (!ran(cpu))
         return {};
     for (reg32 corner = 0; corner < 4; ++corner)
         markCode(app, kQuadAt + 0x20 * corner);
     reg32 r;
-    cpu.esi = kQuadAt + 0x60;
-    cpu.edi = kQuadAt + 0x74;
-    if (!callGame(app, cpu, frame, kClipQuad, {kQuadAt, kQuadAt + 0x20, kQuadAt + 0x40, kQuadAt + 0x60}, {}, r))
+    if (!callPointer(app, cpu, frame, kClipQuad, {kQuadAt, kQuadAt + 0x20, kQuadAt + 0x40, kQuadAt + 0x60}, {}, r))
         return {};
     return int32_t(r);
 }
@@ -1145,19 +1106,20 @@ Result drawLogoOf(App* app, CPU& cpu, reg32 esp, reg32 texture, int32_t x, int32
  * ebx, ecx wide, the stack's height high, in the stack's colour.  ebx, ecx
  * and edx are left as the clipped quad's draw leaves them, as the game's
  * code does: render::loadingScreen hands edx on. */
-void drawLogo(App* app, CPU& cpu)
+x86::reg32 drawLogo(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     const Result r = drawLogoOf(app, cpu, e.esp, e.eax, int32_t(e.edx), int32_t(e.ebx), int32_t(e.ecx),
                                 int32_t(e.arg(app, 0)), e.arg(app, 1));
-    const reg32 ebx = cpu.ebx, ecx = cpu.ecx, edx = cpu.edx;
-    e.finish(cpu, r, 8);
+    const reg32 ebx = args.ebx, ecx = args.ecx, edx = args.edx;
+    const reg32 result = e.finish(cpu, args, r, 8);
     if (r)
     {
-        cpu.ebx = ebx;
-        cpu.ecx = ecx;
-        cpu.edx = edx;
+        args.ebx = ebx;
+        args.ecx = ecx;
+        args.edx = edx;
     }
+    return result;
 }
 
 /* ---- 0x467ac0 ---- */
@@ -1165,12 +1127,10 @@ void drawLogo(App* app, CPU& cpu)
 Result resetLoaderOf(App* app, CPU& cpu, reg32 esp, reg32 loader)
 {
     const reg32 frame = esp - 0x18;
-    HeldEbp held(cpu, frame);
-    Kept kept(cpu);
     if (loader == 0)
         return 0;
     reg32 r;
-    if (!callGame(app, cpu, frame, kReadClose, {kNul}, {}, r))
+    if (!taken(cpu, callCore<kReadClose, frontend::wata::asyncSetFile>(app, cpu, frame, kNul), r))
         return {};
     Loader& l = record<Loader>(app, loader);
     for (int i = 0; i < 4; ++i)
@@ -1181,7 +1141,7 @@ Result resetLoaderOf(App* app, CPU& cpu, reg32 esp, reg32 loader)
     l.shapesName[0] = 0;
     l.state = 0;
     l.waiting = 0;
-    if (!taken(cpu, callCore<kMemset, watcom::clib::memset>(app, cpu, frame, {loader + 0x174, 0, 0x10, loader},
+    if (!taken(cpu, callCore<kMemset, watcom::clib::memset>(app, cpu, frame,
                                                             loader + 0x174, 0u, 0x10u),
                r))
         return {};
@@ -1190,7 +1150,7 @@ Result resetLoaderOf(App* app, CPU& cpu, reg32 esp, reg32 loader)
         const reg32 block = word(app, loader + at);
         if (block == 0)
             continue;
-        if (!taken(cpu, callCore<kFree, ea::purgeBlock>(app, cpu, frame, {block}, block), r))
+        if (!taken(cpu, callCore<kFree, ea::purgeBlock>(app, cpu, frame, block), r))
             return {};
         setWord(app, loader + at, 0);
     }
@@ -1199,10 +1159,10 @@ Result resetLoaderOf(App* app, CPU& cpu, reg32 esp, reg32 loader)
 
 /* 0x467ac0: the loader at eax started afresh: its reads stopped, its names
  * and state cleared, its blocks let go. */
-void resetLoader(App* app, CPU& cpu)
+x86::reg32 resetLoader(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, resetLoaderOf(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, resetLoaderOf(app, cpu, e.esp, e.eax));
 }
 
 /* ---- 0x467c40 ---- */
@@ -1210,9 +1170,7 @@ void resetLoader(App* app, CPU& cpu)
 Result chooseFilesOf(App* app, CPU& cpu, reg32 esp, reg32 item)
 {
     const reg32 frame = esp - 0x18;
-    pushed(app, esp, {cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp});
-    HeldEbp held(cpu, frame);
-    Kept kept(cpu);
+    // (the six registers the code pushes here are not written: nothing reads them)
     if (item == 0)
         return 0;
     Object& o = record<Object>(app, item);
@@ -1228,7 +1186,7 @@ Result chooseFilesOf(App* app, CPU& cpu, reg32 esp, reg32 item)
     auto car = [&](int32_t number) -> bool {
         reg32 r;
         if (!carVivPathOf(app, cpu, callee(frame, 0), number, o.loader)
-            || !taken(cpu, callCore<kCarFilePrefix, load::prefixOf>(app, cpu, frame, {reg32(number), o.loader},
+            || !taken(cpu, callCore<kCarFilePrefix, load::prefixOf>(app, cpu, frame,
                                                                     reg32(number)),
                       r))
             return false;
@@ -1268,25 +1226,22 @@ Result chooseFilesOf(App* app, CPU& cpu, reg32 esp, reg32 item)
     {
         // A car at random, not the one drawn last if there are more than two.
         reg32 count;
-        if (!callGame(app, cpu, frame, kCarCount, {item}, {}, count))
+        if (!taken(cpu, callCore<0x438bd0, load::carsListed>(app, cpu, frame), count))
             return {};
-        cpu.esi = count;
-        cpu.edi = count;
         reg32 chosen = 0;
         if (count != 0)
         {
             reg32 r;
-            if (!callGame(app, cpu, frame, kRandom, {count, 0, 0, item}, {}, r))
+            if (!taken(cpu, callCore<kRandom, port::nextRandom>(app, cpu, frame), r))
                 return {};
             chosen = r % count;
             if (int32_t(count) > 2)
                 do
                 {
-                    if (!callGame(app, cpu, frame, kRandom, {r, 0, chosen, item}, {}, r))
+                    if (!taken(cpu, callCore<kRandom, port::nextRandom>(app, cpu, frame), r))
                         return {};
                     chosen = r % count;
-                    cpu.esi = reg32(kRandomCar(app));
-                } while (chosen == cpu.esi);
+                } while (chosen == reg32(kRandomCar(app)));
         }
         kRandomCar.set(app, int32_t(chosen));
         if (!car(int32_t(chosen)))
@@ -1296,7 +1251,6 @@ Result chooseFilesOf(App* app, CPU& cpu, reg32 esp, reg32 item)
     }
     else if (kind == kSplit)
     {
-        cpu.edi = reg32(gameSettings(app).opponentClass);
         if (std::int32_t(gameSettings(app).opponentClass) < 4)
             return 0;
         if (!car(std::int32_t(gameSettings(app).opponentClass) - 4))
@@ -1313,13 +1267,13 @@ Result chooseFilesOf(App* app, CPU& cpu, reg32 esp, reg32 item)
     if (prefix == 0)
         return 0;
     reg32 printedCount;
-    if (!taken(cpu, callCore<kSprintf, watcom::clib::sprintf>(app, cpu, frame, {o.loader + 0x100}, o.loader + 0x100, kTwo,
+    if (!taken(cpu, callCore<kSprintf, watcom::clib::sprintf>(app, cpu, frame, o.loader + 0x100, kTwo,
                                                               guest::Words{prefix, kFce}),
                printedCount)
-        || !taken(cpu, callCore<kSprintf, watcom::clib::sprintf>(app, cpu, frame, {o.loader + 0x120}, o.loader + 0x120,
+        || !taken(cpu, callCore<kSprintf, watcom::clib::sprintf>(app, cpu, frame, o.loader + 0x120,
                                                                  kTwo, guest::Words{prefix, kTga}),
                   printedCount)
-        || !taken(cpu, callCore<kSprintf, watcom::clib::sprintf>(app, cpu, frame, {o.loader + 0x140}, o.loader + 0x140,
+        || !taken(cpu, callCore<kSprintf, watcom::clib::sprintf>(app, cpu, frame, o.loader + 0x140,
                                                                  kFsh, guest::Words({})),
                   printedCount))
         return {};
@@ -1328,10 +1282,10 @@ Result chooseFilesOf(App* app, CPU& cpu, reg32 esp, reg32 item)
 
 /* 0x467c40: the files of the car (or track, or generic car) the object at
  * eax shows: the .viv's path, the model's, texture's and shapes' names. */
-void chooseFiles(App* app, CPU& cpu)
+x86::reg32 chooseFiles(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, chooseFilesOf(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, chooseFilesOf(app, cpu, e.esp, e.eax));
 }
 
 /* ---- 0x467ea0, 0x467ef0 ---- */
@@ -1354,61 +1308,54 @@ void swapHead(App* app, reg32 at)
 Result readPreheadOf(App* app, CPU& cpu, reg32 esp, reg32 loader)
 {
     const reg32 frame = esp - 0x14;
-    HeldEbp held(cpu, frame);
-    Kept kept(cpu);
     if (loader == 0)
         return 0;
-    reg32 r;
-    cpu.esi = loader + 0x174;
-    if (!taken(cpu, callCore<kMemset, watcom::clib::memset>(app, cpu, frame, {loader + 0x174, 0, 0x10, loader},
-                                                            loader + 0x174, 0u, 0x10u),
+        reg32 r;
+    if (!taken(cpu, callCore<kMemset, watcom::clib::memset>(app, cpu, frame, loader + 0x174, 0u, 0x10u),
                r)
-        || !callGame(app, cpu, frame, kReadClose, {loader, 0, 0x10, loader}, {}, r)
-        || !callGame(app, cpu, frame, kRead, {0, loader + 0x174, 0x10, loader}, {}, r))
+        || !taken(cpu, callCore<kReadClose, frontend::wata::asyncSetFile>(app, cpu, frame, loader), r)
+        || !taken(cpu, callCore<kRead, frontend::wata::asyncRead>(app, cpu, frame, 0u, loader + 0x174, 0x10u), r))
         return {};
     record<Loader>(app, loader).reads[0] = r;
     return r != 0 ? 1 : 0;
 }
 
 /* 0x467ea0: the .viv's first 16 bytes asked for. */
-void readPrehead(App* app, CPU& cpu)
+x86::reg32 readPrehead(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, readPreheadOf(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, readPreheadOf(app, cpu, e.esp, e.eax));
 }
 
 Result readHeadOf(App* app, CPU& cpu, reg32 esp, reg32 loader)
 {
     const reg32 frame = esp - 0x14;
-    HeldEbp held(cpu, frame);
-    Kept kept(cpu);
     if (loader == 0)
         return 0;
     Loader& l = record<Loader>(app, loader);
     if (l.reads[0] == 0)
         return 0;
     swapHead(app, loader + 0x174);
-    reg32 r;
-    cpu.esi = loader;
-    if (!taken(cpu, callCore<kAllocate, ea::reserved>(app, cpu, frame, {kEmpty, l.head[3] + 0x20, 0x10, loader + 0x174},
-                                                      kEmpty, l.head[3] + 0x20, 0x10u),
+        reg32 r;
+    if (!taken(cpu, callCore<kAllocate, ea::reserved>(app, cpu, frame, kEmpty, l.head[3] + 0x20, 0x10u),
                r))
         return {};
     l.vivHead = r;
     if (r == 0)
         return 0;
-    if (!callGame(app, cpu, frame, kReadClose, {loader, l.head[3] + 0x20, 0x10, loader + 0x174}, {}, r)
-        || !callGame(app, cpu, frame, kRead, {0, l.vivHead, l.head[3] + 0x20, loader + 0x174}, {}, r))
+        if (!taken(cpu, callCore<kReadClose, frontend::wata::asyncSetFile>(app, cpu, frame, loader), r)
+        || !taken(cpu, callCore<kRead, frontend::wata::asyncRead>(app, cpu, frame, 0u, l.vivHead, l.head[3] + 0x20),
+                  r))
         return {};
     l.reads[1] = r;
     return r != 0 ? 1 : 0;
 }
 
 /* 0x467ef0: the .viv's header asked for, as long as its first bytes say. */
-void readHead(App* app, CPU& cpu)
+x86::reg32 readHead(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, readHeadOf(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, readHeadOf(app, cpu, e.esp, e.eax));
 }
 
 /* ---- 0x468010, 0x468170, 0x4682c0 ---- */
@@ -1417,8 +1364,6 @@ Result readPartOf(App* app, CPU& cpu, reg32 esp, reg32 loader, int part)
 {
     // The model's code pushes edi too.
     const reg32 ebp = esp - (part == 0 ? 0x18 : 0x14), frame = ebp - 8;
-    HeldEbp held(cpu, ebp);
-    Kept kept(cpu);
     if (loader == 0)
         return 0;
     Loader& l = record<Loader>(app, loader);
@@ -1426,13 +1371,12 @@ Result readPartOf(App* app, CPU& cpu, reg32 esp, reg32 loader, int part)
         return 0;
     swapHead(app, l.vivHead);
     const reg32 offsetAt = ebp - 8, sizeAt = ebp - 4;
-    cpu.esi = loader;
-    if (!callGame(app, cpu, frame, kVivEntry, {l.vivHead, loader + 0x100 + 0x20 * reg32(part), offsetAt, sizeAt}))
+        if (!callPointer(app, cpu, frame, kVivEntry, {l.vivHead, loader + 0x100 + 0x20 * reg32(part), offsetAt, sizeAt}))
         return {};
     if (word(app, offsetAt) == 0 || word(app, sizeAt) == 0)
         return 0;
     reg32 r;
-    if (!taken(cpu, callCore<kAllocate, ea::reserved>(app, cpu, frame, {kEmpty, word(app, sizeAt), 0x10, sizeAt}, kEmpty,
+    if (!taken(cpu, callCore<kAllocate, ea::reserved>(app, cpu, frame, kEmpty,
                                                       word(app, sizeAt), 0x10u),
                r))
         return {};
@@ -1441,9 +1385,12 @@ Result readPartOf(App* app, CPU& cpu, reg32 esp, reg32 loader, int part)
         l.modelSize = word(app, sizeAt);
     if (r == 0)
         return 0;
-    if (!callGame(app, cpu, frame, kReadClose, {loader, word(app, sizeAt), 0x10, sizeAt}, {}, r)
-        || !callGame(app, cpu, frame, kRead, {word(app, offsetAt), word(app, loader + 0x18c + 4 * reg32(part)), word(app, sizeAt), sizeAt},
-                     {}, r))
+        if (!taken(cpu, callCore<kReadClose, frontend::wata::asyncSetFile>(app, cpu, frame, loader), r)
+        || !taken(cpu,
+                  callCore<kRead, frontend::wata::asyncRead>(app, cpu, frame, word(app, offsetAt),
+                                                             word(app, loader + 0x18c + 4 * reg32(part)),
+                                                             word(app, sizeAt)),
+                  r))
         return {};
     l.reads[2 + part] = r;
     return r != 0 ? 1 : 0;
@@ -1451,22 +1398,22 @@ Result readPartOf(App* app, CPU& cpu, reg32 esp, reg32 loader, int part)
 
 /* 0x468010, 0x468170, 0x4682c0: the model's, texture's and shapes' parts of
  * the .viv found in its header and asked for. */
-void readModel(App* app, CPU& cpu)
+x86::reg32 readModel(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, readPartOf(app, cpu, e.esp, e.eax, 0));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, readPartOf(app, cpu, e.esp, e.eax, 0));
 }
 
-void readTexture(App* app, CPU& cpu)
+x86::reg32 readTexture(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, readPartOf(app, cpu, e.esp, e.eax, 1));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, readPartOf(app, cpu, e.esp, e.eax, 1));
 }
 
-void readShapes(App* app, CPU& cpu)
+x86::reg32 readShapes(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, readPartOf(app, cpu, e.esp, e.eax, 2));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, readPartOf(app, cpu, e.esp, e.eax, 2));
 }
 
 /* ---- 0x468410 ---- */
@@ -1474,8 +1421,6 @@ void readShapes(App* app, CPU& cpu)
 Result takeModelOf(App* app, CPU& cpu, reg32 esp, reg32 item)
 {
     const reg32 frame = esp - 0x18;
-    HeldEbp held(cpu, frame);
-    Kept kept(cpu);
     if (item == 0)
         return 0;
     Object& o = record<Object>(app, item);
@@ -1487,15 +1432,16 @@ Result takeModelOf(App* app, CPU& cpu, reg32 esp, reg32 item)
     if (shapes != 0 && kLogoTexture(app) != 0)
     {
         reg32 shape;
-        if (!callGame(app, cpu, frame, kLocateShape, {shapes, kLogo}, {}, shape))
+        if (!callPointer(app, cpu, frame, kLocateShape, {shapes, kLogo}, {}, shape))
             return {};
         if (shape != 0)
         {
             const reg32 place = word(app, shape + 0xc);
             kLogoX.set(app, int32_t(place << 20) >> 20);
-            cpu.edi = reg32(kLogoTexture(app));
-            kLogoY.set(app, int32_t(place << 4) >> 20);
-            if (!callGame(app, cpu, frame, kShapeIntoTexture, {kLogoTexture(app), shape, 0x100, kLogoPalette(app)}))
+                        kLogoY.set(app, int32_t(place << 4) >> 20);
+            callCore<kShapeIntoTexture, graphics::shapeIntoTextureOf>(app, cpu, frame, reg32(kLogoTexture(app)), shape,
+                                                                      0x100u, reg32(kLogoPalette(app)));
+            if (cpu.terminate)
                 return {};
             o.logo = 1;
         }
@@ -1509,21 +1455,20 @@ Result takeModelOf(App* app, CPU& cpu, reg32 esp, reg32 item)
         return 0;
     if (o.modelData != 0)
     {
-        if (!callGame(app, cpu, frame, kFreeModel, {o.modelData}, {}, r))
+                if (!taken(cpu, callCore<kFreeModel, frontend::rendc::modelFree>(app, cpu, frame, o.modelData), r))
             return {};
         o.modelData = 0;
         o.model = 0;
     }
     if (o.shadow != 0)
     {
-        if (!callGame(app, cpu, frame, kFreeModel, {o.shadow}, {}, r))
+        if (!taken(cpu, callCore<kFreeModel, frontend::rendc::modelFree>(app, cpu, frame, o.shadow), r))
             return {};
         o.shadow = 0;
     }
     if (o.textureData != 0)
     {
-        cpu.edi = o.textureData;
-        if (!taken(cpu, callCore<kFree, ea::purgeBlock>(app, cpu, frame, {o.textureData}, o.textureData), r))
+        if (!taken(cpu, callCore<kFree, ea::purgeBlock>(app, cpu, frame, o.textureData), r))
             return {};
         o.textureData = 0;
     }
@@ -1536,10 +1481,10 @@ Result takeModelOf(App* app, CPU& cpu, reg32 esp, reg32 item)
 
 /* 0x468410: the model read taken over by the object at eax, the old one let
  * go; the logo found among the shapes. */
-void takeModel(App* app, CPU& cpu)
+x86::reg32 takeModel(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, takeModelOf(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, takeModelOf(app, cpu, e.esp, e.eax));
 }
 
 /* ---- 0x468580, 0x4685e0 ---- */
@@ -1580,16 +1525,16 @@ Result fadeOutOf(App* app, CPU&, reg32, reg32 item)
 
 /* 0x468580, 0x4685e0: the object at eax faded in or out a step: 1 once it is
  * all there or gone. */
-void fadeIn(App* app, CPU& cpu)
+x86::reg32 fadeIn(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, fadeInOf(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, fadeInOf(app, cpu, e.esp, e.eax));
 }
 
-void fadeOut(App* app, CPU& cpu)
+x86::reg32 fadeOut(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, fadeOutOf(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, fadeOutOf(app, cpu, e.esp, e.eax));
 }
 
 /* ---- 0x468670 ---- */
@@ -1633,10 +1578,10 @@ Result wantedChangedOf(App* app, CPU&, reg32, reg32 item)
 
 /* 0x468670: whether the object at eax wants another car loaded (its kind's
  * car changed), checked every 0x80 ticks; the load started if it does. */
-void wantedChanged(App* app, CPU& cpu)
+x86::reg32 wantedChanged(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, wantedChangedOf(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, wantedChangedOf(app, cpu, e.esp, e.eax));
 }
 
 /* ---- 0x468860 ---- */
@@ -1644,10 +1589,8 @@ void wantedChanged(App* app, CPU& cpu)
 Result runLoaderOf(App* app, CPU& cpu, reg32 esp, reg32 item)
 {
     const reg32 frame = esp - 0x14;
-    HeldEbp held(cpu, frame);
-    Kept kept(cpu);
     reg32 r;
-    if (!callGame(app, cpu, frame, kMenuShownNow, {item, 8, 1, item}, {}, r))
+    if (!taken(cpu, callCore<0x44a660, frontend::loop::shownNow>(app, cpu, frame, item), r))
         return {};
     if (r == 0)
         return 0;
@@ -1660,17 +1603,16 @@ Result runLoaderOf(App* app, CPU& cpu, reg32 esp, reg32 item)
         return {};
     if (o.loading == 0)
         return 1;
-    if (!callCore<kRunTasks, stream::runDueTasks>(app, cpu, frame, {0, item, 1, item}, callee(frame, 0), 0u)
+    if (!callCore<kRunTasks, stream::runDueTasks>(app, cpu, frame, callee(frame, 0), 0u)
         || cpu.terminate)
         return {};
     int32_t result = 1;
     const reg32 loader = o.loader;
     const int32_t state = record<Loader>(app, loader).state;
-    cpu.esi = reg32(state - 1);
-    // A step failed: traced, the loader started afresh, the load given up.
+        // A step failed: traced, the loader started afresh, the load given up.
     auto failed = [&](reg32 text) -> bool {
         // The hook takes nothing: the text the code pushes for it is not read.
-        callCore<kTrace, raceload::noHook>(app, cpu, frame, {loader, item, 1, item});
+        callCore<kTrace, raceload::noHook>(app, cpu, frame);
         if (!ran(cpu))
             return false;
         result = 0;
@@ -1747,12 +1689,15 @@ Result runLoaderOf(App* app, CPU& cpu, reg32 esp, reg32 item)
     case 5:
     {
         // A read waited on: once it is done, the step after it.
-        if (!callCore<kRunTasks, stream::runDueTasks>(app, cpu, frame, {0, item, reg32(result), item}, callee(frame, 0),
+        if (!callCore<kRunTasks, stream::runDueTasks>(app, cpu, frame, callee(frame, 0),
                                                       0u)
             || cpu.terminate)
             return {};
         reg32 done;
-        if (!callGame(app, cpu, frame, kReadDone, {record<Loader>(app, o.loader).reads[waiting - 1]}, {}, done))
+                if (!taken(cpu,
+                   callCore<kReadDone, frontend::wata::asyncReadStatus>(app, cpu, frame,
+                                                                        record<Loader>(app, o.loader).reads[waiting - 1]),
+                   done))
             return {};
         if (done == 0)
             break;
@@ -1811,10 +1756,10 @@ Result runLoaderOf(App* app, CPU& cpu, reg32 esp, reg32 item)
 
 /* 0x468860: the loader of the object at eax run a step: 1, or 0 when the
  * screen is not the object's or a step failed. */
-void runLoader(App* app, CPU& cpu)
+x86::reg32 runLoader(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, runLoaderOf(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, runLoaderOf(app, cpu, e.esp, e.eax));
 }
 
 /* ---- 0x468da0 ---- */
@@ -1822,8 +1767,6 @@ void runLoader(App* app, CPU& cpu)
 Result carColourOf(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 out)
 {
     const reg32 ebp = esp - 0x14, frame = ebp - 0x14;
-    HeldEbp held(cpu, ebp);
-    Kept kept(cpu);
     const reg32 rgb = ebp - 0x14;
     copyWords(app, rgb, kNoColour, 4);
     Object& o = record<Object>(app, item);
@@ -1846,7 +1789,7 @@ Result carColourOf(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 out)
         if (word(app, model + 0x7fc) == 0)
             return 0;
         reg32 r;
-        if (!callGame(app, cpu, frame, kRandom, {0, out, 0, item}, {}, r))
+                if (!taken(cpu, callCore<kRandom, port::nextRandom>(app, cpu, frame), r))
             return {};
         const reg32 chosen = (r % word(app, model + 0x7fc)) << 4;
         for (reg32 i = 0; i < 4; ++i)
@@ -1859,14 +1802,13 @@ Result carColourOf(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 out)
         // The players': the colour they chose, as hue, saturation and value.
         const auto car = [&] { return int32_t(gameSettings(app).players[index == 0 ? 0 : 1].car); };
         reg32 r;
-        if (!taken(cpu, callCore<kCarColourIndex, fields::chosenColour>(app, cpu, frame, {reg32(car()), index},
+        if (!taken(cpu, callCore<kCarColourIndex, fields::chosenColour>(app, cpu, frame,
                                                                         callee(frame, 0), reg32(car()), int32_t(index)),
                    r))
             return {};
-        cpu.esi = reg32(car());
-        if (!callGame(app, cpu, frame, kCarColourRgb, {reg32(car()), r, index, rgb},
+                if (!callPointer(app, cpu, frame, kCarColourRgb, {reg32(car()), r, index, rgb},
                       {ebp - 0x10, ebp - 0xc, ebp - 8})
-            || !callGame(app, cpu, frame, kRgbToHsv, {rgb, out}))
+            || !taken(cpu, callCore<0x49c880, load::colourToHsv>(app, cpu, frame, rgb, out), r))
             return {};
         return 1;
     }
@@ -1876,10 +1818,10 @@ Result carColourOf(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 out)
 }
 
 /* 0x468da0: the colour of the object at eax's car into edx (4 words). */
-void carColour(App* app, CPU& cpu)
+x86::reg32 carColour(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, carColourOf(app, cpu, e.esp, e.eax, e.edx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, carColourOf(app, cpu, e.esp, e.eax, e.edx));
 }
 
 /* ---- 0x468f00 ---- */
@@ -1887,8 +1829,6 @@ void carColour(App* app, CPU& cpu)
 Result makeTextureOf(App* app, CPU& cpu, reg32 esp, reg32 item)
 {
     const reg32 ebp = esp - 0x18, frame = ebp - 0x18;
-    HeldEbp held(cpu, ebp);
-    Kept kept(cpu);
     const reg32 colour = ebp - 0x18;
     copyWords(app, colour, kNoColour2, 4);
     if (item == 0)
@@ -1899,7 +1839,7 @@ Result makeTextureOf(App* app, CPU& cpu, reg32 esp, reg32 item)
     reg32 r;
     if (o.model == 0)
     {
-        if (!callGame(app, cpu, frame, kModelReady, {o.modelData, item}, {}, r))
+        if (!callPointer(app, cpu, frame, kModelReady, {o.modelData, item}, {}, r))
             return {};
         o.model = r;
     }
@@ -1907,32 +1847,35 @@ Result makeTextureOf(App* app, CPU& cpu, reg32 esp, reg32 item)
         return int32_t(item);
     // The object pushed back far enough for the model to be in front of the eye.
     const float back = float(fp::add(Float(1.0), F(app, o.model + 0x30)));
-    if (fcom(cpu, Float(fromBits(o.position[2])), Float(back)).cf)
+    if (fcom(Float(fromBits(o.position[2])), Float(back)).cf)
         o.position[2] = bitsOf(back);
     const Result coloured = carColourOf(app, cpu, callee(frame, 0), item, colour);
     if (!coloured)
         return {};
+    reg32 loadedTga;
     if (*coloured != 0)
     {
-        if (!callGame(app, cpu, frame, kLoadTga, {o.model, o.textureData, 0x100, o.texture}, {colour, 1, 0}))
+        if (!taken(cpu, callCore<0x49d320, load::tgaLoaded>(app, cpu, frame - 12,
+                                                         o.model, o.textureData, 0x100, o.texture, colour, 1, 0),
+                   loadedTga))
             return {};
     }
-    else if (!callGame(app, cpu, frame, kLoadTga, {o.model, o.textureData, 0x100, o.texture}, {0, 1, 0}))
+    else if (!taken(cpu, callCore<0x49d320, load::tgaLoaded>(app, cpu, frame - 12,
+                                                             o.model, o.textureData, 0x100, o.texture, 0, 1, 0),
+                    loadedTga))
         return {};
     if (o.shadow != 0)
         return int32_t(item);
     // The model's copy for the shadow.
-    if (!taken(cpu, callCore<kAllocate, ea::reserved>(app, cpu, frame,
-                                                      {kEmpty, record<Loader>(app, o.loader).modelSize, 0x10}, kEmpty,
+    if (!taken(cpu, callCore<kAllocate, ea::reserved>(app, cpu, frame, kEmpty,
                                                       record<Loader>(app, o.loader).modelSize, 0x10u),
                r))
         return {};
     o.shadow = r;
-    if (!callCore<kMemmove, ea::moveMemory>(app, cpu, frame,
-                                            {o.model, o.shadow, record<Loader>(app, o.loader).modelSize}, o.shadow,
+    if (!callCore<kMemmove, ea::moveMemory>(app, cpu, frame, o.shadow,
                                             o.model, record<Loader>(app, o.loader).modelSize)
         || cpu.terminate
-        || !callGame(app, cpu, frame, kModelReady, {o.shadow, item}, {}, r))
+        || !callPointer(app, cpu, frame, kModelReady, {o.shadow, item}, {}, r))
         return {};
     o.shadow = r;
     return int32_t(r);
@@ -1940,10 +1883,10 @@ Result makeTextureOf(App* app, CPU& cpu, reg32 esp, reg32 item)
 
 /* 0x468f00: the object at eax's model made ready, its texture made in its
  * car's colour, its shadow's copy made. */
-void makeTexture(App* app, CPU& cpu)
+x86::reg32 makeTexture(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, makeTextureOf(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, makeTextureOf(app, cpu, e.esp, e.eax));
 }
 
 /* ---- 0x466cf0 ---- */
@@ -1951,21 +1894,16 @@ void makeTexture(App* app, CPU& cpu)
 Result drawObject(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 edx)
 {
     const reg32 P = esp - 0x14, B = P - 0x82, frame = P - 0xd0;
-    HeldEbp held(cpu, B);
-    Kept kept(cpu);
     reg32 r;
     const reg32 light = B + 0x1e, matrix = B - 0x2a, identity = B - 0x4e, mirrored = B - 6, place = B + 0x2a;
     const reg32 drawn = B + 0x36, shadows = B + 0x3e, flares = B + 0x46;
     copyWords(app, light, kLightDirection, 3);
-    cpu.esi = kLightDirection + 12;
-    cpu.edi = light + 12;
-    for (const reg32 list : {drawn, shadows, flares})
+        for (const reg32 list : {drawn, shadows, flares})
     {
-        cpu.esi = list;
-        if (!callGame(app, cpu, frame, kListEmpty, {item, list == flares ? 8u : edx}))
+        if (!ran(cpu, callCore<kListEmpty, frontend::rendd::emptyList>(app, cpu, frame, list)))
             return {};
     }
-    if (!callGame(app, cpu, frame, kMenuShownNow, {item, 8}, {}, r))
+    if (!taken(cpu, callCore<0x44a660, frontend::loop::shownNow>(app, cpu, frame, item), r))
         return {};
     if (r == 0)
         return 0;
@@ -1976,7 +1914,7 @@ Result drawObject(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 edx)
         o.shownId = -1;
         if (o.modelData != 0)
         {
-            if (!callGame(app, cpu, frame, kFreeModel, {o.modelData}))
+                        if (!ran(cpu, callCore<kFreeModel, frontend::rendc::modelFree>(app, cpu, frame, o.modelData)))
                 return {};
             o.modelData = 0;
             o.model = 0;
@@ -1995,8 +1933,7 @@ Result drawObject(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 edx)
     }
     if (o.logo != 0 && (o.kind == kPlayer1 || o.kind == kPlayer2 || o.kind == kSplit))
     {
-        cpu.edi = kLogoTexture(app);
-        if (kLogoTexture(app) != 0
+                if (kLogoTexture(app) != 0
             && !drawLogoOf(app, cpu, callee(frame, 2), kLogoTexture(app), kLogoX(app), kLogoY(app), 0x100, 0x100,
                            uint32_t(o.alpha) << 24 | 0xffffff))
             return {};
@@ -2008,21 +1945,23 @@ Result drawObject(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 edx)
     const int32_t elapsed = int32_t(uint32_t(clock) - uint32_t(o.lastClock));
     o.lastClock = clock;
     const float dt = float(Float(elapsed));
-    cpu.edi = reg32(kNoMouse(app));
-    if (kNoMouse(app) == 0 && !dragSpin(app, cpu, callee(frame, 0), item, edx))
+        if (kNoMouse(app) == 0 && !dragSpin(app, cpu, callee(frame, 0), item, edx))
         return {};
     // A spin faster than the object's own turn slowed, a step a tick.
     const float own = float(fp::mul(F(app, item + 0x54), F(app, kPerDegree)));
-    const float ownSize = fcom(cpu, Float(0.0), Float(own)).belowOrEqual() ? own : float(-Float(own));
-    const float spinSize = fcom(cpu, Float(0.0), Float(o.spin[1])).belowOrEqual() ? o.spin[1] : float(-Float(o.spin[1]));
-    if (fcom(cpu, Float(spinSize), Float(ownSize)).above())
+    const float ownSize = fcom(Float(0.0), Float(own)).belowOrEqual() ? own : float(-Float(own));
+    const float spinSize = fcom(Float(0.0), Float(o.spin[1])).belowOrEqual() ? o.spin[1] : float(-Float(o.spin[1]));
+    if (fcom(Float(spinSize), Float(ownSize)).above())
         for (int32_t n = 0; n < chopped<int32_t>(cpu, Float(dt)); ++n)
             o.spin[1] = float(fp::mul(Float(o.spin[1]), F(app, kSlowing)));
     if ((kMenuFlags(app) & 0x40) != 0)
     {
         // Over a race: the screen cleared behind it, its turn the pause's.
         const reg32 colour = kPaused(app) != 0 && kPauseShown(app) == 0 ? 0xff00ff00 : 0xff000000;
-        if (!callGame(app, cpu, frame, kFilledRectangle, {0, 0, 0x27f, 0x1df}, {colour}))
+                reg32 filled;
+        if (!taken(cpu, callCore<kFilledRectangle, draw2d::filled>(app, cpu, frame - 4, callee(frame, 1), 0, 0, 0x27f, 0x1df,
+                                                                  colour),
+                   filled))
             return {};
         o.turn[1] = fromBits(kPauseTurn(app));
     }
@@ -2041,21 +1980,22 @@ Result drawObject(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 edx)
         o.turn[2] = float(z);
     }
     // The object's matrix, the renderer's states, the light.
-    if (!rotated<kXRotation, ea::rotateAboutX>(app, cpu, frame, {matrix}, matrix, bitsOf(o.turn[0]))
-        || !callGame(app, cpu, frame, kYRotation, {matrix}, {bitsOf(o.turn[1]), matrix})
-        || !callGame(app, cpu, frame, kZRotation, {matrix, 0}, {bitsOf(o.turn[2]), matrix})
-        || !ran(cpu, callCore<kStatesForHud, collide::hudStates>(app, cpu, frame, {matrix, 0}))
-        || !ran(cpu, callCore<kSetRenderState, graphics::sendState>(app, cpu, frame, {0x15, 0}, 0x15u, 0u))
-        || !callGame(app, cpu, frame, kSunLighting, {0x15, 0})
-        || !callGame(app, cpu, frame, kLightFrom, {1, light})
-        || (callCore<kUnit, vertices::makeUnitVector>(app, cpu, frame, {light, light}, light, light), !ran(cpu))
-        || !callGame(app, cpu, frame, kLightDirectionSet, {light, light})
-        || !callGame(app, cpu, frame, kAmbient, {0xffafafaf, light}))
+    if (!rotated<kXRotation, ea::rotateAboutX>(app, cpu, frame, matrix, bitsOf(o.turn[0]))
+        || (callCore<kYRotation, frontend::simd::rotateY>(app, cpu, frame, matrix, bitsOf(o.turn[1]), matrix), !ran(cpu))
+        || (callCore<kZRotation, frontend::simd::rotateZ>(app, cpu, frame, matrix, bitsOf(o.turn[2]), matrix), !ran(cpu))
+        || !ran(cpu, callCore<kStatesForHud, collide::hudStates>(app, cpu, frame))
+        || !ran(cpu, callCore<kSetRenderState, graphics::sendState>(app, cpu, frame, 0x15u, 0u))
+        || (callCore<kSunLighting, decompiled::sunLightingReset>(app, cpu, frame), !ran(cpu))
+                || !ran(cpu, callCore<kLightFrom, frontend::rendc::modelSetShading>(app, cpu, frame, 1u))
+        || (callCore<kUnit, vertices::makeUnitVector>(app, cpu, frame, light, light), !ran(cpu))
+        || !ran(cpu, callCore<kLightDirectionSet, frontend::rendc::modelSetLight>(app, cpu, frame, light))
+        || !ran(cpu, callCore<kAmbient, frontend::rendc::modelSetColour>(app, cpu, frame, 0xffafafafu)))
         return {};
     {
         const uint32_t white = faded(0xffffffff, fadeOf(o.alpha));
         const uint32_t grey = faded(0x7f7f7f7f, fadeOf(o.alpha));
-        if (!callGame(app, cpu, frame, kGlareColours, {grey, white}))
+                callCore<kGlareColours, render::glareColoursSet>(app, cpu, frame, grey, white);
+        if (!ran(cpu))
             return {};
     }
     const int32_t kind = o.kind;
@@ -2070,13 +2010,13 @@ Result drawObject(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 edx)
         copyWords(app, place, item + 0x5c, 3);
         // The shadow's place: the object's, below it by the model's height.
         putF(app, place + 4, fp::sub(F(app, place + 4), fp::mul(F(app, o.model + 0x2c), D(app, kTwice))));
-        if (!callGame(app, cpu, frame, kListStart)
-            || !callGame(app, cpu, frame, kLightAlpha, {uint32_t(o.alpha) & 0xff, uint32_t(o.alpha >> 1) & 0xff}))
+                if (!ran(cpu, callCore<kListStart, frontend::rendc::objectsBegin>(app, cpu, frame))
+            || !ran(cpu, callCore<kLightAlpha, frontend::rendc::modelSetAlphas>(app, cpu, frame, uint32_t(o.alpha) & 0xff,
+                                                                               uint32_t(o.alpha >> 1) & 0xff)))
             return {};
         if ((kMenuFlags(app) & 0x40) == 0 || (kPaused(app) != 0 && kPauseShown(app) == 0))
         {
             // The car: its body, its glass, its four wheels.
-            cpu.esi = item + 0x5c;
             if (!drawModel(app, cpu, frame, o.model, 0, 0, o.model + 0xfc, matrix, item + 0x5c, kLightsTail(app)))
                 return {};
             if (!drawModel(app, cpu, frame, o.model, 0xc, 0, o.model + 0x18c, matrix, item + 0x5c, kLightsTail(app)))
@@ -2090,8 +2030,8 @@ Result drawObject(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 edx)
             if (!drawModel(app, cpu, frame, o.model, 4, identity, o.model + 0x12c, matrix, item + 0x5c, 0))
                 return {};
         }
-        cpu.esi = drawn;
-        if (!callGame(app, cpu, frame, kListTaken) || !callGame(app, cpu, frame, kListStart))
+                if (!ran(cpu, callCore<kListTaken, frontend::rendc::objectsEnd>(app, cpu, frame, drawn))
+            || !ran(cpu, callCore<kListStart, frontend::rendc::objectsBegin>(app, cpu, frame)))
             return {};
         if (((kMenuFlags(app) & 0x40) == 0 || kPauseShown(app) != 0) && o.shadowed != 0
             && (kDriverFlags(app) & 6) == 0)
@@ -2099,11 +2039,12 @@ Result drawObject(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 edx)
             // The shadow: the copy of the model mirrored below the car, dim.
             const int32_t scaled = int32_t(uint32_t(o.alpha) * 155u);
             const int32_t dim = scaled < 0 ? int32_t(uint32_t(scaled) + 0xff) >> 8 : scaled >> 8;
-            if (!callGame(app, cpu, frame, kLightAlpha, {uint32_t(dim) & 0xff, uint32_t(dim >> 2) & 0xff})
-                || !callGame(app, cpu, frame, kAmbient, {0xff4f5f7f}))
+                        if (!ran(cpu, callCore<kLightAlpha, frontend::rendc::modelSetAlphas>(app, cpu, frame, uint32_t(dim) & 0xff,
+                                                                                 uint32_t(dim >> 2) & 0xff))
+                || !ran(cpu, callCore<kAmbient, frontend::rendc::modelSetColour>(app, cpu, frame, 0xff4f5f7fu)))
                 return {};
             app->getMemory<uint8_t>(B + 0x25) ^= 0x80;
-            if (!callGame(app, cpu, frame, kLightDirectionSet, {light}))
+            if (!ran(cpu, callCore<kLightDirectionSet, frontend::rendc::modelSetLight>(app, cpu, frame, light)))
                 return {};
             const reg32 tail = kLightsTail(app);
             app->getMemory<uint8_t>(kShadowPass) ^= 1;
@@ -2115,64 +2056,61 @@ Result drawObject(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 edx)
                 return {};
             if (!drawModel(app, cpu, frame, o.shadow, 3, identity, o.model + 0x120, mirrored, place, 0))
                 return {};
-            cpu.esi = shadows;
-            if (!drawModel(app, cpu, frame, o.shadow, 4, identity, o.model + 0x12c, mirrored, place, 0))
+                        if (!drawModel(app, cpu, frame, o.shadow, 4, identity, o.model + 0x12c, mirrored, place, 0))
                 return {};
             app->getMemory<uint8_t>(kShadowPass) ^= 1;
-            if (!callGame(app, cpu, frame, kLightAlpha, {0xff, 0x7f}) || !callGame(app, cpu, frame, kListTaken))
+            if (!ran(cpu, callCore<kLightAlpha, frontend::rendc::modelSetAlphas>(app, cpu, frame, 0xffu, 0x7fu))
+                || !ran(cpu, callCore<kListTaken, frontend::rendc::objectsEnd>(app, cpu, frame, shadows)))
                 return {};
         }
         if ((kMenuFlags(app) & 0x40) == 0 || (kPaused(app) == 0 && kPauseShown(app) == 0))
         {
-            cpu.esi = flares;
-            if (!lightFlares(app, cpu, callee(frame, 0), o.model, matrix, item + 0x5c, uint32_t(o.alpha) & 0xff,
+                        if (!lightFlares(app, cpu, callee(frame, 0), o.model, matrix, item + 0x5c, uint32_t(o.alpha) & 0xff,
                              flares))
                 return {};
         }
         if (kAfterState(app) == 0)
         {
-            const reg32 s0 = word(app, shadows), s1 = word(app, shadows + 4);
-            cpu.esi = shadows;
-            if (!callGame(app, cpu, frame, kListSorted, {}, {s0, s1}))
+                        const reg32 s0 = word(app, shadows), s1 = word(app, shadows + 4);
+            if (!ran(cpu, callCore<kListSorted, frontend::rende::polygonsSorted>(app, cpu, frame - 8, shadows, s0, s1)))
                 return {};
             const reg32 d0 = word(app, drawn), d1 = word(app, drawn + 4);
-            cpu.esi = drawn;
-            if (!callGame(app, cpu, frame, kListSorted, {}, {d0, d1}))
+            if (!ran(cpu, callCore<kListSorted, frontend::rende::polygonsSorted>(app, cpu, frame - 8, drawn, d0, d1)))
                 return {};
         }
-        cpu.esi = drawn;
-        if (!callGame(app, cpu, frame, kListJoined, {},
-                      {word(app, shadows), word(app, shadows + 4), word(app, drawn), word(app, drawn + 4)}))
+        if (!ran(cpu, callCore<kListJoined, frontend::rendd::joinLists>(app, cpu, frame - 4 * 4, drawn, word(app, shadows),
+                                                                        word(app, shadows + 4), word(app, drawn),
+                                                                        word(app, drawn + 4))))
             return {};
     }
     else
     {
         // The generic car, the track: the model alone, its glass after it.
-        if (!callGame(app, cpu, frame, kLightAlpha, {uint32_t(o.alpha) & 0xff, uint32_t(o.alpha >> 1) & 0xff})
-            || !callGame(app, cpu, frame, kListStart))
+                if (!ran(cpu, callCore<kLightAlpha, frontend::rendc::modelSetAlphas>(app, cpu, frame, uint32_t(o.alpha) & 0xff,
+                                                                             uint32_t(o.alpha >> 1) & 0xff))
+            || !ran(cpu, callCore<kListStart, frontend::rendc::objectsBegin>(app, cpu, frame)))
             return {};
-        cpu.esi = shadows;
         if (!drawModel(app, cpu, frame, o.model, 1, 0, o.model + 0x108, matrix, item + 0x5c, 0))
             return {};
-        if (!callGame(app, cpu, frame, kListTaken) || !callGame(app, cpu, frame, kListStart))
+        if (!ran(cpu, callCore<kListTaken, frontend::rendc::objectsEnd>(app, cpu, frame, shadows))
+            || !ran(cpu, callCore<kListStart, frontend::rendc::objectsBegin>(app, cpu, frame)))
             return {};
-        cpu.esi = drawn;
         if (!drawModel(app, cpu, frame, o.model, 0, 0, o.model + 0xfc, matrix, item + 0x5c, 0))
             return {};
-        if (!callGame(app, cpu, frame, kListTaken))
+        if (!ran(cpu, callCore<kListTaken, frontend::rendc::objectsEnd>(app, cpu, frame, drawn)))
             return {};
-        cpu.esi = drawn;
-        if (!callGame(app, cpu, frame, kListJoined, {},
-                      {word(app, shadows), word(app, shadows + 4), word(app, drawn), word(app, drawn + 4)}))
+        if (!ran(cpu, callCore<kListJoined, frontend::rendd::joinLists>(app, cpu, frame - 4 * 4, drawn, word(app, shadows),
+                                                                        word(app, shadows + 4), word(app, drawn),
+                                                                        word(app, drawn + 4))))
             return {};
     }
-    if (!callGame(app, cpu, frame, kDrawRecords, {word(app, drawn)})
-        || !ran(cpu, callCore<kSetRenderState, graphics::sendState>(app, cpu, frame, {4, 0}, 4u, 0u))
-        || !callGame(app, cpu, frame, kDrawRecords, {word(app, flares)})
-        || !ran(cpu, callCore<kSetRenderState, graphics::sendState>(app, cpu, frame, {4, kAfterState(app)}, 4u,
+    if (!callPointer(app, cpu, frame, kDrawRecords, {word(app, drawn)})
+        || !ran(cpu, callCore<kSetRenderState, graphics::sendState>(app, cpu, frame, 4u, 0u))
+        || !callPointer(app, cpu, frame, kDrawRecords, {word(app, flares)})
+        || !ran(cpu, callCore<kSetRenderState, graphics::sendState>(app, cpu, frame, 4u,
                                                                     kAfterState(app)))
-        || !callGame(app, cpu, frame, kFrameDone)
-        || !ran(cpu, callCore<kStatesForScreens, collide::screenStates>(app, cpu, frame, {})))
+                || !ran(cpu, callCore<kFrameDone, frontend::rendd::arenaRewind>(app, cpu, frame))
+        || !ran(cpu, callCore<kStatesForScreens, collide::screenStates>(app, cpu, frame)))
         return {};
     return 0;
 }
@@ -2180,33 +2118,33 @@ Result drawObject(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 edx)
 /* 0x466cf0: the object at eax drawn -- its car loaded and faded, turned by
  * the clock or the mouse, lit, its shadow and its lights' flares (edx: the
  * mouse may take hold of it). */
-void objectDraw(App* app, CPU& cpu)
+x86::reg32 objectDraw(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, drawObject(app, cpu, e.esp, e.eax, e.edx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, drawObject(app, cpu, e.esp, e.eax, e.edx));
 }
 
 /* ---- 0x4675b0 ---- */
 
 Result objectKey(App* app, CPU& cpu, reg32 esp, reg32 item)
 {
-    pushed(app, esp, {cpu.ebp});
-    HeldEbp held(cpu, esp - 4);
+    // (the ebp the code pushes here is not written: nothing reads it)
     reg32 r;
-    if (!callGame(app, cpu, esp - 4, kMenuShownNow, {item, 8}, {}, r))
+    if (!taken(cpu, callCore<0x44a660, frontend::loop::shownNow>(app, cpu, esp - 4, item), r))
         return {};
     return 0;
 }
 
 /* 0x4675b0: a key on the object at eax: never taken.  edx is left 8, as the
  * game's code leaves it (the key's dispatch at 0x44a36a hands it up). */
-void objectKeyed(App* app, CPU& cpu)
+x86::reg32 objectKeyed(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     const Result r = objectKey(app, cpu, e.esp, e.eax);
-    e.finish(cpu, r);
+    const reg32 result = e.finish(cpu, args, r);
     if (r)
-        cpu.edx = 8;
+        args.edx = 8;
+    return result;
 }
 
 /* ---- 0x4675d0 ---- */
@@ -2214,9 +2152,8 @@ void objectKeyed(App* app, CPU& cpu)
 Result objectPass(App* app, CPU& cpu, reg32 esp, reg32 item)
 {
     const reg32 frame = esp - 0xc;
-    HeldEbp held(cpu, frame);
     reg32 r;
-    if (!callGame(app, cpu, frame, kMenuShownNow, {item, 8}, {}, r))
+    if (!taken(cpu, callCore<0x44a660, frontend::loop::shownNow>(app, cpu, frame, item), r))
         return {};
     if (r == 0)
         return 0;
@@ -2234,10 +2171,10 @@ Result objectPass(App* app, CPU& cpu, reg32 esp, reg32 item)
 
 /* 0x4675d0: what the object at eax is to the mouse passing over it: 4
  * loading, 2 held, 1 there, 0 not. */
-void objectPassed(App* app, CPU& cpu)
+x86::reg32 objectPassed(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, objectPass(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, objectPass(app, cpu, e.esp, e.eax));
 }
 
 /* ---- 0x467650 ---- */
@@ -2245,9 +2182,8 @@ void objectPassed(App* app, CPU& cpu)
 Result objectUp(App* app, CPU& cpu, reg32 esp, reg32 item)
 {
     const reg32 frame = esp - 0x10;
-    HeldEbp held(cpu, frame);
     reg32 r;
-    if (!callGame(app, cpu, frame, kMenuShownNow, {item, 8}, {}, r))
+    if (!taken(cpu, callCore<0x44a660, frontend::loop::shownNow>(app, cpu, frame, item), r))
         return {};
     if (r == 0)
         return 0;
@@ -2280,10 +2216,10 @@ Result objectUp(App* app, CPU& cpu, reg32 esp, reg32 item)
 }
 
 /* 0x467650: the object at eax's rectangle on the screen made afresh. */
-void objectReleased(App* app, CPU& cpu)
+x86::reg32 objectReleased(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, objectUp(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, objectUp(app, cpu, e.esp, e.eax));
 }
 
 /* ---- 0x467700, 0x467930 ---- */
@@ -2299,30 +2235,27 @@ Result letGo(App* app, CPU& cpu, reg32 frame, reg32 item, reg32& r, bool hidden)
     {
         if (!resetLoaderOf(app, cpu, callee(frame, 0), o.loader))
             return {};
-        if (!taken(cpu, callCore<kFree, ea::purgeBlock>(app, cpu, frame, {o.loader}, o.loader), r))
+        if (!taken(cpu, callCore<kFree, ea::purgeBlock>(app, cpu, frame, o.loader), r))
             return {};
         o.loader = 0;
     }
     if (o.modelData != 0)
     {
-        if (hidden)
-            cpu.esi = o.modelData;
-        if (!callGame(app, cpu, frame, kFreeModel, {o.modelData}, {}, r))
+                if (!taken(cpu, callCore<kFreeModel, frontend::rendc::modelFree>(app, cpu, frame, o.modelData), r))
             return {};
         o.modelData = 0;
         o.model = 0;
     }
-    cpu.edi = o.shadow;
     if (o.shadow != 0)
     {
-        if (!callGame(app, cpu, frame, kFreeModel, {o.shadow}, {}, r))
+        if (!taken(cpu, callCore<kFreeModel, frontend::rendc::modelFree>(app, cpu, frame, o.shadow), r))
             return {};
         o.shadow = 0;
     }
     r = o.textureData;
     if (o.textureData != 0)
     {
-        if (!taken(cpu, callCore<kFree, ea::purgeBlock>(app, cpu, frame, {o.textureData}, o.textureData), r))
+        if (!taken(cpu, callCore<kFree, ea::purgeBlock>(app, cpu, frame, o.textureData), r))
             return {};
         o.textureData = 0;
     }
@@ -2334,11 +2267,8 @@ Result letGo(App* app, CPU& cpu, reg32 frame, reg32 item, reg32& r, bool hidden)
 Result objectShown(App* app, CPU& cpu, reg32 esp, reg32 item)
 {
     const reg32 frame = esp - 0x18;
-    HeldEbp held(cpu, frame);
-    Kept kept(cpu);
-    reg32 r;
-    cpu.esi = item;
-    if (!callGame(app, cpu, frame, kMenuShownNow, {item, 8}, {}, r))
+        reg32 r;
+    if (!taken(cpu, callCore<0x44a660, frontend::loop::shownNow>(app, cpu, frame, item), r))
         return {};
     if (r == 0)
         return 0;
@@ -2365,21 +2295,21 @@ Result objectShown(App* app, CPU& cpu, reg32 esp, reg32 item)
         return {};
     // A loader afresh, a texture of the object's own, the first car loaded
     // as far as the screen lets it.
-    if (!taken(cpu, callCore<kAllocate, ea::reserved>(app, cpu, frame, {kEmpty, 0x1a0, 0x10, item}, kEmpty, 0x1a0u,
+    if (!taken(cpu, callCore<kAllocate, ea::reserved>(app, cpu, frame, kEmpty, 0x1a0u,
                                                       0x10u),
                r))
         return {};
     o.loader = r;
     if (r != 0)
     {
-        if (!taken(cpu, callCore<kAllocTexture, graphics::allocatedTexture>(app, cpu, frame, {0x100, 0x100, 0x10, item},
+        if (!taken(cpu, callCore<kAllocTexture, graphics::allocatedTexture>(app, cpu, frame,
                                                                             0x100u, 0x100u),
                    r))
             return {};
         o.texture = r;
         if (r != 0)
         {
-            if (!taken(cpu, callCore<kMemset, watcom::clib::memset>(app, cpu, frame, {o.loader, 0, 0x1a0, item}, o.loader,
+            if (!taken(cpu, callCore<kMemset, watcom::clib::memset>(app, cpu, frame, o.loader,
                                                                     0u, 0x1a0u),
                        r))
                 return {};
@@ -2429,19 +2359,17 @@ Result objectShown(App* app, CPU& cpu, reg32 esp, reg32 item)
 
 /* 0x467700: the object at eax shown: its state afresh, its loader and
  * texture made, its first car loaded as far as it goes. */
-void objectOpened(App* app, CPU& cpu)
+x86::reg32 objectOpened(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, objectShown(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, objectShown(app, cpu, e.esp, e.eax));
 }
 
 Result objectHidden(App* app, CPU& cpu, reg32 esp, reg32 item)
 {
     const reg32 frame = esp - 0x18;
-    HeldEbp held(cpu, frame);
-    Kept kept(cpu);
     reg32 r;
-    if (!callGame(app, cpu, frame, kMenuShownNow, {item, 8}, {}, r))
+    if (!taken(cpu, callCore<0x44a660, frontend::loop::shownNow>(app, cpu, frame, item), r))
         return {};
     if (r == 0)
         return 0;
@@ -2458,10 +2386,10 @@ Result objectHidden(App* app, CPU& cpu, reg32 esp, reg32 item)
 }
 
 /* 0x467930: the object at eax hidden: what it holds let go. */
-void objectClosed(App* app, CPU& cpu)
+x86::reg32 objectClosed(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, objectHidden(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, objectHidden(app, cpu, e.esp, e.eax));
 }
 
 }  // namespace obj3d

@@ -4,11 +4,10 @@
 #include "native_guest.h"
 
 /* native_trackdata.cpp's typed functions that other files call as C++ (guest::direct), and how the
- * game's code calls each by address (ByAddress, for the check's stand-ins).  A place on the track is
+ * game's code calls each by address.  A place on the track is
  * its record of 0x78 bytes (native_trackdata.cpp says what it holds), a point three 16.16 words.
  * Each may call the game's other functions by address on `cpu`, and is false or nullopt when the
- * game stopped in one; one without `cpu` calls nothing, and through ByAddress leaves cpu.terminate
- * to say it. */
+ * game stopped in one; one without `cpu` calls nothing. */
 namespace nfs3hp
 {
 namespace trackdata
@@ -57,7 +56,8 @@ x86::reg32 resetPlace(win32::WinApplication* app, x86::reg32 node, x86::reg32 pl
 // The game's 0x41e990: the road's quad under the point looked for about the place's node.
 std::optional<Searched> searchQuad(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 point, x86::reg32 place);
 // The game's 0x41f6e0: the place brought to the point, followed or not.
-bool bringPlace(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 point, x86::reg32 place, x86::reg32 followed);
+std::optional<x86::reg32> bringPlace(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 point, x86::reg32 place,
+                                     x86::reg32 followed);
 // The game's 0x41f870: the place `from` copied to `to` and moved by `way` to the quad that matches.
 Matched matchQuad(win32::WinApplication* app, x86::reg32 way, x86::reg32 from, x86::reg32 to);
 // The game's 0x41fd60: which edges of `other`'s quad the point is past, its height to [height].
@@ -85,266 +85,17 @@ x86::reg32 groundUnder(win32::WinApplication* app, x86::sreg32 node, x86::sreg32
 // The game's 0x420bf0: 1 where the place (three words at `place`) is in a tunnel by node `node`, else 0.
 std::optional<x86::reg32> placeInTunnel(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 place, x86::reg32 node);
 
+// The game's 0x41ffd0: a place in a lane to `out` (16.16), from the place on the track, on the right where `right`; the lane's node.
+x86::reg32 laneNodePlaced(win32::WinApplication* app, x86::reg32 place, x86::reg32 out, x86::reg32 right);
+// The game's 0x420d60: whether the car is in a tunnel two nodes on (or back) from its node (1 or 0).
+std::optional<x86::reg32> carAgainstTrack(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 car);
+// The game's 0x4211c0: the kind of the track at the car's node.
+x86::reg32 trackKindUnderCar(win32::WinApplication* app, x86::reg32 car);
+
 }  // namespace trackdata
 
 namespace guest
 {
-
-// The header in eax.
-template <>
-struct ByAddress<trackdata::openTrack>
-{
-    template <x86::reg32 Address>
-    static bool call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 header)
-    {
-        return watcom(app, cpu, Address, {header});
-    }
-};
-
-template <>
-struct ByAddress<trackdata::closeTrack>
-{
-    template <x86::reg32 Address>
-    static bool call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        return watcom(app, cpu, Address, {});
-    }
-};
-
-// The point in eax, the place in edx.
-template <>
-struct ByAddress<trackdata::followToNearest>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 point, x86::reg32 place)
-    {
-        watcom(app, cpu, Address, {point, place});
-        return cpu.eax;
-    }
-};
-
-// The node in eax, the place in edx.
-template <>
-struct ByAddress<trackdata::resetPlace>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 node, x86::reg32 place)
-    {
-        watcom(app, cpu, Address, {node, place});
-        return cpu.eax;
-    }
-};
-
-// The point in eax, the place in edx; found in eax, the rest in edx.
-template <>
-struct ByAddress<trackdata::searchQuad>
-{
-    template <x86::reg32 Address>
-    static std::optional<trackdata::Searched> call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 point,
-                                                    x86::reg32 place)
-    {
-        const KeptRegisters kept(cpu);
-        cpu.eax = point;
-        cpu.edx = place;
-        if (!guest::call(app, cpu, Address))
-            return std::nullopt;
-        return trackdata::Searched{cpu.eax, cpu.edx};
-    }
-};
-
-// The point in eax, the place in edx, followed in ebx.
-template <>
-struct ByAddress<trackdata::bringPlace>
-{
-    template <x86::reg32 Address>
-    static bool call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 point, x86::reg32 place,
-                     x86::reg32 followed)
-    {
-        return watcom(app, cpu, Address, {point, place, followed});
-    }
-};
-
-// The way in eax, from in edx, to in ebx; found in eax, the rest in edx.
-template <>
-struct ByAddress<trackdata::matchQuad>
-{
-    template <x86::reg32 Address>
-    static trackdata::Matched call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 way, x86::reg32 from,
-                                   x86::reg32 to)
-    {
-        const KeptRegisters kept(cpu);
-        cpu.eax = way;
-        cpu.edx = from;
-        cpu.ebx = to;
-        guest::call(app, cpu, Address);
-        return trackdata::Matched{cpu.eax, cpu.edx};
-    }
-};
-
-// The point in eax, the other in edx, the place in ebx, the height's address in ecx; the flags in
-// eax (and edx and ebx), the rest in ecx.
-template <>
-struct ByAddress<trackdata::edgesPast>
-{
-    template <x86::reg32 Address>
-    static trackdata::Edges call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 point, x86::reg32 other,
-                                 x86::reg32 place, x86::reg32 height)
-    {
-        const KeptRegisters kept(cpu);
-        cpu.eax = point;
-        cpu.edx = other;
-        cpu.ebx = place;
-        cpu.ecx = height;
-        guest::call(app, cpu, Address);
-        return trackdata::Edges{cpu.eax, cpu.ecx};
-    }
-};
-
-// The place in eax.
-template <>
-struct ByAddress<trackdata::itemCount>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 place)
-    {
-        watcom(app, cpu, Address, {place});
-        return cpu.eax;
-    }
-};
-
-// The place in eax, the index in edx, to in ebx, the size's address in ecx; the result in eax, and
-// for an item taken the size in bx and the items in edx.
-template <>
-struct ByAddress<trackdata::takeItem>
-{
-    template <x86::reg32 Address>
-    static trackdata::ItemTaken call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 place, x86::reg32 index,
-                                     x86::reg32 to, x86::reg32 size)
-    {
-        const KeptRegisters kept(cpu);
-        cpu.eax = place;
-        cpu.edx = index;
-        cpu.ebx = to;
-        cpu.ecx = size;
-        guest::call(app, cpu, Address);
-        if (cpu.eax != 0)
-            return trackdata::ItemTaken{cpu.eax, 0, 0};
-        return trackdata::ItemTaken{cpu.eax, cpu.bx, cpu.edx};
-    }
-};
-
-// The shift in eax, the span in edx.
-template <>
-struct ByAddress<trackdata::setLanes>
-{
-    template <x86::reg32 Address>
-    static void call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 span, x86::reg32 shift)
-    {
-        watcom(app, cpu, Address, {shift, span});
-    }
-};
-
-// The place in eax, the axes in edx, the corner in esi; the result in edx.
-template <>
-struct ByAddress<trackdata::takeFrame>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 place, x86::reg32 axes,
-                           x86::reg32 corner)
-    {
-        const KeptRegisters kept(cpu);
-        cpu.eax = place;
-        cpu.edx = axes;
-        cpu.esi = corner;
-        guest::call(app, cpu, Address);
-        return cpu.edx;
-    }
-};
-
-// The place in eax, followed in edx, the node in ebx, out in esi.
-template <>
-struct ByAddress<trackdata::snapPlace>
-{
-    template <x86::reg32 Address>
-    static bool call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 place, x86::reg32 out,
-                     x86::reg32 followed, x86::reg32 node)
-    {
-        const KeptRegisters kept(cpu);
-        cpu.eax = place;
-        cpu.edx = followed;
-        cpu.ebx = node;
-        cpu.esi = out;
-        return guest::call(app, cpu, Address);
-    }
-};
-
-// The point in eax, followed in edx, the node in ebx, out in esi.
-template <>
-struct ByAddress<trackdata::placeAt>
-{
-    template <x86::reg32 Address>
-    static bool call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 point, x86::reg32 followed,
-                     x86::reg32 node, x86::reg32 out)
-    {
-        const KeptRegisters kept(cpu);
-        cpu.eax = point;
-        cpu.edx = followed;
-        cpu.ebx = node;
-        cpu.esi = out;
-        return guest::call(app, cpu, Address);
-    }
-};
-
-// The place in eax, followed in edx.
-template <>
-struct ByAddress<trackdata::placeColour>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 place, x86::reg32 followed)
-    {
-        watcom(app, cpu, Address, {place, followed});
-        return cpu.eax;
-    }
-};
-
-// The place in eax, followed in edx.
-template <>
-struct ByAddress<trackdata::placeSurface>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 place, x86::reg32 followed)
-    {
-        watcom(app, cpu, Address, {place, followed});
-        return cpu.eax;
-    }
-};
-
-// The node in eax, the lane in edx.
-template <>
-struct ByAddress<trackdata::groundUnder>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::sreg32 node, x86::sreg32 lane)
-    {
-        watcom(app, cpu, Address, {x86::reg32(node), x86::reg32(lane)});
-        return cpu.eax;
-    }
-};
-
-// Stdcall: the place's three words and the node pushed.
-template <>
-struct ByAddress<trackdata::placeInTunnel>
-{
-    template <x86::reg32 Address>
-    static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 place,
-                                          x86::reg32 node)
-    {
-        const KeptRegisters kept(cpu);
-        if (!guest::call(app, cpu, Address, {at(app, place), at(app, place + 4), at(app, place + 8), node}))
-            return std::nullopt;
-        return cpu.eax;
-    }
-};
 
 }  // namespace guest
 }  // namespace nfs3hp

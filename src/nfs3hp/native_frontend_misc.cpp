@@ -1,9 +1,13 @@
 #include "native_frontend_misc.h"
+#include "native_load_saves.h"
+#include "native_carstate.h"
 #include "native_watcom.h"
 #include "native_game.h"
 #include "game_settings.h"
 #include "native_controls_input.h"
 #include "native_ea_memory.h"
+#include "native_ea_net.h"
+
 #include "native_ea_support.h"
 #include "native_frontend.h"
 #include "native_frontend_dialogs.h"
@@ -26,6 +30,69 @@
 #include <nfs3hp.h>
 #include <array>
 #include <iterator>
+#include "native_guest.h"
+
+namespace nfs3hp
+{
+namespace
+{
+
+/* A call through a pointer or to a function of the game's that has no typed core: Watcom's register
+ * arguments (eax, edx, ebx, ecx in turn) and the stack words as `arguments` have them, through
+ * guest::pointerCall; its eax, and Terminated when the game stopped in it. */
+x86::reg32 callAt(fe::Guest& guest, x86::reg32 target, const fe::Arguments& arguments = fe::Arguments())
+{
+    x86::CPU& cpu = guest.cpu();
+    x86::Args registers;
+    x86::reg32* const into[4] = { &registers.eax, &registers.edx, &registers.ebx, &registers.ecx };
+    for (std::size_t i = 0; i < arguments.registerCount; ++i)
+        *into[i] = arguments.registers[i];
+    const x86::reg32 esp = cpu.esp;
+    for (std::size_t i = arguments.stackCount; i-- > 0;)
+    {
+        cpu.esp -= 4;
+        guest.setDword(cpu.esp, arguments.stack[i]);
+    }
+    const std::optional<x86::reg32> result = guest::pointerCall(guest.app(), cpu, target, registers);
+    if (!result)
+        throw fe::Terminated();
+    cpu.esp = esp;
+    return *result;
+}
+
+}  // namespace
+}  // namespace nfs3hp
+
+namespace nfs3hp
+{
+namespace
+{
+
+/* The game's float operations on plain values: fild, the single-precision sum, difference and
+ * product (fp::), what jb and ja read after fcom, and the truncation of sub_4dfd56 and fistp. */
+struct FloatMath
+{
+    explicit FloatMath(fe::Guest& guest) : m_guest(guest) {}
+
+    static x86::Float integer(std::int32_t value) { return x86::Float(x86::sreg32(value)); }
+    x86::Float load(x86::reg32 address) const { return x86::Float(m_guest.floatAt(address)); }
+    x86::Float add(const x86::Float& a, const x86::Float& b) { return fp::add(a, b); }
+    x86::Float sub(const x86::Float& a, const x86::Float& b) { return fp::sub(a, b); }
+    x86::Float mul(const x86::Float& a, const x86::Float& b) { return fp::mul(a, b); }
+    bool above(const x86::Float& a, const x86::Float& b) { return a > b; }
+    bool below(const x86::Float& a, const x86::Float& b) { return !(a >= b); }  // or unordered
+    std::int32_t truncated(const x86::Float& value)
+    {
+        const double chopped = fe::direct<0x4dfd56, watcom::clib::chop>(m_guest.app(), m_guest.cpu(), double(value));
+        return fp::toInteger<x86::sreg32>(chopped);
+    }
+
+private:
+    fe::Guest& m_guest;
+};
+
+}  // namespace
+}  // namespace nfs3hp
 
 /* The screens that are neither the race's pause, nor the cars', nor the network's,
  * decompiled:
@@ -52,7 +119,7 @@
  *
  * Plan step 5: each function a typed core in frontend::misc (native_frontend_misc.h), in a frame
  * of its own where the game's function has one and calls anything (fe::Frame: what it calls runs
- * at the stack addresses it did), and an adapter under the game's name for the calls by address.
+ * at the stack addresses it did), and a thunk under the game's name for the calls by address.
  * A core of this file calls another as C++ (guest::direct), and so the typed cores of the other
  * menu files, the port's and the libraries' (fe::direct); the rest of the game by address. */
 namespace nfs3hp
@@ -62,6 +129,14 @@ namespace
 {
 
 using fe::Guest;
+
+/* The question as fe::openQuestion opens it (sub_4446d0), with what it answers. */
+x86::reg32 openQuestionAnswer(Guest& guest, const fe::Question& question)
+{
+    return fe::direct<0x4446d0, frontend::dialogs::openQuestion>(
+        guest.app(), guest.cpu(), question.lineCount, question.lines, question.buttonCount, question.buttons,
+        question.buttonHelp, question.focus, question.column, question.callback);
+}
 using fe::GuestString;
 using fe::Item;
 
@@ -167,7 +242,6 @@ constexpr x86::reg32 kCameraMode = 0x5e1054;
 constexpr x86::reg32 kDimBackground = 0x451530;    // a float on the stack: a race's pause screen behind
 constexpr std::uint32_t kFloat0_6 = 0x3f19999a;    // 0.6f
 constexpr x86::reg32 kCameraEscape = 0x45d840;
-constexpr x86::reg32 kSetCameraViews = 0x472300;
 constexpr x86::reg32 kBuildCameraCycle = 0x423a60;
 constexpr x86::reg32 kRememberMode = 0x423ae0;     // eax the player, edx the mode
 constexpr x86::reg32 kSetCameraMode = 0x4238b0;    // likewise
@@ -182,7 +256,7 @@ x86::reg32 cameraOnEnterBody(Guest& guest, x86::reg32 menu)
     // the caller has it, handed on.
     const x86::reg32 shade = guest.frame() - 4;
     guest.setDword(shade, kFloat0_6);
-    fe::direct<kDimBackground, port::text::dimmed>(guest.app(), guest.cpu(), shade, guest.eax());
+    fe::direct<kDimBackground, port::text::dimmed>(guest.app(), guest.cpu(), shade, 0);  // eax: its result is not read
     for (x86::reg32 i = 0; i < std::size(kCameraViewsKept); ++i)
         guest.setDword(kCameraViewsKept[i], gameSettings(guest).cameraViewsChosen[i]);
     if (Item escape = fe::findItem(guest, menu, kCameraEscapeItem))
@@ -205,8 +279,7 @@ x86::reg32 cameraOnExitBody(Guest& guest, x86::reg32 menu)
         cancel = *fe::direct<kCodelinkMatches, port::menus::codelinkMatched>(guest.app(), guest.cpu(),
                                                                               guest.cpu().esp - 4,
                                                                               guest.dword(item + fe::item::kCodelink),
-                                                                              kCameraCancel.address, guest.cpu().ebx) != 0;
-        guest.leaveEdx(kCameraCancel.address);  // as the call by address leaves it: loaded, given back as it came
+                                                                              kCameraCancel.address, 0 /* ebx: not read by the core */) != 0;
     }
     if (cancel)
     {
@@ -214,15 +287,15 @@ x86::reg32 cameraOnExitBody(Guest& guest, x86::reg32 menu)
             gameSettings(guest).cameraViewsChosen[i] = guest.dword(kCameraViewsKept[i]);
         return 0;
     }
-    guest.call(kSetCameraViews);
-    guest.call(kBuildCameraCycle);
-    guest.call(kRememberMode, fe::args({ 0, guest.dword(kCameraMode) }));
-    guest.call(kRememberMode, fe::args({ 1, guest.dword(kCameraMode) }));
+    fe::direct<0x472300, load::cameraViewsSet>(guest.app(), guest.cpu());
+    fe::direct<kBuildCameraCycle, carstate::cycleBuilt>(guest.app(), guest.cpu());
+    fe::direct<kRememberMode, carstate::modeRemembered>(guest.app(), guest.cpu(), 0, guest.dword(kCameraMode));
+    fe::direct<kRememberMode, carstate::modeRemembered>(guest.app(), guest.cpu(), 1, guest.dword(kCameraMode));
     if (guest.dword(kInRace) != 0)
     {
-        guest.call(kSetCameraMode, fe::args({ 0, guest.dword(kCameraMode) }));
+        fe::direct<kSetCameraMode, carstate::cameraModePut>(guest.app(), guest.cpu(), 0, guest.dword(kCameraMode));
         if (gameSettings(guest).playMode == 1)
-            guest.call(kSetCameraMode, fe::args({ 1, guest.dword(kCameraMode) }));
+            fe::direct<kSetCameraMode, carstate::cameraModePut>(guest.app(), guest.cpu(), 1, guest.dword(kCameraMode));
     }
     return 0;
 }
@@ -265,7 +338,7 @@ x86::reg32 frontend::misc::setupOnEnter(App* app, CPU& cpu, x86::reg32 menu)
     const fe::Frame frame(guest, cpu, 24);
     gameSettings(guest).playMode = 0;
     if (guest.dword(kNetworkConnected) != 0)
-        guest.call(kCloseNetwork);
+                fe::direct<kCloseNetwork, ea::networkClosed>(app, cpu);
     if (guest.word(kNetworkLost) != 0)
     {
         guest.setDword(kConnectionLost, fe::text(guest, 0x114));
@@ -364,7 +437,6 @@ x86::reg32 frontend::misc::setupRaceAnswered(App* app, CPU& cpu, x86::reg32 answ
         guest.setByte(closes, close ? 1 : 0);
     if (std::int32_t(gameSettings(guest).playMode) > 1)
         next = kStay;
-    guest.leaveEdx(next);
     return next;
 }
 
@@ -401,8 +473,7 @@ x86::reg32 frontend::misc::setupAskRace(App* app, CPU& cpu, x86::reg32 canCancel
     question.focus = canCancel != 0 ? gameSettings(guest).raceType : 0;
     question.column = 1;
     question.callback = 0x452ac0;
-    fe::openQuestion(guest, question);
-    return guest.eax();
+    return openQuestionAnswer(guest, question);
 }
 
 namespace
@@ -568,11 +639,9 @@ x86::reg32 frontend::misc::resultsParticipantById(App* app, CPU& cpu, x86::reg32
         const x86::reg32 found = participant(group, i);
         if (guest.dword(found + kPartId) == id)
         {
-            guest.leaveEdx(left);
             return found;
         }
     }
-    guest.leaveEdx(left);
     return 0;
 }
 
@@ -650,14 +719,13 @@ x86::reg32 frontend::misc::resultsCompare(App* app, CPU& cpu, x86::reg32 aAt, x8
     case 2:
     {
         // Three comparisons as the game makes them: NaN against anything is 0.
-        fe::X87 x87(guest);
+        FloatMath x87(guest);
         const x86::Float fa = x87.load(a + kPartLapTime), fb = x87.load(b + kPartLapTime);
         if (x87.below(fa, fb))
             order = -1;
         if (x87.above(fa, fb))
             order = 1;
-        guest.fpu().compare(fa, fb);
-        if (guest.fpu().status.c3)
+        if (!(fa < fb) && !(fa > fb))  // equal, or unordered: fcom's c3
             order = 0;
         break;
     }
@@ -697,7 +765,6 @@ x86::reg32 frontend::misc::resultsCompare(App* app, CPU& cpu, x86::reg32 aAt, x8
         order = -order;
     if (order == 0)
         order = biggerFirst(guest, a, b, kPartRank);
-    guest.leaveEdx(x86::reg32(order));
     return x86::reg32(order);
 }
 
@@ -722,15 +789,12 @@ x86::reg32 frontend::misc::resultsSort(App* app, CPU& cpu, x86::reg32 group, x86
     const std::int32_t n = signedDword(guest, kGroupCounts + 4 * group);
     if (n <= 0)
     {
-        guest.leaveEdx(0);
-        return guest.eax();
+        return group;   // eax as it came: the group, the first argument (no caller reads it)
     }
     for (std::int32_t i = 0; i < n; ++i)
         for (std::int32_t j = 0; j < n; ++j)
             if (participant(group, j) == guest.dword(sorted + 4 * x86::reg32(i)))
                 guest.setWord(order + 2 * x86::reg32(i), std::uint16_t(j));
-    guest.leaveEbx(kParticipants + group * kGroupSize);
-    guest.leaveEdx(x86::reg32(n));
     return x86::reg32(n);
 }
 
@@ -748,14 +812,11 @@ x86::reg32 frontend::misc::resultsNth(App* app, CPU& cpu, x86::reg32 group, x86:
     const std::int32_t count = signedDword(guest, kGroupCounts + 4 * group);
     if (mask == 0)
     {
-        guest.leaveEdx(index + index);
         const std::int32_t at = signedWord(guest, order + 2 * index);
         if (at < 0)
             return 0;
-        guest.leaveEcx(x86::reg32(count));
         if (at > count)
             return 0;
-        guest.leaveEdx(x86::reg32(at) * kParticipantSize);
         return participant(group, at);
     }
     x86::reg32 leftEbx = 0, leftEdx = index;
@@ -776,17 +837,11 @@ x86::reg32 frontend::misc::resultsNth(App* app, CPU& cpu, x86::reg32 group, x86:
             continue;
         if (found == index)
         {
-            guest.leaveEbx(leftEbx);
-            guest.leaveEcx(slot);
-            guest.leaveEdx(leftEdx);
             return candidate;
         }
         ++found;
         leftEbx = found;
     }
-    guest.leaveEbx(leftEbx);
-    guest.leaveEcx(16);
-    guest.leaveEdx(leftEdx);
     return 0;
 }
 
@@ -802,9 +857,7 @@ x86::reg32 frontend::misc::resultsNthSorted(App* app, CPU& cpu, x86::reg32 group
     fe::direct<0x4ea4f0, ea::moveMemory>(app, cpu, kept, order, 0x20);
     guest::direct<0x455c10, resultsSort>(app, cpu, group, key, descending);
     const x86::reg32 found = guest::direct<0x455cd0, resultsNth>(app, cpu, group, index, mask, state);
-    // By address: ebx and edx go back to the caller as memmove leaves them.
-    guest.call(kCopy, fe::args({ kept, order, 0x20 }));
-    guest.leaveEcx(found);
+        fe::direct<kCopy, ea::moveMemory>(app, cpu, order, kept, 0x20);
     return found;
 }
 
@@ -820,8 +873,6 @@ constexpr x86::reg32 kRecordTimes = 0x55940c;       // the track's chosen, in it
 constexpr x86::reg32 kRecordHolder = 0x559410;
 constexpr x86::reg32 kRecordsDelete = 0x559424;     // the item
 constexpr x86::reg32 kRecordsSelect = 0x44f670;
-constexpr x86::reg32 kLoadRecords = 0x44f510;
-constexpr x86::reg32 kSaveRecords = 0x44f5f0;
 constexpr GuestString kRecordsDeleteItem{ 0x5395c0, "RECORD_DELETE" };
 constexpr GuestString kRecordsSheet{ 0x5395d0, "RECORDS_SHEET" };
 
@@ -838,7 +889,6 @@ x86::reg32 frontend::misc::recordsSelect(App* app, CPU& cpu, x86::reg32 track, x
     const x86::reg32 holder = file + 4 + offset;
     guest.setDword(kRecordTimes, times);
     guest.setDword(kRecordHolder, holder);
-    guest.leaveEdx(holder);
     return offset;
 }
 
@@ -955,12 +1005,12 @@ x86::reg32 frontend::misc::recordsHolder(App* app, CPU& cpu, x86::reg32 track)
     const x86::reg32 trackIndex = x86::reg32(std::int32_t(std::int16_t(track)));
     const bool loaded = guest::direct<0x44f5d0, recordsLoaded>(app, cpu) != 0;
     if (!loaded)
-        guest.call(kLoadRecords);
-    // By address: the code hands ebx too, the buffer, which the core does not take.
-    guest.call(kRecordsSelect, fe::args({ trackIndex, 0, names }));
+        fe::direct<0x44f510, load::recordsTableLoaded>(app, cpu);
+    // The code hands ebx too, the buffer, which the core does not take.
+    guest::direct<kRecordsSelect, recordsSelect>(app, cpu, trackIndex, 0);
     const x86::reg32 holder = guest::direct<0x44fa90, recordsRead>(app, cpu, names, names, names);
     if (!loaded)
-        guest.call(kSaveRecords);
+        fe::direct<0x44f5f0, load::recordsTableSaved>(app, cpu);
     return holder;
 }
 
@@ -995,7 +1045,6 @@ constexpr x86::reg32 kTrackNameIds = 0x44e152;      // int16[10]: a track's name
 constexpr x86::reg32 kTrackLine = 0x6644c4;
 constexpr x86::reg32 kTrackUnlocked = 0x556382;     // int16 for each track
 constexpr x86::reg32 kTrackNames = 0x55636e;
-constexpr x86::reg32 kKeptReplay = 0x446990;
 
 constexpr GuestString kPgRaceNow{ 0x539494, "racenow" };
 constexpr GuestString kPgSpeech{ 0x53949c, "PG_SPEECH" };
@@ -1152,9 +1201,9 @@ x86::reg32 frontend::misc::postgameLeaveNetwork(App* app, CPU& cpu)
     {
         if (guest.word(kNetworkHost) != 0)
             return fe::direct<0x4a6a10, neta::barrier>(app, cpu, 0x28, 0x21);
-        guest.call(kCloseNetwork);
+                return *fe::direct<kCloseNetwork, ea::networkClosed>(app, cpu);
     }
-    return guest.eax();
+    return 0;   // eax is whatever the caller had (none reads it)
 }
 
 /* sub_44e510: "leave?" answered. */
@@ -1196,8 +1245,7 @@ x86::reg32 frontend::misc::postgameAskLeave(App* app, CPU& cpu, x86::reg32 lineI
     question.buttons = kButtons;
     question.focus = 1;
     question.callback = 0x44e510;
-    fe::openQuestion(guest, question);
-    return guest.eax();
+    return openQuestionAnswer(guest, question);
 }
 
 /* sub_44e5b0: Main Menu's click: asked first if a series has more to race. */
@@ -1270,7 +1318,7 @@ x86::reg32 frontend::misc::postgameViewReplayClicked(App* app, CPU& cpu)
     const x86::reg32 name = guest.frame() + 0xb4;
     guest.setByte(name, guest.byte(0x44e150));      // the empty string
     x86::reg32 result = 2;
-    if (guest.call(kKeptReplay, fe::args({ name })) != 0)
+    if (*fe::direct<0x446990, load::keptReplayLoaded>(app, cpu, name) != 0)
         result = 7;
     else
         fe::direct<0x444be0, frontend::dialogs::messageById>(app, cpu, 0x41);
@@ -1456,8 +1504,8 @@ x86::reg32 frontend::misc::postgameOnFrame(App* app, CPU& cpu, x86::reg32 menu)
     {
         guest.setDword(kLine, fe::text(guest, 0x114));
         openMessage(app, cpu, 1, kLine, kShortMessage);
-        guest.setWord(kNetworkLost, 0);
-        guest.call(kCloseNetwork);
+                guest.setWord(kNetworkLost, 0);
+        fe::direct<kCloseNetwork, ea::networkClosed>(app, cpu);
     }
     if (std::int32_t(gameSettings(guest).playMode) > 1 && guest.dword(kNetworkConnected) == 0)
         if (Item raceNow = fe::findItem(guest, menu, kPgRaceNow))
@@ -1582,9 +1630,7 @@ constexpr x86::reg32 kKeptFolder = 0x7a2f34;
 constexpr x86::reg32 kDeleteName = 0x6610a0;
 constexpr x86::reg32 kListReplays = 0x4475a0;       // eax the list, edx what kind of file
 constexpr x86::reg32 kSelectionMoved = 0x4471a0;
-constexpr x86::reg32 kReadReplayInfo = 0x446060;
 constexpr x86::reg32 kUnlink = 0x4e28a0;
-constexpr x86::reg32 kSaveConfig = 0x472820;
 
 constexpr GuestString kExtReplay{ 0x538c14, "rp3" };
 constexpr GuestString kExtTournament{ 0x538c10, "trn" };
@@ -1798,7 +1844,7 @@ x86::reg32 frontend::misc::loadSaveLoadGhost(App* app, CPU& cpu, x86::reg32 path
     const fe::Frame frame(guest, cpu, 20 + 0x1784);
     KeptSettings kept;
     kept.keep(guest);
-    guest.call(kSaveConfig);
+    fe::direct<0x472820, load::configSaved>(app, cpu);
     const x86::reg32 loaded = fe::direct<0x477b50, loopa::loadGhost>(app, cpu, path);
     if (loaded == 0)
         return loaded;
@@ -1822,7 +1868,7 @@ x86::reg32 showKind(win32::WinApplication* app, x86::CPU& cpu, Guest& guest, con
     const x86::reg32 list = guest.dword(kReplayList);
     if (list == 0)
         return 0;
-    guest.call(kListReplays, fe::args({ list, extension.address }));
+    fe::direct<0x4475a0, load::replaysListed>(app, cpu, list, extension.address);
     const x86::reg32 again = guest.dword(kReplayList);
     guest.setDword(kShownKind, kind);
     guest::direct<0x4471a0, frontend::misc::loadSaveSelectionMoved>(app, cpu, again,
@@ -1912,7 +1958,7 @@ x86::reg32 frontend::misc::loadSaveLoadNow(App* app, CPU& cpu)
     // The kind's loader: the kept replay's the game's, the others this file's.
     x86::reg32 loaded;
     if (kind == 0)
-        loaded = guest.call(kKeptReplay, fe::args({ path }));
+        loaded = *fe::direct<0x446990, load::keptReplayLoaded>(app, cpu, path);
     else if (kind == 2)
         loaded = guest::direct<0x446800, loadSaveLoadTournament>(app, cpu, path);
     else if (kind == 3)
@@ -1942,9 +1988,9 @@ x86::reg32 frontend::misc::loadSaveDeleteSelected(App* app, CPU& cpu)
     {
         const GuestString& extension = extensionOf(kind);
         appendExtension(guest, kDeleteName, extension);
-        guest.call(kUnlink, fe::args({ kDeleteName, extension.address }));
-        // Its kind of file stays in edx from the call above.
-        guest.call(kListReplays, fe::args({ guest.dword(kReplayList) }));
+        callAt(guest, kUnlink, fe::args({ kDeleteName, extension.address }));
+                // Its kind of file stays in edx from the call above.
+        fe::direct<kListReplays, load::replaysListed>(app, cpu, guest.dword(kReplayList), extension.address);
     }
     const x86::reg32 again = guest.dword(kReplayList);
     return guest::direct<0x4471a0, loadSaveSelectionMoved>(app, cpu, again, guest.dword(again + kListSelected));
@@ -2033,13 +2079,11 @@ x86::reg32 frontend::misc::loadSaveSelectionMoved(App* app, CPU& cpu, reg32 /*li
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 20 + 0xfc);
-    guest.call(kFillZero, fe::args({ kDescription, kDescriptionBytes }));
+        const x86::reg32 zeroed = fe::direct<kFillZero, ea::clearBytes>(app, cpu, kDescription, kDescriptionBytes);
     const x86::reg32 list = guest.dword(kReplayList);
-    guest.leaveEdx(list);
     if (list == 0)
-        return guest.eax();
+        return zeroed;
     const std::int32_t selected = signedDword(guest, list + kListSelected);
-    guest.leaveEdx(x86::reg32(selected));
     if (selected >= signedDword(guest, list + kListCount) || selected < 0)
         return list;
     const x86::reg32 path = guest.frame();      // char[0xfc]
@@ -2054,7 +2098,7 @@ x86::reg32 frontend::misc::loadSaveSelectionMoved(App* app, CPU& cpu, reg32 /*li
             guest.setByte(path, 0);
         else if (guest.byte(path) != 0)
             appendExtension(guest, path, kExtReplay);
-        return guest.call(kReadReplayInfo, fe::args({ path }));
+        return *fe::direct<0x446060, load::replayInfoShown>(app, cpu, path);
     }
     if (guest.byte(path) != 0)
         appendExtension(guest, path, extensionOf(kind));
@@ -2096,7 +2140,7 @@ x86::reg32 frontend::misc::loadSaveOnEnter(App* app, CPU& cpu, x86::reg32 menu)
     if (Item show = fe::findItem(guest, menu, kLsShowReplays))
         show.setOnClick(0x446b60);
     if (const x86::reg32 list = guest.dword(kReplayList))
-        guest.call(kListReplays, fe::args({ list, kExtReplay.address }));
+        fe::direct<0x4475a0, load::replaysListed>(app, cpu, list, kExtReplay.address);
     const x86::reg32 list = guest.dword(kReplayList);
     guest.setDword(kShownKind, 0);
     guest::direct<0x4471a0, loadSaveSelectionMoved>(app, cpu, list, guest.dword(list + kListSelected));
@@ -2261,14 +2305,14 @@ x86::reg32 frontend::misc::creditsRenderPage(App* app, CPU& cpu, x86::reg32 prev
         if (const x86::reg32 art = guest.dword(kCreditsArt))
         {
             drawCentred(guest, cpu, fe::direct<0x4ef1e0, eab::shapeFileFind>(app, cpu, art, kind == 1 ? kCrSttl.address : kCrVanc.address));
-            x86::reg32 picture = guest.call(kLocateShape, fe::args({ guest.dword(kCreditsArt), guest.dword(page + kPagePicture) }));
+            x86::reg32 picture = callAt(guest, kLocateShape, fe::args({ guest.dword(kCreditsArt), guest.dword(page + kPagePicture) }));
             if (picture == 0)
-                picture = guest.call(kLocateShape, fe::args({ guest.dword(kCreditsArt), kCrDummy.address }));
+                picture = callAt(guest, kLocateShape, fe::args({ guest.dword(kCreditsArt), kCrDummy.address }));
             fe::direct<0x4ef3f0, eab::shapeDrawKeyed>(app, cpu, picture, 0x19c, 0x4c);
             const x86::reg32 name = guest.frame() + 0x14;   // char[]
             const x86::reg32 number = x86::reg32(signedDword(guest, kCreditsPage) % 5 + 1);
             fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), name, kCrSignature.address, guest::Words{number});
-            const x86::reg32 signature = guest.call(kLocateShape, fe::args({ guest.dword(kCreditsArt), name }));
+            const x86::reg32 signature = callAt(guest, kLocateShape, fe::args({ guest.dword(kCreditsArt), name }));
             if (signature != 0)
                 fe::direct<0x4ef3f0, eab::shapeDrawKeyed>(app, cpu, signature, 0x19c, 0xfa);
         }
@@ -2394,8 +2438,7 @@ x86::reg32 frontend::misc::creditsRenderPage(App* app, CPU& cpu, x86::reg32 prev
     }
     fe::direct<0x4ead90, eaa::bitmapDrawToScreen>(app, cpu);
     const x86::reg32 texture = x86::reg32(*fe::direct<0x4d6390, port::shapes::artTexturesOf>(
-        app, cpu, cpu.esp - 4, guest.dword(canvas + 0x20), std::int32_t(previous), cpu.ecx));
-    guest.leaveEdx(texture);   // handed in edx too, as the game's code does, which it does not read
+        app, cpu, cpu.esp - 4, guest.dword(canvas + 0x20), std::int32_t(previous), 0));
     fe::direct<0x4eff00, eab::windowBitmapFree>(app, cpu, canvas);
     return texture;
 }
@@ -2512,14 +2555,14 @@ x86::reg32 frontend::misc::creditsOnFrame(App* app, CPU& cpu, x86::reg32 menu)
     const auto names = [&](x86::reg32 at, const GuestString& link) {
         return *fe::direct<0x4429c0, port::menus::codelinkMatched>(app, cpu, cpu.esp - 4,
                                                                     guest.dword(at + fe::item::kCodelink), link.address,
-                                                                    cpu.ebx) != 0;
+                                                                    0) != 0;
     };
     if (guest.dword(kCreditsArt) == 0)
     {
         fe::direct<kSprintf, watcom::clib::sprintf>(app, cpu, name, kCrArtFormat.address, guest::Words{kArtFolder});
         // The art's shapes loaded, port_buttons.cpp's (ebx handed on as the code has it).
         const port::Result art =
-            fe::direct<0x44ac90, port::buttons::shapesLoaded>(app, cpu, cpu.esp - 4, name, cpu.ebx);
+            fe::direct<0x44ac90, port::buttons::shapesLoaded>(app, cpu, cpu.esp - 4, name, 0);
         guest.setDword(kCreditsArt, x86::reg32(*art));
         guest.setDword(kCreditsCanvas, guest::direct<0x441cb0, creditsRenderPage>(app, cpu, 0));
     }
@@ -2829,556 +2872,556 @@ x86::reg32 frontend::misc::postgameOnExit(App* app, CPU& cpu)
     return x86::reg32(0);
 }
 
-/* The screens' tables and the items' handlers enter these as the generated code
+/* The screens' tables and the items' handlers enter these as the game's code
  * does: a menu in eax, an answer in eax with the byte that closes the dialog in
  * edx, an item in eax. */
 
-void frontend::raceTypeOnExit(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::raceTypeOnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_45dab0", 0, 0, nullptr, 0, 0 };
-    const x86::reg32 menu = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::raceTypeOnExit(app, cpu, menu); });
+    const x86::reg32 menu = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::raceTypeOnExit(app, cpu, menu); });
 }
 
-void frontend::levelOnEnter(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::levelOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_45d630", 0, 0, kLevelStrings, std::size(kLevelStrings), kEcxEdx };
-    const x86::reg32 menu = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::levelOnEnter(app, cpu, menu); });
+    const x86::reg32 menu = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::levelOnEnter(app, cpu, menu); });
 }
 
-void frontend::setupOnEnter(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::setupOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_452f80", 0, 0, kSetupStrings, std::size(kSetupStrings) };
-    const x86::reg32 menu = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::setupOnEnter(app, cpu, menu); });
+    const x86::reg32 menu = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::setupOnEnter(app, cpu, menu); });
 }
 
-void frontend::setupOnFrame(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::setupOnFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_452f60", 0, 0, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::setupOnFrame(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::setupOnFrame(app, cpu); });
 }
 
-void frontend::setupRaceAnswered(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::setupRaceAnswered(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_452ac0", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdi };
-    const x86::reg32 answer = cpu.eax, closes = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::setupRaceAnswered(app, cpu, answer, closes); });
+    const x86::reg32 answer = args.eax, closes = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::setupRaceAnswered(app, cpu, answer, closes); });
 }
 
-void frontend::setupAskRace(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::setupAskRace(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_452bd0", 0, 0, nullptr, 0 };
-    const x86::reg32 canCancel = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::setupAskRace(app, cpu, canCancel); });
+    const x86::reg32 canCancel = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::setupAskRace(app, cpu, canCancel); });
 }
 
-void frontend::setupTwoPlayersClicked(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::setupTwoPlayersClicked(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_452d40", 0, 0, nullptr, 0, kEcxEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::setupTwoPlayersClicked(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::setupTwoPlayersClicked(app, cpu); });
 }
 
-void frontend::setupOnePlayerClicked(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::setupOnePlayerClicked(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_452f20", 0, 0, nullptr, 0, kEbxEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::setupOnePlayerClicked(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::setupOnePlayerClicked(app, cpu); });
 }
 
-void frontend::setupWebSiteRefused(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::setupWebSiteRefused(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_452d80", 0, 0, nullptr, 0, fe::kRestoreEcx };
-    const x86::reg32 answer = cpu.eax, closes = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::setupWebSiteRefused(app, cpu, answer, closes); });
+    const x86::reg32 answer = args.eax, closes = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::setupWebSiteRefused(app, cpu, answer, closes); });
 }
 
-void frontend::setupIsCurrent(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::setupIsCurrent(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_452db0", 0, 0, kSetupNameStrings, std::size(kSetupNameStrings), fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::setupIsCurrent(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::setupIsCurrent(app, cpu); });
 }
 
-void frontend::setupWebSiteAnswered(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::setupWebSiteAnswered(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_452de0", 0, 0, nullptr, 0, fe::kRestoreEcx };
-    const x86::reg32 answer = cpu.eax, closes = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::setupWebSiteAnswered(app, cpu, answer, closes); });
+    const x86::reg32 answer = args.eax, closes = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::setupWebSiteAnswered(app, cpu, answer, closes); });
 }
 
-void frontend::setupWebSiteClicked(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::setupWebSiteClicked(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_452e60", 0, 0, nullptr, 0, kEbxEcxEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::setupWebSiteClicked(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::setupWebSiteClicked(app, cpu); });
 }
 
-void frontend::resultsParticipantById(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::resultsParticipantById(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4554e0", 0, 0, nullptr, 0, kEbxEcxEsiEdi };
-    const x86::reg32 group = cpu.eax, id = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::resultsParticipantById(app, cpu, group, id); });
+    const x86::reg32 group = args.eax, id = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::resultsParticipantById(app, cpu, group, id); });
 }
 
-void frontend::resultsParticipantRanks(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::resultsParticipantRanks(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_455530", 0, 0, nullptr, 0, fe::kRestoreEcx };
-    const x86::reg32 found = cpu.eax, a = cpu.edx, b = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::resultsParticipantRanks(app, cpu, found, a, b); });
+    const x86::reg32 found = args.eax, a = args.edx, b = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::resultsParticipantRanks(app, cpu, found, a, b); });
 }
 
-void frontend::resultsParticipantMatches(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::resultsParticipantMatches(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4557b0", 0, 0, nullptr, 0, 0 };
-    const x86::reg32 found = cpu.eax, mask = cpu.edx, state = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::resultsParticipantMatches(app, cpu, found, mask, state); });
+    const x86::reg32 found = args.eax, mask = args.edx, state = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::resultsParticipantMatches(app, cpu, found, mask, state); });
 }
 
-void frontend::resultsCompare(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::resultsCompare(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_455840", 0, 0, nullptr, 0, kEbxEcxEsiEdi };
-    const x86::reg32 a = cpu.eax, b = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::resultsCompare(app, cpu, a, b); });
+    const x86::reg32 a = args.eax, b = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::resultsCompare(app, cpu, a, b); });
 }
 
-void frontend::resultsSort(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::resultsSort(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_455c10", 0, 0, nullptr, 0, fe::kRestoreEcx | kEsiEdi };
-    const x86::reg32 group = cpu.eax, key = cpu.edx, descending = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::resultsSort(app, cpu, group, key, descending); });
+    const x86::reg32 group = args.eax, key = args.edx, descending = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::resultsSort(app, cpu, group, key, descending); });
 }
 
-void frontend::resultsNth(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::resultsNth(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_455cd0", 0, 0, nullptr, 0, kEsiEdi };
-    const x86::reg32 group = cpu.eax, index = cpu.edx, mask = cpu.ebx, state = cpu.ecx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::resultsNth(app, cpu, group, index, mask, state); });
+    const x86::reg32 group = args.eax, index = args.edx, mask = args.ebx, state = args.ecx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::resultsNth(app, cpu, group, index, mask, state); });
 }
 
-void frontend::resultsNthSorted(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::resultsNthSorted(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_455dd0", 8, 0, nullptr, 0, kEsiEdi };
-    const x86::reg32 group = cpu.eax, index = cpu.edx, key = cpu.ebx, descending = cpu.ecx;
+    const x86::reg32 group = args.eax, index = args.edx, key = args.ebx, descending = args.ecx;
     const x86::reg32 mask = app->getMemory<x86::reg32>(cpu.esp + 4), state = app->getMemory<x86::reg32>(cpu.esp + 8);
-    fe::runWhole(app, cpu, site, [&](Guest&) {
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
         return misc::resultsNthSorted(app, cpu, group, index, key, descending, mask, state);
     });
 }
 
-void frontend::recordsLoaded(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::recordsLoaded(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44f5d0", 0, 0, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::recordsLoaded(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::recordsLoaded(app, cpu); });
 }
 
-void frontend::recordsSelect(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::recordsSelect(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44f670", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx };
-    const x86::reg32 track = cpu.eax, kind = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::recordsSelect(app, cpu, track, kind); });
+    const x86::reg32 track = args.eax, kind = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::recordsSelect(app, cpu, track, kind); });
 }
 
-void frontend::recordsRead(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::recordsRead(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44fa90", 0, 0, nullptr, 0, kEsiEdi };
-    const x86::reg32 first = cpu.eax, second = cpu.edx, third = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::recordsRead(app, cpu, first, second, third); });
+    const x86::reg32 first = args.eax, second = args.edx, third = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::recordsRead(app, cpu, first, second, third); });
 }
 
-void frontend::recordsClear(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::recordsClear(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44fbc0", 0, 0, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::recordsClear(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::recordsClear(app, cpu); });
 }
 
-void frontend::recordsOnEnter(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::recordsOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_450f70", 0, 0, kRecordsStrings, std::size(kRecordsStrings), kEcxEdx };
-    const x86::reg32 menu = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::recordsOnEnter(app, cpu, menu); });
+    const x86::reg32 menu = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::recordsOnEnter(app, cpu, menu); });
 }
 
-void frontend::recordsOnExit(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::recordsOnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     // sub_450fd0: nothing to undo.
     static fe::Site site{ "sub_450fd0", 0, 4, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [](Guest&) { return x86::reg32(0); });
+    return fe::runThunk(app, cpu, args, site, [](Guest&) { return x86::reg32(0); });
 }
 
-void frontend::recordsOnFrame(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::recordsOnFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_450f20", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::recordsOnFrame(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::recordsOnFrame(app, cpu); });
 }
 
-void frontend::recordsDeleteClicked(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::recordsDeleteClicked(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_450eb0", 0, 0, nullptr, 0, kEbxEcxEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::recordsDeleteClicked(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::recordsDeleteClicked(app, cpu); });
 }
 
-void frontend::recordsDeleteAnswered(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::recordsDeleteAnswered(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_450e50", 0, 0, nullptr, 0, fe::kRestoreEcx };
-    const x86::reg32 answer = cpu.eax, closes = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::recordsDeleteAnswered(app, cpu, answer, closes); });
+    const x86::reg32 answer = args.eax, closes = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::recordsDeleteAnswered(app, cpu, answer, closes); });
 }
 
-void frontend::recordsHolder(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::recordsHolder(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4cef00", 0, 0, nullptr, 0, kEbxEdx };
-    const x86::reg32 track = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::recordsHolder(app, cpu, track); });
+    const x86::reg32 track = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::recordsHolder(app, cpu, track); });
 }
 
-void frontend::postgameUnlockTrack(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::postgameUnlockTrack(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_442b60", 0, 0, nullptr, 0, kEbxEdx };
-    const x86::reg32 track = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::postgameUnlockTrack(app, cpu, track); });
+    const x86::reg32 track = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::postgameUnlockTrack(app, cpu, track); });
 }
 
-void frontend::postgameAwardMessage(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::postgameAwardMessage(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44e170", 0, 0, nullptr, 0, kEbxEcxEdx };
-    const x86::reg32 id = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::postgameAwardMessage(app, cpu, id); });
+    const x86::reg32 id = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::postgameAwardMessage(app, cpu, id); });
 }
 
-void frontend::postgameCheckAwards(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::postgameCheckAwards(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44e1a0", 0, 0, nullptr, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::postgameCheckAwards(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::postgameCheckAwards(app, cpu); });
 }
 
-void frontend::postgameSaveKnockoutClicked(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::postgameSaveKnockoutClicked(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44e460", 0, 0, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::postgameSaveKnockoutClicked(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::postgameSaveKnockoutClicked(app, cpu); });
 }
 
-void frontend::postgameSaveTournamentClicked(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::postgameSaveTournamentClicked(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44e480", 0, 0, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::postgameSaveTournamentClicked(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::postgameSaveTournamentClicked(app, cpu); });
 }
 
-void frontend::postgameSaveGhostClicked(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::postgameSaveGhostClicked(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44e4a0", 0, 0, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::postgameSaveGhostClicked(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::postgameSaveGhostClicked(app, cpu); });
 }
 
-void frontend::postgameSaveReplayClicked(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::postgameSaveReplayClicked(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44e6a0", 0, 0, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::postgameSaveReplayClicked(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::postgameSaveReplayClicked(app, cpu); });
 }
 
-void frontend::postgameLeaveNetwork(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::postgameLeaveNetwork(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44e4c0", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::postgameLeaveNetwork(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::postgameLeaveNetwork(app, cpu); });
 }
 
-void frontend::postgameLeaveAnswered(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::postgameLeaveAnswered(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44e510", 0, 0, nullptr, 0, 0 };
-    const x86::reg32 answer = cpu.eax, closes = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::postgameLeaveAnswered(app, cpu, answer, closes); });
+    const x86::reg32 answer = args.eax, closes = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::postgameLeaveAnswered(app, cpu, answer, closes); });
 }
 
-void frontend::postgameAskLeave(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::postgameAskLeave(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44e550", 0, 0, nullptr, 0, kEbxEcxEdx };
-    const x86::reg32 lineId = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::postgameAskLeave(app, cpu, lineId); });
+    const x86::reg32 lineId = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::postgameAskLeave(app, cpu, lineId); });
 }
 
-void frontend::postgameMainMenuClicked(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::postgameMainMenuClicked(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44e5b0", 0, 0, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::postgameMainMenuClicked(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::postgameMainMenuClicked(app, cpu); });
 }
 
-void frontend::postgameNetworkMainMenuClicked(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::postgameNetworkMainMenuClicked(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44e600", 0, 0, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::postgameNetworkMainMenuClicked(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::postgameNetworkMainMenuClicked(app, cpu); });
 }
 
-void frontend::postgameQuitClicked(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::postgameQuitClicked(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44e690", 0, 0, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::postgameQuitClicked(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::postgameQuitClicked(app, cpu); });
 }
 
-void frontend::postgameCannotSaveReplay(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::postgameCannotSaveReplay(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44e6c0", 0, 0, nullptr, 0, kEbxEcxEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::postgameCannotSaveReplay(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::postgameCannotSaveReplay(app, cpu); });
 }
 
-void frontend::postgameViewReplayClicked(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::postgameViewReplayClicked(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44e710", 0, 0, nullptr, 0, kEcxEdx | kEsiEdi };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::postgameViewReplayClicked(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::postgameViewReplayClicked(app, cpu); });
 }
 
-void frontend::postgameToggleSheets(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::postgameToggleSheets(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44e7a0", 0, 0, nullptr, 0, kEbxEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::postgameToggleSheets(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::postgameToggleSheets(app, cpu); });
 }
 
-void frontend::postgameOnEnter(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::postgameOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44efd0", 0, 0, kPostgameStrings, std::size(kPostgameStrings) };
-    const x86::reg32 menu = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::postgameOnEnter(app, cpu, menu); });
+    const x86::reg32 menu = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::postgameOnEnter(app, cpu, menu); });
 }
 
-void frontend::postgameOnExit(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::postgameOnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44f500", 0, 0, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::postgameOnExit(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::postgameOnExit(app, cpu); });
 }
 
-void frontend::postgameOnFrame(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::postgameOnFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44eda0", 0, 0, kPostgameFrameStrings, std::size(kPostgameFrameStrings) };
-    const x86::reg32 menu = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::postgameOnFrame(app, cpu, menu); });
+    const x86::reg32 menu = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::postgameOnFrame(app, cpu, menu); });
 }
 
-void frontend::postgameFinishers(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::postgameFinishers(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4cef80", 0, 0, nullptr, 0, kEbxEcxEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::postgameFinishers(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::postgameFinishers(app, cpu); });
 }
 
-void frontend::postgameFinishersCount(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::postgameFinishersCount(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4cf000", 0, 0, nullptr, 0, kEbxEcxEdxEsi };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::postgameFinishersCount(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::postgameFinishersCount(app, cpu); });
 }
 
-void frontend::postgameReplayExcluded(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::postgameReplayExcluded(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4cf040", 0, 0, nullptr, 0, kEcxEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::postgameReplayExcluded(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::postgameReplayExcluded(app, cpu); });
 }
 
-void frontend::postgameRaceAgain(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::postgameRaceAgain(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4cf090", 0, 0, nullptr, 0, kEbxEcxEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::postgameRaceAgain(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::postgameRaceAgain(app, cpu); });
 }
 
-void frontend::loadSaveKnockoutInfo(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadSaveKnockoutInfo(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4461d0", 0, 0, kInfoStrings, std::size(kInfoStrings), kEbxEcxEdxEsi };
-    const x86::reg32 path = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::loadSaveKnockoutInfo(app, cpu, path); });
+    const x86::reg32 path = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::loadSaveKnockoutInfo(app, cpu, path); });
 }
 
-void frontend::loadSaveTournamentInfo(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadSaveTournamentInfo(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4462e0", 0, 0, kInfoStrings, std::size(kInfoStrings), kEbxEcxEdxEsi };
-    const x86::reg32 path = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::loadSaveTournamentInfo(app, cpu, path); });
+    const x86::reg32 path = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::loadSaveTournamentInfo(app, cpu, path); });
 }
 
-void frontend::loadSaveGhostInfo(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadSaveGhostInfo(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_446420", 0, 0, kInfoStrings, std::size(kInfoStrings), kEbxEcxEdxEsi };
-    const x86::reg32 path = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::loadSaveGhostInfo(app, cpu, path); });
+    const x86::reg32 path = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::loadSaveGhostInfo(app, cpu, path); });
 }
 
-void frontend::loadSaveLoadKnockout(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadSaveLoadKnockout(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4465e0", 0, 0, nullptr, 0 };
-    const x86::reg32 path = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::loadSaveLoadKnockout(app, cpu, path); });
+    const x86::reg32 path = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::loadSaveLoadKnockout(app, cpu, path); });
 }
 
-void frontend::loadSaveLoadTournament(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadSaveLoadTournament(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_446800", 0, 0, nullptr, 0 };
-    const x86::reg32 path = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::loadSaveLoadTournament(app, cpu, path); });
+    const x86::reg32 path = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::loadSaveLoadTournament(app, cpu, path); });
 }
 
-void frontend::loadSaveLoadGhost(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadSaveLoadGhost(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4466a0", 0, 0, nullptr, 0, kEcxEdx | kEsiEdi };
-    const x86::reg32 path = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::loadSaveLoadGhost(app, cpu, path); });
+    const x86::reg32 path = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::loadSaveLoadGhost(app, cpu, path); });
 }
 
-void frontend::loadSaveShowTournaments(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadSaveShowTournaments(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_446ad0", 0, 0, nullptr, 0, kEcxEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::loadSaveShowTournaments(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::loadSaveShowTournaments(app, cpu); });
 }
 
-void frontend::loadSaveShowKnockouts(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadSaveShowKnockouts(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_446b10", 0, 0, nullptr, 0, kEcxEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::loadSaveShowKnockouts(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::loadSaveShowKnockouts(app, cpu); });
 }
 
-void frontend::loadSaveShowReplays(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadSaveShowReplays(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_446b60", 0, 0, nullptr, 0, kEcxEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::loadSaveShowReplays(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::loadSaveShowReplays(app, cpu); });
 }
 
-void frontend::loadSaveShowGhosts(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadSaveShowGhosts(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_446ba0", 0, 0, nullptr, 0, kEcxEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::loadSaveShowGhosts(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::loadSaveShowGhosts(app, cpu); });
 }
 
-void frontend::loadSaveLoadFailed(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadSaveLoadFailed(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_446bf0", 0, 0, nullptr, 0, kEbxEcxEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::loadSaveLoadFailed(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::loadSaveLoadFailed(app, cpu); });
 }
 
-void frontend::loadSaveLoadNow(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadSaveLoadNow(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_446c50", 0, 0, kKeptNameStrings, std::size(kKeptNameStrings) };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::loadSaveLoadNow(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::loadSaveLoadNow(app, cpu); });
 }
 
-void frontend::loadSaveDeleteSelected(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadSaveDeleteSelected(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_446ea0", 0, 0, kKeptNameStrings, std::size(kKeptNameStrings) };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::loadSaveDeleteSelected(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::loadSaveDeleteSelected(app, cpu); });
 }
 
-void frontend::loadSaveDeleteAnswered(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadSaveDeleteAnswered(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_446ff0", 0, 0, nullptr, 0, fe::kRestoreEcx };
-    const x86::reg32 answer = cpu.eax, closes = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::loadSaveDeleteAnswered(app, cpu, answer, closes); });
+    const x86::reg32 answer = args.eax, closes = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::loadSaveDeleteAnswered(app, cpu, answer, closes); });
 }
 
-void frontend::loadSaveDeleteClicked(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadSaveDeleteClicked(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_447030", 0, 0, nullptr, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::loadSaveDeleteClicked(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::loadSaveDeleteClicked(app, cpu); });
 }
 
-void frontend::loadSaveDrawDescription(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadSaveDrawDescription(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4470e0", 0, 0, kDrawDescriptionStrings, std::size(kDrawDescriptionStrings) };
-    const x86::reg32 item = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::loadSaveDrawDescription(app, cpu, item); });
+    const x86::reg32 item = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::loadSaveDrawDescription(app, cpu, item); });
 }
 
-void frontend::loadSaveSelectionMoved(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadSaveSelectionMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4471a0", 0, 0, kKeptNameStrings, std::size(kKeptNameStrings), kEbxEcxEsiEdi };
-    const x86::reg32 list = cpu.eax, selected = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::loadSaveSelectionMoved(app, cpu, list, selected); });
+    const x86::reg32 list = args.eax, selected = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::loadSaveSelectionMoved(app, cpu, list, selected); });
 }
 
-void frontend::loadSaveOnEnter(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadSaveOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_447470", 0, 0, kLoadSaveStrings, std::size(kLoadSaveStrings), kEbxEcxEdx };
-    const x86::reg32 menu = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::loadSaveOnEnter(app, cpu, menu); });
+    const x86::reg32 menu = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::loadSaveOnEnter(app, cpu, menu); });
 }
 
-void frontend::loadSaveOnExit(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadSaveOnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     // sub_447590: nothing to undo.
     static fe::Site site{ "sub_447590", 0, 4, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [](Guest&) { return x86::reg32(0); });
+    return fe::runThunk(app, cpu, args, site, [](Guest&) { return x86::reg32(0); });
 }
 
-void frontend::loadSaveOnFrame(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadSaveOnFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_447370", 0, 0, kLoadSaveFrameStrings, std::size(kLoadSaveFrameStrings),
                           kEbxEcxEdx | fe::kRestoreEdi };
-    const x86::reg32 menu = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::loadSaveOnFrame(app, cpu, menu); });
+    const x86::reg32 menu = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::loadSaveOnFrame(app, cpu, menu); });
 }
 
-void frontend::creditsHaveBonusCar(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::creditsHaveBonusCar(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_439ce0", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::creditsHaveBonusCar(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::creditsHaveBonusCar(app, cpu); });
 }
 
-void frontend::creditsRenderPage(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::creditsRenderPage(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_441cb0", 0, 0, kRenderPageStrings, std::size(kRenderPageStrings) };
-    const x86::reg32 previous = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::creditsRenderPage(app, cpu, previous); });
+    const x86::reg32 previous = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::creditsRenderPage(app, cpu, previous); });
 }
 
-void frontend::creditsNextPage(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::creditsNextPage(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_442370", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx };
-    const x86::reg32 item = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::creditsNextPage(app, cpu, item); });
+    const x86::reg32 item = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::creditsNextPage(app, cpu, item); });
 }
 
-void frontend::creditsPreviousPage(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::creditsPreviousPage(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4423e0", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::creditsPreviousPage(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::creditsPreviousPage(app, cpu); });
 }
 
-void frontend::creditsOnEnter(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::creditsOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_442850", 0, 0, kCreditsEnterStrings, std::size(kCreditsEnterStrings),
                           kEbxEcxEdx | fe::kRestoreEdi };
-    const x86::reg32 menu = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::creditsOnEnter(app, cpu, menu); });
+    const x86::reg32 menu = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::creditsOnEnter(app, cpu, menu); });
 }
 
-void frontend::creditsOnExit(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::creditsOnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_442980", 0, 0, nullptr, 0, kEcxEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::creditsOnExit(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::creditsOnExit(app, cpu); });
 }
 
-void frontend::creditsOnFrame(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::creditsOnFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_442580", 0, 0, kCreditsFrameStrings, std::size(kCreditsFrameStrings) };
-    const x86::reg32 menu = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::creditsOnFrame(app, cpu, menu); });
+    const x86::reg32 menu = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::creditsOnFrame(app, cpu, menu); });
 }
 
-void frontend::credits1ShowPage(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::credits1ShowPage(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_454d60", 0, 0, kGlamShowStrings, std::size(kGlamShowStrings) };
-    const x86::reg32 nextButton = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::credits1ShowPage(app, cpu, nextButton); });
+    const x86::reg32 nextButton = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::credits1ShowPage(app, cpu, nextButton); });
 }
 
-void frontend::credits1NextClicked(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::credits1NextClicked(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_454e40", 0, 0, nullptr, 0, kEbxEcxEdxEsi };
-    const x86::reg32 item = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::credits1NextClicked(app, cpu, item); });
+    const x86::reg32 item = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::credits1NextClicked(app, cpu, item); });
 }
 
-void frontend::credits1OnEnter(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::credits1OnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_454ea0", 0, 0, kGlamEnterStrings, std::size(kGlamEnterStrings), kEbxEcxEdx };
-    const x86::reg32 menu = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::credits1OnEnter(app, cpu, menu); });
+    const x86::reg32 menu = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::credits1OnEnter(app, cpu, menu); });
 }
 
-void frontend::credits1OnExit(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::credits1OnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_454e80", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return misc::credits1OnExit(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return misc::credits1OnExit(app, cpu); });
 }
 
 }

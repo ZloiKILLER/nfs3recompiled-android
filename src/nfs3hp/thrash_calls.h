@@ -15,62 +15,55 @@
  *     guest::driver<thrash::kThrashDrawTri, &port::driver::drawTri>(app, cpu, a, b, c)
  *
  * The words are what the game's code pushes, in its order.  In the game, when
- * the pointer leads to voodoo2a's export -- the adapter the port registers
+ * the pointer leads to voodoo2a's export -- the thunk the port registers
  * under its name (disassembly/voodoo2a.cpp), which GetProcAddress gave
- * THRASH_opendll -- the typed function is called with them, the registers
- * but eax kept as the export keeps them; a pointer to anything else (another
- * driver) is called as the game's code calls it.  In tools/game_checks
- * (NFS_GAME_CHECKS) and tools/frontend_checks (NFS_FRONTEND_CHECKS) the call
- * always goes through the pointer, stdcall, the words pushed below esp, for
- * the check's stand-in; neither builds port_thrash.cpp.  What the export
+ * THRASH_opendll -- the typed function is called with them,  a pointer to anything else (another
+ * driver) is called as the game's code calls it.  What the export
  * leaves in eax, or nullopt when the game stopped in it. */
 namespace nfs3hp
 {
 
 /* voodoo2a's exports as the game calls them (port_thrash.cpp). */
-void THRASH_about(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_clearwindow(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_clip(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_drawline(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_drawlinemesh(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_drawlinestrip(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_drawpoint(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_drawpointmesh(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_drawpointstrip(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_drawquad(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_drawquadmesh(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_drawtri(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_drawtrifan(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_drawtrimesh(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_drawtristrip(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_flushwindow(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_idle(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_init(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_is(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_lockwindow(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_pageflip(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_readrect(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_restore(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_selectdisplay(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_setstate(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_settexture(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_setvideomode(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_sync(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_talloc(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_treset(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_tupdate(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_unlockwindow(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_window(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_writerect(win32::WinApplication* app, x86::CPU& cpu);
+x86::reg32 THRASH_about(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_clearwindow(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_clip(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_drawline(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_drawlinemesh(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_drawlinestrip(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_drawpoint(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_drawpointmesh(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_drawpointstrip(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_drawquad(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_drawquadmesh(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_drawtri(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_drawtrifan(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_drawtrimesh(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_drawtristrip(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_flushwindow(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_idle(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_init(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_is(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_lockwindow(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_pageflip(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_readrect(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_restore(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_selectdisplay(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_setstate(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_settexture(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_setvideomode(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_sync(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_talloc(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_treset(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_tupdate(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_unlockwindow(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_window(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_writerect(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
 
 namespace guest
 {
 
-#if defined(NFS_GAME_CHECKS) || defined(NFS_FRONTEND_CHECKS)
-#define NFS3HP_THRASH_THROUGH_SLOTS 1
-#endif
 
-/* Each pointer's export: its typed function and, in the game, its adapter. */
+/* Each pointer's export: its typed function and, in the game, its thunk. */
 template <x86::reg32 Slot>
 struct DriverExport;
 
@@ -87,7 +80,7 @@ struct DriverExport;
     struct DriverExport<thrash::slot>                                    \
     {                                                                    \
         static constexpr auto function = &port::driver::typed;           \
-        static constexpr Native registered = &nfs3hp::adapter;           \
+        static constexpr win32::ThunkPtr registered = &nfs3hp::adapter;           \
     }
 #endif
 
@@ -134,38 +127,36 @@ inline std::optional<x86::reg32> driver(win32::WinApplication* app, x86::CPU& cp
     static_assert(Fn == DriverExport<Slot>::function, "the export the pointer is to");
     static_assert(4 * sizeof...(W) == thrash::exportAt(Slot).bytes, "every word the export takes");
 #ifndef NFS3HP_THRASH_THROUGH_SLOTS
-    if (app->methodAt(at(app, Slot)) == DriverExport<Slot>::registered)
+    if (app->thunkAt(at(app, Slot)) == DriverExport<Slot>::registered)
     {
-        const x86::reg32 ebx = cpu.ebx, ecx = cpu.ecx, edx = cpu.edx, esi = cpu.esi, edi = cpu.edi, ebp = cpu.ebp;
         const x86::reg32 esp = cpu.esp;
-        const auto result = Fn(app, cpu, x86::reg32(words)...);
-        x86::reg32 eax;
-        if constexpr (std::is_same_v<std::decay_t<decltype(result)>, std::optional<x86::reg32>>)
+        x86::reg32 eax = 0;  // a void export leaves no result
+        if constexpr (std::is_void_v<decltype(Fn(app, cpu, x86::reg32(words)...))>)
         {
-            if (!result)
-                return std::nullopt;
-            eax = *result;
+            Fn(app, cpu, x86::reg32(words)...);
         }
         else
         {
-            eax = result;
+            const auto result = Fn(app, cpu, x86::reg32(words)...);
+            if constexpr (std::is_same_v<std::decay_t<decltype(result)>, std::optional<x86::reg32>>)
+            {
+                if (!result)
+                    return std::nullopt;
+                eax = *result;
+            }
+            else
+            {
+                eax = result;
+            }
         }
         if (cpu.terminate)
             return std::nullopt;
-        cpu.eax = eax;
-        cpu.ebx = ebx;
-        cpu.ecx = ecx;
-        cpu.edx = edx;
-        cpu.esi = esi;
-        cpu.edi = edi;
-        cpu.ebp = ebp;
         cpu.esp = esp;
         return eax;
     }
 #endif
-    if (!call(app, cpu, at(app, Slot), {x86::reg32(words)...}))
-        return std::nullopt;
-    return cpu.eax;
+    x86::Args none;
+    return pointerCall(app, cpu, at(app, Slot), none, {x86::reg32(words)...});
 }
 
 /* The same from a rewrite's frame (port.h's callGame): esp first set to

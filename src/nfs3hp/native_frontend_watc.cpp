@@ -1,4 +1,6 @@
 #include "native_frontend_watc.h"
+#include "native_ea_formats.h"
+#include "native_ea_support.h"
 #include "native_game.h"
 #include "native_watcom.h"
 #include "native_frontend_eaa.h"
@@ -8,6 +10,7 @@
 #include "native_frontend_watb.h"
 #include "native_frontend_wina.h"
 #include "native_frontend.h"
+#include "native_frontend_pcall.h"
 #include "native_windows.h"
 #include "host_threads.h"
 #include <nfs3hp.h>
@@ -17,6 +20,144 @@
 #include <array>
 #include <optional>
 #include <utility>
+
+/* The thunks defined below by qualified name, declared where they are defined. */
+namespace nfs3hp
+{
+namespace frontend {
+x86::reg32 watcFpNotLoaded(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcSetMbcpZero(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcSetOsHandle(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcFreeHandleTable(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcNothing51e540(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcNothing51f270(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcNewSemaphore(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcDeleteKeptSemaphores(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcDeleteExtraSemaphores(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcClearLock(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcLockStreams(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcUnlockStreams(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcLockFile(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcUnlockFile(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcAllocHandleHook(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcFreeHandleHook(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcLockHeap(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcUnlockHeap(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcLockFileTable(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcUnlockFileTable(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcLockThreadList(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcUnlockThreadList(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcLockHandleTable(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcLock(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcUnlockHandleTable(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcUnlock(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcThreadData(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcAllocTlsIndex(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcAttachThread(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcDetachThread(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcEndThreads(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcFreeTlsIndex(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcInitThreads(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcFiniThreads(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcHasActiveWindow(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcReportAppend(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcReportException(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcExceptionHandler(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcFormatFloat(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcScanFloat(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcShapeRowBytes(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcPutPixel(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcBlend4To8(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcWritePixel(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcInitEnviron(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcFreeEnviron(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcSetMbcp(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcAttachThisThread(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcResizeThreadData(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcAddThread(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcRemoveThread(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcFreeThreadList(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcFreeThreadListJump(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcClearFpExceptions(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcSetSignalHandler(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcSignalHandler(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcSignalMask(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcSignalForCode(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcConsoleControl(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcConsoleWanted(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcConsoleUnhook(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcRaiseFp(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcRaise(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcInitThreadSignals(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcFiniThreadSignals(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcHookThreadSignals(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcPowError(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcSetRectClip(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcDrawBox(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcTextCentred(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcClipWholeRect(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcViewerOnWindow(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcViewerOnMono(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcWindowStart(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcWindowEnd(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcWindowSize(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcPrintAtCell(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcNothing52b9d0(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcBlitOnBlack(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcSetTextColours(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcDebugColour(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcWaitKey(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcFillCells(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcMonoSize(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcMonoClearJump(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcShowCentred(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcMonoAttribute(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcPrintInWindow(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcMonoAttributeOf(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcMonoWaitKey(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcMonoFill(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcInheritHandles(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcClearEnviron(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcReturnZero52c810(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcThreadEndHook(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcThreadStartHook(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcMathErrorHook(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcAbnormalTermination(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcDoubleZero(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcDoubleInfinityHook(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcDoubleInfinity(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcZeroJump(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcTextAt(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcStrtol(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcStrtolSigned(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcDigitValue(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcPutenv(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcEnvironSet(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcEnvironFind(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcThreadStart(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcBeginThread(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcEndThread(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcReturnZero52edfa(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcSetClip(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcMbschr(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcTapiFind(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcLineAnswer(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcLineClose(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcLineDeallocateCall(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcLineDrop(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcLineGetDevCaps(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcLineGetDevConfig(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcLineGetID(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcLineGetLineDevStatus(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcLineInitialize(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcLineMakeCall(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcLineNegotiateAPIVersion(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcLineOpen(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcLineSetDevConfig(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcLineSetStatusMessages(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watcLineShutdown(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+}  // frontend
+}  // namespace nfs3hp
 
 /* The rest of the C runtime, decompiled, with what EA's libraries and the linker put between its
  * modules:
@@ -34,8 +175,7 @@
  * The state stays in guest memory.  A Watcom function saves only the registers it says it does,
  * and callers may go on with what is left in the others, so each Site restores what its function
  * pushes, no more, and what a function leaves behind in the others is left as its code leaves it.
- * Windows' functions are the port's own, called as C++ (callImport); in the checks through the
- * import table's slots. */
+ * Windows' functions are the port's own, called as C++ (callImport). */
 namespace nfs3hp
 {
 
@@ -70,10 +210,50 @@ reg32 sar(reg32 value, unsigned bits)
     return reg32(sreg32(value) >> bits);
 }
 
-/* A jump to another function: it returns to our caller. */
-void tail(win32::WinApplication* app, x86::CPU& cpu, reg32 target)
+/* A function called as C++ (fe::direct) from a core that is written register by register: nothing
+ * thrown when the game stopped in it -- cpu.terminate set, 0 back -- as such a core's callers have
+ * it. */
+template <reg32 Address, auto Core, typename... Args>
+reg32 callTo(win32::WinApplication* app, x86::CPU& cpu, Args... args)
 {
-    app->dynamic_call(target, cpu);
+    try
+    {
+        return reg32(fe::direct<Address, Core>(app, cpu, args...));
+    }
+    catch (const fe::Terminated&)
+    {
+        return 0;
+    }
+}
+
+/* The function such a core jumps to, called where the jump is: its return address's slot the
+ * jump's caller's, so its frame lies where the jump puts it.  The core's thunk hands the result
+ * back in eax and takes the return address off, as the function jumped to did. */
+template <reg32 Address, auto Core, typename... Args>
+reg32 jumpTo(win32::WinApplication* app, x86::CPU& cpu, Args... args)
+{
+    cpu.esp += 4;
+    const reg32 result = callTo<Address, Core>(app, cpu, args...);
+    cpu.esp -= 4;
+    return result;
+}
+
+/* The same to a function of another file's with no typed core yet: by address, `arguments` in its
+ * registers. */
+reg32 jumpByAddress(win32::WinApplication* app, x86::CPU& cpu, reg32 target, const fe::Arguments& arguments)
+{
+    cpu.esp += 4;
+    reg32 result = 0;
+    try
+    {
+        fe::Guest guest(app, cpu);
+        result = fe::pointerCall(guest, target, arguments);
+    }
+    catch (const fe::Terminated&)
+    {
+    }
+    cpu.esp -= 4;
+    return result;
 }
 
 /* The inline memcpy: dwords, then what is left, upwards. */
@@ -98,8 +278,8 @@ constexpr reg32 kTlsAlloc = 0x53460c, kTlsFree = 0x534610, kTlsGetValue = 0x5346
 constexpr reg32 kUnhandledExceptionFilter = 0x53461c, kWaitForSingleObject = 0x534634, kWriteFile = 0x534640;
 
 /* A Windows function, its words as the code pushes them: the port's own, called as C++
- * (native_windows.h); in the checks through its import's slot, as a call of the guest's.  Its
- * answer, eax; the game stopped in it ends the stand-in as Guest::call's do. */
+ * (native_windows.h).  Its
+ * answer, eax; the game stopped in it ends the function as Guest::call's do. */
 template <reg32 Slot, auto Function, typename... Words>
 reg32 callImport(Guest& guest, x86::CPU& cpu, Words... words)
 {
@@ -107,6 +287,16 @@ reg32 callImport(Guest& guest, x86::CPU& cpu, Words... words)
     if (!eax)
         throw fe::Terminated();
     return *eax;
+}
+
+/* The same with eax `eax`, as the code has it at the call. */
+template <reg32 Slot, auto Function, typename... Words>
+reg32 callImportAt(Guest& guest, x86::CPU& cpu, reg32 eax, Words... words)
+{
+    const std::optional<reg32> left = guest::windowsKeeping<Slot, Function>(guest.app(), cpu, eax, words...);
+    if (!left)
+        throw fe::Terminated();
+    return *left;
 }
 
 // The runtime's functions.
@@ -140,10 +330,12 @@ constexpr reg32 kWindowDepth = 0x565010, kWindowFlag = 0x565012, kWindowPixels =
 constexpr reg32 kRowOffsets = 0x565020, kColumnOffsets = 0x565024;
 constexpr reg32 kScreenWidth = 0x564ff8, kScreenHeight = 0x564ffc;
 
-/* A semaphore of the runtime's: its lock taken (sub_51e71c's body). */
+/* A semaphore of the runtime's: its lock taken (sub_51e71c's body); what its code leaves in eax, the
+ * last answer of Windows'. */
 reg32 lockSemaphore(Guest& guest, x86::CPU& cpu, reg32 semaphore)
 {
     const reg32 thread = callImport<kGetCurrentThreadId, &host::currentThreadId>(guest, cpu);
+    reg32 eax = thread;
     if (thread != guest.dword(semaphore + 8))
     {
         if (guest.dword(semaphore + 4) == 0)
@@ -157,11 +349,11 @@ reg32 lockSemaphore(Guest& guest, x86::CPU& cpu, reg32 semaphore)
             }
             guest::direct<0x51e780, frontend::watc::unlock>(guest.app(), cpu, kLockOfLocks);
         }
-        callImport<kEnterCriticalSection, &host::enterLock>(guest, cpu, guest.dword(semaphore));
+        eax = callImport<kEnterCriticalSection, &host::enterLock>(guest, cpu, guest.dword(semaphore));
         guest.setDword(semaphore + 8, thread);
     }
     guest.setDword(semaphore + 0xc, guest.dword(semaphore + 0xc) + 1);
-    return guest.eax();
+    return eax;
 }
 
 /* And given back (sub_51e780's body). */
@@ -181,16 +373,17 @@ reg32 unlockSemaphore(Guest& guest, x86::CPU& cpu, reg32 semaphore)
     return semaphore;
 }
 
-/* sub_51e940's body: the thread data's TLS index given back. */
-reg32 giveBackTlsIndex(Guest& guest, x86::CPU& cpu)
+/* sub_51e940's body: the thread data's TLS index given back; what its code leaves in eax, TlsFree's
+ * answer or `eax` as it came. */
+reg32 giveBackTlsIndex(Guest& guest, x86::CPU& cpu, reg32 eax)
 {
     const reg32 index = guest.dword(kTlsIndex);
     if (index != 0xffffffff)
     {
-        callImport<kTlsFree, &host::tlsFree>(guest, cpu, index);
+        eax = callImport<kTlsFree, &host::tlsFree>(guest, cpu, index);
         guest.setDword(kTlsIndex, 0xffffffff);
     }
-    return guest.eax();
+    return eax;
 }
 
 }
@@ -204,26 +397,27 @@ reg32 frontend::watc::fpNotLoaded(App* app, CPU& cpu)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 4);
-    return guest.call(kFatalError, args({ 0x551368, 1 }));
+    return fe::direct<kFatalError, watcom::clib::fatalRuntimeError>(app, cpu, 0x551368u, 1u);
 }
 
-void frontend::watcFpNotLoaded(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcFpNotLoaded(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_51e110", 0, 0, kEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::fpNotLoaded(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::fpNotLoaded(app, cpu); });
 }
 
 /* sub_51e2a0: setmbcp(0). */
 reg32 frontend::watc::setMbcpZero(App* app, CPU& cpu)
 {
-    cpu.eax = 0;
-    tail(app, cpu, 0x525ba0);
-    return cpu.eax;
+    return jumpTo<0x525ba0, setMbcp>(app, cpu, 0u);
 }
 
-void frontend::watcSetMbcpZero(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcSetMbcpZero(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    watc::setMbcpZero(app, cpu);
+    const reg32 result = watc::setMbcpZero(app, cpu);
+    if (!cpu.terminate)
+        args.eax = result, cpu.esp += 4;
+    return args.eax;
 }
 
 /* sub_51e388: an OS handle in the table of POSIX handles, the table grown to take it, and for
@@ -232,18 +426,12 @@ reg32 frontend::watc::setOsHandle(App* app, CPU& cpu, reg32 osHandle, reg32 hand
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 24);
-    // The lock's hook keeps edx, which the code reads after it.
-    cpu.edx = handle;
     if (s(handle) < 0)
         return osHandle;
-    guest.call(guest.dword(kLockHandles));
-    const reg32 standard = guest.edx();
+    fe::pointerCall(guest, guest.dword(kLockHandles), args({ osHandle, handle }));  // its registers as the code has them
+    const reg32 standard = handle;  // edx, which the lock's hook keeps
     if (standard < 3)
-    {
-        if (standard == 2)
-            guest.leaveEdx(osHandle);
         callImport<kSetStdHandle, &host::setStdHandle>(guest, cpu, reg32(0) - 10 - standard, osHandle);
-    }
     const reg32 size = guest.dword(kHandleCount);
     reg32 table = guest.dword(kHandleTable);
     const reg32 bytes = handle * 4;
@@ -269,61 +457,66 @@ reg32 frontend::watc::setOsHandle(App* app, CPU& cpu, reg32 osHandle, reg32 hand
         guest.setDword(kHandleCount, handle + 1);
         last = table + bytes;
         guest.setDword(last, osHandle);
-        guest.leaveEdx(osHandle);
     }
-    return guest.call(guest.dword(kUnlockHandles), args({ last }));
+    return fe::pointerCall(guest, guest.dword(kUnlockHandles), args({ last }));
 }
 
-void frontend::watcSetOsHandle(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcSetOsHandle(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_51e388", 0, 0, kEbx | kEcx | kEsi | kEdi);
-    const reg32 osHandle = cpu.eax, handle = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::setOsHandle(app, cpu, osHandle, handle); });
+    const reg32 osHandle = args.eax, handle = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::setOsHandle(app, cpu, osHandle, handle); });
 }
 
-/* sub_51e51c: the table of handles freed. */
-reg32 frontend::watc::freeHandleTable(App* app, CPU& cpu)
+/* sub_51e51c: the table of handles freed; what its code leaves in eax, _nfree's or `eax` as it came. */
+reg32 frontend::watc::freeHandleTable(App* app, CPU& cpu, reg32 eax)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 8);
     const reg32 table = guest.dword(kHandleTable);
     if (table != 0)
     {
-        guest.call(kNfree, args({ table }));
+        eax = fe::direct<kNfree, watcom::clib::free>(app, cpu, table);
         guest.setDword(kHandleTable, 0);
     }
-    return guest.eax();
+    return eax;
 }
 
-void frontend::watcFreeHandleTable(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcFreeHandleTable(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_51e51c", 0, 0, kEbx | kEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::freeHandleTable(app, cpu); });
+    const reg32 eax = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::freeHandleTable(app, cpu, eax); });
 }
 
-/* sub_51e540, sub_51f270: hooks that do nothing. */
+/* sub_51e540, sub_51f270: hooks that do nothing -- eax as it was, which their thunks leave; 0 back
+ * to a caller as C++. */
 reg32 frontend::watc::nothing51e540(App* app, CPU& cpu)
 {
     (void)app;
-    return cpu.eax;
+    (void)cpu;
+    return 0;
 }
 
-void frontend::watcNothing51e540(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcNothing51e540(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     watc::nothing51e540(app, cpu);
     cpu.esp += 4;
+    return args.eax;
 }
 
 reg32 frontend::watc::nothing51f270(App* app, CPU& cpu)
 {
     (void)app;
-    return cpu.eax;
+    (void)cpu;
+    return 0;
 }
 
-void frontend::watcNothing51f270(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcNothing51f270(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     watc::nothing51f270(app, cpu);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* sub_51e544: a critical section for a lock: one of the 64 kept, then ones allocated. */
@@ -342,11 +535,11 @@ reg32 frontend::watc::newSemaphore(App* app, CPU& cpu)
     {
         section = fe::direct<kCalloc, watcom::clib::calloc>(guest.app(), guest.cpu(), 1, 0x18);
         if (section == 0)
-            guest.call(kFatalError, args({ 0x55138c, 1 }));
+            fe::direct<kFatalError, watcom::clib::fatalRuntimeError>(app, cpu, 0x55138cu, 1u);
         const reg32 list = fe::direct<kNrealloc, watcom::clib::realloc>(guest.app(), guest.cpu(), guest.dword(kExtraSemaphores), (guest.dword(kExtraSemaphoreCount) + 1) << 2);
         guest.setDword(kExtraSemaphores, list);
         if (list == 0)
-            guest.call(kFatalError, args({ 0x5513b0, 1 }));
+            fe::direct<kFatalError, watcom::clib::fatalRuntimeError>(app, cpu, 0x5513b0u, 1u);
         const reg32 count = guest.dword(kExtraSemaphoreCount);
         guest.setDword(guest.dword(kExtraSemaphores) + count * 4, section);
         guest.setDword(kExtraSemaphoreCount, count + 1);
@@ -355,14 +548,15 @@ reg32 frontend::watc::newSemaphore(App* app, CPU& cpu)
     return section;
 }
 
-void frontend::watcNewSemaphore(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcNewSemaphore(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_51e544", 0, 0, kEbx | kEcx | kEdx | kEsi);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::newSemaphore(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::newSemaphore(app, cpu); });
 }
 
-/* sub_51e5e8: the kept critical sections deleted. */
-reg32 frontend::watc::deleteKeptSemaphores(App* app, CPU& cpu)
+/* sub_51e5e8: the kept critical sections deleted; what its code leaves in eax, the last answer of
+ * Windows' or `eax` as it came. */
+reg32 frontend::watc::deleteKeptSemaphores(App* app, CPU& cpu, reg32 eax)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 16);
@@ -372,21 +566,23 @@ reg32 frontend::watc::deleteKeptSemaphores(App* app, CPU& cpu)
         do
         {
             ++i;
-            callImport<kDeleteCriticalSection, &host::deleteLock>(guest, cpu, section);
+            eax = callImport<kDeleteCriticalSection, &host::deleteLock>(guest, cpu, section);
             section += 0x18;
         } while (s(i) < s(guest.dword(kStaticSemaphoreCount)));
     }
-    return guest.eax();
+    return eax;
 }
 
-void frontend::watcDeleteKeptSemaphores(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcDeleteKeptSemaphores(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_51e5e8", 0, 0, kEbx | kEcx | kEdx | kEsi);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::deleteKeptSemaphores(app, cpu); });
+    const reg32 eax = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::deleteKeptSemaphores(app, cpu, eax); });
 }
 
-/* sub_51e618: the allocated ones deleted and freed, and their list. */
-reg32 frontend::watc::deleteExtraSemaphores(App* app, CPU& cpu)
+/* sub_51e618: the allocated ones deleted and freed, and their list; what its code leaves in eax,
+ * the last call's or `eax` as it came. */
+reg32 frontend::watc::deleteExtraSemaphores(App* app, CPU& cpu, reg32 eax)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 24);
@@ -399,19 +595,20 @@ reg32 frontend::watc::deleteExtraSemaphores(App* app, CPU& cpu)
             ++i;
             callImport<kDeleteCriticalSection, &host::deleteLock>(
                 guest, cpu, guest.dword(guest.dword(kExtraSemaphores) + offset));
-            fe::direct<kNfree, watcom::clib::free>(guest.app(), guest.cpu(), guest.dword(guest.dword(kExtraSemaphores) + offset));
+            eax = fe::direct<kNfree, watcom::clib::free>(guest.app(), guest.cpu(), guest.dword(guest.dword(kExtraSemaphores) + offset));
         } while (s(i) < s(guest.dword(kExtraSemaphoreCount)));
     }
     const reg32 list = guest.dword(kExtraSemaphores);
     if (list != 0)
-        fe::direct<kNfree, watcom::clib::free>(guest.app(), guest.cpu(), list);
-    return guest.eax();
+        eax = fe::direct<kNfree, watcom::clib::free>(guest.app(), guest.cpu(), list);
+    return eax;
 }
 
-void frontend::watcDeleteExtraSemaphores(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcDeleteExtraSemaphores(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_51e618", 0, 0, kEbx | kEcx | kEdx | kEsi | kEdi);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::deleteExtraSemaphores(app, cpu); });
+    const reg32 eax = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::deleteExtraSemaphores(app, cpu, eax); });
 }
 
 /* sub_51e670: a lock's owner and count cleared. */
@@ -423,77 +620,79 @@ reg32 frontend::watc::clearLock(App* app, CPU& cpu, reg32 lock)
     return lock;
 }
 
-void frontend::watcClearLock(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcClearLock(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_51e670", 0, 0, 0);
-    const reg32 lock = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::clearLock(app, cpu, lock); });
+    const reg32 lock = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::clearLock(app, cpu, lock); });
 }
 
 /* sub_51e680 to sub_51e70c: the runtime's hooks for its locks, each a lock named and sub_51e71c
  * or sub_51e780 on it. */
 reg32 frontend::watc::lockStreams(App* app, CPU& cpu)
 {
-    cpu.eax = kLockStreams;
-    tail(app, cpu, 0x51e71c);
-    return cpu.eax;
+    return jumpTo<0x51e71c, lock>(app, cpu, kLockStreams);
 }
 
-void frontend::watcLockStreams(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcLockStreams(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    watc::lockStreams(app, cpu);
+    const reg32 result = watc::lockStreams(app, cpu);
+    if (!cpu.terminate)
+        args.eax = result, cpu.esp += 4;
+    return args.eax;
 }
 
 reg32 frontend::watc::unlockStreams(App* app, CPU& cpu)
 {
-    cpu.eax = kLockStreams;
-    tail(app, cpu, 0x51e780);
-    return cpu.eax;
+    return jumpTo<0x51e780, unlock>(app, cpu, kLockStreams);
 }
 
-void frontend::watcUnlockStreams(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcUnlockStreams(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    watc::unlockStreams(app, cpu);
+    const reg32 result = watc::unlockStreams(app, cpu);
+    if (!cpu.terminate)
+        args.eax = result, cpu.esp += 4;
+    return args.eax;
 }
 
 reg32 frontend::watc::lockFile(App* app, CPU& cpu, reg32 file)
 {
-    cpu.eax = ((file & 0xf) << 4) + kLockFiles;
-    tail(app, cpu, 0x51e71c);
-    return cpu.eax;
+    return jumpTo<0x51e71c, lock>(app, cpu, ((file & 0xf) << 4) + kLockFiles);
 }
 
-void frontend::watcLockFile(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcLockFile(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const reg32 file = cpu.eax;
-    watc::lockFile(app, cpu, file);
+    const reg32 result = watc::lockFile(app, cpu, args.eax);
+    if (!cpu.terminate)
+        args.eax = result, cpu.esp += 4;
+    return args.eax;
 }
 
 reg32 frontend::watc::unlockFile(App* app, CPU& cpu, reg32 file)
 {
-    cpu.eax = ((file & 0xf) << 4) + kLockFiles;
-    tail(app, cpu, 0x51e780);
-    return cpu.eax;
+    return jumpTo<0x51e780, unlock>(app, cpu, ((file & 0xf) << 4) + kLockFiles);
 }
 
-void frontend::watcUnlockFile(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcUnlockFile(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const reg32 file = cpu.eax;
-    watc::unlockFile(app, cpu, file);
+    const reg32 result = watc::unlockFile(app, cpu, args.eax);
+    if (!cpu.terminate)
+        args.eax = result, cpu.esp += 4;
+    return args.eax;
 }
 
 /* sub_51e6b8: allocPOSIXHandle. */
 reg32 frontend::watc::allocHandleHook(App* app, CPU& cpu, reg32 osHandle)
 {
-    cpu.eax = osHandle;
-    tail(app, cpu, 0x51e304);
-    return cpu.eax;
+    return jumpTo<0x51e304, watcom::clib::allocPOSIXHandle>(app, cpu, osHandle);
 }
 
-void frontend::watcAllocHandleHook(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcAllocHandleHook(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const reg32 osHandle = cpu.eax;
-    watc::allocHandleHook(app, cpu, osHandle);
+    const reg32 result = watc::allocHandleHook(app, cpu, args.eax);
+    if (!cpu.terminate)
+        args.eax = result, cpu.esp += 4;
+    return args.eax;
 }
 
 /* sub_51e6c0: a file's lock cleared and its POSIX handle freed. */
@@ -502,86 +701,92 @@ reg32 frontend::watc::freeHandleHook(App* app, CPU& cpu, reg32 handle)
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 4);
     guest::direct<0x51e670, clearLock>(app, cpu, ((handle & 0xf) << 4) + kLockFiles);
-    return guest.call(0x51e45c, args({ handle }));
+    return fe::direct<0x51e45c, watcom::clib::freePOSIXHandle>(app, cpu, handle);
 }
 
-void frontend::watcFreeHandleHook(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcFreeHandleHook(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_51e6c0", 0, 0, kEdx);
-    const reg32 handle = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::freeHandleHook(app, cpu, handle); });
+    const reg32 handle = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::freeHandleHook(app, cpu, handle); });
 }
 
 reg32 frontend::watc::lockHeap(App* app, CPU& cpu)
 {
-    cpu.eax = kLockHeap;
-    tail(app, cpu, 0x51e71c);
-    return cpu.eax;
+    return jumpTo<0x51e71c, lock>(app, cpu, kLockHeap);
 }
 
-void frontend::watcLockHeap(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcLockHeap(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    watc::lockHeap(app, cpu);
+    const reg32 result = watc::lockHeap(app, cpu);
+    if (!cpu.terminate)
+        args.eax = result, cpu.esp += 4;
+    return args.eax;
 }
 
 reg32 frontend::watc::unlockHeap(App* app, CPU& cpu)
 {
-    cpu.eax = kLockHeap;
-    tail(app, cpu, 0x51e780);
-    return cpu.eax;
+    return jumpTo<0x51e780, unlock>(app, cpu, kLockHeap);
 }
 
-void frontend::watcUnlockHeap(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcUnlockHeap(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    watc::unlockHeap(app, cpu);
+    const reg32 result = watc::unlockHeap(app, cpu);
+    if (!cpu.terminate)
+        args.eax = result, cpu.esp += 4;
+    return args.eax;
 }
 
 reg32 frontend::watc::lockFileTable(App* app, CPU& cpu)
 {
-    cpu.eax = kLockFileTable;
-    tail(app, cpu, 0x51e71c);
-    return cpu.eax;
+    return jumpTo<0x51e71c, lock>(app, cpu, kLockFileTable);
 }
 
-void frontend::watcLockFileTable(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcLockFileTable(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    watc::lockFileTable(app, cpu);
+    const reg32 result = watc::lockFileTable(app, cpu);
+    if (!cpu.terminate)
+        args.eax = result, cpu.esp += 4;
+    return args.eax;
 }
 
 reg32 frontend::watc::unlockFileTable(App* app, CPU& cpu)
 {
-    cpu.eax = kLockFileTable;
-    tail(app, cpu, 0x51e780);
-    return cpu.eax;
+    return jumpTo<0x51e780, unlock>(app, cpu, kLockFileTable);
 }
 
-void frontend::watcUnlockFileTable(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcUnlockFileTable(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    watc::unlockFileTable(app, cpu);
+    const reg32 result = watc::unlockFileTable(app, cpu);
+    if (!cpu.terminate)
+        args.eax = result, cpu.esp += 4;
+    return args.eax;
 }
 
 reg32 frontend::watc::lockThreadList(App* app, CPU& cpu)
 {
-    cpu.eax = kLockThreadList;
-    tail(app, cpu, 0x51e71c);
-    return cpu.eax;
+    return jumpTo<0x51e71c, lock>(app, cpu, kLockThreadList);
 }
 
-void frontend::watcLockThreadList(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcLockThreadList(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    watc::lockThreadList(app, cpu);
+    const reg32 result = watc::lockThreadList(app, cpu);
+    if (!cpu.terminate)
+        args.eax = result, cpu.esp += 4;
+    return args.eax;
 }
 
 reg32 frontend::watc::unlockThreadList(App* app, CPU& cpu)
 {
-    cpu.eax = kLockThreadList;
-    tail(app, cpu, 0x51e780);
-    return cpu.eax;
+    return jumpTo<0x51e780, unlock>(app, cpu, kLockThreadList);
 }
 
-void frontend::watcUnlockThreadList(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcUnlockThreadList(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    watc::unlockThreadList(app, cpu);
+    const reg32 result = watc::unlockThreadList(app, cpu);
+    if (!cpu.terminate)
+        args.eax = result, cpu.esp += 4;
+    return args.eax;
 }
 
 /* sub_51e714: the handle table's lock. */
@@ -592,10 +797,10 @@ reg32 frontend::watc::lockHandleTable(App* app, CPU& cpu)
     return lockSemaphore(guest, cpu, kLockHandleTable);
 }
 
-void frontend::watcLockHandleTable(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcLockHandleTable(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_51e714", 0, 0, kEbx | kEcx | kEdx | kEsi);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::lockHandleTable(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::lockHandleTable(app, cpu); });
 }
 
 /* sub_51e71c: a lock taken: its critical section made the first time, entered unless this thread
@@ -607,11 +812,11 @@ reg32 frontend::watc::lock(App* app, CPU& cpu, reg32 lock)
     return lockSemaphore(guest, cpu, lock);
 }
 
-void frontend::watcLock(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcLock(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_51e71c", 0, 0, kEbx | kEcx | kEdx | kEsi);
-    const reg32 lock = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::lock(app, cpu, lock); });
+    const reg32 lock = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::lock(app, cpu, lock); });
 }
 
 /* sub_51e778: the handle table's lock given back. */
@@ -622,10 +827,10 @@ reg32 frontend::watc::unlockHandleTable(App* app, CPU& cpu)
     return unlockSemaphore(guest, cpu, kLockHandleTable);
 }
 
-void frontend::watcUnlockHandleTable(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcUnlockHandleTable(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_51e778", 0, 0, kEbx | kEcx | kEdx | kEsi);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::unlockHandleTable(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::unlockHandleTable(app, cpu); });
 }
 
 /* sub_51e780: a lock given back, its critical section left when the count is out. */
@@ -636,11 +841,11 @@ reg32 frontend::watc::unlock(App* app, CPU& cpu, reg32 lock)
     return unlockSemaphore(guest, cpu, lock);
 }
 
-void frontend::watcUnlock(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcUnlock(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_51e780", 0, 0, kEbx | kEcx | kEdx | kEsi);
-    const reg32 lock = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::unlock(app, cpu, lock); });
+    const reg32 lock = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::unlock(app, cpu, lock); });
 }
 
 // ---------------------------------------------------------------------------
@@ -653,21 +858,21 @@ reg32 frontend::watc::threadData(App* app, CPU& cpu)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 16);
-    // In esi across what follows, as the code keeps it.
-    cpu.esi = callImport<kGetLastError, &host::lastError>(guest, cpu);
+    // Kept across what follows (esi, as the code keeps it).
+    const reg32 lastError = callImport<kGetLastError, &host::lastError>(guest, cpu);
     reg32 data = callImport<kTlsGetValue, &host::tlsGet>(guest, cpu, guest.dword(kTlsIndex));
     if (data == 0)
-        data = guest.call(0x525e10);   // by address: the esi its fatal error's path leaves is read after it
+        data = fe::direct<0x525e10, attachThisThread>(app, cpu);
     else if (guest.byte(data + 0x53) != 0)
         data = fe::direct<0x525e4c, resizeThreadData>(app, cpu);
-    callImport<kSetLastError, &host::setLastError>(guest, cpu, cpu.esi);
+    callImport<kSetLastError, &host::setLastError>(guest, cpu, lastError);
     return data;
 }
 
-void frontend::watcThreadData(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcThreadData(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_51e7a8", 0, 0, kEbx | kEcx | kEdx | kEsi);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::threadData(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::threadData(app, cpu); });
 }
 
 /* sub_51e828: the TLS index taken, past 0, 1 and 2 on Windows' older versions. */
@@ -693,20 +898,21 @@ reg32 frontend::watc::allocTlsIndex(App* app, CPU& cpu)
     return index != 0xffffffff ? 1 : 0;
 }
 
-void frontend::watcAllocTlsIndex(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcAllocTlsIndex(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_51e828", 0, 0, kEbx | kEcx | kEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::allocTlsIndex(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::allocTlsIndex(app, cpu); });
 }
 
-/* sub_51e888: a thread's data made, put on the list and in its TLS slot. */
-reg32 frontend::watc::attachThread(App* app, CPU& cpu)
+/* sub_51e888: a thread's data made -- from the block `data` (eax, which it hands on to sub_51e7ec),
+ * 0 for one of calloc's -- put on the list and in its TLS slot. */
+reg32 frontend::watc::attachThread(App* app, CPU& cpu, reg32 block)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 12);
     if (guest.dword(kTlsIndex) == 0xffffffff)
         return 0;
-    const reg32 data = guest.call(0x51e7ec);
+    const reg32 data = fe::direct<0x51e7ec, watcom::clib::initThreadData>(app, cpu, block);
     if (data == 0)
         return 0;
     if (fe::direct<0x525f20, addThread>(app, cpu, guest.dword(data + 0xda), data) == 0)
@@ -718,10 +924,11 @@ reg32 frontend::watc::attachThread(App* app, CPU& cpu)
     return 1;
 }
 
-void frontend::watcAttachThread(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcAttachThread(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_51e888", 0, 0, kEbx | kEcx | kEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::attachThread(app, cpu); });
+    const reg32 block = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::attachThread(app, cpu, block); });
 }
 
 /* sub_51e8dc: this thread's data off the list and out of its slot; with eax its handle closed. */
@@ -731,23 +938,23 @@ reg32 frontend::watc::detachThread(App* app, CPU& cpu, reg32 closeIt)
     const fe::Frame frame(guest, cpu, 20);
     const reg32 index = guest.dword(kTlsIndex);
     if (index == 0xffffffff)
-        return guest.eax();
+        return closeIt;  // eax as it came
     const reg32 data = callImport<kTlsGetValue, &host::tlsGet>(guest, cpu, index);
     if (data == 0)
         return 0;
     const reg32 thread = guest.dword(data + 0xde);
     guest::direct<0x525f84, removeThread>(app, cpu, guest.dword(data + 0xda));
-    callImport<kTlsSetValue, &host::tlsSet>(guest, cpu, guest.dword(kTlsIndex), 0);
+    reg32 eax = callImport<kTlsSetValue, &host::tlsSet>(guest, cpu, guest.dword(kTlsIndex), 0);
     if (thread != 0 && closeIt != 0)
-        callImport<kCloseHandle, &host::closeHandle>(guest, cpu, thread);
-    return guest.eax();
+        eax = callImport<kCloseHandle, &host::closeHandle>(guest, cpu, thread);
+    return eax;
 }
 
-void frontend::watcDetachThread(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcDetachThread(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_51e8dc", 0, 0, kEbx | kEcx | kEdx | kEsi | kEdi);
-    const reg32 closeIt = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::detachThread(app, cpu, closeIt); });
+    const reg32 closeIt = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::detachThread(app, cpu, closeIt); });
 }
 
 /* sub_51e934: the last thread's end: its data, then the TLS index. */
@@ -755,32 +962,32 @@ reg32 frontend::watc::endThreads(App* app, CPU& cpu)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 0);
-    // 1 in eax as the game's code hands it, which it gives back with no index; what it gives back, in
-    // eax: what the end hands back if there is no index to give.
-    cpu.eax = 1;
-    cpu.eax = fe::direct<0x51e8dc, detachThread>(app, cpu, 1);
+    // 1 in eax as the game's code hands it, which it gives back with no index; what it gives back is
+    // what the end hands back if there is no index to give.
+    const reg32 detached = fe::direct<0x51e8dc, detachThread>(app, cpu, 1);
     cpu.esp -= 8;
-    return giveBackTlsIndex(guest, cpu);
+    return giveBackTlsIndex(guest, cpu, detached);
 }
 
-void frontend::watcEndThreads(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcEndThreads(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_51e934", 0, 0, kEcx | kEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::endThreads(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::endThreads(app, cpu); });
 }
 
-/* sub_51e940: the TLS index given back. */
-reg32 frontend::watc::freeTlsIndex(App* app, CPU& cpu)
+/* sub_51e940: the TLS index given back; `eax` as it came, which it leaves for none. */
+reg32 frontend::watc::freeTlsIndex(App* app, CPU& cpu, reg32 eax)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 8);
-    return giveBackTlsIndex(guest, cpu);
+    return giveBackTlsIndex(guest, cpu, eax);
 }
 
-void frontend::watcFreeTlsIndex(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcFreeTlsIndex(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_51e940", 0, 0, kEcx | kEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::freeTlsIndex(app, cpu); });
+    const reg32 eax = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::freeTlsIndex(app, cpu, eax); });
 }
 
 /* sub_51e964: the runtime made thread-safe, on the first _beginthread: the hooks pointed at the
@@ -805,26 +1012,24 @@ reg32 frontend::watc::initThreads(App* app, CPU& cpu)
     guest.setDword(0x567784, 0x51e6f0);
     guest.setDword(0x567788, 0x51e6e4);
     guest.setDword(0x56778c, 0x51e6f8);
-    // In edi across the call, as the code keeps it.  By address: the edi it leaves is stored after it
-    // (its fatal error's path changes it).
-    cpu.edi = 0x51e934;
-    const reg32 section = guest.call(0x51e544);
+    const reg32 section = fe::direct<0x51e544, newSemaphore>(app, cpu);
     guest.setDword(kLockOfLocks, section);
     guest.setDword(kLockOfLocks + 4, 1);
     guest.setDword(kLockHandles, 0x51e714);
     guest.setDword(kUnlockHandles, 0x51e778);
     const reg32 data = guest.dword(kMainThreadData);
-    guest.setDword(0x5677a0, cpu.edi);
+    guest.setDword(0x5677a0, 0x51e934);  // kept in edi across the call, as the code keeps it
     guest::direct<0x525f20, addThread>(app, cpu, guest.dword(data + 0xda), data);
-    callImport<kTlsSetValue, &host::tlsSet>(guest, cpu, guest.dword(kTlsIndex), guest.dword(kMainThreadData));
+    const reg32 eax =
+        callImport<kTlsSetValue, &host::tlsSet>(guest, cpu, guest.dword(kTlsIndex), guest.dword(kMainThreadData));
     guest.setDword(kThreadDataGetter, 0x51e7a8);
-    return guest.eax();
+    return eax;
 }
 
-void frontend::watcInitThreads(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcInitThreads(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_51e964", 0, 0, kEbx | kEcx | kEdx | kEsi | kEdi);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::initThreads(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::initThreads(app, cpu); });
 }
 
 /* sub_51ea7c: the runtime's locks taken down at its end. */
@@ -832,27 +1037,27 @@ reg32 frontend::watc::finiThreads(App* app, CPU& cpu)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 8);
-    const auto clear = [&](reg32 lock) { guest.call(guest.dword(0x56acd0), args({ lock })); };
+    const auto clear = [&](reg32 lock) { return fe::pointerCall(guest, guest.dword(0x56acd0), args({ lock })); };
     clear(kLockStreams);
     for (reg32 lock = kLockFiles; lock != kLockFiles + 0x100; lock += 0x10)
         clear(lock);
-    clear(kLockHandleTable);
-    fe::direct<0x51e618, deleteExtraSemaphores>(app, cpu);
-    fe::direct<0x526060, freeThreadListJump>(app, cpu);
-    guest.call(0x5241c0);
+    // What each gives back in eax goes on to the next, which gives it back when it has nothing to do.
+    reg32 eax = clear(kLockHandleTable);
+    eax = fe::direct<0x51e618, deleteExtraSemaphores>(app, cpu, eax);
+    fe::direct<0x526060, freeThreadListJump>(app, cpu, eax);
+    fe::direct<0x5241c0, watcom::clib::heapShrink>(app, cpu);
     clear(kLockHeap);
     clear(kLockFileTable);
     clear(kLockThreadList);
-    clear(kLockOfLocks);
-    // What it gives back on in eax: what the last hands back when there is no index to give.
-    cpu.eax = fe::direct<0x51e5e8, deleteKeptSemaphores>(app, cpu);
-    return fe::direct<0x51e940, freeTlsIndex>(app, cpu);
+    eax = clear(kLockOfLocks);
+    eax = fe::direct<0x51e5e8, deleteKeptSemaphores>(app, cpu, eax);
+    return fe::direct<0x51e940, freeTlsIndex>(app, cpu, eax);
 }
 
-void frontend::watcFiniThreads(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcFiniThreads(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_51ea7c", 0, 0, kEbx | kEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::finiThreads(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::finiThreads(app, cpu); });
 }
 
 // ---------------------------------------------------------------------------
@@ -870,15 +1075,15 @@ reg32 frontend::watc::hasActiveWindow(App* app, CPU& cpu)
     {
         const reg32 getActiveWindow = callImport<kGetProcAddress, &host::procAddress>(guest, cpu, user32, 0x5513e0);
         if (getActiveWindow != 0)
-            window = guest.call(getActiveWindow);
+            window = fe::pointerCall(guest, getActiveWindow);
     }
     return window != 0 ? 1 : 0;
 }
 
-void frontend::watcHasActiveWindow(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcHasActiveWindow(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_51ec90", 0, 0, kEbx | kEcx | kEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::hasActiveWindow(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::hasActiveWindow(app, cpu); });
 }
 
 /* sub_51eccc: a line added to the report, the hex digits after its 0x the value's. */
@@ -907,32 +1112,26 @@ reg32 frontend::watc::reportAppend(App* app, CPU& cpu, reg32 report, reg32 line,
         ++to;
         ++from;
     }
-    guest.leaveEdx(from);
     if (lastDigit == 0)
-    {
-        guest.leaveEbx(0);
         return to;
-    }
     reg32 rest = value;
     while (rest != 0)
     {
         const std::uint8_t digit = guest.byte((rest & 0xf) + kHexDigits);
-        guest.leaveEdx(digit);
         --lastDigit;
         guest.setByte(lastDigit + 1, digit);
         rest >>= 4;
     }
-    guest.leaveEbx(lastDigit);
     return 0;
 }
 
-void frontend::watcReportAppend(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcReportAppend(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_51eccc", 0, 0, kEcx | kEsi | kEdi);
-    const reg32 value = cpu.ebx;
-    const reg32 report = cpu.eax;
-    const reg32 line = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::reportAppend(app, cpu, report, line, value); });
+    const reg32 value = args.ebx;
+    const reg32 report = args.eax;
+    const reg32 line = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::reportAppend(app, cpu, report, line, value); });
 }
 
 /* sub_51ed24: the filter that writes the report on stderr, when there is a console to read it. */
@@ -942,8 +1141,8 @@ reg32 frontend::watc::reportException(App* app, CPU& cpu, reg32 pointers)
     const fe::Frame frame(guest, cpu, 0x10c);
     const reg32 buffer = guest.frame();
     const reg32 record = guest.dword(pointers), context = guest.dword(pointers + 4);
-    cpu.ecx = record;
-    if (fe::direct<0x51ec90, hasActiveWindow>(app, cpu) != 0 || guest.call(0x515734) == 0xffffffff)
+    if (fe::direct<0x51ec90, hasActiveWindow>(app, cpu) != 0
+        || fe::direct<0x515734, watcom::clib::consoleOutput>(app, cpu) == 0xffffffff)
         return 0;
     guest.setByte(buffer, 0);
     const auto add = [&](reg32 line, reg32 value) { fe::direct<0x51eccc, reportAppend>(app, cpu, buffer, line, value); };
@@ -978,17 +1177,16 @@ reg32 frontend::watc::reportException(App* app, CPU& cpu, reg32 pointers)
     if (line != 0)
         add(line, where);
     const reg32 length = guest.length(buffer);
-    cpu.ecx = length;
     const reg32 handles = guest.dword(kHandleTable);
     callImport<kWriteFile, &host::writeFile>(guest, cpu, guest.dword(handles + 8), buffer, length, buffer + 0x100, 0);
     return 1;
 }
 
-void frontend::watcReportException(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcReportException(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_51ed24", 4, 0, kEbx | kEdi);
     const reg32 pointers = app->getMemory<reg32>(cpu.esp + 4);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::reportException(app, cpu, pointers); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::reportException(app, cpu, pointers); });
 }
 
 /* sub_51ef08: the runtime's exception handler: the x87's exceptions and the rest raised as
@@ -1002,8 +1200,7 @@ reg32 frontend::watc::exceptionHandler(App* app, CPU& cpu, reg32 record, reg32 c
     const auto notHandled = [&]() -> reg32 {
         guest.setDword(pointers, record);
         guest.setDword(pointers + 4, context);
-        cpu.eax = pointers;
-        if (callImport<kUnhandledExceptionFilter, &host::unhandledExceptionFilter>(guest, cpu, pointers) != 0)
+        if (callImportAt<kUnhandledExceptionFilter, &host::unhandledExceptionFilter>(guest, cpu, pointers, pointers) != 0)
             callImport<kExitProcess, &host::exitProcess>(guest, cpu, 0xffffffff);
         return 1;
     };
@@ -1026,7 +1223,7 @@ reg32 frontend::watc::exceptionHandler(App* app, CPU& cpu, reg32 record, reg32 c
             // An invalid operation: which instruction, and for a store whether st(0) was empty.
             const reg32 instruction = guest.dword(context + 0x28);
             const std::uint16_t opcode = guest.word(instruction);
-            reg32 edx = (cpu.edx & 0xffff0000) | opcode;
+            reg32 edx = opcode;  // dx: the code's working of it (the rest of edx is none of its)
             signal = 0x81;
             if (opcode == 0xfad9)
                 signal = 0x88;
@@ -1047,13 +1244,11 @@ reg32 frontend::watc::exceptionHandler(App* app, CPU& cpu, reg32 record, reg32 c
                 {
                     const reg32 top = ((guest.dword(context + 0x20) << 2) & 0xffff) >> 13;
                     const reg32 tags = guest.dword(context + 0x24) & 0xffff;
-                    cpu.ecx = top * 2;
                     edx = (tags >> (top * 2)) & 1;
                     if (edx == 1)
                         signal = 0x83;
                 }
             }
-            guest.leaveEdx(edx);
             break;
         }
         }
@@ -1070,28 +1265,27 @@ reg32 frontend::watc::exceptionHandler(App* app, CPU& cpu, reg32 record, reg32 c
     }
     if (guest.dword(kSignalRaise) == 0)
         return notHandled();
-    cpu.ecx = 1;
     for (reg32 number = 1; s(number) <= 0xc; ++number)
     {
-        const reg32 asked = guest.call(guest.dword(kSignalAsked), args({ number, guest.dword(record) }));
+        const reg32 asked = fe::pointerCall(guest, guest.dword(kSignalAsked), args({ number, guest.dword(record) }));
         if (asked == 0)
             continue;
         if (asked == 1 || asked == 2 || asked == 3)
             break;
-        guest.setByte(kSignalStopped, std::uint8_t(cpu.ecx));
-        guest.call(guest.dword(kSignalRaise), args({ number }));
+        guest.setByte(kSignalStopped, 1);  // cl, 1 across the calls, which keep it
+        fe::pointerCall(guest, guest.dword(kSignalRaise), args({ number }));
         if (guest.byte(kSignalStopped) != 0)
             return 0;
     }
     return notHandled();
 }
 
-void frontend::watcExceptionHandler(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcExceptionHandler(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_51ef08", 0, 0, kEbx | kEsi | kEdi);
     const reg32 record = app->getMemory<reg32>(cpu.esp + 4);
     const reg32 context = app->getMemory<reg32>(cpu.esp + 12);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::exceptionHandler(app, cpu, record, context); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::exceptionHandler(app, cpu, record, context); });
 }
 
 /* sub_51f140: the float formatter's hook for printf: the double taken off the arguments, its
@@ -1135,7 +1329,6 @@ reg32 frontend::watc::formatFloat(App* app, CPU& cpu, reg32 out, reg32 arguments
         precision = 6;
     guest.setDword(local(0x4c), precision);
     guest.setDword(local(0x3c), 0);
-    guest.leaveEcx(spec);
     fe::direct<0x5167b3, watb::longDoubleToDigits>(app, cpu, local(0x20), local(0x4c), out + 1);
     guest.setDword(spec + 0x28, guest.dword(local(0x30)));
     guest.setDword(spec + 0x2c, guest.dword(local(0x2c)));
@@ -1156,15 +1349,14 @@ reg32 frontend::watc::formatFloat(App* app, CPU& cpu, reg32 out, reg32 arguments
         else if ((flags & 2) != 0)
             sign(' ');
     }
-    guest.leaveEdx(cpu.ds);
     return out;
 }
 
-void frontend::watcFormatFloat(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcFormatFloat(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_51f140", 0, 0, kEcx | kEsi | kEdi);
-    const reg32 out = cpu.eax, arguments = cpu.edx, spec = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::formatFloat(app, cpu, out, arguments, spec); });
+    const reg32 out = args.eax, arguments = args.edx, spec = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::formatFloat(app, cpu, out, arguments, spec); });
 }
 
 /* sub_51f254: scanf's hook: strtod, the double stored. */
@@ -1172,16 +1364,16 @@ reg32 frontend::watc::scanFloat(App* app, CPU& cpu, reg32 text, reg32 to)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 4);
-    const reg32 result = guest.call(0x4f82b6, args({ text, 0 }));
-    app->getMemory<double>(to) = double(guest.fpu().pop());
+    reg32 result = 0;
+    app->getMemory<double>(to) = fe::direct<0x4f82b6, watcom::clib::strtod>(app, cpu, text, 0u, &result);
     return result;
 }
 
-void frontend::watcScanFloat(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcScanFloat(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_51f254", 0, 0, kEbx);
-    const reg32 text = cpu.eax, to = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::scanFloat(app, cpu, text, to); });
+    const reg32 text = args.eax, to = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::scanFloat(app, cpu, text, to); });
 }
 
 // ---------------------------------------------------------------------------
@@ -1199,13 +1391,10 @@ reg32 frontend::watc::shapeRowBytes(App* app, CPU& cpu, reg32 shape)
         return sar(guest.dword(shape + 2), 16);
     if ((type & 0x80) != 0)
     {
-        const reg32 ebx = cpu.ebx, esi = cpu.esi;
         guest.setDword(kErrorFile, 0x551b0c);
         guest.setDword(kErrorFunction, 0x551b1c);
         guest.setDword(kErrorLine, 0x35);
         fe::direct<0x401010, ea::error>(app, cpu, 0x551b2cu, guest::Words({ type }));
-        cpu.ebx = ebx;
-        cpu.esi = esi;
     }
     reg32 bits = guest.byte((guest.dword(shape) & 0x7f) + kBitsOfType);
     if (bits == 0xf)
@@ -1216,11 +1405,11 @@ reg32 frontend::watc::shapeRowBytes(App* app, CPU& cpu, reg32 shape)
     return sar((rowBits + 7) & 0xfffffff8, 3);
 }
 
-void frontend::watcShapeRowBytes(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcShapeRowBytes(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_5236c0", 0, 0, kEcx | kEdx);
-    const reg32 shape = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::shapeRowBytes(app, cpu, shape); });
+    const reg32 shape = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::shapeRowBytes(app, cpu, shape); });
 }
 
 namespace
@@ -1251,10 +1440,7 @@ reg32 frontend::watc::putPixel(App* app, CPU& cpu, reg32 x, reg32 y, reg32 colou
         const reg32 rows = guest.dword(kRowOffsets);
         const reg32 at = guest.dword(guest.dword(kColumnOffsets) + x * 4) + guest.dword(rows + y * 4) + guest.dword(kWindowPixels);
         if (colour < 0x10000000)
-        {
-            guest.leaveEdx(rows);
             return at;
-        }
         reg32 mixed = colour;
         if (colour < 0xfc000000)
         {
@@ -1267,8 +1453,6 @@ reg32 frontend::watc::putPixel(App* app, CPU& cpu, reg32 x, reg32 y, reg32 colou
         }
         const reg32 packed = ((mixed & 0xf80000) >> 8) + ((mixed >> 3) & 0x1f) + ((mixed & 0xfc00) >> 5);
         guest.setWord(at, std::uint16_t(packed));
-        guest.leaveEbx(packed);
-        guest.leaveEdx((mixed & 0xfc00) >> 5);
         return (mixed >> 3) & 0x1f;
     }
     const reg32 alpha = colour >> 24;
@@ -1278,18 +1462,13 @@ reg32 frontend::watc::putPixel(App* app, CPU& cpu, reg32 x, reg32 y, reg32 colou
         return fe::direct<0x523b00, writePixel>(app, cpu, x, y, converted);
     }
     if (alpha == 0)
-    {
-        guest.leaveEbx(0);
         return x;
-    }
-    cpu.ebx = alpha;
     const reg32 red = (colour >> 16) & 0xff, green = (colour >> 8) & 0xff, blue = colour & 0xff;
-    cpu.ecx = 0x10000 - (alpha << 8);
+    const reg32 scale = 0x10000 - (alpha << 8);  // in ecx across the calls, which keep it
     const reg32 under = fe::direct<0x50c3a0, watb::colourToArgb>(app, cpu, fe::direct<0x503bc0, watb::readPixel>(app, cpu, x, y));
     const reg32 underAlpha = sar(under, 24) & 0xff, underRed = sar(under, 16) & 0xff;
     const reg32 underGreen = sar(under, 8) & 0xff, underBlue = under & 0xff;
-    const reg32 outAlpha = 0xff - reg32(s((0xff - cpu.ebx) * (0xff - underAlpha)) / 0xff);
-    const reg32 scale = cpu.ecx;
+    const reg32 outAlpha = 0xff - reg32(s((0xff - alpha) * (0xff - underAlpha)) / 0xff);
     const auto channel = [&](reg32 below, reg32 own) {
         const reg32 sum = fixedProduct(below, scale) + own;
         return s(sum) <= 0xff ? sum : reg32(0xff);
@@ -1302,34 +1481,30 @@ reg32 frontend::watc::putPixel(App* app, CPU& cpu, reg32 x, reg32 y, reg32 colou
     return fe::direct<0x523b00, writePixel>(app, cpu, x, y, converted);
 }
 
-void frontend::watcPutPixel(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcPutPixel(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_523760", 0, 0, kEcx | kEsi | kEdi);
-    const reg32 x = cpu.eax, y = cpu.edx, colour = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::putPixel(app, cpu, x, y, colour); });
+    const reg32 x = args.eax, y = args.edx, colour = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::putPixel(app, cpu, x, y, colour); });
 }
 
 /* sub_5239ec: a 4-bit shape's rows through a blending table onto 8-bit pixels: a pixel's nibble is
- * the table's high byte, what is under it the low. */
-reg32 frontend::watc::blend4To8(App* app, CPU& cpu, reg32 arguments)
+ * the table's high byte, what is under it the low.  What its code leaves in eax: the last pixels
+ * written, or `eax` as it came. */
+reg32 frontend::watc::blend4To8(App* app, CPU& cpu, reg32 arguments, reg32 eax)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 16);
     const reg32 base = arguments;
     const reg32 kPairs = base + 12, kRows = base + 16, kFromSkip = base + 20, kToSkip = base + 24;
     const reg32 table = guest.dword(base);
-    reg32 eax = cpu.eax;
     if (s(guest.dword(kRows)) <= 0)
         return eax;
     reg32 edx = 0;
-    guest.leaveEdx(0);
     reg32 from = guest.dword(base + 4), to = guest.dword(base + 8);
     const reg32 width = guest.dword(kPairs);
     if (s(width) < 1)
-    {
-        guest.leaveEcx(width);
         return eax;
-    }
     const bool odd = (width & 1) != 0;
     guest.setDword(kPairs, width >> 1);
     const auto pixel = [&](reg32 source, reg32 under) {
@@ -1364,16 +1539,16 @@ reg32 frontend::watc::blend4To8(App* app, CPU& cpu, reg32 arguments)
         to += guest.dword(kToSkip);
         guest.setDword(kRows, guest.dword(kRows) - 1);
     } while (guest.dword(kRows) != 0);
-    guest.leaveEcx(0);
-    guest.leaveEdx(edx);
+    (void)edx;
     return eax;
 }
 
-void frontend::watcBlend4To8(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcBlend4To8(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_5239ec", 0, 0, kEbx | kEsi | kEdi);
     const reg32 arguments = cpu.esp + 4;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::blend4To8(app, cpu, arguments); });
+    const reg32 eax = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::blend4To8(app, cpu, arguments, eax); });
 }
 
 /* sub_523b00: writepixel: a colour already in the window's format, at its depth. */
@@ -1385,7 +1560,6 @@ reg32 frontend::watc::writePixel(App* app, CPU& cpu, reg32 x, reg32 y, reg32 col
         || s(y) >= s(guest.dword(kClipBottom)))
         return x;
     const reg32 at = guest.dword(guest.dword(kRowOffsets) + y * 4) + guest.dword(guest.dword(kColumnOffsets) + x * 4) + guest.dword(kWindowPixels);
-    guest.leaveEdx(at);
     const std::uint8_t depth = guest.byte(kWindowDepth);
     const reg32 eax = (guest.dword(kWindowPixels) & 0xffffff00) | depth;
     switch (depth)
@@ -1396,7 +1570,6 @@ reg32 frontend::watc::writePixel(App* app, CPU& cpu, reg32 x, reg32 y, reg32 col
         return eax;
     case 0x18:
         guest.setWord(at, std::uint16_t(colour));
-        guest.leaveEbx(colour >> 16);
         guest.setByte(at + 2, std::uint8_t(colour >> 16));
         return eax;
     case 0x20:
@@ -1411,22 +1584,19 @@ reg32 frontend::watc::writePixel(App* app, CPU& cpu, reg32 x, reg32 y, reg32 col
     reg32 left = eax;
     if (depth != 4)
     {
-        const reg32 edi = cpu.edi;
         guest.setDword(kErrorLine, 0x53);
         guest.setDword(kErrorFile, 0x551b68);
         guest.setDword(kErrorFunction, 0x551b78);
-        guest.call(kError, args({ depth }, { 0x551b84, depth }));
-        cpu.edi = edi;
-        left = cpu.eax;
+        // Error's eax read after it (where it comes back).
+        left = *fe::direct<kError, ea::errorLeaves>(app, cpu, depth, 0x551b84u, guest::Words({ depth }));
     }
     // Four bits a pixel, or what a depth that is none falls through to.
-    const reg32 where = cpu.edx;
+    const reg32 where = at;
     if ((x & 1) != 0)
     {
         const std::uint8_t high = std::uint8_t(colour << 4);
         const std::uint8_t merged = (guest.byte(where) & 0xf) | high;
         guest.setByte(where, merged);
-        guest.leaveEbx((colour & 0xffff00ff) | (reg32(merged) << 8));
         return (left & 0xffffff00) | high;
     }
     const std::uint8_t merged = (guest.byte(where) & 0xf0) | std::uint8_t(colour);
@@ -1434,12 +1604,12 @@ reg32 frontend::watc::writePixel(App* app, CPU& cpu, reg32 x, reg32 y, reg32 col
     return (left & 0xffffff00) | merged;
 }
 
-void frontend::watcWritePixel(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcWritePixel(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_523b00", 0, 0, kEcx | kEsi);
-    const reg32 x = cpu.eax, y = cpu.edx;
-    const reg32 colour = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::writePixel(app, cpu, x, y, colour); });
+    const reg32 x = args.eax, y = args.edx;
+    const reg32 colour = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::writePixel(app, cpu, x, y, colour); });
 }
 
 // ---------------------------------------------------------------------------
@@ -1447,14 +1617,15 @@ void frontend::watcWritePixel(win32::WinApplication* app, x86::CPU& cpu)
 // ---------------------------------------------------------------------------
 
 /* sub_524f88: environ made from Windows' block, the strings copied, with a byte a string that says
- * whose memory each is in; then the handles' modes from C_FILE_INFO. */
-reg32 frontend::watc::initEnviron(App* app, CPU& cpu)
+ * whose memory each is in; then the handles' modes from C_FILE_INFO.  `eax` as it came, which it
+ * leaves when environ is made already. */
+reg32 frontend::watc::initEnviron(App* app, CPU& cpu, reg32 eax)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 24);
     constexpr reg32 kEnvironCopy = 0xa18230;
     if (guest.dword(kEnviron) != 0)
-        return guest.eax();
+        return eax;
     const reg32 block = guest.dword(kEnvironmentBlock);
     reg32 strings = 0;
     reg32 end = block;
@@ -1506,10 +1677,11 @@ reg32 frontend::watc::initEnviron(App* app, CPU& cpu)
     return guest::direct<0x52bdb0, inheritHandles>(app, cpu);
 }
 
-void frontend::watcInitEnviron(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcInitEnviron(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_524f88", 0, 0, kEbx | kEcx | kEdx | kEsi | kEdi);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::initEnviron(app, cpu); });
+    const reg32 eax = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::initEnviron(app, cpu, eax); });
 }
 
 /* sub_52506c: environ freed, and Windows' block. */
@@ -1518,29 +1690,30 @@ reg32 frontend::watc::freeEnviron(App* app, CPU& cpu)
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 20);
     constexpr reg32 kEnvironCopy = 0xa18230;
-    guest::direct<0x52bed0, clearEnviron>(app, cpu);
+    // What each call gives back in eax, the last of them what this one leaves there.
+    reg32 eax = guest::direct<0x52bed0, clearEnviron>(app, cpu);
     const reg32 list = guest.dword(kEnviron);
     if (list != 0)
     {
-        fe::direct<kNfree, watcom::clib::free>(guest.app(), guest.cpu(), list);
+        eax = fe::direct<kNfree, watcom::clib::free>(guest.app(), guest.cpu(), list);
         guest.setDword(kEnviron, 0);
     }
     const reg32 copy = guest.dword(kEnvironCopy);
     if (copy != 0)
     {
-        fe::direct<kNfree, watcom::clib::free>(guest.app(), guest.cpu(), copy);
+        eax = fe::direct<kNfree, watcom::clib::free>(guest.app(), guest.cpu(), copy);
         guest.setDword(kEnvironCopy, 0);
     }
     const reg32 block = guest.dword(kEnvironmentBlock);
     if (block != 0)
-        callImport<kFreeEnvironmentStrings, &host::freeEnvironmentStrings>(guest, cpu, block);
-    return guest.eax();
+        eax = callImport<kFreeEnvironmentStrings, &host::freeEnvironmentStrings>(guest, cpu, block);
+    return eax;
 }
 
-void frontend::watcFreeEnviron(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcFreeEnviron(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_52506c", 0, 0, kEbx | kEcx | kEdx | kEsi | kEdi);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::freeEnviron(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::freeEnviron(app, cpu); });
 }
 
 /* sub_525ba0: setmbcp: the table of lead bytes for a code page. */
@@ -1577,8 +1750,7 @@ reg32 frontend::watc::setMbcp(App* app, CPU& cpu, reg32 asked)
     if (page == 0)
         page = 1;
     const reg32 info = guest.frame();
-    cpu.eax = info;
-    if (callImport<kGetCpInfo, &host::codePageInfo>(guest, cpu, page, info) == 0)
+    if (callImportAt<kGetCpInfo, &host::codePageInfo>(guest, cpu, info, page, info) == 0)
         return 1;
     clearTable();
     guest.setDword(kIsMultibyte, 0);
@@ -1601,11 +1773,11 @@ reg32 frontend::watc::setMbcp(App* app, CPU& cpu, reg32 asked)
     return 0;
 }
 
-void frontend::watcSetMbcp(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcSetMbcp(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_525ba0", 0, 0, kEbx | kEcx | kEdx | kEsi);
-    const reg32 asked = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::setMbcp(app, cpu, asked); });
+    const reg32 asked = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::setMbcp(app, cpu, asked); });
 }
 
 // ---------------------------------------------------------------------------
@@ -1618,18 +1790,18 @@ reg32 frontend::watc::attachThisThread(App* app, CPU& cpu)
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 12);
     reg32 data = 0;
-    cpu.eax = 0;   // on through it to sub_51e7ec: no block of its own
-    if (fe::direct<0x51e888, attachThread>(app, cpu) != 0)
+    // 0 on through it to sub_51e7ec: no block of its own.
+    if (fe::direct<0x51e888, attachThread>(app, cpu, 0u) != 0)
         data = callImport<kTlsGetValue, &host::tlsGet>(guest, cpu, guest.dword(kTlsIndex));
     if (data == 0)
-        guest.call(kFatalError, args({ 0x551ef0, 1 }));
+        fe::direct<kFatalError, watcom::clib::fatalRuntimeError>(app, cpu, 0x551ef0u, 1u);
     return data;
 }
 
-void frontend::watcAttachThisThread(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcAttachThisThread(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_525e10", 0, 0, kEbx | kEcx | kEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::attachThisThread(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::attachThisThread(app, cpu); });
 }
 
 /* sub_525e4c: the thread's data to the size asked now, moved from the block it did not own. */
@@ -1637,7 +1809,7 @@ reg32 frontend::watc::resizeThreadData(App* app, CPU& cpu)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 24);
-    guest.call(guest.dword(kLockThreads));
+    fe::pointerCall(guest, guest.dword(kLockThreads));
     const reg32 thread = callImport<kGetCurrentThreadId, &host::currentThreadId>(guest, cpu);
     reg32 node = guest.dword(kThreadList);
     while (node != 0 && thread != guest.dword(node + 4))
@@ -1647,13 +1819,13 @@ reg32 frontend::watc::resizeThreadData(App* app, CPU& cpu)
     {
         data = fe::direct<kNrealloc, watcom::clib::realloc>(guest.app(), guest.cpu(), guest.dword(node + 8), guest.dword(kThreadDataSize));
         if (data == 0)
-            guest.call(kFatalError, args({ 0x551f18, 1 }));
+            fe::direct<kFatalError, watcom::clib::fatalRuntimeError>(app, cpu, 0x551f18u, 1u);
     }
     else
     {
         data = fe::direct<kCalloc, watcom::clib::calloc>(guest.app(), guest.cpu(), 1, guest.dword(kThreadDataSize));
         if (data == 0)
-            guest.call(kFatalError, args({ 0x551f40, 1 }));
+            fe::direct<kFatalError, watcom::clib::fatalRuntimeError>(app, cpu, 0x551f40u, 1u);
         const reg32 old = guest.dword(node + 8);
         copyUp(guest, data, old, guest.dword(old + 0xf0));
         guest.setDword(node + 0xc, 1);
@@ -1664,14 +1836,14 @@ reg32 frontend::watc::resizeThreadData(App* app, CPU& cpu)
     guest.setByte(data + 0x53, 0);
     guest.setDword(data + 0xf0, size);
     callImport<kTlsSetValue, &host::tlsSet>(guest, cpu, guest.dword(kTlsIndex), data);
-    guest.call(guest.dword(kUnlockThreads));
+    fe::pointerCall(guest, guest.dword(kUnlockThreads));
     return data;
 }
 
-void frontend::watcResizeThreadData(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcResizeThreadData(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_525e4c", 0, 0, kEbx | kEcx | kEdx | kEsi | kEdi);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::resizeThreadData(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::resizeThreadData(app, cpu); });
 }
 
 /* sub_525f20: a thread's data on the list: 1, or 0 if there is no memory or the hook says no. */
@@ -1679,14 +1851,13 @@ reg32 frontend::watc::addThread(App* app, CPU& cpu, reg32 thread, reg32 data)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 12);
-    guest.call(guest.dword(kLockThreads));
+    fe::pointerCall(guest, guest.dword(kLockThreads));
     reg32 added = 0;
     const reg32 node = fe::direct<kCalloc, watcom::clib::calloc>(guest.app(), guest.cpu(), 1, 0x10);
-    guest.leaveEdx(node);
     if (node != 0)
     {
-        cpu.eax = data;   // on through it to the hook
-        if (fe::direct<0x52c824, threadStartHook>(app, cpu) != 0)
+        // The data on through it to the hook, in eax.
+        if (fe::direct<0x52c824, threadStartHook>(app, cpu, data) != 0)
         {
             fe::direct<kNfree, watcom::clib::free>(guest.app(), guest.cpu(), node);
         }
@@ -1701,15 +1872,15 @@ reg32 frontend::watc::addThread(App* app, CPU& cpu, reg32 thread, reg32 data)
             added = 1;
         }
     }
-    guest.call(guest.dword(kUnlockThreads));
+    fe::pointerCall(guest, guest.dword(kUnlockThreads));
     return added;
 }
 
-void frontend::watcAddThread(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcAddThread(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_525f20", 0, 0, kEbx | kEcx | kEsi);
-    const reg32 thread = cpu.eax, data = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::addThread(app, cpu, thread, data); });
+    const reg32 thread = args.eax, data = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::addThread(app, cpu, thread, data); });
 }
 
 /* sub_525f84: a thread off the list, its data freed if the list owns it. */
@@ -1717,7 +1888,7 @@ reg32 frontend::watc::removeThread(App* app, CPU& cpu, reg32 thread)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 12);
-    guest.call(guest.dword(kLockThreads));
+    fe::pointerCall(guest, guest.dword(kLockThreads));
     reg32 link = kThreadList;
     for (reg32 node = guest.dword(kThreadList); node != 0; link = node, node = guest.dword(node))
     {
@@ -1730,19 +1901,18 @@ reg32 frontend::watc::removeThread(App* app, CPU& cpu, reg32 thread)
             break;
         }
     }
-    guest.call(guest.dword(kUnlockThreads));
-    return guest.eax();
+    return fe::pointerCall(guest, guest.dword(kUnlockThreads));
 }
 
-void frontend::watcRemoveThread(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcRemoveThread(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_525f84", 0, 0, kEbx | kEcx | kEdx);
-    const reg32 thread = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::removeThread(app, cpu, thread); });
+    const reg32 thread = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::removeThread(app, cpu, thread); });
 }
 
-/* sub_525ff8: the whole list freed. */
-reg32 frontend::watc::freeThreadList(App* app, CPU& cpu)
+/* sub_525ff8: the whole list freed; what its code leaves in eax, _nfree's last or `eax` as it came. */
+reg32 frontend::watc::freeThreadList(App* app, CPU& cpu, reg32 eax)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 12);
@@ -1752,41 +1922,47 @@ reg32 frontend::watc::freeThreadList(App* app, CPU& cpu)
         const reg32 owned = guest.dword(node + 0xc), next = guest.dword(node);
         if (owned != 0)
             fe::direct<kNfree, watcom::clib::free>(guest.app(), guest.cpu(), guest.dword(node + 8));
-        guest.call(kNfree, args({ node }));
+        eax = fe::direct<kNfree, watcom::clib::free>(app, cpu, node);
         node = next;
     }
-    return guest.eax();
+    return eax;
 }
 
-void frontend::watcFreeThreadList(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcFreeThreadList(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_525ff8", 0, 0, kEbx | kEcx | kEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::freeThreadList(app, cpu); });
+    const reg32 eax = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::freeThreadList(app, cpu, eax); });
 }
 
-/* sub_526060: the same, by another name. */
-reg32 frontend::watc::freeThreadListJump(App* app, CPU& cpu)
+/* sub_526060: the same, by another name: `eax` on to it. */
+reg32 frontend::watc::freeThreadListJump(App* app, CPU& cpu, reg32 eax)
 {
-    tail(app, cpu, 0x525ff8);
-    return cpu.eax;
+    return jumpTo<0x525ff8, freeThreadList>(app, cpu, eax);
 }
 
-void frontend::watcFreeThreadListJump(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcFreeThreadListJump(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    watc::freeThreadListJump(app, cpu);
+    const reg32 result = watc::freeThreadListJump(app, cpu, args.eax);
+    if (!cpu.terminate)
+        args.eax = result, cpu.esp += 4;
+    return args.eax;
 }
 
-/* sub_526070: the x87's exceptions cleared, which the host has none of. */
+/* sub_526070: the x87's exceptions cleared, which the host has none of -- eax as it was, which its
+ * thunk leaves; 0 back to a caller as C++. */
 reg32 frontend::watc::clearFpExceptions(App* app, CPU& cpu)
 {
     (void)app;
-    return cpu.eax;
+    (void)cpu;
+    return 0;
 }
 
-void frontend::watcClearFpExceptions(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcClearFpExceptions(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     watc::clearFpExceptions(app, cpu);
     cpu.esp += 4;
+    return args.eax;
 }
 
 // ---------------------------------------------------------------------------
@@ -1810,26 +1986,25 @@ reg32 frontend::watc::setSignalHandler(App* app, CPU& cpu, reg32 signal, reg32 h
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 8);
-    cpu.edx = handler;
     if (processWide(signal))
     {
         const reg32 at = kBreakHandlers + signal * 8;
         const reg32 old = guest.dword(at);
-        guest.setDword(at, guest.edx());
+        guest.setDword(at, handler);
         return old;
     }
-    const reg32 old = guest.dword(signal * 8 + guest.call(guest.dword(kThreadDataGetter)) + 0x58);
-    const reg32 data = guest.call(guest.dword(kThreadDataGetter));
-    guest.setDword(signal * 8 + data + 0x58, guest.edx());
+    const reg32 old = guest.dword(signal * 8 + fe::pointerCall(guest, guest.dword(kThreadDataGetter)) + 0x58);
+    const reg32 data = fe::pointerCall(guest, guest.dword(kThreadDataGetter));
+    guest.setDword(signal * 8 + data + 0x58, handler);
     return old;
 }
 
-void frontend::watcSetSignalHandler(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcSetSignalHandler(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_526080", 0, 0, kEbx | kEcx);
-    const reg32 signal = cpu.eax;
-    const reg32 handler = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::setSignalHandler(app, cpu, signal, handler); });
+    const reg32 signal = args.eax;
+    const reg32 handler = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::setSignalHandler(app, cpu, signal, handler); });
 }
 
 /* sub_5260c8: a signal's handler. */
@@ -1839,14 +2014,14 @@ reg32 frontend::watc::signalHandler(App* app, CPU& cpu, reg32 signal)
     const fe::Frame frame(guest, cpu, 4);
     if (processWide(signal))
         return guest.dword(kBreakHandlers + signal * 8);
-    return guest.dword(guest.call(guest.dword(kThreadDataGetter)) + signal * 8 + 0x58);
+    return guest.dword(fe::pointerCall(guest, guest.dword(kThreadDataGetter)) + signal * 8 + 0x58);
 }
 
-void frontend::watcSignalHandler(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcSignalHandler(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_5260c8", 0, 0, kEdx);
-    const reg32 signal = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::signalHandler(app, cpu, signal); });
+    const reg32 signal = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::signalHandler(app, cpu, signal); });
 }
 
 /* sub_5260ec: the x87's status a signal goes with. */
@@ -1856,14 +2031,14 @@ reg32 frontend::watc::signalMask(App* app, CPU& cpu, reg32 signal)
     const fe::Frame frame(guest, cpu, 4);
     if (processWide(signal))
         return guest.dword(kBreakHandlers + 4 + signal * 8);
-    return guest.dword(guest.call(guest.dword(kThreadDataGetter)) + signal * 8 + 0x5c);
+    return guest.dword(fe::pointerCall(guest, guest.dword(kThreadDataGetter)) + signal * 8 + 0x5c);
 }
 
-void frontend::watcSignalMask(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcSignalMask(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_5260ec", 0, 0, kEdx);
-    const reg32 signal = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::signalMask(app, cpu, signal); });
+    const reg32 signal = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::signalMask(app, cpu, signal); });
 }
 
 /* sub_526110: the exception handler's question: the handler of a signal that goes with this code. */
@@ -1871,19 +2046,18 @@ reg32 frontend::watc::signalForCode(App* app, CPU& cpu, reg32 signal, reg32 code
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 4);
-    cpu.edx = code;   // across sub_5260ec, which keeps it
     const reg32 mask = fe::direct<0x5260ec, signalMask>(app, cpu, signal);
     if (code != mask)
         return 0;
     return fe::direct<0x5260c8, signalHandler>(app, cpu, signal);
 }
 
-void frontend::watcSignalForCode(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcSignalForCode(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_526110", 0, 0, kEbx);
-    const reg32 signal = cpu.eax;
-    const reg32 code = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::signalForCode(app, cpu, signal, code); });
+    const reg32 signal = args.eax;
+    const reg32 code = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::signalForCode(app, cpu, signal, code); });
 }
 
 /* sub_52612c: the console control handler: Ctrl-C and Ctrl-Break as signals. */
@@ -1899,18 +2073,17 @@ reg32 frontend::watc::consoleControl(App* app, CPU& cpu, reg32 event)
     else
         return 0;
     const reg32 handler = fe::direct<0x5260c8, signalHandler>(app, cpu, signal);
-    guest.leaveEdx(handler);   // across sub_526338, which keeps it
     if (handler == 0)
         return 0;
     fe::direct<0x526338, raiseSignal>(app, cpu, signal);
     return handler == 2 || handler == 3 ? 0 : 1;
 }
 
-void frontend::watcConsoleControl(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcConsoleControl(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_52612c", 4, 0, 0);
     const reg32 event = app->getMemory<reg32>(cpu.esp + 4);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::consoleControl(app, cpu, event); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::consoleControl(app, cpu, event); });
 }
 
 /* sub_526194: whether the console handler is wanted: not when both signals are ignored or default. */
@@ -1919,17 +2092,16 @@ reg32 frontend::watc::consoleWanted(App* app, CPU& cpu)
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 4);
     const reg32 first = fe::direct<0x5260c8, signalHandler>(app, cpu, 4);
-    guest.leaveEdx(first);   // across the second, which keeps it
     const reg32 second = fe::direct<0x5260c8, signalHandler>(app, cpu, 7);
     if ((first == 2 || first == 3) && (second == 2 || second == 3))
         return 0;
     return 1;
 }
 
-void frontend::watcConsoleWanted(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcConsoleWanted(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_526194", 0, 0, kEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::consoleWanted(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::consoleWanted(app, cpu); });
 }
 
 /* sub_5261fc: the console handler taken off: 1 when it is. */
@@ -1944,10 +2116,10 @@ reg32 frontend::watc::consoleUnhook(App* app, CPU& cpu)
     return guest.byte(kHooked) == 0 ? 1 : 0;
 }
 
-void frontend::watcConsoleUnhook(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcConsoleUnhook(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_5261fc", 0, 0, kEcx | kEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::consoleUnhook(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::consoleUnhook(app, cpu); });
 }
 
 /* sub_526244: the floating-point signal raised with its code, the handler reset first. */
@@ -1958,17 +2130,16 @@ reg32 frontend::watc::raiseFp(App* app, CPU& cpu, reg32 code)
     const reg32 handler = fe::direct<0x5260c8, signalHandler>(app, cpu, 2);
     if (handler == 1 || handler == 2 || handler == 3)
         return 0xffffffff;
-    cpu.ecx = handler;   // across sub_526080, which keeps it
     fe::direct<0x526080, setSignalHandler>(app, cpu, 2, 2);
-    guest.call(cpu.ecx, args({ 2, code }));
+    fe::pointerCall(guest, handler, args({ 2, code }));  // the handler, through its pointer: the signal, the code
     return 0;
 }
 
-void frontend::watcRaiseFp(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcRaiseFp(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_526244", 0, 0, kEbx | kEcx | kEdx);
-    const reg32 code = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::raiseFp(app, cpu, code); });
+    const reg32 code = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::raiseFp(app, cpu, code); });
 }
 
 /* sub_526338: raise. */
@@ -1977,7 +2148,6 @@ reg32 frontend::watc::raiseSignal(App* app, CPU& cpu, reg32 signal)
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 12);
     const reg32 handler = fe::direct<0x5260c8, signalHandler>(app, cpu, signal);
-    cpu.ecx = handler;   // across what follows, which keeps it
     if (signal - 1 > 0xb)
         return 0xffffffff;
     if (signal == 2)
@@ -1987,46 +2157,47 @@ reg32 frontend::watc::raiseSignal(App* app, CPU& cpu, reg32 signal)
     }
     if (signal == 1 && handler == 2)
         fe::direct<0x52c878, abnormalTermination>(app, cpu);
-    const reg32 current = cpu.ecx;
-    if (current != 1 && current != 2 && current != 3)
+    if (handler != 1 && handler != 2 && handler != 3)
     {
-        guest.leaveEdx(2);   // the new handler in edx, as the game's code loads it: on to the handler's call
         fe::direct<0x526080, setSignalHandler>(app, cpu, signal, 2);
-        guest.call(cpu.ecx, args({ signal }));
+        // The handler, through its pointer: the signal, and in edx the new handler, as the game's
+        // code loads it for sub_526080.
+        fe::pointerCall(guest, handler, args({ signal, 2 }));
     }
     if (fe::direct<0x526194, consoleWanted>(app, cpu) == 0)
         fe::direct<0x5261fc, consoleUnhook>(app, cpu);
     return 0;
 }
 
-void frontend::watcRaise(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcRaise(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_526338", 0, 0, kEbx | kEcx | kEdx);
-    const reg32 signal = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::raiseSignal(app, cpu, signal); });
+    const reg32 signal = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::raiseSignal(app, cpu, signal); });
 }
 
 /* sub_5263a8: a new thread's handlers, copied from the process's, and the exception handler's
- * hooks set. */
-reg32 frontend::watc::initThreadSignals(App* app, CPU& cpu)
+ * hooks set; `ds`, which its code leaves in eax. */
+reg32 frontend::watc::initThreadSignals(App* app, CPU& cpu, reg32 ds)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 20);
     for (reg32 offset = 8; offset != 0x68; offset += 8)
     {
-        const reg32 data = guest.call(guest.dword(kThreadDataGetter));
+        const reg32 data = fe::pointerCall(guest, guest.dword(kThreadDataGetter));
         guest.setDword(data + offset + 0x58, guest.dword(kBreakHandlers + offset));
         guest.setDword(data + offset + 0x5c, guest.dword(kBreakHandlers + offset + 4));
     }
     guest.setDword(0x56acd4, 0x526110);
     guest.setDword(0x56acd8, 0x526338);
-    return cpu.ds;
+    return ds;
 }
 
-void frontend::watcInitThreadSignals(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcInitThreadSignals(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_5263a8", 0, 0, kEbx | kEdx | kEsi | kEdi);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::initThreadSignals(app, cpu); });
+    const reg32 ds = 0;  // the flat model's data selector, as the port's thread starts with it
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::initThreadSignals(app, cpu, ds); });
 }
 
 /* sub_5263f0: a thread's end: the console signals back to default, when it was wanted. */
@@ -2045,29 +2216,30 @@ reg32 frontend::watc::finiThreadSignals(App* app, CPU& cpu)
     return left;
 }
 
-void frontend::watcFiniThreadSignals(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcFiniThreadSignals(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_5263f0", 0, 0, kEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::finiThreadSignals(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::finiThreadSignals(app, cpu); });
 }
 
-/* sub_526420: the two above hooked. */
-reg32 frontend::watc::hookThreadSignals(App* app, CPU& cpu)
+/* sub_526420: the two above hooked; `eax` as it came, which it leaves. */
+reg32 frontend::watc::hookThreadSignals(App* app, CPU& cpu, reg32 eax)
 {
     Guest guest(app, cpu);
     guest.setDword(kThreadOnStart, 0x5263a8);
     guest.setDword(kThreadOnEnd, 0x5263f0);
-    return guest.eax();
+    return eax;
 }
 
-void frontend::watcHookThreadSignals(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcHookThreadSignals(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_526420", 0, 0, kEbx | kEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::hookThreadSignals(app, cpu); });
+    const reg32 eax = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::hookThreadSignals(app, cpu, eax); });
 }
 
 /* sub_52b523: pow's bad cases: the error reported, or 0 where the answer is 0 with no error; the
- * answer, which its adapter leaves on the x87's stack as the code does. */
+ * answer, which its thunk leaves on the x87's stack as the code does. */
 double frontend::watc::powError(App* app, CPU& cpu, reg32 arguments)
 {
     Guest guest(app, cpu);
@@ -2093,21 +2265,20 @@ double frontend::watc::powError(App* app, CPU& cpu, reg32 arguments)
     }
     double answer = 0.0;
     if (code != 0)
-    {
-        // The runtime's error report (native_watcom.cpp's) by address: its answer off the x87's stack.
-        guest.call(0x5243b1, args({ code, x, y }));
-        answer = double(guest.fpu().pop());
-    }
+        // The runtime's error report (native_watcom.cpp's): its answer, which its code leaves on the
+        // x87's stack.
+        answer = fe::direct<0x5243b1, watcom::clib::reportError>(app, cpu, code, x, y);
     return answer;
 }
 
-void frontend::watcPowError(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcPowError(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_52b523", 0x14, 0, kEbx | kEcx | kEdx);
     const reg32 arguments = cpu.esp + 4;
-    fe::runWhole(app, cpu, site, [&](Guest&) {
-        const reg32 eax = cpu.eax;  // as it came
-        cpu.fpu.push(x86::Float(watc::powError(app, cpu, arguments)));
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
+        const reg32 eax = args.eax;  // as it came
+        args.floatSet = true;
+        args.floatResult = x86::Float(watc::powError(app, cpu, arguments));
         return eax;
     });
 }
@@ -2121,33 +2292,27 @@ reg32 frontend::watc::setRectClip(App* app, CPU& cpu, reg32 rect, reg32 leftAske
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 8);
-    cpu.edx = leftAsked;
-    cpu.ebx = topAsked;
-    cpu.ecx = rightAsked;
     const auto held = [](reg32 value, reg32 most) {
         const reg32 positive = s(value) < 0 ? 0 : value;
         return s(positive) > s(most) ? most : positive;
     };
     const reg32 wide = guest.dword(rect + 4), high = guest.dword(rect + 8);
-    const reg32 left = held(cpu.edx, wide), right = held(cpu.ecx, wide);
-    const reg32 top = held(cpu.ebx, high), bottom = held(bottomAsked, high);
+    const reg32 left = held(leftAsked, wide), right = held(rightAsked, wide);
+    const reg32 top = held(topAsked, high), bottom = held(bottomAsked, high);
     guest.setDword(rect + 0x14, right);
     guest.setDword(rect + 0x10, top);
     guest.setDword(rect + 0x18, bottom);
     guest.setDword(rect + 0xc, left);
-    guest.leaveEdx(left);
-    guest.leaveEbx(top);
-    guest.leaveEcx(right);
     return rect;
 }
 
-void frontend::watcSetRectClip(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcSetRectClip(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_52b6c0", 4, 0, kEsi | kEdi);
-    const reg32 rect = cpu.eax;
-    const reg32 leftAsked = cpu.edx, topAsked = cpu.ebx, rightAsked = cpu.ecx;
+    const reg32 rect = args.eax;
+    const reg32 leftAsked = args.edx, topAsked = args.ebx, rightAsked = args.ecx;
     const reg32 bottomAsked = app->getMemory<reg32>(cpu.esp + 4);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::setRectClip(app, cpu, rect, leftAsked, topAsked, rightAsked, bottomAsked); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::setRectClip(app, cpu, rect, leftAsked, topAsked, rightAsked, bottomAsked); });
 }
 
 /* sub_52b720: a box's outline, its corners in any order, as four filled rects. */
@@ -2167,15 +2332,15 @@ reg32 frontend::watc::drawBox(App* app, CPU& cpu, reg32 left, reg32 top, reg32 r
     return fe::direct<0x4fd540, watb::drawFilledRect>(app, cpu, left, bottom, wide, 1, colour);
 }
 
-void frontend::watcDrawBox(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcDrawBox(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_52b720", 4, 0, kEsi | kEdi);
-    const reg32 left = cpu.eax;
-    const reg32 top = cpu.edx;
-    const reg32 right = cpu.ebx;
-    const reg32 bottom = cpu.ecx;
+    const reg32 left = args.eax;
+    const reg32 top = args.edx;
+    const reg32 right = args.ebx;
+    const reg32 bottom = args.ecx;
     const reg32 colour = app->getMemory<reg32>(cpu.esp + 4);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::drawBox(app, cpu, left, top, right, bottom, colour); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::drawBox(app, cpu, left, top, right, bottom, colour); });
 }
 
 /* sub_52b860: a line of text centred, the pen put back. */
@@ -2189,18 +2354,17 @@ reg32 frontend::watc::textCentred(App* app, CPU& cpu, reg32 text, reg32 y)
     const reg32 x = reg32(s(room) / 2);
     const reg32 penX = guest.dword(kPenX), penY = guest.dword(kPenY);
     guest::direct<0x4f0850, wata::textSetPen>(app, cpu, x, y);
-    guest.leaveEdx(y);   // as the call by address left it, on to sub_4efb50
     const reg32 result = fe::direct<0x4efb50, eab::textDrawAtPen>(app, cpu, text);
     guest.setDword(kPenX, penX);
     guest.setDword(kPenY, penY);
     return result;
 }
 
-void frontend::watcTextCentred(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcTextCentred(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_52b860", 0, 0, kEbx | kEcx | kEsi | kEdi);
-    const reg32 text = cpu.eax, y = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::textCentred(app, cpu, text, y); });
+    const reg32 text = args.eax, y = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::textCentred(app, cpu, text, y); });
 }
 
 /* sub_52b8b0: a rect's clip to all of it. */
@@ -2211,72 +2375,69 @@ reg32 frontend::watc::clipWholeRect(App* app, CPU& cpu, reg32 rect)
     return fe::direct<0x52b6c0, setRectClip>(app, cpu, rect, 0, 0, guest.dword(rect + 4), guest.dword(rect + 8));
 }
 
-void frontend::watcClipWholeRect(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcClipWholeRect(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_52b8b0", 0, 0, kEbx | kEcx | kEdx);
-    const reg32 rect = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::clipWholeRect(app, cpu, rect); });
+    const reg32 rect = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::clipWholeRect(app, cpu, rect); });
 }
 
 /* sub_52b8d0, sub_52bb20: the memory viewer on the two drivers' tables. */
 reg32 frontend::watc::viewerOnWindow(App* app, CPU& cpu)
 {
-    cpu.eax = 0x56b170;
-    tail(app, cpu, 0x497620);
-    return cpu.eax;
+    return jumpTo<0x497620, eaa::memViewerRun>(app, cpu, 0x56b170u);
 }
 
-void frontend::watcViewerOnWindow(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcViewerOnWindow(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    watc::viewerOnWindow(app, cpu);
+    const reg32 result = watc::viewerOnWindow(app, cpu);
+    if (!cpu.terminate)
+        args.eax = result, cpu.esp += 4;
+    return args.eax;
 }
 
 reg32 frontend::watc::viewerOnMono(App* app, CPU& cpu)
 {
-    cpu.eax = 0x56b198;
-    tail(app, cpu, 0x497620);
-    return cpu.eax;
+    return jumpTo<0x497620, eaa::memViewerRun>(app, cpu, 0x56b198u);
 }
 
-void frontend::watcViewerOnMono(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcViewerOnMono(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    watc::viewerOnMono(app, cpu);
+    const reg32 result = watc::viewerOnMono(app, cpu);
+    if (!cpu.terminate)
+        args.eax = result, cpu.esp += 4;
+    return args.eax;
 }
 
-/* sub_52b8e0: the debug window's start. */
+/* sub_52b8e0: the debug window's start: sub_4ead20, then the jump to the text's start. */
 reg32 frontend::watc::windowStart(App* app, CPU& cpu)
 {
-    // sub_4ead20 called as C++ (a stop in it thrown, as its core's calls throw), what it gives back
-    // in eax on to the jump.
-    try
-    {
-        cpu.eax = guest::direct<0x4ead20, wata::windowApply>(app, cpu);
-    }
-    catch (const fe::Terminated&)
-    {
-        return cpu.eax;
-    }
+    callTo<0x4ead20, wata::windowApply>(app, cpu);
     if (cpu.terminate)
-        return cpu.eax;
-    tail(app, cpu, kTextStart);
-    return cpu.eax;
+        return 0;
+    return jumpTo<kTextStart, wina::textStart>(app, cpu);
 }
 
-void frontend::watcWindowStart(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcWindowStart(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    watc::windowStart(app, cpu);
+    const reg32 result = watc::windowStart(app, cpu);
+    if (!cpu.terminate)
+        args.eax = result, cpu.esp += 4;
+    return args.eax;
 }
 
 /* sub_52b8f0: and its end. */
 reg32 frontend::watc::windowEnd(App* app, CPU& cpu)
 {
-    tail(app, cpu, kBitmapToScreen);
-    return cpu.eax;
+    return jumpTo<kBitmapToScreen, eaa::bitmapDrawToScreen>(app, cpu);
 }
 
-void frontend::watcWindowEnd(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcWindowEnd(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    watc::windowEnd(app, cpu);
+    const reg32 result = watc::windowEnd(app, cpu);
+    if (!cpu.terminate)
+        args.eax = result, cpu.esp += 4;
+    return args.eax;
 }
 
 /* sub_52b910: the window driver's sizes: 0 and 1 in characters of 8 pixels, 2 and 3 in pixels. */
@@ -2298,11 +2459,11 @@ reg32 frontend::watc::windowSize(App* app, CPU& cpu, reg32 which)
     }
 }
 
-void frontend::watcWindowSize(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcWindowSize(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_52b910", 0, 0, kEdx);
-    const reg32 which = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::windowSize(app, cpu, which); });
+    const reg32 which = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::windowSize(app, cpu, which); });
 }
 
 /* sub_52b970: a line printed at a character cell. */
@@ -2319,24 +2480,27 @@ reg32 frontend::watc::printAtCell(App* app, CPU& cpu, reg32 arguments)
     return result;
 }
 
-void frontend::watcPrintAtCell(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcPrintAtCell(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_52b970", 0, 0, kEbx | kEcx | kEdx | kEsi);
     const reg32 arguments = cpu.esp + 4;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::printAtCell(app, cpu, arguments); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::printAtCell(app, cpu, arguments); });
 }
 
-/* sub_52b9d0: the driver's hook that does nothing. */
+/* sub_52b9d0: the driver's hook that does nothing -- eax as it was, which its thunk leaves; 0 back
+ * to a caller as C++. */
 reg32 frontend::watc::nothing52b9d0(App* app, CPU& cpu)
 {
     (void)app;
-    return cpu.eax;
+    (void)cpu;
+    return 0;
 }
 
-void frontend::watcNothing52b9d0(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcNothing52b9d0(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     watc::nothing52b9d0(app, cpu);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* sub_52b9e0: a shape drawn on black. */
@@ -2344,23 +2508,18 @@ reg32 frontend::watc::blitOnBlack(App* app, CPU& cpu, reg32 shape, reg32 x, reg3
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 4);
-    cpu.ebx = x;
-    cpu.ecx = y;
-    guest.leaveEdx(cpu.ebx);
     const reg32 black = fe::direct<0x4ef760, eab::colourPack>(app, cpu, 0xff000000);
     fe::direct<0x4ef1b0, eab::drawClearClip>(app, cpu, black);   // the colour as it came back in eax
-    guest.leaveEbx(cpu.ecx);
-    cpu.eax = shape;   // the blitter's, with edx and ebx
-    return fe::direct<0x4f09c0, wata::blitDispatch>(app, cpu);
+    return fe::direct<0x4f09c0, wata::blitDispatchAt>(app, cpu, shape, x, y);
 }
 
-void frontend::watcBlitOnBlack(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcBlitOnBlack(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_52b9e0", 0, 0, kEsi);
-    const reg32 shape = cpu.eax;
-    const reg32 x = cpu.ebx;
-    const reg32 y = cpu.ecx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::blitOnBlack(app, cpu, shape, x, y); });
+    const reg32 shape = args.eax;
+    const reg32 x = args.ebx;
+    const reg32 y = args.ecx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::blitOnBlack(app, cpu, shape, x, y); });
 }
 
 /* sub_52ba00: the text's colours by the debug screen's numbers. */
@@ -2368,18 +2527,17 @@ reg32 frontend::watc::setTextColours(App* app, CPU& cpu, reg32 ink, reg32 paper)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 4);
-    cpu.edx = paper;   // across the first, which keeps it
     const reg32 inkColour = fe::direct<0x52ba70, debugColour>(app, cpu, ink);
     const reg32 paperColour = fe::direct<0x52ba70, debugColour>(app, cpu, paper);
     return fe::direct<0x4ef830, eab::fontSetColours>(app, cpu, inkColour, paperColour);
 }
 
-void frontend::watcSetTextColours(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcSetTextColours(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_52ba00", 0, 0, kEcx);
-    const reg32 ink = cpu.eax;
-    const reg32 paper = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::setTextColours(app, cpu, ink, paper); });
+    const reg32 ink = args.eax;
+    const reg32 paper = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::setTextColours(app, cpu, ink, paper); });
 }
 
 /* sub_52ba70: a debug-screen colour, one of the CGA's by its number, in the window's format. */
@@ -2389,15 +2547,15 @@ reg32 frontend::watc::debugColour(App* app, CPU& cpu, reg32 colour)
         0xff00aaaa, 0xff000000, 0xffffffff, 0xff0000aa, 0xff000000, 0xffffffff, 0xff00aaaa, 0xffffffff, 0xff000000, 0xffaa0000,
         0xffffffff, 0xffaa0000, 0xffffff50, 0xffffffff, 0xff0000aa, 0xffaa0000, 0xffffffff, 0xffffffff, 0xffaa0000,
     };
-    cpu.eax = colour > 0x12 ? 0xff00aaaa : kColours[colour];
-    tail(app, cpu, kRgbToColour);
-    return cpu.eax;
+    return jumpTo<kRgbToColour, eab::colourPack>(app, cpu, colour > 0x12 ? 0xff00aaaa : kColours[colour]);
 }
 
-void frontend::watcDebugColour(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcDebugColour(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const reg32 colour = cpu.eax;
-    watc::debugColour(app, cpu, colour);
+    const reg32 result = watc::debugColour(app, cpu, args.eax);
+    if (!cpu.terminate)
+        args.eax = result, cpu.esp += 4;
+    return args.eax;
 }
 
 namespace
@@ -2408,9 +2566,8 @@ reg32 keyWaitedFor(Guest& guest, x86::CPU& cpu)
 {
     fe::direct<0x4f00f0, frontend::eab::keySetHookFlag>(guest.app(), cpu, 0x4f00e0);
     reg32 key;
-    // By address: the ebx and ecx it leaves are left at the end.
     do
-        key = guest.call(0x4f0120);
+        key = fe::direct<0x4f0120, ea::waitKey>(guest.app(), cpu).value_or(0);
     while (key == 0);
     return s(key) >= 0x61 && s(key) <= 0x7a ? key - 0x20 : key;
 }
@@ -2424,10 +2581,10 @@ reg32 frontend::watc::windowWaitKey(App* app, CPU& cpu)
     return keyWaitedFor(guest, cpu);
 }
 
-void frontend::watcWaitKey(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcWaitKey(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_52bac0", 0, 0, kEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::windowWaitKey(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::windowWaitKey(app, cpu); });
 }
 
 /* sub_52baf0: a filled box in character cells, in a debug colour. */
@@ -2435,23 +2592,19 @@ reg32 frontend::watc::fillCells(App* app, CPU& cpu, reg32 left, reg32 top, reg32
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 4);
-    cpu.edx = top;
-    cpu.ebx = wide;
-    cpu.ecx = high;
-    // The cell's place and size kept across it, read after it.
     const reg32 shown = fe::direct<0x52ba70, debugColour>(app, cpu, colour);
-    return fe::direct<0x4fd540, watb::drawFilledRect>(app, cpu, left << 3, cpu.edx << 3, cpu.ebx << 3, cpu.ecx << 3, shown);
+    return fe::direct<0x4fd540, watb::drawFilledRect>(app, cpu, left << 3, top << 3, wide << 3, high << 3, shown);
 }
 
-void frontend::watcFillCells(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcFillCells(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_52baf0", 4, 0, kEsi);
-    const reg32 left = cpu.eax;
-    const reg32 top = cpu.edx;
-    const reg32 wide = cpu.ebx;
-    const reg32 high = cpu.ecx;
+    const reg32 left = args.eax;
+    const reg32 top = args.edx;
+    const reg32 wide = args.ebx;
+    const reg32 high = args.ecx;
     const reg32 colour = app->getMemory<reg32>(cpu.esp + 4);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::fillCells(app, cpu, left, top, wide, high, colour); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::fillCells(app, cpu, left, top, wide, high, colour); });
 }
 
 /* sub_52bb50: the mono driver's sizes. */
@@ -2468,23 +2621,26 @@ reg32 frontend::watc::monoSize(App* app, CPU& cpu, reg32 which)
     }
 }
 
-void frontend::watcMonoSize(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcMonoSize(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_52bb50", 0, 0, 0);
-    const reg32 which = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::monoSize(app, cpu, which); });
+    const reg32 which = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::monoSize(app, cpu, which); });
 }
 
-/* sub_52bb80: the mono screen cleared. */
-reg32 frontend::watc::monoClearJump(App* app, CPU& cpu)
+/* sub_52bb80: the mono screen cleared, by sub_4e0ca0 -- `eax` on to it, as it came, which it reads
+ * (by address: native_ea_support.cpp has no typed core of it). */
+reg32 frontend::watc::monoClearJump(App* app, CPU& cpu, reg32 eax)
 {
-    tail(app, cpu, 0x4e0ca0);
-    return cpu.eax;
+    return jumpByAddress(app, cpu, 0x4e0ca0, args({ eax }));
 }
 
-void frontend::watcMonoClearJump(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcMonoClearJump(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    watc::monoClearJump(app, cpu);
+    const reg32 result = watc::monoClearJump(app, cpu, args.eax);
+    if (!cpu.terminate)
+        args.eax = result, cpu.esp += 4;
+    return args.eax;
 }
 
 /* sub_52bb90: a shape centred on the cleared screen, on black. */
@@ -2498,39 +2654,39 @@ reg32 frontend::watc::showCentred(App* app, CPU& cpu, reg32 shape)
     const reg32 roomX = guest::direct<0x52bb50, monoSize>(app, cpu, 2);
     const reg32 shapeHigh = sar(guest.dword(shape + 4), 16);
     const reg32 roomY = guest::direct<0x52bb50, monoSize>(app, cpu, 3);
-    guest.leaveEdx(sar(roomX - shapeWide, 1));
-    guest.leaveEbx(sar(roomY - shapeHigh, 1));
+    const reg32 x = sar(roomX - shapeWide, 1), y = sar(roomY - shapeHigh, 1);
     const reg32 black = fe::direct<0x4ef760, eab::colourPack>(app, cpu, 0xff000000);
     // The colour as it came back in eax; what that gives back in eax on to sub_4e0ca0, which reads it.
-    cpu.eax = fe::direct<0x4ef1b0, eab::drawClearClip>(app, cpu, black);
-    guest.call(0x4e0ca0);
-    cpu.eax = shape;   // the blitter's, with edx and ebx
-    fe::direct<0x4f09c0, wata::blitDispatch>(app, cpu);
+    const reg32 cleared = fe::direct<0x4ef1b0, eab::drawClearClip>(app, cpu, black);
+    fe::direct<0x4e0ca0, ea::monoCleared>(app, cpu, cleared);
+    fe::direct<0x4f09c0, wata::blitDispatchAt>(app, cpu, shape, x, y);
     return fe::direct<0x4ead90, eaa::bitmapDrawToScreen>(app, cpu);
 }
 
-void frontend::watcShowCentred(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcShowCentred(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_52bb90", 0, 0, kEsi);
-    const reg32 shape = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::showCentred(app, cpu, shape); });
+    const reg32 shape = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::showCentred(app, cpu, shape); });
 }
 
 /* sub_52bbf0: the mono screen's attribute, from a debug colour. */
 reg32 frontend::watc::monoAttribute(App* app, CPU& cpu, reg32 colour)
 {
-    // sub_52bd00 called as C++, what it gives back in eax on to the jump.
-    cpu.eax = guest::direct<0x52bd00, monoAttributeOf>(app, cpu, colour);
+    // sub_52bd00 called as C++, what it gives back in eax on to the jump to sub_4e0d50 (by address:
+    // native_ea_support.cpp has no typed core of it).
+    const reg32 attribute = guest::direct<0x52bd00, monoAttributeOf>(app, cpu, colour);
     if (cpu.terminate)
-        return cpu.eax;
-    tail(app, cpu, 0x4e0d50);
-    return cpu.eax;
+        return 0;
+    return jumpByAddress(app, cpu, 0x4e0d50, args({ attribute }));
 }
 
-void frontend::watcMonoAttribute(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcMonoAttribute(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const reg32 colour = cpu.eax;
-    watc::monoAttribute(app, cpu, colour);
+    const reg32 result = watc::monoAttribute(app, cpu, args.eax);
+    if (!cpu.terminate)
+        args.eax = result, cpu.esp += 4;
+    return args.eax;
 }
 
 /* sub_52bc00: a line printed through a window's text at a character cell. */
@@ -2542,12 +2698,10 @@ reg32 frontend::watc::printInWindow(App* app, CPU& cpu, reg32 arguments)
     const reg32 x = guest.dword(arguments) << 3, y = guest.dword(arguments + 4) << 3;
     if (guest.dword(0x567294) == 0x50b580)
     {
-        const reg32 edi = cpu.edi;
         guest.setDword(kErrorFile, 0x552050);
         guest.setDword(kErrorFunction, 0x552060);
         guest.setDword(kErrorLine, 0x72);
         fe::direct<kError, ea::error>(guest.app(), guest.cpu(), 0x552074, guest::Words({}));
-        cpu.edi = edi;
     }
     guest.setDword(buffer + 0x100, arguments + 12);
     fe::direct<kVsprintf, watcom::clib::vsprintf>(guest.app(), guest.cpu(), buffer, guest.dword(arguments + 8), buffer + 0x100);
@@ -2558,11 +2712,11 @@ reg32 frontend::watc::printInWindow(App* app, CPU& cpu, reg32 arguments)
     return fe::direct<0x4ead90, eaa::bitmapDrawToScreen>(app, cpu);
 }
 
-void frontend::watcPrintInWindow(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcPrintInWindow(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_52bc00", 0, 0, kEbx | kEcx | kEdx | kEsi);
     const reg32 arguments = cpu.esp + 4;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::printInWindow(app, cpu, arguments); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::printInWindow(app, cpu, arguments); });
 }
 
 /* sub_52bd00: a debug colour's mono attribute. */
@@ -2572,11 +2726,11 @@ reg32 frontend::watc::monoAttributeOf(App* app, CPU& cpu, reg32 colour)
     return colour <= 0x12 && kBright[colour] != 0 ? 0x70 : 7;
 }
 
-void frontend::watcMonoAttributeOf(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcMonoAttributeOf(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_52bd00", 0, 0, 0);
-    const reg32 colour = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::monoAttributeOf(app, cpu, colour); });
+    const reg32 colour = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::monoAttributeOf(app, cpu, colour); });
 }
 
 /* sub_52bd20: the mono driver's key: as the window's. */
@@ -2587,10 +2741,10 @@ reg32 frontend::watc::monoWaitKey(App* app, CPU& cpu)
     return keyWaitedFor(guest, cpu);
 }
 
-void frontend::watcMonoWaitKey(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcMonoWaitKey(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_52bd20", 0, 0, kEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::monoWaitKey(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::monoWaitKey(app, cpu); });
 }
 
 /* sub_52bd50: a box of spaces on the mono screen. */
@@ -2599,45 +2753,39 @@ reg32 frontend::watc::monoFill(App* app, CPU& cpu, reg32 left, reg32 top, reg32 
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 24);
     constexpr reg32 kSpace = 0x5520b4;
-    // What it reads of ebx after the call, kept by it.
-    cpu.ebx = wide;
-    cpu.ecx = top;
     const reg32 bottom = high + top;
-    // The colour handed in edx too, as the game's code does; what it gives back left in eax.
-    guest.leaveEdx(colour);
-    cpu.eax = fe::direct<0x52bbf0, monoAttribute>(app, cpu, colour);
-    reg32 row = cpu.ecx;
+    // What each call gives back in eax: on to the next, in eax as the code has it, and what this one
+    // leaves there.
+    reg32 eax = fe::direct<0x52bbf0, monoAttribute>(app, cpu, colour);
+    reg32 row = top;
     if (s(bottom) > s(row))
     {
-        const reg32 count = cpu.ebx;
+        const reg32 count = wide;
         do
         {
             if (s(wide) > 0)
             {
                 const reg32 right = left + count;
-                cpu.eax = count;
-                guest.leaveEbx(right);
+                eax = count;
                 reg32 column = left;
                 do
                 {
-                    guest.call(0x4e0980, args({}, { column, row, kSpace }));
+                    eax = fe::direct<0x4e0980, ea::monoPrintedAt>(app, cpu, eax, column, row, kSpace, guest::Words({})).value_or(0);
                     ++column;
-                    guest.leaveEdx(column);
                 } while (s(column) < s(right));
             }
             ++row;
-            guest.leaveEcx(row);
         } while (s(row) < s(bottom));
     }
-    return guest.eax();
+    return eax;
 }
 
-void frontend::watcMonoFill(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcMonoFill(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_52bd50", 4, 0, kEsi | kEdi);
-    const reg32 left = cpu.eax, top = cpu.edx, wide = cpu.ebx, high = cpu.ecx;
+    const reg32 left = args.eax, top = args.edx, wide = args.ebx, high = args.ecx;
     const reg32 colour = app->getMemory<reg32>(cpu.esp + 4);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::monoFill(app, cpu, left, top, wide, high, colour); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::monoFill(app, cpu, left, top, wide, high, colour); });
 }
 
 // ---------------------------------------------------------------------------
@@ -2681,15 +2829,15 @@ reg32 frontend::watc::inheritHandles(App* app, CPU& cpu)
         guest.setDword(buffer + 0xc, field(':'));
         const reg32 mode = field('*');
         guest::direct<0x51e388, setOsHandle>(app, cpu, guest.dword(buffer + 0xc), handle);
-        guest.call(0x522e38, args({ handle, mode }));
+        fe::direct<0x522e38, watcom::clib::setIOMode>(app, cpu, handle, mode);
     }
     return guest::direct<0x52e6d0, putEnvironment>(app, cpu, 0x5520c4);
 }
 
-void frontend::watcInheritHandles(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcInheritHandles(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_52bdb0", 0, 0, kEbx | kEcx | kEdx | kEsi | kEdi);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::inheritHandles(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::inheritHandles(app, cpu); });
 }
 
 /* sub_52bed0: environ's own strings freed and its list emptied. */
@@ -2723,10 +2871,10 @@ reg32 frontend::watc::clearEnviron(App* app, CPU& cpu)
     return 0;
 }
 
-void frontend::watcClearEnviron(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcClearEnviron(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_52bed0", 0, 0, kEbx | kEcx | kEdx | kEsi);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::clearEnviron(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::clearEnviron(app, cpu); });
 }
 
 /* sub_52c810: 0. */
@@ -2735,48 +2883,52 @@ reg32 frontend::watc::returnZero52c810(App* app, CPU& cpu)
     return 0;
 }
 
-void frontend::watcReturnZero52c810(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcReturnZero52c810(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_52c810", 0, 0, 0);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::returnZero52c810(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::returnZero52c810(app, cpu); });
 }
 
 /* sub_52c81c, sub_52c824, sub_52ed20: calls through the hooks of the thread start and end, and the
  * math error. */
-reg32 frontend::watc::threadEndHook(App* app, CPU& cpu)
+/* Each hook is handed eax as its caller has it, on through these. */
+reg32 frontend::watc::threadEndHook(App* app, CPU& cpu, reg32 eax)
 {
     Guest guest(app, cpu);
-    return guest.call(guest.dword(0x56b1c4));
+    return fe::pointerCall(guest, guest.dword(0x56b1c4), args({ eax }));
 }
 
-void frontend::watcThreadEndHook(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcThreadEndHook(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_52c81c", 0, 0, 0);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::threadEndHook(app, cpu); });
+    const reg32 eax = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::threadEndHook(app, cpu, eax); });
 }
 
-reg32 frontend::watc::threadStartHook(App* app, CPU& cpu)
+reg32 frontend::watc::threadStartHook(App* app, CPU& cpu, reg32 eax)
 {
     Guest guest(app, cpu);
-    return guest.call(guest.dword(0x56b1c8));
+    return fe::pointerCall(guest, guest.dword(0x56b1c8), args({ eax }));
 }
 
-void frontend::watcThreadStartHook(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcThreadStartHook(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_52c824", 0, 0, 0);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::threadStartHook(app, cpu); });
+    const reg32 eax = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::threadStartHook(app, cpu, eax); });
 }
 
-reg32 frontend::watc::mathErrorHook(App* app, CPU& cpu)
+reg32 frontend::watc::mathErrorHook(App* app, CPU& cpu, reg32 eax)
 {
     Guest guest(app, cpu);
-    return guest.call(guest.dword(0x567853));
+    return fe::pointerCall(guest, guest.dword(0x567853), args({ eax }));
 }
 
-void frontend::watcMathErrorHook(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcMathErrorHook(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_52ed20", 0, 0, 0);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::mathErrorHook(app, cpu); });
+    const reg32 eax = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::mathErrorHook(app, cpu, eax); });
 }
 
 /* sub_52c878: abort's report. */
@@ -2784,74 +2936,86 @@ reg32 frontend::watc::abnormalTermination(App* app, CPU& cpu)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 4);
-    return guest.call(kFatalError, args({ 0x5520d4, 0xff }));
+    return fe::direct<kFatalError, watcom::clib::fatalRuntimeError>(app, cpu, 0x5520d4u, 0xffu);
 }
 
-void frontend::watcAbnormalTermination(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcAbnormalTermination(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_52c878", 0, 0, kEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::abnormalTermination(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::abnormalTermination(app, cpu); });
 }
 
-/* sub_52c88a: a double's 0 in edx:eax. */
-reg32 frontend::watc::doubleZero(App* app, CPU& cpu)
+/* sub_52c88a: a double's 0, in edx:eax: high and low dwords. */
+std::uint64_t frontend::watc::doubleZero(App* app, CPU& cpu)
 {
-    Guest guest(app, cpu);
-    guest.leaveEdx(0);
+    (void)app;
+    (void)cpu;
     return 0;
 }
 
-void frontend::watcDoubleZero(win32::WinApplication* app, x86::CPU& cpu)
+/* The thunks of these: the double's low dword in eax, its high one left in edx. */
+x86::reg32 frontend::watcDoubleZero(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_52c88a", 0, 0, 0);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::doubleZero(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
+        const std::uint64_t d = watc::doubleZero(app, cpu);
+        args.edx = reg32(d >> 32);
+        return reg32(d);
+    });
 }
 
-/* sub_52c89b: the math error, and a double's infinity, in edx:eax, of the sign in what it returns. */
-reg32 frontend::watc::doubleInfinityHook(App* app, CPU& cpu)
+/* sub_52c89b: the math error (0x83 handed to its hook), and a double's infinity, in edx:eax, of the
+ * sign in what that gives back. */
+std::uint64_t frontend::watc::doubleInfinityHook(App* app, CPU& cpu)
 {
-    Guest guest(app, cpu);
-    cpu.eax = 0x83;   // on through it to the hook
-    const reg32 sign = fe::direct<0x52ed20, mathErrorHook>(app, cpu);
-    guest.leaveEdx((sign & 0x80000000) | 0x7ff00000);
-    return 0;
+    const reg32 sign = fe::direct<0x52ed20, mathErrorHook>(app, cpu, 0x83u);
+    return std::uint64_t((sign & 0x80000000) | 0x7ff00000) << 32;
 }
 
-void frontend::watcDoubleInfinityHook(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcDoubleInfinityHook(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_52c89b", 0, 0, 0);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::doubleInfinityHook(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
+        const std::uint64_t d = watc::doubleInfinityHook(app, cpu);
+        args.edx = reg32(d >> 32);
+        return reg32(d);
+    });
 }
 
-/* sub_52c8a7: errno's ERANGE, the math error, and a double's infinity of the sign in eax. */
-reg32 frontend::watc::doubleInfinity(App* app, CPU& cpu, reg32 sign)
+/* sub_52c8a7: errno's ERANGE, the math error (0x84 handed to its hook), and a double's infinity of
+ * the sign in eax, in edx:eax. */
+std::uint64_t frontend::watc::doubleInfinity(App* app, CPU& cpu, reg32 sign)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 4);
-    guest.call(0x5028a4);
-    cpu.eax = 0x84;   // on through it to the hook
-    fe::direct<0x52ed20, mathErrorHook>(app, cpu);
-    guest.leaveEdx((sign & 0x80000000) | 0x7ff00000);
-    return 0;
+    fe::direct<0x5028a4, watcom::clib::setERANGE>(app, cpu);
+    fe::direct<0x52ed20, mathErrorHook>(app, cpu, 0x84u);
+    return std::uint64_t((sign & 0x80000000) | 0x7ff00000) << 32;
 }
 
-void frontend::watcDoubleInfinity(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcDoubleInfinity(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_52c8a7", 0, 0, 0);
-    const reg32 sign = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::doubleInfinity(app, cpu, sign); });
+    const reg32 sign = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
+        const std::uint64_t d = watc::doubleInfinity(app, cpu, sign);
+        args.edx = reg32(d >> 32);
+        return reg32(d);
+    });
 }
 
 /* sub_52e3f8: the driver's hook, 0. */
 reg32 frontend::watc::zeroJump(App* app, CPU& cpu)
 {
-    tail(app, cpu, 0x52edfa);
-    return cpu.eax;
+    return jumpTo<0x52edfa, returnZero52edfa>(app, cpu);
 }
 
-void frontend::watcZeroJump(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcZeroJump(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    watc::zeroJump(app, cpu);
+    const reg32 result = watc::zeroJump(app, cpu);
+    if (!cpu.terminate)
+        args.eax = result, cpu.esp += 4;
+    return args.eax;
 }
 
 /* sub_52e4e0: a line of text at a position. */
@@ -2859,20 +3023,17 @@ reg32 frontend::watc::textAt(App* app, CPU& cpu, reg32 text, reg32 x, reg32 y)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 4);
-    cpu.edx = x;
-    cpu.ebx = y;
     guest::direct<0x4f0850, wata::textSetPen>(app, cpu, x, y);
-    guest.leaveEdx(y);   // as the call by address left it, on to sub_52e440
     return fe::direct<0x52e440, menz::textBackgroundBox>(app, cpu, text);
 }
 
-void frontend::watcTextAt(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcTextAt(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_52e4e0", 0, 0, kEcx);
-    const reg32 text = cpu.eax;
-    const reg32 x = cpu.edx;
-    const reg32 y = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::textAt(app, cpu, text, x, y); });
+    const reg32 text = args.eax;
+    const reg32 x = args.edx;
+    const reg32 y = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::textAt(app, cpu, text, x, y); });
 }
 
 /* sub_52e500: strtol and strtoul: ecx 1 for the signed. */
@@ -2880,9 +3041,7 @@ reg32 frontend::watc::stringToLong(App* app, CPU& cpu, reg32 text, reg32 end, re
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 28);
-    cpu.ebx = radix;
-    cpu.ecx = isSigned;
-    reg32 base = cpu.ebx;
+    reg32 base = radix;
     constexpr reg32 kCharacterClass = 0x564ef0, kOverflowLimits = 0x56b648;
     constexpr std::uint8_t kSpace = 2;
     constexpr reg32 kEinval = 0xd, kErange = 0xe;
@@ -2892,7 +3051,6 @@ reg32 frontend::watc::stringToLong(App* app, CPU& cpu, reg32 text, reg32 end, re
     while ((guest.byte(kCharacterClass + std::uint8_t(guest.byte(at) + 1)) & kSpace) != 0)
         ++at;
     const std::uint8_t sign = guest.byte(at);
-    reg32 ecx = (cpu.ecx & 0xffff00ff) | (reg32(sign) << 8);
     if (sign == '+' || sign == '-')
         ++at;
     const auto hasHexPrefix = [&] {
@@ -2903,8 +3061,6 @@ reg32 frontend::watc::stringToLong(App* app, CPU& cpu, reg32 text, reg32 end, re
     };
     if (base == 0)
     {
-        if (guest.byte(at) == '0')
-            ecx = (ecx & 0xffffff00) | guest.byte(at + 1);
         if (hasHexPrefix())
         {
             base = 0x10;
@@ -2915,9 +3071,7 @@ reg32 frontend::watc::stringToLong(App* app, CPU& cpu, reg32 text, reg32 end, re
     }
     else if (s(base) < 2 || s(base) > 0x24)
     {
-        guest.leaveEcx(ecx);
-        guest.leaveEdx(at);
-        guest.call(kSetErrno, args({ kEinval }));
+        fe::direct<kSetErrno, watcom::clib::setErrno>(app, cpu, kEinval);
         return 0;
     }
     else if (base == 0x10 && hasHexPrefix())
@@ -2928,7 +3082,6 @@ reg32 frontend::watc::stringToLong(App* app, CPU& cpu, reg32 text, reg32 end, re
     const reg32 limit = guest.dword(kOverflowLimits + base * 4);
     bool overflow = false;
     reg32 value = 0;
-    ecx &= 0xffffff00;
     for (;;)
     {
         const reg32 digit = fe::direct<0x52e670, digitValue>(app, cpu, std::uint8_t(guest.byte(at)));
@@ -2946,32 +3099,24 @@ reg32 frontend::watc::stringToLong(App* app, CPU& cpu, reg32 text, reg32 end, re
         at = text;
     if (end != 0)
         guest.setDword(end, at);
-    if (overflow)
-        ecx |= 1;
-    guest.leaveEcx(ecx);
-    guest.leaveEbx(value);
-    guest.leaveEdx(at);
     if ((isSigned == 1 && value >= 0x80000000 && (value != 0x80000000 || sign != '-')) || overflow)
     {
-        guest.call(kSetErrno, args({ kErange }));
+        fe::direct<kSetErrno, watcom::clib::setErrno>(app, cpu, kErange);
         if (isSigned == 0)
             return 0xffffffff;
         return sign == '-' ? 0x80000000 : 0x7fffffff;
     }
     if (sign == '-')
-    {
         value = reg32(0) - value;
-        guest.leaveEbx(value);
-    }
     return value;
 }
 
-void frontend::watcStrtol(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcStrtol(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_52e500", 0, 0, kEsi | kEdi);
-    const reg32 text = cpu.eax, end = cpu.edx, isSigned = cpu.ecx;
-    const reg32 radix = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::stringToLong(app, cpu, text, end, radix, isSigned); });
+    const reg32 text = args.eax, end = args.edx, isSigned = args.ecx;
+    const reg32 radix = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::stringToLong(app, cpu, text, end, radix, isSigned); });
 }
 
 /* sub_52e660: strtol. */
@@ -2983,11 +3128,11 @@ reg32 frontend::watc::stringToLongSigned(App* app, CPU& cpu, reg32 text, reg32 e
     return fe::direct<0x52e500, stringToLong>(app, cpu, text, end, radix, 1);
 }
 
-void frontend::watcStrtolSigned(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcStrtolSigned(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_52e660", 0, 0, kEcx);
-    const reg32 text = cpu.eax, end = cpu.edx, radix = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::stringToLongSigned(app, cpu, text, end, radix); });
+    const reg32 text = args.eax, end = args.edx, radix = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::stringToLongSigned(app, cpu, text, end, radix); });
 }
 
 /* sub_52e670: a character's value as a digit of any base, 0x25 for none. */
@@ -3003,11 +3148,11 @@ reg32 frontend::watc::digitValue(App* app, CPU& cpu, std::uint8_t c)
     return 0x25;
 }
 
-void frontend::watcDigitValue(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcDigitValue(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_52e670", 0, 0, kEdx);
-    const std::uint8_t c = std::uint8_t(cpu.eax);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::digitValue(app, cpu, c); });
+    const std::uint8_t c = std::uint8_t(args.eax);
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::digitValue(app, cpu, c); });
 }
 
 /* sub_52e6d0: putenv: Windows' variable set, then environ, then the wide one if there is one. */
@@ -3027,7 +3172,7 @@ reg32 frontend::watc::putEnvironment(App* app, CPU& cpu, reg32 text)
     copyUp(guest, name, text, nameLength);
     guest.setByte(name + nameLength, 0);
     const reg32 from = equals + 1;
-    const reg32 valueLength = guest.call(kMbslen, args({ from }));
+    const reg32 valueLength = fe::direct<kMbslen, watcom::clib::mbslen>(app, cpu, from);
     reg32 value = 0;
     if (valueLength != 0)
     {
@@ -3045,41 +3190,44 @@ reg32 frontend::watc::putEnvironment(App* app, CPU& cpu, reg32 text)
     fe::direct<kNfree, watcom::clib::free>(guest.app(), guest.cpu(), value);
     if (set == 0)
         return kFailed;
-    if (guest::direct<0x52e88c, environSet>(app, cpu, text) != 0)
+    // The text has its '=' past its start, so edx, which sub_52e88c reads for an empty one, is not
+    // its.
+    if (guest::direct<0x52e88c, environSet>(app, cpu, text, 0u) != 0)
         return kFailed;
     if (guest.dword(kWideEnviron) == 0)
         return 0;
-    const reg32 characters = guest.call(kMbslen, args({ text })) + 1;
+    const reg32 characters = fe::direct<kMbslen, watcom::clib::mbslen>(app, cpu, text) + 1;
     const reg32 wide = fe::direct<kNmalloc, watcom::clib::malloc>(guest.app(), guest.cpu(), 2 * characters);
     if (wide == 0)
     {
-        guest.call(0x500f8c, args({ 5 }));
+        fe::direct<0x500f8c, watcom::clib::setErrnoDos>(app, cpu, 5u);
         return kFailed;
     }
-    if (guest.call(0x518080, args({ wide, text, characters })) == kFailed)
+    if (fe::direct<0x518080, watcom::clib::mbstowcs>(app, cpu, wide, text, characters) == kFailed)
     {
         fe::direct<kNfree, watcom::clib::free>(guest.app(), guest.cpu(), wide);
         return kFailed;
     }
-    return guest.call(0x52c178, args({ wide }));
+    return fe::direct<0x52c178, watcom::clib::wputenv>(app, cpu, wide);
 }
 
-void frontend::watcPutenv(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcPutenv(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_52e6d0", 0, 0, kEbx | kEcx | kEdx | kEsi | kEdi);
-    const reg32 text = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::putEnvironment(app, cpu, text); });
+    const reg32 text = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::putEnvironment(app, cpu, text); });
 }
 
-/* sub_52e88c: the string put in environ, or the variable taken out if it has nothing after =. */
-reg32 frontend::watc::environSet(App* app, CPU& cpu, reg32 text)
+/* sub_52e88c: the string put in environ, or the variable taken out if it has nothing after =.  For
+ * an empty text its code looks for the '=' at `edx`, as the caller has it. */
+reg32 frontend::watc::environSet(App* app, CPU& cpu, reg32 text, reg32 edx)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 36);
     constexpr reg32 kFailed = 0xffffffff;
     if (text == 0)
         return kFailed;
-    reg32 at = cpu.edx;
+    reg32 at = edx;
     if (guest.byte(text) != 0)
     {
         at = text + 1;
@@ -3143,7 +3291,7 @@ reg32 frontend::watc::environSet(App* app, CPU& cpu, reg32 text)
                 if (list == 0)
                     return kFailed;
                 const reg32 moved = listBytes + list;
-                guest.call(kMemmove, args({ moved, guest.dword(kEnvironFlags), index }));
+                fe::direct<kMemmove, watcom::clib::memmove>(app, cpu, moved, guest.dword(kEnvironFlags), index);
                 guest.setDword(kEnvironFlags, moved);
             }
             guest.setDword(kEnviron, list);
@@ -3155,11 +3303,11 @@ reg32 frontend::watc::environSet(App* app, CPU& cpu, reg32 text)
     return 0;
 }
 
-void frontend::watcEnvironSet(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcEnvironSet(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_52e88c", 0, 0, kEbx | kEcx | kEdx | kEsi | kEdi);
-    const reg32 text = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::environSet(app, cpu, text); });
+    const reg32 text = args.eax, edx = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::environSet(app, cpu, text, edx); });
 }
 
 /* sub_52ea3c: a variable looked for in environ, case aside: its index + 1, or with edx set the
@@ -3172,7 +3320,6 @@ reg32 frontend::watc::environFind(App* app, CPU& cpu, reg32 name, reg32 removing
     for (;; entry += 4)
     {
         reg32 string = guest.dword(entry);
-        guest.leaveEdx(string);
         if (string == 0)
             return sar(guest.dword(kEnviron) - entry, 2);
         reg32 wanted = name;
@@ -3200,12 +3347,8 @@ reg32 frontend::watc::environFind(App* app, CPU& cpu, reg32 name, reg32 removing
             continue;
         reg32 index = sar(entry - guest.dword(kEnviron), 2);
         if (removing == 0)
-        {
-            guest.leaveEdx(guest.dword(kEnviron));
             return index + 1;
-        }
         const reg32 removed = guest.dword(entry);
-        guest.leaveEdx(removed);
         reg32 last = entry;
         if (removed != 0)
         {
@@ -3223,24 +3366,20 @@ reg32 frontend::watc::environFind(App* app, CPU& cpu, reg32 name, reg32 removing
             if (guest.byte(index + flags) != 0)
                 fe::direct<kNfree, watcom::clib::free>(guest.app(), guest.cpu(), removed);
             const reg32 count = sar(last - guest.dword(kEnviron), 2);
-            guest.call(kMemmove, args({ last, guest.dword(kEnvironFlags), count }));
+            fe::direct<kMemmove, watcom::clib::memmove>(app, cpu, last, guest.dword(kEnvironFlags), count);
             guest.setDword(kEnvironFlags, last);
             for (; s(index) < s(count); ++index)
-            {
-                const std::uint8_t flag = guest.byte(index + last + 1);
-                guest.leaveEdx((guest.edx() & 0xffffff00) | flag);
-                guest.setByte(index + last, flag);
-            }
+                guest.setByte(index + last, guest.byte(index + last + 1));
         }
         return 0;
     }
 }
 
-void frontend::watcEnvironFind(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcEnvironFind(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_52ea3c", 0, 0, kEbx | kEcx | kEsi | kEdi);
-    const reg32 name = cpu.eax, removing = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::environFind(app, cpu, name, removing); });
+    const reg32 name = args.eax, removing = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::environFind(app, cpu, name, removing); });
 }
 
 /* sub_52eb70: a thread's first function: its data made, _beginthread told, the function called,
@@ -3253,36 +3392,33 @@ reg32 frontend::watc::threadStart(App* app, CPU& cpu, reg32 parameters)
     const reg32 frame = guest.frame();
     const reg32 function = guest.dword(parameters), argument = guest.dword(parameters + 4);
     const reg32 single = guest.dword(kSingleThread);
-    guest.leaveEdx(single);
     guest.setDword(frame + 8, function);
     if (single == 0)
     {
         // The data on the stack, for a thread of the program's.
         cpu.esp -= (guest.dword(kThreadDataSize) + 3) & 0xfffffffc;
         const reg32 data = cpu.esp;
-        guest.leaveEcx(data);
         const reg32 size = guest.dword(kThreadDataSize);
         fe::direct<0x4e0640, watcom::clib::memset>(app, cpu, data, 0u, size);
-        guest.leaveEbx(size);  // as the code loads it for it, which it keeps
         guest.setDword(data + 0xf0, guest.dword(kThreadDataSize));
-        cpu.eax = data;   // on through it to sub_51e7ec: the block to take
-        if (fe::direct<0x51e888, attachThread>(app, cpu) == 0)
+        // On through it to sub_51e7ec: the block to take.
+        if (fe::direct<0x51e888, attachThread>(app, cpu, data) == 0)
             return 0;
     }
-    const reg32 own = guest.call(guest.dword(kThreadDataGetter)) + 0xde;
+    const reg32 own = fe::pointerCall(guest, guest.dword(kThreadDataGetter)) + 0xde;
     guest.setDword(parameters + 0x10, own);
     callImport<kSetEvent, &host::setEvent>(guest, cpu, guest.dword(parameters + 0xc));
-    guest.call(0x51f0d0, args({ frame }));
-    guest.call(guest.dword(kThreadOnStart));
-    guest.call(guest.dword(frame + 8), args({ argument }));
-    return fe::direct<0x52c81c, threadEndHook>(app, cpu);   // the registers on to the hook as they are
+    fe::direct<0x51f0d0, watcom::clib::initExceptionHandling>(app, cpu, frame);
+    fe::pointerCall(guest, guest.dword(kThreadOnStart));
+    const reg32 result = fe::pointerCall(guest, guest.dword(frame + 8), args({ argument }));
+    return fe::direct<0x52c81c, threadEndHook>(app, cpu, result);   // its eax on to the hook
 }
 
-void frontend::watcThreadStart(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcThreadStart(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_52eb70", 0, 0, kEbx | kEsi | kEdi);
     const reg32 parameters = app->getMemory<reg32>(cpu.esp + 4);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::threadStart(app, cpu, parameters); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::threadStart(app, cpu, parameters); });
 }
 
 /* sub_52ec04: _beginthread: the thread made and waited for until it has its data. */
@@ -3290,7 +3426,6 @@ reg32 frontend::watc::beginThread(App* app, CPU& cpu, reg32 function, reg32 stac
 {
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0x4c);
-    cpu.ebx = argument;
     const reg32 frame = guest.frame();
     constexpr reg32 kEventName = 0x552134;
     if (guest.dword(kTlsIndex) == 0xffffffff)
@@ -3300,19 +3435,16 @@ reg32 frontend::watc::beginThread(App* app, CPU& cpu, reg32 function, reg32 stac
         fe::direct<0x51e964, initThreads>(app, cpu);
     }
     guest.setDword(frame + 0x20, function);
-    guest.setDword(frame + 0x24, cpu.ebx);
+    guest.setDword(frame + 0x24, argument);
     guest.setDword(frame + 0x28, callImport<kGetCurrentThread, &host::currentThread>(guest, cpu));
     guest.setDword(frame + 0x30, 0);
     copyUp(guest, frame, kEventName, 9);
     const reg32 thread = callImport<kGetCurrentThreadId, &host::currentThreadId>(guest, cpu);
-    guest.call(0x51e0ec, args({ thread, frame + 8, 0x10 }));
-    cpu.eax = frame;
-    const reg32 event = callImport<kCreateEvent, &host::createEvent>(guest, cpu, 0, 0, 0, frame);
+    fe::direct<0x51e0ec, watcom::clib::itoa>(app, cpu, thread, frame + 8, 0x10u);
+    const reg32 event = callImportAt<kCreateEvent, &host::createEvent>(guest, cpu, frame, 0, 0, 0, frame);
     guest.setDword(frame + 0x2c, event);
-    cpu.eax = frame + 0x20;
-    const reg32 handle = callImport<kCreateThread, &host::createThread>(
-        guest, cpu, 0, (stackSize + 0xfff) & 0xfffff000, 0x52eb70, frame + 0x20, 0, frame + 0x34);
-    guest.leaveEbx(handle);
+    const reg32 handle = callImportAt<kCreateThread, &host::createThread>(
+        guest, cpu, frame + 0x20, 0, (stackSize + 0xfff) & 0xfffff000, 0x52eb70, frame + 0x20, 0, frame + 0x34);
     if (handle == 0)
     {
         guest.setDword(frame + 0x34, 0xffffffff);
@@ -3330,12 +3462,12 @@ reg32 frontend::watc::beginThread(App* app, CPU& cpu, reg32 function, reg32 stac
     return handle;
 }
 
-void frontend::watcBeginThread(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcBeginThread(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_52ec04", 0, 0, kEcx | kEsi | kEdi);
-    const reg32 function = cpu.eax, stackSize = cpu.edx;
-    const reg32 argument = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::beginThread(app, cpu, function, stackSize, argument); });
+    const reg32 function = args.eax, stackSize = args.edx;
+    const reg32 argument = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::beginThread(app, cpu, function, stackSize, argument); });
 }
 
 /* sub_52ecf0: _endthread. */
@@ -3344,21 +3476,17 @@ reg32 frontend::watc::endThread(App* app, CPU& cpu)
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 8);
     constexpr reg32 kSingleThread = 0x9f6420;
-    guest.call(guest.dword(kThreadOnEnd));
-    guest.call(0x51f11c);
+    const reg32 ended = fe::pointerCall(guest, guest.dword(kThreadOnEnd));
+    fe::direct<0x51f11c, watcom::clib::doneExceptionHandler>(app, cpu, ended);
     if (guest.dword(kSingleThread) == 0)
-    {
-        cpu.eax = 1;   // as the game's code hands it
-        fe::direct<0x51e8dc, detachThread>(app, cpu, 1);
-    }
-    callImport<kExitThread, &host::exitThread>(guest, cpu, 0);
-    return guest.eax();
+        fe::direct<0x51e8dc, detachThread>(app, cpu, 1);  // 1 in eax, as the game's code hands it
+    return callImport<kExitThread, &host::exitThread>(guest, cpu, 0);
 }
 
-void frontend::watcEndThread(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcEndThread(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_52ecf0", 0, 0, kEcx | kEdx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::endThread(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::endThread(app, cpu); });
 }
 
 /* sub_52edfa: 0. */
@@ -3367,45 +3495,38 @@ reg32 frontend::watc::returnZero52edfa(App* app, CPU& cpu)
     return 0;
 }
 
-void frontend::watcReturnZero52edfa(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcReturnZero52edfa(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_52edfa", 0, 0, 0);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::returnZero52edfa(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::returnZero52edfa(app, cpu); });
 }
 
 /* sub_52ee00: the window's clip, held inside the screen. */
 reg32 frontend::watc::setClip(App* app, CPU& cpu, reg32 leftAsked, reg32 topAsked, reg32 rightAsked, reg32 bottomAsked)
 {
     Guest guest(app, cpu);
-    cpu.eax = leftAsked;
-    cpu.edx = topAsked;
-    cpu.ebx = rightAsked;
-    cpu.ecx = bottomAsked;
     const auto held = [](reg32 value, reg32 most) {
         const reg32 positive = s(value) < 0 ? 0 : value;
         return s(positive) > s(most) ? most : positive;
     };
     const reg32 wide = guest.dword(kScreenWidth), high = guest.dword(kScreenHeight);
-    const reg32 left = held(cpu.eax, wide), right = held(cpu.ebx, wide);
-    const reg32 top = held(cpu.edx, high), bottom = held(cpu.ecx, high);
+    const reg32 left = held(leftAsked, wide), right = held(rightAsked, wide);
+    const reg32 top = held(topAsked, high), bottom = held(bottomAsked, high);
     guest.setDword(kClipRight, right);
     guest.setDword(kClipTop, top);
     guest.setDword(kClipBottom, bottom);
     guest.setDword(kClipLeft, left);
-    guest.leaveEbx(right);
-    guest.leaveEdx(top);
-    guest.leaveEcx(bottom);
     return left;
 }
 
-void frontend::watcSetClip(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcSetClip(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_52ee00", 0, 0, kEsi);
-    const reg32 leftAsked = cpu.eax;
-    const reg32 topAsked = cpu.edx;
-    const reg32 rightAsked = cpu.ebx;
-    const reg32 bottomAsked = cpu.ecx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::setClip(app, cpu, leftAsked, topAsked, rightAsked, bottomAsked); });
+    const reg32 leftAsked = args.eax;
+    const reg32 topAsked = args.edx;
+    const reg32 rightAsked = args.ebx;
+    const reg32 bottomAsked = args.ecx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::setClip(app, cpu, leftAsked, topAsked, rightAsked, bottomAsked); });
 }
 
 /* sub_52ee60: _mbschr: the multibyte character found, or the end if asked for 0. */
@@ -3413,27 +3534,26 @@ reg32 frontend::watc::mbschr(App* app, CPU& cpu, reg32 text, reg32 wanted)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 12);
-    cpu.eax = text;
-    reg32 at = cpu.eax;
+    reg32 at = text;
     constexpr reg32 kMbterm = 0x5250c0;
     const reg32 character = guest.frame();
-    guest.call(0x52ede0, args({ wanted, character }));
-    guest.leaveEdx(cpu.edx & 0xffffff00);
-    const reg32 length = guest.call(0x52b5b0, args({ character }));
-    guest.setByte(character + length, std::uint8_t(cpu.edx));
-    while (guest.call(kMbterm, args({ at })) == 0 && guest.call(0x52e3a0, args({ at, character })) != 0)
-        at = guest.call(0x525100, args({ at }));
-    if (guest.call(kMbterm, args({ at })) != 0 && wanted != 0)
+    fe::direct<0x52ede0, watcom::clib::mbvtop>(app, cpu, wanted, character);
+    const reg32 length = fe::direct<0x52b5b0, watcom::clib::mbclen>(app, cpu, character);
+    guest.setByte(character + length, 0);  // dl, which the code clears
+    while (fe::direct<kMbterm, watcom::clib::mbterm>(app, cpu, at) == 0
+           && fe::direct<0x52e3a0, watcom::clib::mbccmp>(app, cpu, at, character) != 0)
+        at = fe::direct<0x525100, watcom::clib::mbsinc>(app, cpu, at);
+    if (fe::direct<kMbterm, watcom::clib::mbterm>(app, cpu, at) != 0 && wanted != 0)
         return 0;
     return at;
 }
 
-void frontend::watcMbschr(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcMbschr(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_52ee60", 0, 0, kEbx | kEcx);
-    const reg32 wanted = cpu.edx;
-    const reg32 text = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::mbschr(app, cpu, text, wanted); });
+    const reg32 wanted = args.edx;
+    const reg32 text = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::mbschr(app, cpu, text, wanted); });
 }
 
 // ---------------------------------------------------------------------------
@@ -3466,7 +3586,7 @@ reg32 tapiStub(win32::WinApplication* app, x86::CPU& cpu, reg32 frameBytes, reg3
     fe::Arguments arguments = args({ kLineUnavailable });
     for (const reg32 word : words)
         arguments.stack[arguments.stackCount++] = word;
-    return guest.call(guest.dword(slot), arguments);
+    return fe::pointerCall(guest, guest.dword(slot), arguments);
 }
 
 }
@@ -3487,17 +3607,16 @@ reg32 frontend::watc::tapiFind(App* app, CPU& cpu, reg32 name, reg32 slot)
     if (guest.dword(kTapi) == 0xffffffff)
         return kLineUnavailable;
     const reg32 found = callImport<kGetProcAddress, &host::procAddress>(guest, cpu, guest.dword(kTapi), name);
-    guest.leaveEcx(slot);
     guest.setDword(slot, found);
     return found == 0 ? kLineUnavailable : 0;
 }
 
-void frontend::watcTapiFind(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcTapiFind(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_52f318", 8, 0, 0);
     const reg32 name = app->getMemory<reg32>(cpu.esp + 4);
     const reg32 slot = app->getMemory<reg32>(cpu.esp + 8);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::tapiFind(app, cpu, name, slot); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::tapiFind(app, cpu, name, slot); });
 }
 
 /* sub_52f535: lineAnswer. */
@@ -3506,13 +3625,13 @@ reg32 frontend::watc::lineAnswer(App* app, CPU& cpu, reg32 callHandle, reg32 use
     return tapiStub<3>(app, cpu, 0, 0x56d14c, 0x56ba50, { callHandle, userUserInfo, size });
 }
 
-void frontend::watcLineAnswer(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcLineAnswer(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_52f535", 12, 0, 0);
     const reg32 callHandle = app->getMemory<reg32>(cpu.esp + 4);
     const reg32 userUserInfo = app->getMemory<reg32>(cpu.esp + 8);
     const reg32 size = app->getMemory<reg32>(cpu.esp + 12);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::lineAnswer(app, cpu, callHandle, userUserInfo, size); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::lineAnswer(app, cpu, callHandle, userUserInfo, size); });
 }
 
 /* sub_52f661: lineClose. */
@@ -3521,11 +3640,11 @@ reg32 frontend::watc::lineClose(App* app, CPU& cpu, reg32 line)
     return tapiStub<1>(app, cpu, 0, 0x56d15c, 0x56ba98, { line });
 }
 
-void frontend::watcLineClose(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcLineClose(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_52f661", 4, 0, 0);
     const reg32 line = app->getMemory<reg32>(cpu.esp + 4);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::lineClose(app, cpu, line); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::lineClose(app, cpu, line); });
 }
 
 /* sub_52f969: lineDeallocateCall. */
@@ -3534,11 +3653,11 @@ reg32 frontend::watc::lineDeallocateCall(App* app, CPU& cpu, reg32 callHandle)
     return tapiStub<1>(app, cpu, 0, 0x56d184, 0x56bb68, { callHandle });
 }
 
-void frontend::watcLineDeallocateCall(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcLineDeallocateCall(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_52f969", 4, 0, 0);
     const reg32 callHandle = app->getMemory<reg32>(cpu.esp + 4);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::lineDeallocateCall(app, cpu, callHandle); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::lineDeallocateCall(app, cpu, callHandle); });
 }
 
 /* sub_52fb2e: lineDrop. */
@@ -3547,13 +3666,13 @@ reg32 frontend::watc::lineDrop(App* app, CPU& cpu, reg32 callHandle, reg32 userU
     return tapiStub<3>(app, cpu, 0, 0x56d19c, 0x56bbc8, { callHandle, userUserInfo, size });
 }
 
-void frontend::watcLineDrop(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcLineDrop(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_52fb2e", 12, 0, 0);
     const reg32 callHandle = app->getMemory<reg32>(cpu.esp + 4);
     const reg32 userUserInfo = app->getMemory<reg32>(cpu.esp + 8);
     const reg32 size = app->getMemory<reg32>(cpu.esp + 12);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::lineDrop(app, cpu, callHandle, userUserInfo, size); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::lineDrop(app, cpu, callHandle, userUserInfo, size); });
 }
 
 /* sub_530747: lineGetDevCaps. */
@@ -3562,7 +3681,7 @@ reg32 frontend::watc::lineGetDevCaps(App* app, CPU& cpu, reg32 lineApp, reg32 de
     return tapiStub<5>(app, cpu, 4, 0x56d238, 0x56bed4, { lineApp, device, apiVersion, extVersion, caps });
 }
 
-void frontend::watcLineGetDevCaps(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcLineGetDevCaps(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_530747", 20, 0, 0);
     const reg32 lineApp = app->getMemory<reg32>(cpu.esp + 4);
@@ -3570,7 +3689,7 @@ void frontend::watcLineGetDevCaps(win32::WinApplication* app, x86::CPU& cpu)
     const reg32 apiVersion = app->getMemory<reg32>(cpu.esp + 12);
     const reg32 extVersion = app->getMemory<reg32>(cpu.esp + 16);
     const reg32 caps = app->getMemory<reg32>(cpu.esp + 20);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::lineGetDevCaps(app, cpu, lineApp, device, apiVersion, extVersion, caps); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::lineGetDevCaps(app, cpu, lineApp, device, apiVersion, extVersion, caps); });
 }
 
 /* sub_53083d: lineGetDevConfig. */
@@ -3579,13 +3698,13 @@ reg32 frontend::watc::lineGetDevConfig(App* app, CPU& cpu, reg32 device, reg32 c
     return tapiStub<3>(app, cpu, 0, 0x56d244, 0x56bf04, { device, config, deviceClass });
 }
 
-void frontend::watcLineGetDevConfig(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcLineGetDevConfig(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_53083d", 12, 0, 0);
     const reg32 device = app->getMemory<reg32>(cpu.esp + 4);
     const reg32 config = app->getMemory<reg32>(cpu.esp + 8);
     const reg32 deviceClass = app->getMemory<reg32>(cpu.esp + 12);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::lineGetDevConfig(app, cpu, device, config, deviceClass); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::lineGetDevConfig(app, cpu, device, config, deviceClass); });
 }
 
 /* sub_530a4e: lineGetID. */
@@ -3594,7 +3713,7 @@ reg32 frontend::watc::lineGetID(App* app, CPU& cpu, reg32 line, reg32 address, r
     return tapiStub<6>(app, cpu, 4, 0x56d260, 0x56bf7c, { line, address, callHandle, select, deviceId, deviceClass });
 }
 
-void frontend::watcLineGetID(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcLineGetID(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_530a4e", 24, 0, 0);
     const reg32 line = app->getMemory<reg32>(cpu.esp + 4);
@@ -3603,7 +3722,7 @@ void frontend::watcLineGetID(win32::WinApplication* app, x86::CPU& cpu)
     const reg32 select = app->getMemory<reg32>(cpu.esp + 16);
     const reg32 deviceId = app->getMemory<reg32>(cpu.esp + 20);
     const reg32 deviceClass = app->getMemory<reg32>(cpu.esp + 24);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::lineGetID(app, cpu, line, address, callHandle, select, deviceId, deviceClass); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::lineGetID(app, cpu, line, address, callHandle, select, deviceId, deviceClass); });
 }
 
 /* sub_530b4d: lineGetLineDevStatus. */
@@ -3612,12 +3731,12 @@ reg32 frontend::watc::lineGetLineDevStatus(App* app, CPU& cpu, reg32 line, reg32
     return tapiStub<2>(app, cpu, 0, 0x56d26c, 0x56bfa0, { line, status });
 }
 
-void frontend::watcLineGetLineDevStatus(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcLineGetLineDevStatus(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_530b4d", 8, 0, 0);
     const reg32 line = app->getMemory<reg32>(cpu.esp + 4);
     const reg32 status = app->getMemory<reg32>(cpu.esp + 8);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::lineGetLineDevStatus(app, cpu, line, status); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::lineGetLineDevStatus(app, cpu, line, status); });
 }
 
 /* sub_5310be: lineInitialize. */
@@ -3626,7 +3745,7 @@ reg32 frontend::watc::lineInitialize(App* app, CPU& cpu, reg32 lineAppOut, reg32
     return tapiStub<5>(app, cpu, 4, 0x56d2b8, 0x56c114, { lineAppOut, instance, callback, appName, devicesOut });
 }
 
-void frontend::watcLineInitialize(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcLineInitialize(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_5310be", 20, 0, 0);
     const reg32 lineAppOut = app->getMemory<reg32>(cpu.esp + 4);
@@ -3634,7 +3753,7 @@ void frontend::watcLineInitialize(win32::WinApplication* app, x86::CPU& cpu)
     const reg32 callback = app->getMemory<reg32>(cpu.esp + 12);
     const reg32 appName = app->getMemory<reg32>(cpu.esp + 16);
     const reg32 devicesOut = app->getMemory<reg32>(cpu.esp + 20);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::lineInitialize(app, cpu, lineAppOut, instance, callback, appName, devicesOut); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::lineInitialize(app, cpu, lineAppOut, instance, callback, appName, devicesOut); });
 }
 
 /* sub_5311c0: lineMakeCall. */
@@ -3643,7 +3762,7 @@ reg32 frontend::watc::lineMakeCall(App* app, CPU& cpu, reg32 line, reg32 callOut
     return tapiStub<5>(app, cpu, 4, 0x56d2c4, 0x56c14c, { line, callOut, destination, country, callParams });
 }
 
-void frontend::watcLineMakeCall(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcLineMakeCall(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_5311c0", 20, 0, 0);
     const reg32 line = app->getMemory<reg32>(cpu.esp + 4);
@@ -3651,7 +3770,7 @@ void frontend::watcLineMakeCall(win32::WinApplication* app, x86::CPU& cpu)
     const reg32 destination = app->getMemory<reg32>(cpu.esp + 12);
     const reg32 country = app->getMemory<reg32>(cpu.esp + 16);
     const reg32 callParams = app->getMemory<reg32>(cpu.esp + 20);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::lineMakeCall(app, cpu, line, callOut, destination, country, callParams); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::lineMakeCall(app, cpu, line, callOut, destination, country, callParams); });
 }
 
 /* sub_53138f: lineNegotiateAPIVersion. */
@@ -3660,7 +3779,7 @@ reg32 frontend::watc::lineNegotiateAPIVersion(App* app, CPU& cpu, reg32 lineApp,
     return tapiStub<6>(app, cpu, 4, 0x56d2dc, 0x56c1b8, { lineApp, device, lowVersion, highVersion, versionOut, extensionId });
 }
 
-void frontend::watcLineNegotiateAPIVersion(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcLineNegotiateAPIVersion(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_53138f", 24, 0, 0);
     const reg32 lineApp = app->getMemory<reg32>(cpu.esp + 4);
@@ -3669,7 +3788,7 @@ void frontend::watcLineNegotiateAPIVersion(win32::WinApplication* app, x86::CPU&
     const reg32 highVersion = app->getMemory<reg32>(cpu.esp + 16);
     const reg32 versionOut = app->getMemory<reg32>(cpu.esp + 20);
     const reg32 extensionId = app->getMemory<reg32>(cpu.esp + 24);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::lineNegotiateAPIVersion(app, cpu, lineApp, device, lowVersion, highVersion, versionOut, extensionId); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::lineNegotiateAPIVersion(app, cpu, lineApp, device, lowVersion, highVersion, versionOut, extensionId); });
 }
 
 /* sub_531439: lineOpen. */
@@ -3678,7 +3797,7 @@ reg32 frontend::watc::lineOpen(App* app, CPU& cpu, reg32 lineApp, reg32 device, 
     return tapiStub<9>(app, cpu, 4, 0x56d2e4, 0x56c1e8, { lineApp, device, lineOut, apiVersion, extVersion, callbackInstance, privileges, mediaModes, callParams });
 }
 
-void frontend::watcLineOpen(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcLineOpen(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_531439", 36, 0, 0);
     const reg32 lineApp = app->getMemory<reg32>(cpu.esp + 4);
@@ -3690,7 +3809,7 @@ void frontend::watcLineOpen(win32::WinApplication* app, x86::CPU& cpu)
     const reg32 privileges = app->getMemory<reg32>(cpu.esp + 28);
     const reg32 mediaModes = app->getMemory<reg32>(cpu.esp + 32);
     const reg32 callParams = app->getMemory<reg32>(cpu.esp + 36);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::lineOpen(app, cpu, lineApp, device, lineOut, apiVersion, extVersion, callbackInstance, privileges, mediaModes, callParams); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::lineOpen(app, cpu, lineApp, device, lineOut, apiVersion, extVersion, callbackInstance, privileges, mediaModes, callParams); });
 }
 
 /* sub_531f31: lineSetDevConfig. */
@@ -3699,14 +3818,14 @@ reg32 frontend::watc::lineSetDevConfig(App* app, CPU& cpu, reg32 device, reg32 c
     return tapiStub<4>(app, cpu, 4, 0x56d374, 0x56c4a8, { device, config, size, deviceClass });
 }
 
-void frontend::watcLineSetDevConfig(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcLineSetDevConfig(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_531f31", 16, 0, 0);
     const reg32 device = app->getMemory<reg32>(cpu.esp + 4);
     const reg32 config = app->getMemory<reg32>(cpu.esp + 8);
     const reg32 size = app->getMemory<reg32>(cpu.esp + 12);
     const reg32 deviceClass = app->getMemory<reg32>(cpu.esp + 16);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::lineSetDevConfig(app, cpu, device, config, size, deviceClass); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::lineSetDevConfig(app, cpu, device, config, size, deviceClass); });
 }
 
 /* sub_532162: lineSetStatusMessages. */
@@ -3715,13 +3834,13 @@ reg32 frontend::watc::lineSetStatusMessages(App* app, CPU& cpu, reg32 line, reg3
     return tapiStub<3>(app, cpu, 0, 0x56d390, 0x56c534, { line, lineStates, addressStates });
 }
 
-void frontend::watcLineSetStatusMessages(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcLineSetStatusMessages(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_532162", 12, 0, 0);
     const reg32 line = app->getMemory<reg32>(cpu.esp + 4);
     const reg32 lineStates = app->getMemory<reg32>(cpu.esp + 8);
     const reg32 addressStates = app->getMemory<reg32>(cpu.esp + 12);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::lineSetStatusMessages(app, cpu, line, lineStates, addressStates); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::lineSetStatusMessages(app, cpu, line, lineStates, addressStates); });
 }
 
 /* sub_5324d2: lineShutdown. */
@@ -3730,11 +3849,11 @@ reg32 frontend::watc::lineShutdown(App* app, CPU& cpu, reg32 lineApp)
     return tapiStub<1>(app, cpu, 0, 0x56d3bc, 0x56c614, { lineApp });
 }
 
-void frontend::watcLineShutdown(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::watcLineShutdown(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site = makeSite("sub_5324d2", 4, 0, 0);
     const reg32 lineApp = app->getMemory<reg32>(cpu.esp + 4);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::lineShutdown(app, cpu, lineApp); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return watc::lineShutdown(app, cpu, lineApp); });
 }
 
 }

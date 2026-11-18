@@ -56,11 +56,12 @@ struct Packer<R, Owner, F, f, I>
     template< typename ...Pairs >
     struct Pack
     {
-        static void stdcall(WinApplication* app, x86::CPU& cpu)
+        static x86::reg32 stdcall(WinApplication* app, x86::CPU& cpu, x86::Args& args)
         {
             Owner* owner = Unpacker<Owner*>::unpack(app, cpu.esp + 4);
-            cpu.eax = (owner->*f)(app, cpu, Unpacker<typename Pairs::Type>::unpack(app, cpu.esp + 8 + 4*Pairs::Index)...);
+            args.eax = (owner->*f)(app, cpu, Unpacker<typename Pairs::Type>::unpack(app, cpu.esp + 8 + 4*Pairs::Index)...);
             cpu.esp += 8 + 4*Length<Pairs...>::L;
+            return args.eax;
         }
     };
 };
@@ -71,11 +72,12 @@ struct Packer<void, Owner, F, f, I>
     template< typename ...Pairs >
     struct Pack
     {
-        static void stdcall(WinApplication* app, x86::CPU& cpu)
+        static x86::reg32 stdcall(WinApplication* app, x86::CPU& cpu, x86::Args& args)
         {
             Owner* owner = Unpacker<Owner*>::unpack(app, cpu.esp + 4);
             (owner->*f)(app, cpu, Unpacker<typename Pairs::Type>::unpack(app, cpu.esp + 8 + 4*Pairs::Index)...);
             cpu.esp += 8 + 4*Length<Pairs...>::L;
+            return args.eax;
         }
     };
 };
@@ -86,10 +88,11 @@ struct Packer<R, void, F, f, I>
     template< typename ...Pairs >
     struct Pack
     {
-        static void stdcall(WinApplication* app, x86::CPU& cpu)
+        static x86::reg32 stdcall(WinApplication* app, x86::CPU& cpu, x86::Args& args)
         {
-            cpu.eax = (*f)(app, cpu, Unpacker<typename Pairs::Type>::unpack(app, cpu.esp + 4 + 4*Pairs::Index)...);
+            args.eax = (*f)(app, cpu, Unpacker<typename Pairs::Type>::unpack(app, cpu.esp + 4 + 4*Pairs::Index)...);
             cpu.esp += 4 + 4*Length<Pairs...>::L;
+            return args.eax;
         }
     };
 };
@@ -100,10 +103,11 @@ struct Packer<void, void, F, f, I>
     template< typename ...Pairs >
     struct Pack
     {
-        static void stdcall(WinApplication* app, x86::CPU& cpu)
+        static x86::reg32 stdcall(WinApplication* app, x86::CPU& cpu, x86::Args& args)
         {
             (*f)(app, cpu, Unpacker<typename Pairs::Type>::unpack(app, cpu.esp + 4 + 4*Pairs::Index)...);
             cpu.esp += 4 + 4*Length<Pairs...>::L;
+            return args.eax;
         }
     };
 };

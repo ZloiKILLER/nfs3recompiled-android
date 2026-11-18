@@ -5,7 +5,7 @@
 
 /* What the game's rewritten functions tell the diagnostics, when something
  * listens (nfs3hp_main.cpp sets them as the traces ask).  Null, as they are for
- * a player and in tools/game_checks, each costs a test and links nothing. */
+ * a player, each costs a test and links nothing. */
 namespace nfs3hp
 {
 namespace diag

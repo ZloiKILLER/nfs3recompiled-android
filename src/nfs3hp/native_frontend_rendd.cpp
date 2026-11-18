@@ -1,5 +1,7 @@
 #include "native_frontend_rendd.h"
+#include "native_collide.h"
 #include "native_game.h"
+#include "native_load_carmodels.h"
 #include "native_watcom.h"
 #include "game_settings.h"
 #include "native_carstate.h"
@@ -15,9 +17,64 @@
 #include "native_trackdata.h"
 #include "native_vertices.h"
 #include "thrash_calls.h"
+#include "native_render.h"
 #include <nfs3hp.h>
 #include <cstdint>
 #include <cstring>
+
+/* The thunks defined below under their qualified names. */
+namespace nfs3hp
+{
+namespace frontend
+{
+x86::reg32 rendFreeBlock(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendChooseDriver(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendReadDriverFeatures(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendFreePlayerModel(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendFreeCarModel(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendShadowCorners(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendCarShadow(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendCarLights(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendBodyShake(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendFrontWheelTurn(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendRearWheelTurn(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendBodyLean(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendTrackLitColour(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendReplayPose(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendCarStates(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendCarShade(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendCarAverageColour(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendCarFarthest(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendCarFar(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendCarNear(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendCarSimpleNear(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendDrawCar(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendDetailInUse(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendLowerDetail(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendFitDetailBudget(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendCars(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendArenaRewind(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendArenaCreate(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendArenaFree(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendArenaTake(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendArenaHere(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendEmptyList(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendListOfOne(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendJoinLists(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendOpenListStart(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendOpenListAppend(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendOpenListTake(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendOpenListClose(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendFlushAndList(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendDrawListPlain(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendDrawListAt(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendDrawListMirrored(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendFillReciprocals(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendSetClipBounds(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendSetProjection(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendProjectPoints(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+}
+}
 
 /* The race's cars as the renderer sees them, decompiled:
  *
@@ -35,17 +92,17 @@
  *                       it (sub_4bf370), and the table of reciprocals (sub_4bf110).
  *
  * The cars' state stays in guest memory, where the game reads it.  Only what is handed
- * to a callee by address is kept in the frame: the rest of the generated code's frame
+ * to a callee by address is kept in the frame: the rest of the game's frame
  * is plain locals here.  A value on
- * the x87 is a double, as the generated code holds it, and each operation rounds
+ * the x87 is a double, as the game's code holds it, and each operation rounds
  * through fp:: as it does, in its order and operand order: a float's 24 bits.
  *
- * The registers no caller reads are left as the generated code leaves them, which
- * the check holds them to: that is what leaveEbx and the others are doing here.
+ * The registers no caller reads are left as the game's code leaves them, which
+ * is what leaveEbx and the others are doing here.
  *
  * Plan step 5: each function a typed core in frontend::rendd (native_frontend_rendd.h), in a
  * frame of its own where the game's function has one (fe::Frame: what it calls runs at the stack
- * addresses it did), and an adapter under the game's name for the calls by address.  A core of
+ * addresses it did), and a thunk under the game's name for the calls by address.  A core of
  * this round's three files (rendd, rende, loada) calls another as C++ (guest::direct), and the
  * typed cores of other files too (fe::direct); the rest of the game still by address. */
 #if defined(__clang__)
@@ -57,9 +114,9 @@
 namespace nfs3hp
 {
 
-// Port (tools/apply_native_vertices.py): only watches how much of the arena a pass used.
+// Port (the port's vertex hooks change): only watches how much of the arena a pass used.
 bool arenaReset(win32::WinApplication* app, x86::CPU& cpu);
-// Port (tools/apply_car_detail.py): the frame a car's wheels last moved, per car and per use.
+// Port (the port's car detail change): the frame a car's wheels last moved, per car and per use.
 x86::reg32 carWheelStamp(win32::WinApplication* app, x86::reg32 car, x86::reg32 which);
 
 namespace
@@ -70,8 +127,35 @@ using fe::Guest;
 using x86::reg32;
 using x86::sreg32;
 
+/* Guest::call as a call through guest::pointerCall: `arguments`' registers in eax, edx, ebx and ecx, `esi` in esi,
+ * its stack words pushed in order, esp back after; Terminated when the game stopped in it.  `floatResult`, when given,
+ * takes the float the callee gives back. */
+inline reg32 callAt(Guest& guest, reg32 function, const fe::Arguments& arguments = fe::Arguments(), reg32 esi = 0,
+                    double* floatResult = nullptr)
+{
+    x86::CPU& cpu = guest.cpu();
+    x86::Args registers;
+    reg32* const into[4] = { &registers.eax, &registers.edx, &registers.ebx, &registers.ecx };
+    for (std::size_t i = 0; i < arguments.registerCount; ++i)
+        *into[i] = arguments.registers[i];
+    registers.esi = esi;
+    const reg32 esp = cpu.esp;
+    for (std::size_t i = arguments.stackCount; i-- > 0;)
+    {
+        cpu.esp -= 4;
+        guest.setDword(cpu.esp, arguments.stack[i]);
+    }
+    const std::optional<reg32> result = guest::pointerCall(guest.app(), cpu, function, registers);
+    if (!result)
+        throw fe::Terminated();
+    cpu.esp = esp;
+    if (floatResult)
+        *floatResult = registers.floatResult;  // what the callee leaves on the x87's top, as a float result
+    return *result;
+}
+
 // ---------------------------------------------------------------------------
-// The x87 as the generated code holds it
+// The x87 as the game's code holds it
 // ---------------------------------------------------------------------------
 
 // fp::compare's word, as a jump after sahf reads it: ja, and jb (true unordered).
@@ -138,8 +222,8 @@ inline reg32 scaledColour(x86::CPU& cpu, reg32 colour, reg32 factor)
     const reg32 by = (factor >> 8) & 0xff;
     const reg32 redBlue = (colour & 0x00ff00ff) * by;
     const reg32 alphaGreen = ((colour & 0xff00ff00) >> 8) * by;
-    cpu.ebx = (redBlue >> 8) & 0x00ff00ff;
-    return (alphaGreen & 0xff00ff00) | cpu.ebx;
+    const reg32 ebx = (redBlue >> 8) & 0x00ff00ff;
+    return (alphaGreen & 0xff00ff00) | ebx;
 }
 
 /* The clip code of a vertex on the screen, from its reciprocal depth and position as
@@ -179,7 +263,6 @@ constexpr reg32 kSmallestDepth = 0x37800080;
 // The game's functions and data, by address
 // ---------------------------------------------------------------------------
 
-constexpr reg32 kCreateArena = 0x4b56e0;       // eax where its size is
 constexpr reg32 kLog = 0x401010;               // the game's printf to its log
 constexpr reg32 kCompareNoCase = 0x4eb390;     // eax, edx, ebx the most
 constexpr reg32 kEndModelBatch = 0x49d640;
@@ -192,15 +275,12 @@ constexpr reg32 kGunFire = 0x42cff0;           // eax the car: how far through i
 constexpr reg32 kFlare = 0x492370;             // eax a view; the stack the point, colour, size...
 constexpr reg32 kLightFlare = 0x491bc0;        // likewise, a record of the road's light back
 constexpr reg32 kRingFlare = 0x492980;
-constexpr reg32 kSetSpecular = 0x49d800;
 constexpr reg32 kDrawModelPart = 0x49de20;     // eax the model, edx a part, ebx a part's matrix, ecx its offset
 constexpr reg32 kRgbToHsv = 0x49c880;          // eax to edx, three dwords
 constexpr reg32 kHsvToRgb = 0x49ca50;
 constexpr reg32 kNightColour = 0x4b97b0;       // eax the car, edx its colour
 constexpr reg32 kCarVisible = 0x4bb5d0;        // eax a view, edx a car, ebx where its distance goes: its detail, -1 if none
 constexpr reg32 kDrawCarDetail = 0x4bae00;
-constexpr reg32 kDrawTrafficDetail = 0x4bb200;
-constexpr reg32 kDrawCarExtras = 0x4b9bc0;
 constexpr reg32 kDrawListAtDepth = 0x4c7790;
 constexpr reg32 kDrawListSoftware = 0x4349d0;
 constexpr reg32 kFlushVertices = 0x4c79a0;
@@ -294,11 +374,11 @@ x86::reg32 frontend::rendd::freeBlock(App* app, CPU& cpu, reg32 block)
     return left;
 }
 
-void frontend::rendFreeBlock(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendFreeBlock(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4b5700", 0, 0, nullptr, 0, 0 };
-    const reg32 block = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendd::freeBlock(app, cpu, block); });
+    const reg32 block = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendd::freeBlock(app, cpu, block); });
 }
 
 /* sub_4b5720: which driver of the eleven (their names at 0x55fd68) the registry names, and
@@ -355,11 +435,11 @@ x86::reg32 frontend::rendd::chooseDriver(App* app, CPU& cpu, reg32 chosen)
     return left;
 }
 
-void frontend::rendChooseDriver(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendChooseDriver(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4b5720", 0, 0, nullptr, 0 };
-    const reg32 chosen = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendd::chooseDriver(app, cpu, chosen); });
+    const reg32 chosen = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendd::chooseDriver(app, cpu, chosen); });
 }
 
 /* sub_4b5940: which of the driver's five features answer (THRASH_setstate's pointer, by a
@@ -384,11 +464,11 @@ x86::reg32 frontend::rendd::readDriverFeatures(App* app, CPU& cpu, reg32 first)
     return bit;
 }
 
-void frontend::rendReadDriverFeatures(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendReadDriverFeatures(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4b5940", 0, 0, nullptr, 0 };
-    const reg32 first = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendd::readDriverFeatures(app, cpu, first); });
+    const reg32 first = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendd::readDriverFeatures(app, cpu, first); });
 }
 
 /* sub_4b7d00: the player's model freed, as a race ends, and the models' batch ended. */
@@ -399,17 +479,16 @@ x86::reg32 frontend::rendd::freePlayerModel(App* app, CPU& cpu)
     const reg32 model = guest.dword(kPlayerModel);
     if (model != 0)
     {
-        guest.leaveEcx(0);
         fe::direct<0x49d5a0, frontend::rendc::modelFree>(app, cpu, model);
         guest.setDword(kPlayerModel, 0);   // ecx, its 0 kept across the call
     }
-    return guest.call(kEndModelBatch);
+    return callAt(guest, kEndModelBatch);
 }
 
-void frontend::rendFreePlayerModel(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendFreePlayerModel(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4b7d00", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendd::freePlayerModel(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendd::freePlayerModel(app, cpu); });
 }
 
 /* sub_4b7eb0: car eax's model freed, and no car left pointing at it; the replay's model too
@@ -444,11 +523,11 @@ x86::reg32 frontend::rendd::freeCarModel(App* app, CPU& cpu, reg32 car)
     return left;
 }
 
-void frontend::rendFreeCarModel(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendFreeCarModel(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4b7eb0", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx | fe::kRestoreEdi };
-    const reg32 car = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendd::freeCarModel(app, cpu, car); });
+    const reg32 car = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendd::freeCarModel(app, cpu, car); });
 }
 
 // ---------------------------------------------------------------------------
@@ -488,7 +567,6 @@ x86::reg32 frontend::rendd::shadowCorners(App* app, CPU& cpu, reg32 car, reg32 c
     for (reg32 i = 0; i < 4; ++i)
     {
         const reg32 corner = corners + 12 * i;
-        guest.leaveEdx(corner);
         const float height = fe::direct<0x4968a0, vertices::groundHeightAt>(
             app, cpu, car + 0x124, guest.floatAt(car + 0x148), guest.floatAt(car + 0x14c), guest.floatAt(car + 0x150),
             guest.floatAt(corner), guest.floatAt(corner + 4), guest.floatAt(corner + 8));
@@ -503,15 +581,14 @@ x86::reg32 frontend::rendd::shadowCorners(App* app, CPU& cpu, reg32 car, reg32 c
         guest.setDword(fixedPoint, x);
         guest.setDword(fixedPoint + 4, y);
         guest.setDword(fixedPoint + 8, z);
-        guest.setEsi(record);
-        left = guest.call(kTrackPointAt, args({ fixedPoint, 1, guest.dword(car + kCarSegment) }));
+        fe::direct<kTrackPointAt, trackdata::placeAt>(guest.app(), guest.cpu(), fixedPoint, 1, guest.dword(car + kCarSegment), record);
+        left = record;  // eax as it leaves it: the record it filled
         const reg32 below = guest.dword(record + 0x14), surface = guest.dword(record + 0x18);
         if (below == 0 || surface == 0)
             continue;
         left = guest.byte(surface + 1);
         if ((left & 0x3f) == 0)
             continue;
-        guest.leaveEdx(surface);
         left = guest.byte(surface + 1);
         if ((left & 0x3f) == kSurfaceNoShadow)
         {
@@ -529,7 +606,6 @@ x86::reg32 frontend::rendd::shadowCorners(App* app, CPU& cpu, reg32 car, reg32 c
         const double worldX = fp::mul(double(sreg32(x)), fromFixed);
         const double worldY = fp::mul(double(sreg32(y)), fromFixed);
         const double worldZ = fp::mul(fromFixed, double(sreg32(z)));
-        guest.leaveEdx(corner);
         guest.setFloat(corner, float(worldX));
         guest.setFloat(corner + 4, float(worldY));
         guest.setFloat(corner + 8, float(worldZ));
@@ -538,11 +614,11 @@ x86::reg32 frontend::rendd::shadowCorners(App* app, CPU& cpu, reg32 car, reg32 c
     return left;
 }
 
-void frontend::rendShadowCorners(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendShadowCorners(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4b7f80", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 car = cpu.eax, corners = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendd::shadowCorners(app, cpu, car, corners); });
+    const reg32 car = args.eax, corners = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendd::shadowCorners(app, cpu, car, corners); });
 }
 
 /* sub_4b81a0: car eax's shadow in view edx, a quad of the arena on the view's list: its
@@ -568,7 +644,6 @@ x86::reg32 frontend::rendd::carShadow(App* app, CPU& cpu, reg32 car, reg32 view)
     const reg32 vertexSlot = frame + 0xbc;
     const reg32 quadSlot = frame + 0xc0;
     guest.setDword(quadSlot, 0);
-    guest.leaveEdx(0);
     if (guest.dword(car + 0x184) != 0 || guest.dword(car + kCarSpeedLow) == 0)
         return car;
     const bool sunShows = gameSettings(guest).night == 0 && gameSettings(guest).weather == 0 && guest.dword(view) != 1;
@@ -581,7 +656,6 @@ x86::reg32 frontend::rendd::carShadow(App* app, CPU& cpu, reg32 car, reg32 view)
         guest.setFloat(copy + 4, float(y));
         guest.setFloat(copy + 8, float(z));
     }
-    guest.leaveEdx(4);
     if (sunShows)
     {
         for (reg32 i = 0; i < 4; ++i)
@@ -657,7 +731,6 @@ x86::reg32 frontend::rendd::carShadow(App* app, CPU& cpu, reg32 car, reg32 view)
     const std::uint8_t codes0 = guest.byte(vertices + 0x14), codes1 = guest.byte(vertices + 0x34), codes2 = guest.byte(vertices + 0x54);
     const std::uint8_t codes3 = guest.byte(vertices + 0x74);
     const reg32 someCodes = reg32(codes0) | codes1 | codes2;
-    guest.leaveEdx(someCodes);
     if (((someCodes | codes3) & 0x10) == 0)
     {
         const double v0x = floatOf(guest, vertices), v0y = floatOf(guest, vertices + 4);
@@ -692,19 +765,17 @@ x86::reg32 frontend::rendd::carShadow(App* app, CPU& cpu, reg32 car, reg32 view)
     guest.setDword(vertices + 0x30, 0x6fffffff);
     guest.setDword(vertices + 0x10, 0x6fffffff);
     guest.setDword(quad + 0x1c, 0);
-    guest.setEsi(list);
-    guest.leaveEdx(list);
     guest::direct<0x4bbe90, listOfOne>(app, cpu, quad, list);
     const double depth = fp::sub(floatOf(guest, car + kCarDepth), floatOf(guest, kDepthBias));
     // The list in edx, as the call before leaves it.
     return guest::direct<0x4bc0b0, drawListMirrored>(app, cpu, view, list, bitsOf(float(depth)));
 }
 
-void frontend::rendCarShadow(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendCarShadow(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4b81a0", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 car = cpu.eax, view = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendd::carShadow(app, cpu, car, view); });
+    const reg32 car = args.eax, view = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendd::carShadow(app, cpu, car, view); });
 }
 
 // ---------------------------------------------------------------------------
@@ -716,7 +787,7 @@ void frontend::rendCarShadow(win32::WinApplication* app, x86::CPU& cpu)
  * name, a tail light by its brake, a head light by the night, a cop's by the flash, the
  * flares through sub_492370 and the road's light they throw on a list drawn at the car's depth.
  *
- * What the generated code leaves in its frame from before, the size and colour a light of
+ * What the game's code leaves in its frame from before, the size and colour a light of
  * an unknown kind finds, is read from where it would be. */
 x86::reg32 frontend::rendd::carLights(App* app, CPU& cpu, reg32 view, reg32 car, reg32 matrix, reg32 place, reg32 flareSize, reg32 paint)
 {
@@ -753,14 +824,12 @@ x86::reg32 frontend::rendd::carLights(App* app, CPU& cpu, reg32 view, reg32 car,
     reg32 size = guest.dword(frame + 0x104);
     float flash = guest.floatAt(frame + 0x10c);
 
-    guest.setEsi(lights);
     guest::direct<0x4bbe70, emptyList>(app, cpu, lights);
     const float time = float(double(sreg32(fe::direct<0x470a60, frontend::renda::fogAmount>(app, cpu))));
     const reg32 model = guest.dword(car + kCarModel);
     const std::uint8_t flags = guest.byte(car + kCarFlags);
     if (flags & kFlagHidden)
     {
-        guest.leaveEdx((guest.edx() & 0xffffff00) | flags);
         return model;
     }
 
@@ -819,8 +888,8 @@ x86::reg32 frontend::rendd::carLights(App* app, CPU& cpu, reg32 view, reg32 car,
     std::uint8_t flashSide = 0;
     if ((guest.byte(car + kCarFlags) & kFlagCop) && guest.dword(car + kCarHasCop) != 0)
     {
-        guest.call(kGunFire, args({ car }));
-        const double through = guest.fpu().pop();
+        double through = 0.0;
+        callAt(guest, kGunFire, args({ car }), 0, &through);
         flash = float(through);
         flashSide = isAbove(fp::compare(through, doubleOf(guest, kHalf))) ? 0x45 : 0x4f;
         const double doubled = fp::mul(double(flash), floatOf(guest, kFlashScale));
@@ -829,13 +898,12 @@ x86::reg32 frontend::rendd::carLights(App* app, CPU& cpu, reg32 view, reg32 car,
             flash = float(fp::sub(doubleOf(guest, kTwo), doubled));
     }
 
-    cpu.ebx = 0;
     for (reg32 i = 0;; ++i)
     {
         if (sreg32(i) >= sreg32(guest.dword(guest.dword(car + kCarModel) + kModelLightCount)))
             break;
         // By address: what it leaves in ebx goes on to the end, which does not restore ebx.
-        guest.call(kTransformPoints, args({ 1, model + kModelLights + 12 * i, matrix, place }, { world }));
+        fe::direct<0x4e0430, vertices::transformPointList>(app, cpu, 1, model + kModelLights + 12 * i, matrix, place, world);
         const reg32 name = model + (i << 6);
         const reg32 x = guest.dword(world), y = guest.dword(world + 4), z = guest.dword(world + 8);
 
@@ -860,7 +928,6 @@ x86::reg32 frontend::rendd::carLights(App* app, CPU& cpu, reg32 view, reg32 car,
                 if (isAbove(fp::compare(behind, doubleOf(guest, kQuarterDouble))))
                 {
                     strength = 1.0;
-                    cpu.ebx = 0x3ff00000;
                 }
                 else
                     strength = fp::mul(behind, doubleOf(guest, kFour));
@@ -882,7 +949,6 @@ x86::reg32 frontend::rendd::carLights(App* app, CPU& cpu, reg32 view, reg32 car,
                 if (isAbove(fp::compare(ahead, doubleOf(guest, kQuarterDouble))))
                 {
                     strength = 1.0;
-                    cpu.ebx = 0x3ff00000;
                 }
                 else
                     strength = fp::mul(ahead, doubleOf(guest, kFour));
@@ -891,7 +957,6 @@ x86::reg32 frontend::rendd::carLights(App* app, CPU& cpu, reg32 view, reg32 car,
                 if (guest.dword(car + kCarLightsOn) != 2)
                 {
                     wide = 1.0;
-                    cpu.ebx = 0x3ff00000;
                 }
                 const double sized = fp::mul(double(facing), doubleOf(guest, kSizeScale));
                 const double alphaWhole = fp::mul(double(strengthStored), floatOf(guest, kByteScale));
@@ -910,20 +975,15 @@ x86::reg32 frontend::rendd::carLights(App* app, CPU& cpu, reg32 view, reg32 car,
             if ((guest.dword(car + kCarLightsOn) != 0 || guest.byte(car + kCarBraking) != 0)
                 && isBelow(fp::compare(0.0, double(facing))))
             {
-                cpu.ebx = y;
-                guest.call(kFlare, args({ view }, { x, y, z, colour, size, flareSize, 0 }));
+                callAt(guest, kFlare, args({ view }, { x, y, z, colour, size, flareSize, 0 }));
                 if (guest.byte(name + kModelLightNames + 4) != 'N')
                 {
                     const reg32 dimmed = scaledColour(cpu, colour, kHaloDim);
-                    guest.leaveEbx(z);
-                    const reg32 record = guest.call(kLightFlare, args({ view }, { x, y, z, dimmed, guest.dword(car + kCarSegment), size, car + kCarAxes, 0 }));
+                    const reg32 record = callAt(guest, kLightFlare, args({ view }, { x, y, z, dimmed, guest.dword(car + kCarSegment), size, car + kCarAxes, 0 }));
                     if (record != 0)
                     {
-                        guest.setEsi(halo);
                         guest::direct<0x4bbe90, listOfOne>(app, cpu, record, halo);
                         const reg32 head = guest.dword(halo), tail = guest.dword(halo + 4);
-                        guest.leaveEbx(guest.dword(lights + 4));
-                        guest.setEsi(lights);
                         guest::direct<0x4bbec0, joinLists>(app, cpu, lights, guest.dword(lights), guest.dword(lights + 4), head,
                                                            tail);
                     }
@@ -934,19 +994,15 @@ x86::reg32 frontend::rendd::carLights(App* app, CPU& cpu, reg32 view, reg32 car,
         {
             if (isBelow(fp::compare(0.0, double(facing))))
             {
-                cpu.ebx = colour;
-                guest.call(kFlare, args({ view }, { x, y, z, colour, size, flareSize, 0 }));
+                callAt(guest, kFlare, args({ view }, { x, y, z, colour, size, flareSize, 0 }));
                 if (guest.byte(name + kModelLightNames + 4) != 'N')
                 {
                     const reg32 dimmed = scaledColour(cpu, colour, kHaloDim);
-                    const reg32 record = guest.call(kLightFlare, args({ view }, { x, y, z, dimmed, guest.dword(car + kCarSegment), size, car + kCarAxes, 1 }));
+                    const reg32 record = callAt(guest, kLightFlare, args({ view }, { x, y, z, dimmed, guest.dword(car + kCarSegment), size, car + kCarAxes, 1 }));
                     if (record != 0)
                     {
-                        guest.setEsi(streak);
                         guest::direct<0x4bbe90, listOfOne>(app, cpu, record, streak);
                         const reg32 head = guest.dword(streak), tail = guest.dword(streak + 4);
-                        guest.leaveEbx(head);
-                        guest.setEsi(lights);
                         guest::direct<0x4bbec0, joinLists>(app, cpu, lights, guest.dword(lights), guest.dword(lights + 4), head,
                                                            tail);
                     }
@@ -954,8 +1010,7 @@ x86::reg32 frontend::rendd::carLights(App* app, CPU& cpu, reg32 view, reg32 car,
             }
             if (isAbove(fp::compare(double(time), doubleOf(guest, kRingAfter))))
             {
-                guest.leaveEbx(y);
-                guest.call(kRingFlare, args({ view }, { x, y, z, car + kCarAxes, ringColour, 0x40c00000, 0x3dcccccd, 0x3f400000, ringAngle, 0xbecccccd }));
+                callAt(guest, kRingFlare, args({ view }, { x, y, z, car + kCarAxes, ringColour, 0x40c00000, 0x3dcccccd, 0x3f400000, ringAngle, 0xbecccccd }));
             }
         }
         if (kind == 'S' && (guest.byte(car + kCarFlags) & kFlagCop) && guest.dword(car + kCarHasCop) != 0)
@@ -987,28 +1042,24 @@ x86::reg32 frontend::rendd::carLights(App* app, CPU& cpu, reg32 view, reg32 car,
                 rgb = guest.dword(car + 0x7a8);
             }
             colour = (alphaByte << 24) | (rgb & 0xffffff);
-            guest.leaveEbx(y);
-            guest.call(kFlare, args({ view }, { x, y, z, colour, size, 0, 0xbf400000 }));
+            callAt(guest, kFlare, args({ view }, { x, y, z, colour, size, 0, 0xbf400000 }));
         }
     }
 
     const reg32 head = guest.dword(lights), tail = guest.dword(lights + 4);
-    guest.leaveEcx(head);
-    guest.leaveEdx(lights);
-    guest.setEsi(lights);
     guest::direct<0x4c7380, rende::polygonsSorted>(app, cpu, lights, head, tail);
     const double depth = fp::sub(floatOf(guest, car + kCarDepth), floatOf(guest, kDepthBias));
     // The lights in edx, as the call before leaves it.
     return guest::direct<0x4bc0b0, drawListMirrored>(app, cpu, view, lights, bitsOf(float(depth)));
 }
 
-void frontend::rendCarLights(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendCarLights(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4b8740", 8, 0, nullptr, 0, fe::kRestoreEsi | fe::kRestoreEdi };
     const reg32 flareSize = app->getMemory<reg32>(cpu.esp + 4);
     const reg32 paint = app->getMemory<reg32>(cpu.esp + 8);
-    const reg32 view = cpu.eax, car = cpu.edx, matrix = cpu.ebx, place = cpu.ecx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendd::carLights(app, cpu, view, car, matrix, place, flareSize, paint); });
+    const reg32 view = args.eax, car = args.edx, matrix = args.ebx, place = args.ecx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendd::carLights(app, cpu, view, car, matrix, place, flareSize, paint); });
 }
 
 /* sub_4b90e0: how much of a shake car eax's body has this frame, at random around 0 by its
@@ -1020,21 +1071,20 @@ x86::reg32 frontend::rendd::bodyShake(App* app, CPU& cpu, reg32 car, reg32 acros
     constexpr reg32 kHalfFloat = 0x540048;
     if (carWheelStamp(app, car, across ? 3u : 2u) == guest.dword(kFrameCount))
         return car;
-    // eax as the code leaves it: the random fraction's call keeps it.
-    const reg32 eax = guest.eax();
+    // eax (the car) as the code leaves it: the random fraction's call keeps it.
     const double fraction = double(*fe::direct<0x4eb230, ea::randomFractionOf>(app, cpu));
     const reg32 roughness = car + 0x930;
     const double random = fp::mul(fraction, floatOf(guest, roughness));
     const double centre = fp::mul(floatOf(guest, roughness), floatOf(guest, kHalfFloat));
     guest.setFloat(car + (across ? 0x940 : 0x93c), float(fp::sub(random, centre)));
-    return eax;
+    return car;
 }
 
-void frontend::rendBodyShake(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendBodyShake(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4b90e0", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx };
-    const reg32 car = cpu.eax, across = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendd::bodyShake(app, cpu, car, across); });
+    const reg32 car = args.eax, across = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendd::bodyShake(app, cpu, car, across); });
 }
 
 namespace
@@ -1113,16 +1163,16 @@ x86::reg32 frontend::rendd::frontWheelTurn(App* app, CPU& cpu, reg32 car, reg32 
         return 0;
     }
     const double angle = fp::mul(double(sreg32(steer * 36)), doubleOf(guest, kSteerScale));
-    guest.leaveEbx(out);
-    guest.call(kRotationY, args({ steering, steering }, { bitsOf(float(angle)) }));
-    return guest.call(kMultiplyMatrices, args({ rotation }));
+    callAt(guest, kRotationY, args({ steering, steering }, { bitsOf(float(angle)) }));
+    // The product's other factor in edx and where it goes in ebx, as the rotation before leaves and sets them.
+    return callAt(guest, kMultiplyMatrices, args({ rotation, steering, out }));
 }
 
-void frontend::rendFrontWheelTurn(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendFrontWheelTurn(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4b9140", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 car = cpu.eax, out = cpu.edx, steered = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendd::frontWheelTurn(app, cpu, car, out, steered); });
+    const reg32 car = args.eax, out = args.edx, steered = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendd::frontWheelTurn(app, cpu, car, out, steered); });
 }
 
 /* sub_4b9280: a rear wheel's matrix of car eax to edx: only turned, and less when it is
@@ -1162,11 +1212,11 @@ x86::reg32 frontend::rendd::rearWheelTurn(App* app, CPU& cpu, reg32 car, reg32 o
     return *fe::direct<0x4dfd80, ea::rotateAboutX>(app, cpu, out, turn);
 }
 
-void frontend::rendRearWheelTurn(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendRearWheelTurn(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4b9280", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx };
-    const reg32 car = cpu.eax, out = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendd::rearWheelTurn(app, cpu, car, out); });
+    const reg32 car = args.eax, out = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendd::rearWheelTurn(app, cpu, car, out); });
 }
 
 /* sub_4b93c0: the body of car eax leaning, its matrix to edx: its two leans (+0x920, +0x924)
@@ -1209,23 +1259,22 @@ x86::reg32 frontend::rendd::bodyLean(App* app, CPU& cpu, reg32 car, reg32 out, r
         rollCut = isBelow(fp::compare(again, doubleOf(guest, kRollHigh))) ? again : doubleFrom(0x33333333, 0x3fd33333);
     }
     guest.setFloat(roll, float(rollCut));
-    guest.call(kRotationZ, args({ yawed, pitched }, { guest.dword(roll) }));
-    guest.leaveEbx(out);
+    callAt(guest, kRotationZ, args({ yawed, pitched }, { guest.dword(roll) }));
     fe::direct<0x4dfd80, ea::rotateAboutX>(app, cpu, pitched, pitch);
-    const reg32 multiplied = guest.call(kMultiplyMatrices, args({ yawed }));
+    const reg32 multiplied = callAt(guest, kMultiplyMatrices, args({ yawed, pitched, out }));
     const x86::reg16 fsw = fp::compare(floatOf(guest, car + 0x10c), doubleOf(guest, kRollOver));
     if (!isBelow(fsw))
         return (multiplied & 0xffff0000) | fsw;
-    const reg32 turned = guest.call(kMultiplyMatrices, args({ out, before, before }));
+    const reg32 turned = callAt(guest, kMultiplyMatrices, args({ out, before, before }));
     copyDwords(guest, out, kRollMatrix, 9);
     return turned;
 }
 
-void frontend::rendBodyLean(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendBodyLean(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4b93c0", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 car = cpu.eax, out = cpu.edx, before = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendd::bodyLean(app, cpu, car, out, before); });
+    const reg32 car = args.eax, out = args.edx, before = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendd::bodyLean(app, cpu, car, out, before); });
 }
 
 /* sub_4b9550: colour edx lit by the track's lights around car eax: what each light within
@@ -1254,13 +1303,11 @@ x86::reg32 frontend::rendd::trackLitColour(App* app, CPU& cpu, reg32 car, reg32 
             segment -= guest.dword(kSegmentCount);
         const reg32 block = kSegmentLights + reg32(sreg32(segment) >> 3) * 0x5c0;
         const reg32 count = guest.dword(block + 0x5b8);
-        guest.leaveEdx(count);
         if (count == 0)
             continue;
         reg32 light = guest.dword(block + 0x5bc);
         for (reg32 left = count; left-- != 0; light += 0x10)
         {
-            guest.leaveEdx(light);
             const reg32 lit = fe::direct<0x491120, frontend::rendc::blinkColour>(app, cpu, reg32(guest.word(light + 0xc)));
             if (lit == 0)
                 continue;
@@ -1276,7 +1323,6 @@ x86::reg32 frontend::rendd::trackLitColour(App* app, CPU& cpu, reg32 car, reg32 
             sumRed += red;
             sumBlue += blue;
             sumGreen += green;
-            guest.leaveEdx(green);
             ++seen;
         }
     }
@@ -1289,15 +1335,14 @@ x86::reg32 frontend::rendd::trackLitColour(App* app, CPU& cpu, reg32 car, reg32 
     const reg32 red = channel(reg32(sreg32(colour) >> 16), sumRed, seen);
     const reg32 green = channel(reg32(sreg32(colour) >> 8), sumGreen, seen);
     const reg32 blue = channel(colour, sumBlue, seen);
-    guest.leaveEdx(red);
     return 0xff000000 | ((red & 0xff) << 16) | ((green & 0xff) << 8) | (blue & 0xff);
 }
 
-void frontend::rendTrackLitColour(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendTrackLitColour(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4b9550", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 car = cpu.eax, colour = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendd::trackLitColour(app, cpu, car, colour); });
+    const reg32 car = args.eax, colour = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendd::trackLitColour(app, cpu, car, colour); });
 }
 
 // ---------------------------------------------------------------------------
@@ -1325,7 +1370,6 @@ x86::reg32 frontend::rendd::replayPose(App* app, CPU& cpu, reg32 view, reg32 car
     const reg32 got = fe::direct<0x477d90, frontend::loopa::playbackPose>(app, cpu, fixedPlace, fixedAxes);
     if (got == 0)
         return got;
-    guest.leaveEdx(0);
     const reg32 model = guest.dword(kReplayModel);
     if (model == 0 || sreg32(guest.dword(model + kModelParts)) <= 0)
         return got;
@@ -1339,7 +1383,6 @@ x86::reg32 frontend::rendd::replayPose(App* app, CPU& cpu, reg32 view, reg32 car
     // measure left in eax, which the answers below keep the high half of.
     reg32 measured = 0;
     const auto distance = [&](reg32 from, reg32 to) {
-        guest.leaveEdx(to);   // as the call by address leaves it
         const frontend::sima::FloatLeft quick = fe::direct<0x4965b0, frontend::sima::quickDistanceOf>(app, cpu, from, to);
         measured = quick.eax;
         return quick.value;
@@ -1359,7 +1402,6 @@ x86::reg32 frontend::rendd::replayPose(App* app, CPU& cpu, reg32 view, reg32 car
             return (measured & 0xffff0000) | fsw;
     }
     const reg32 distances = gameSettings(guest).detailLevel << 4;
-    guest.leaveEdx(distances);
     {
         const x86::reg16 fsw = fp::compare(double(away), floatOf(guest, kDetailDistances + distances + 0xc));
         if (isAbove(fsw))
@@ -1374,13 +1416,12 @@ x86::reg32 frontend::rendd::replayPose(App* app, CPU& cpu, reg32 view, reg32 car
         detail = 3;
 
     fe::direct<0x49c410, frontend::rendc::objectsBegin>(app, cpu);
-    guest.call(kEndModelBatch);
+    callAt(guest, kEndModelBatch);
     fe::direct<0x49d750, frontend::rendc::modelSetShading>(app, cpu, gameSettings(guest).useSpecular != 0 ? 1u : 0u);
     fe::direct<0x49d760, frontend::rendc::modelSetLight>(app, cpu, kSun);
     // edx too, as the game's code hands it: sub_49d800 below reads it.
-    guest.leaveEdx(0xffffffff);
     fe::direct<0x49d8f0, frontend::rendc::modelSetColour>(app, cpu, 0xffffffffu);
-    guest.call(kSetSpecular, args({ 0x7f7f7f7f }));
+    fe::direct<0x49d800, render::glareColoursSet>(app, cpu, 0x7f7f7f7f, 0xffffffff);
     fe::direct<0x49d720, frontend::rendc::modelSetAlphas>(app, cpu, 0x8fu, 0x4fu);
     if (gameSettings(guest).useLights == 0)
         lightOn = 0;
@@ -1417,26 +1458,23 @@ x86::reg32 frontend::rendd::replayPose(App* app, CPU& cpu, reg32 view, reg32 car
         part(0xb, 0x180, 0);
         break;
     }
-    guest.setEsi(list);
     fe::direct<0x49d720, frontend::rendc::modelSetAlphas>(app, cpu, 0xffu, 0x7fu);
     fe::direct<0x49c470, frontend::rendc::objectsEnd>(app, cpu, list);
     if (guest.dword(kDriverOnCard) == 0)
     {
         const reg32 head = guest.dword(list), tail = guest.dword(list + 4);
-        guest.setEsi(list);
         guest::direct<0x4c7380, rende::polygonsSorted>(app, cpu, list, head, tail);
     }
     fe::direct<0x4e0430, vertices::transformPointList>(app, cpu, 1, place, view + 0x44, view + 0x38, place);
     const double depth = fp::sub(floatOf(guest, place + 8), floatOf(guest, kDepthBias));
-    guest.leaveEdx(list);   // as the call by address leaves it
     return fe::direct<0x49c420, frontend::rendc::objectsDraw>(app, cpu, view, list, bitsOf(float(depth)));
 }
 
-void frontend::rendReplayPose(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendReplayPose(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4b9df0", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 view = cpu.eax, car = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendd::replayPose(app, cpu, view, car); });
+    const reg32 view = args.eax, car = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendd::replayPose(app, cpu, view, car); });
 }
 
 // ---------------------------------------------------------------------------
@@ -1453,15 +1491,14 @@ x86::reg32 frontend::rendd::carStates(App* app, CPU& cpu, reg32 view, reg32 car,
     fe::direct<0x49d750, frontend::rendc::modelSetShading>(app, cpu, gameSettings(guest).useSpecular != 0 ? 1u : 0u);
     fe::direct<0x49d760, frontend::rendc::modelSetLight>(app, cpu, kSun);
     // The game's code hands it the car in edx too, which it does not read: left there for the caller.
-    guest.leaveEdx(car);
     return fe::direct<0x49d8f0, frontend::rendc::modelSetColour>(app, cpu, outline);
 }
 
-void frontend::rendCarStates(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendCarStates(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4ba320", 0, 0, nullptr, 0, 0 };
-    const reg32 view = cpu.eax, car = cpu.edx, outline = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendd::carStates(app, cpu, view, car, outline); });
+    const reg32 view = args.eax, car = args.edx, outline = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendd::carStates(app, cpu, view, car, outline); });
 }
 
 /* sub_4ba350: the specular colours of car edx's paint, ebx, in view eax, and the light's flag
@@ -1486,9 +1523,7 @@ x86::reg32 frontend::rendd::carShade(App* app, CPU& cpu, reg32 view, reg32 car, 
     const reg32 segment = guest.dword(car + kCarSegment);
     const reg32 place = car + kCarPlace;
     const reg32 flag = guest.dword(guest.dword(kRenderState) + 4);
-    guest.leaveEdx(0x100);
-    cpu.ebx = guest.dword(view);
-    if (cpu.ebx == 1)
+    if (guest.dword(view) == 1)
         return 0;
     if (gameSettings(guest).useLights == 0)
         return 0;
@@ -1522,7 +1557,7 @@ x86::reg32 frontend::rendd::carShade(App* app, CPU& cpu, reg32 view, reg32 car, 
     guest.setDword(paintRgb, red);
     guest.setDword(paintRgb + 4, green);
     guest.setDword(paintRgb + 8, blue);
-    guest.call(kRgbToHsv, args({ paintRgb, paintHsv }));
+    fe::direct<0x49c880, load::colourToHsv>(guest.app(), guest.cpu(), paintRgb, paintHsv);
     guest.setDword(mixedRgb, guest.byte(kAmbientBlue + 2));
     guest.setDword(mixedRgb + 4, guest.byte(kAmbientBlue + 1));
     guest.setDword(mixedRgb + 8, guest.byte(kAmbientBlue));
@@ -1537,7 +1572,7 @@ x86::reg32 frontend::rendd::carShade(App* app, CPU& cpu, reg32 view, reg32 car, 
         guest.setDword(mixedRgb + 4, mix(green, guest.dword(mixedRgb + 4)));
         guest.setDword(mixedRgb + 8, mix(blue, guest.dword(mixedRgb + 8)));
     }
-    guest.call(kRgbToHsv, args({ mixedRgb, mixedHsv }));
+    fe::direct<0x49c880, load::colourToHsv>(guest.app(), guest.cpu(), mixedRgb, mixedHsv);
     const reg32 hue = guest.dword(mixedHsv), saturation = guest.dword(mixedHsv + 4), value = guest.dword(mixedHsv + 8);
     const reg32 paintValue = guest.dword(paintHsv + 8);
     const reg32 wear = guest.dword(car + 0x8a8 + 8);
@@ -1545,30 +1580,28 @@ x86::reg32 frontend::rendd::carShade(App* app, CPU& cpu, reg32 view, reg32 car, 
     guest.setDword(hsvIn + 4, cutByte(over256(saturation * 96)));
     const reg32 first = cutBright(over512(value * paintValue) + 0x80 - reg32(sreg32(wear) >> 2));
     guest.setDword(hsvIn + 8, first);
-    cpu.ebx = first;
-    guest.call(kHsvToRgb, args({ hsvIn, rgbOut }));
+    fe::direct<0x49ca50, load::hsvToColour>(guest.app(), guest.cpu(), hsvIn, rgbOut);
     const reg32 colourOne = ((first & 0xff) << 24) | ((guest.dword(rgbOut) & 0xff) << 16) | ((guest.dword(rgbOut + 4) & 0xff) << 8)
                             | (guest.dword(rgbOut + 8) & 0xff);
     guest.setDword(hsvIn, cutByte(hue));
     guest.setDword(hsvIn + 4, cutByte(reg32(sreg32(saturation) >> 1)));
     const reg32 second = cutBright(over512(value * paintValue) + 0x80);
     guest.setDword(hsvIn + 8, second);
-    cpu.ebx = second;
-    guest.call(kHsvToRgb, args({ hsvIn, rgbOut }));
+    fe::direct<0x49ca50, load::hsvToColour>(guest.app(), guest.cpu(), hsvIn, rgbOut);
     const reg32 colourTwo = ((second & 0xff) << 24) | ((guest.dword(rgbOut) & 0xff) << 16) | ((guest.dword(rgbOut + 4) & 0xff) << 8)
                             | (guest.dword(rgbOut + 8) & 0xff);
     const reg32 factor = specular << 8;
     const reg32 scaledOne = scaledColour(cpu, colourOne, factor);
     const reg32 scaledTwo = scaledColour(cpu, colourTwo, factor);
-    guest.call(kSetSpecular, args({ scaledOne, scaledTwo }));
+    fe::direct<0x49d800, render::glareColoursSet>(app, cpu, scaledOne, scaledTwo);
     return flag;
 }
 
-void frontend::rendCarShade(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendCarShade(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4ba350", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 view = cpu.eax, car = cpu.edx, paint = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendd::carShade(app, cpu, view, car, paint); });
+    const reg32 view = args.eax, car = args.edx, paint = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendd::carShade(app, cpu, view, car, paint); });
 }
 
 /* sub_4ba810: car eax's colour, the average of the road's at its four wheels, the place's
@@ -1594,11 +1627,11 @@ x86::reg32 frontend::rendd::carAverageColour(App* app, CPU& cpu, reg32 car)
     return 0xff000000 | (average(16) << 16) | (average(8) << 8) | average(0);
 }
 
-void frontend::rendCarAverageColour(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendCarAverageColour(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4ba810", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx };
-    const reg32 car = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendd::carAverageColour(app, cpu, car); });
+    const reg32 car = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendd::carAverageColour(app, cpu, car); });
 }
 
 namespace
@@ -1615,34 +1648,26 @@ inline void carFrame(Guest& guest, reg32 car, reg32 matrix, reg32 place, reg32 r
 
 /* sub_49de20 called as the game's code calls it, `arguments` in the registers and pushed: sub_4b8740
  * after it reads what is left in its frame, which a C++ call (fe::direct), pushing none of the five
- * stack arguments, would leave 20 bytes up -- and the registers it leaves.  Its depth back.  In the
- * game the call made as Guest::call makes it, rendc's modelTransformPartCalled in place of the jump
- * by address, which leaves everything as the call does; in the checks the call by address itself,
- * the depth taken off the x87's stack. */
+ * stack arguments, would leave 20 bytes up -- and the registers it leaves.  Its depth back.  The call is made
+ * as Guest::call makes it, rendc's modelTransformPartCalled in place of the jump by address, which
+ * leaves everything as the call does. */
 double partByAddress(Guest& guest, const fe::Arguments& arguments)
 {
     x86::CPU& cpu = guest.cpu();
-#ifdef NFS_FRONTEND_CHECKS
-    guest.call(kDrawModelPart, arguments);
-    return double(cpu.fpu.take());
-#else
-    reg32* const registers[4] = { &cpu.eax, &cpu.edx, &cpu.ebx, &cpu.ecx };
-    for (std::size_t i = 0; i < arguments.registerCount; ++i)
-        *registers[i] = arguments.registers[i];
     const reg32 esp = cpu.esp;
+    // The five stack arguments pushed.
     for (std::size_t i = arguments.stackCount; i-- > 0;)
     {
         cpu.esp -= 4;
         guest.setDword(cpu.esp, arguments.stack[i]);
     }
-    // The return address's slot, left unwritten as the generated code leaves it.
-    cpu.esp -= 4;
-    const std::optional<double> depth = frontend::rendc::modelTransformPartCalled(guest.app(), cpu);
-    if (!depth)
-        throw fe::Terminated();
+    const frontend::rendc::Nearest nearest = guest::direct<0x49de20, frontend::rendc::modelTransformPart>(
+        guest.app(), cpu, arguments.registers[0], arguments.registers[1], arguments.registers[2], arguments.registers[3],
+        arguments.stack[0], arguments.stack[1], arguments.stack[2], arguments.stack[3], arguments.stack[4]);
     cpu.esp = esp;
-    return *depth;
-#endif
+    if (cpu.terminate)
+        throw fe::Terminated();
+    return nearest.depth;
 }
 
 /* The whole car as one part of its model; its depth, what sub_4b8740 sizes by, kept.  By address
@@ -1664,23 +1689,21 @@ x86::reg32 frontend::rendd::carFarthest(App* app, CPU& cpu, reg32 car, reg32 vie
     const reg32 model = guest.dword(car + kCarModel);
     const reg32 matrix = guest.frame(), place = matrix + 0x24;
     const reg32 colour = fe::direct<0x4206f0, trackdata::placeColour>(app, cpu, car + 0xc, 1u);
-    guest.leaveEdx(model);
     if (model == 0 || sreg32(guest.dword(model + kModelParts)) <= 0xb)
         return colour;
-    guest.leaveEbx(colour);
     guest::direct<0x4ba320, carStates>(app, cpu, view, car, colour);
     carFrame(guest, car, matrix, place, kRaise);
     const reg32 size = drawWhole(guest, model, view, 0xb, 0x180, matrix, place, 0);
     // By address: sub_4b8740 reads what is left in its frame from before (an unknown light's size,
     // colour, facing), which a C++ call, pushing no arguments, would move 8 bytes up.
-    return guest.call(kCarLights, args({ view, car, matrix, place }, { size, colour }));
+    return guest::direct<0x4b8740, carLights>(app, cpu, view, car, matrix, place, size, colour);
 }
 
-void frontend::rendCarFarthest(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendCarFarthest(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4ba960", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 car = cpu.eax, view = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendd::carFarthest(app, cpu, car, view); });
+    const reg32 car = args.eax, view = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendd::carFarthest(app, cpu, car, view); });
 }
 
 /* sub_4baa50: a car far away: its whole, its lights and its shadow. */
@@ -1692,28 +1715,25 @@ x86::reg32 frontend::rendd::carFar(App* app, CPU& cpu, reg32 car, reg32 view)
     const reg32 model = guest.dword(car + kCarModel);
     const reg32 matrix = guest.frame(), place = matrix + 0x24;
     reg32 colour = fe::direct<0x4206f0, trackdata::placeColour>(app, cpu, car + 0xc, 1u);
-    guest.leaveEdx(model);
     if (model == 0 || sreg32(guest.dword(model + kModelParts)) <= 0xa)
         return colour;
     if (gameSettings(guest).night != 0)
-        colour = guest.call(kNightColour, args({ car, colour }));
-    guest.leaveEbx(colour);
+        colour = *fe::direct<0x4b97b0, render::nightColourOf>(app, cpu, car, colour);
     const reg32 shade = guest::direct<0x4ba350, carShade>(app, cpu, view, car, colour);
-    guest.leaveEbx(colour);
     guest::direct<0x4ba320, carStates>(app, cpu, view, car, colour);
     carFrame(guest, car, matrix, place, kRaise);
     const reg32 size = drawWhole(guest, model, view, 0xa, 0x174, matrix, place, shade);
     // By address: sub_4b8740 reads what is left in its frame from before (an unknown light's size,
     // colour, facing), which a C++ call, pushing no arguments, would move 8 bytes up.
-    guest.call(kCarLights, args({ view, car, matrix, place }, { size, colour }));
+    guest::direct<0x4b8740, carLights>(app, cpu, view, car, matrix, place, size, colour);
     return guest::direct<0x4b81a0, carShadow>(app, cpu, car, view);
 }
 
-void frontend::rendCarFar(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendCarFar(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4baa50", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 car = cpu.eax, view = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendd::carFar(app, cpu, car, view); });
+    const reg32 car = args.eax, view = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendd::carFar(app, cpu, car, view); });
 }
 
 /* sub_4bab70: a car near: body, a police bar if it has one, four wheels each of its own
@@ -1731,15 +1751,12 @@ x86::reg32 frontend::rendd::carNear(App* app, CPU& cpu, reg32 car, reg32 view)
     const reg32 bodyTurn = frame + 0x6c;
     const reg32 place = frame + 0x90;
     const reg32 model = guest.dword(car + kCarModel);
-    guest.leaveEdx(model);
     reg32 colour = guest::direct<0x4ba810, carAverageColour>(app, cpu, car);
     if (model == 0 || sreg32(guest.dword(model + kModelParts)) <= 5)
         return colour;
     if (gameSettings(guest).night != 0)
-        colour = guest.call(kNightColour, args({ car, colour }));
-    guest.leaveEbx(colour);
+        colour = *fe::direct<0x4b97b0, render::nightColourOf>(app, cpu, car, colour);
     guest::direct<0x4ba320, carStates>(app, cpu, view, car, colour);
-    guest.leaveEbx(colour);
     const reg32 shade = guest::direct<0x4ba350, carShade>(app, cpu, view, car, colour);
     carFrame(guest, car, axes, place, kRaise);
     guest::direct<0x4b93c0, bodyLean>(app, cpu, car, lean, axes);
@@ -1766,15 +1783,15 @@ x86::reg32 frontend::rendd::carNear(App* app, CPU& cpu, reg32 car, reg32 view)
     // By address: sub_4b8740 reads what is left in its frame from before (an unknown light's size,
     // colour, facing), which a C++ call, pushing no arguments, would move 8 bytes up.
     // The place in ecx, as the call before leaves it.
-    guest.call(kCarLights, args({ view, car, bodyTurn, place }, { size, colour }));
+    guest::direct<0x4b8740, carLights>(app, cpu, view, car, bodyTurn, place, size, colour);
     return guest::direct<0x4b81a0, carShadow>(app, cpu, car, view);
 }
 
-void frontend::rendCarNear(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendCarNear(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4bab70", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 car = cpu.eax, view = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendd::carNear(app, cpu, car, view); });
+    const reg32 car = args.eax, view = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendd::carNear(app, cpu, car, view); });
 }
 
 /* sub_4bb110: traffic's car at its nearest: one part, its lights and its shadow. */
@@ -1786,24 +1803,22 @@ x86::reg32 frontend::rendd::carSimpleNear(App* app, CPU& cpu, reg32 car, reg32 v
     const reg32 model = guest.dword(car + kCarModel);
     const reg32 matrix = guest.frame(), place = matrix + 0x24;
     const reg32 colour = fe::direct<0x4206f0, trackdata::placeColour>(app, cpu, car + 0xc, 1u);
-    guest.leaveEdx(model);
     if (model == 0 || sreg32(guest.dword(model + kModelParts)) <= 5)
         return colour;
-    guest.leaveEbx(colour);
     guest::direct<0x4ba320, carStates>(app, cpu, view, car, colour);
     carFrame(guest, car, matrix, place, kRaise);
     const reg32 size = drawWhole(guest, model, view, 5, 0x180, matrix, place, 0);
     // By address: sub_4b8740 reads what is left in its frame from before (an unknown light's size,
     // colour, facing), which a C++ call, pushing no arguments, would move 8 bytes up.
-    guest.call(kCarLights, args({ view, car, matrix, place }, { size, colour }));
+    guest::direct<0x4b8740, carLights>(app, cpu, view, car, matrix, place, size, colour);
     return guest::direct<0x4b81a0, carShadow>(app, cpu, car, view);
 }
 
-void frontend::rendCarSimpleNear(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendCarSimpleNear(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4bb110", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 car = cpu.eax, view = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendd::carSimpleNear(app, cpu, car, view); });
+    const reg32 car = args.eax, view = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendd::carSimpleNear(app, cpu, car, view); });
 }
 
 /* sub_4bb4c0: car eax in view edx, in its own batch of models, the detail ebx brought down
@@ -1814,10 +1829,8 @@ x86::reg32 frontend::rendd::drawCar(App* app, CPU& cpu, reg32 car, reg32 view, r
     const fe::Frame ownFrame(guest, cpu, 0x18);
     const reg32 list = guest.frame();
     const reg32 model = guest.dword(car + kCarModel);
-    cpu.ebx = model;
-    guest.leaveEdx(detail);
     fe::direct<0x49c410, frontend::rendc::objectsBegin>(app, cpu);
-    guest.call(kEndModelBatch);
+    callAt(guest, kEndModelBatch);
     const auto hasParts = [&](sreg32 parts) { return model != 0 && sreg32(guest.dword(model + kModelParts)) > parts; };
     if (detail == 3 && !hasParts(0xb))
         detail = 2;
@@ -1825,38 +1838,33 @@ x86::reg32 frontend::rendd::drawCar(App* app, CPU& cpu, reg32 car, reg32 view, r
         detail = 1;
     if (detail == 1 && !hasParts(5))
         detail = 0;
-    guest.leaveEdx(detail);
     if (detail <= 3)
     {
         if (hasParts(0xb))
         {
             static const reg32 kFull[] = { kDrawCarDetail, kCarNear, kCarFar, kCarFarthest };
-            guest.call(kFull[detail], args({ car, view }));
+            callAt(guest, kFull[detail], args({ car, view }));
         }
         else if (detail == 3)
             guest::direct<0x4bb110, carSimpleNear>(app, cpu, car, view);
         else
-            guest.call(kDrawTrafficDetail, args({ car, view }));
+            fe::direct<0x4bb200, render::mediumCarLightsDrawn>(app, cpu, car, view);
     }
-    guest.setEsi(list);
     fe::direct<0x49c470, frontend::rendc::objectsEnd>(app, cpu, list);
     if (guest.dword(kDriverOnCard) == 0)
     {
-        cpu.ebx = guest.dword(list + 4);
         const reg32 head = guest.dword(list);
-        guest.setEsi(list);
-        guest::direct<0x4c7380, rende::polygonsSorted>(app, cpu, list, head, cpu.ebx);
+        guest::direct<0x4c7380, rende::polygonsSorted>(app, cpu, list, head, guest.dword(list + 4));
     }
     const double depth = fp::sub(floatOf(guest, car + kCarDepth), floatOf(guest, kDepthBias));
-    guest.leaveEdx(list);   // as the call by address leaves it
     return fe::direct<0x49c420, frontend::rendc::objectsDraw>(app, cpu, view, list, bitsOf(float(depth)));
 }
 
-void frontend::rendDrawCar(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendDrawCar(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4bb4c0", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 car = cpu.eax, view = cpu.edx, detail = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendd::drawCar(app, cpu, car, view, detail); });
+    const reg32 car = args.eax, view = args.edx, detail = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendd::drawCar(app, cpu, car, view, detail); });
 }
 
 // ---------------------------------------------------------------------------
@@ -1877,10 +1885,10 @@ x86::reg32 frontend::rendd::detailInUse(App* app, CPU& cpu)
     return used;
 }
 
-void frontend::rendDetailInUse(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendDetailInUse(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4bba10", 0, 0, nullptr, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendd::detailInUse(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendd::detailInUse(app, cpu); });
 }
 
 /* sub_4bba50: the farthest car but the one numbered eax at detail edx brought to detail ebx;
@@ -1894,7 +1902,6 @@ x86::reg32 frontend::rendd::lowerDetail(App* app, CPU& cpu, reg32 keep, reg32 de
     for (; sreg32(i) < sreg32(guest.dword(kCarCount)); ++i)
     {
         const reg32 car = guest.dword(kCarTable + 4 * i);
-        cpu.ebx = car;
         if (i == keep)
             continue;
         if (!isAbove(fp::compare(floatOf(guest, car + kCarDepth), double(floatFrom(farthest)))))
@@ -1904,29 +1911,28 @@ x86::reg32 frontend::rendd::lowerDetail(App* app, CPU& cpu, reg32 keep, reg32 de
         farthest = guest.dword(car + kCarDepth);
         found = sreg32(i);
     }
-    guest.leaveEdx(i);
     if (found < 0)
         return 0;
     guest.setDword(guest.dword(kCarTable + 4 * reg32(found)) + kCarDetail, lowered);
     return 1;
 }
 
-void frontend::rendLowerDetail(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendLowerDetail(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4bba50", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 keep = cpu.eax, detail = cpu.edx, lowered = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendd::lowerDetail(app, cpu, keep, detail, lowered); });
+    const reg32 keep = args.eax, detail = args.edx, lowered = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendd::lowerDetail(app, cpu, keep, detail, lowered); });
 }
 
 /* sub_4bbad0: the cars' details cut to what the setting's budget allows, the camera eax's own
  * car spared; with a car asking for the second view, every such car's by the setting. */
-x86::reg32 frontend::rendd::fitDetailBudget(App* app, CPU& cpu, reg32 camera)
+x86::reg32 frontend::rendd::fitDetailBudget(App* app, CPU& cpu, reg32 camera, reg32 ecx)
 {
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0x24);
     constexpr reg32 kWantsBothViews = 0x9a4;
     const reg32 ownCar = fe::direct<0x422ba0, carstate::carOfCamera>(app, cpu, guest.dword(camera + 4));
-    reg32 own = cpu.ecx;
+    reg32 own = ecx;  // as it came: kept when no car is the camera's
     for (reg32 i = 0; sreg32(i) < sreg32(guest.dword(kCarCount)); ++i)
     {
         const reg32 car = guest.dword(kCarTable + 4 * i);
@@ -1937,16 +1943,13 @@ x86::reg32 frontend::rendd::fitDetailBudget(App* app, CPU& cpu, reg32 camera)
     for (;;)
     {
         const reg32 setting = gameSettings(guest).detailLevel;
-        guest.leaveEdx(setting);
         const reg32 used = guest::direct<0x4bba10, detailInUse>(app, cpu);
         left = used;
         if (sreg32(used) <= sreg32(guest.dword(kDetailBudget + 4 * setting)))
             break;
-        guest.leaveEbx(2);
         left = guest::direct<0x4bba50, lowerDetail>(app, cpu, own, 1u, 2u);
         if (left != 0)
             continue;
-        guest.leaveEbx(1);
         left = guest::direct<0x4bba50, lowerDetail>(app, cpu, own, 0u, 1u);
         if (left == 0)
             break;
@@ -1963,11 +1966,11 @@ x86::reg32 frontend::rendd::fitDetailBudget(App* app, CPU& cpu, reg32 camera)
     return i;
 }
 
-void frontend::rendFitDetailBudget(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendFitDetailBudget(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4bbad0", 0, 0, nullptr, 0 };
-    const reg32 camera = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendd::fitDetailBudget(app, cpu, camera); });
+    const reg32 camera = args.eax, ecx = args.ecx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendd::fitDetailBudget(app, cpu, camera, ecx); });
 }
 
 /* sub_4bbba0: every car in view eax: each one's detail by its distance (sub_4bb5d0), fitted
@@ -1981,19 +1984,18 @@ x86::reg32 frontend::rendd::cars(App* app, CPU& cpu, reg32 view)
     for (reg32 i = 0; sreg32(i) < sreg32(guest.dword(kCarCount)); ++i)
     {
         const reg32 car = guest.dword(kCarTable + 4 * i);
-        cpu.ecx = car;
         guest.setDword(car + kCarDepth, 0);
-        guest.setDword(car + kCarDetail, guest.call(kCarVisible, args({ view, car, car + kCarDepth })));
+        guest.setDword(car + kCarDetail, callAt(guest, kCarVisible, args({ view, car, car + kCarDepth })));
     }
-    guest::direct<0x4bbad0, fitDetailBudget>(app, cpu, view);
+    guest::direct<0x4bbad0, fitDetailBudget>(app, cpu, view, 0xffffffffu);
     for (reg32 i = 0; sreg32(i) < sreg32(guest.dword(kCarCount)); ++i)
     {
         const reg32 car = guest.dword(kCarTable + 4 * i);
-        cpu.ebx = guest.dword(car + kCarDetail);
-        if (sreg32(cpu.ebx) <= -1)
+        const reg32 detail = guest.dword(car + kCarDetail);
+        if (sreg32(detail) <= -1)
             continue;
         if (guest.dword(car + 0x8e4) != 0 && guest.dword(car + 0x8e8) != 0)
-            guest.call(kDrawCarExtras, args({ car, view }));
+            fe::direct<0x4b9bc0, render::carLightsDrawn>(app, cpu, car, view);
         if (guest.byte(car + 0x89) == 0 || guest.byte(car + 0x88) != 0)
             continue;
         if (guest.dword(car + 0x174) != 0)
@@ -2004,8 +2006,7 @@ x86::reg32 frontend::rendd::cars(App* app, CPU& cpu, reg32 view)
             if ((guest.byte(car + 0x8bc) & 1) != 0 && guest.dword(kEveryOtherFrame) == 0)
                 continue;
         }
-        // The detail in ebx, as set above.
-        guest::direct<0x4bb4c0, drawCar>(app, cpu, car, view, cpu.ebx);
+        guest::direct<0x4bb4c0, drawCar>(app, cpu, car, view, detail);
     }
     if (guest.dword(kReplayShowing) == 1)
         guest::direct<0x4b9df0, replayPose>(app, cpu, view, guest.dword(kPlayerCars + 4 * gameSettings(guest).localPlayer));
@@ -2015,11 +2016,11 @@ x86::reg32 frontend::rendd::cars(App* app, CPU& cpu, reg32 view)
     return now;
 }
 
-void frontend::rendCars(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendCars(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4bbba0", 0, 0, nullptr, 0 };
-    const reg32 view = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendd::cars(app, cpu, view); });
+    const reg32 view = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendd::cars(app, cpu, view); });
 }
 
 // ---------------------------------------------------------------------------
@@ -2036,10 +2037,10 @@ x86::reg32 frontend::rendd::arenaRewind(App* app, CPU& cpu)
     return start;
 }
 
-void frontend::rendArenaRewind(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendArenaRewind(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4bbd70", 0, 0, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendd::arenaRewind(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendd::arenaRewind(app, cpu); });
 }
 
 /* sub_4bbd80: the arena made, its next byte aligned to 32, 100 bytes of its size kept back. */
@@ -2047,7 +2048,7 @@ x86::reg32 frontend::rendd::arenaCreate(App* app, CPU& cpu)
 {
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 8);
-    const reg32 block = guest.call(kCreateArena, args({ kArenaSize }));
+    const reg32 block = *fe::direct<0x4b56e0, render::transformBufferAllocated>(app, cpu, kArenaSize);
     guest.setDword(kArena, block);
     const reg32 next = block + 0x1f;
     guest.setDword(kArenaNext, next);
@@ -2057,10 +2058,10 @@ x86::reg32 frontend::rendd::arenaCreate(App* app, CPU& cpu)
     return (next & 0xffff00ff) | (reg32(aligned) << 8);
 }
 
-void frontend::rendArenaCreate(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendArenaCreate(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4bbd80", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendd::arenaCreate(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendd::arenaCreate(app, cpu); });
 }
 
 /* sub_4bbdc0: the arena freed. */
@@ -2068,15 +2069,15 @@ x86::reg32 frontend::rendd::arenaFree(App* app, CPU& cpu)
 {
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 8);
-    const reg32 freed = guest.call(kFreeBlock, args({ guest.dword(kArena), 0 }));
-    guest.setDword(kArena, guest.edx());
+    const reg32 freed = guest::direct<0x4b5700, freeBlock>(app, cpu, guest.dword(kArena));
+    guest.setDword(kArena, 0);  // the edx the freeing is handed and leaves
     return freed;
 }
 
-void frontend::rendArenaFree(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendArenaFree(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4bbdc0", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendd::arenaFree(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendd::arenaFree(app, cpu); });
 }
 
 /* sub_4bbde0: edx bytes of the arena to *eax, the next aligned to 32; 1, or 0 and the log's
@@ -2098,11 +2099,11 @@ x86::reg32 frontend::rendd::arenaTake(App* app, CPU& cpu, reg32 slot, reg32 byte
     return 0;
 }
 
-void frontend::rendArenaTake(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendArenaTake(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4bbde0", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 slot = cpu.eax, bytes = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendd::arenaTake(app, cpu, slot, bytes); });
+    const reg32 slot = args.eax, bytes = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendd::arenaTake(app, cpu, slot, bytes); });
 }
 
 /* sub_4bbe40: where the arena is now, to *eax; 1, or 0 when it has run out. */
@@ -2112,15 +2113,14 @@ x86::reg32 frontend::rendd::arenaHere(App* app, CPU& cpu, reg32 slot)
     const reg32 here = guest.dword(kArenaNext);
     guest.setDword(slot, here);
     const reg32 start = guest.dword(kArena);
-    guest.leaveEdx(start);
     return sreg32(here - start) <= sreg32(guest.dword(kArenaSize)) ? 1 : 0;
 }
 
-void frontend::rendArenaHere(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendArenaHere(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4bbe40", 0, 0, nullptr, 0, fe::kRestoreEcx };
-    const reg32 slot = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendd::arenaHere(app, cpu, slot); });
+    const reg32 slot = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendd::arenaHere(app, cpu, slot); });
 }
 
 /* A list is two dwords in the caller's frame: its first record and its last.  These leave esi
@@ -2133,15 +2133,14 @@ x86::reg32 frontend::rendd::emptyList(App* app, CPU& cpu, reg32 list)
     const fe::Frame ownFrame(guest, cpu, 0x14);
     guest.setDword(list, 0);
     guest.setDword(list + 4, 0);
-    guest.setEsi(guest.frame() + 8);
     return list;
 }
 
-void frontend::rendEmptyList(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendEmptyList(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4bbe70", 0, 0, nullptr, 0, fe::kRestoreEdx | fe::kRestoreEdi };
-    const reg32 list = cpu.esi;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendd::emptyList(app, cpu, list); });
+    const reg32 list = args.esi;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendd::emptyList(app, cpu, list); });
 }
 
 /* sub_4bbe90: *esi the list of the one record eax, 0 for none. */
@@ -2153,15 +2152,14 @@ x86::reg32 frontend::rendd::listOfOne(App* app, CPU& cpu, reg32 record, reg32 li
         guest.setDword(record, 0);
     guest.setDword(list, record);
     guest.setDword(list + 4, record);
-    guest.setEsi(guest.frame() + 8);
     return list;
 }
 
-void frontend::rendListOfOne(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendListOfOne(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4bbe90", 0, 0, nullptr, 0, fe::kRestoreEdx | fe::kRestoreEdi };
-    const reg32 record = cpu.eax, list = cpu.esi;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendd::listOfOne(app, cpu, record, list); });
+    const reg32 record = args.eax, list = args.esi;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendd::listOfOne(app, cpu, record, list); });
 }
 
 /* sub_4bbec0: *esi the two lists on the stack joined, an empty one giving the other. */
@@ -2182,17 +2180,16 @@ x86::reg32 frontend::rendd::joinLists(App* app, CPU& cpu, reg32 list, reg32 firs
     }
     guest.setDword(list, head);
     guest.setDword(list + 4, tail);
-    guest.setEsi(guest.frame() + 8);
     return list;
 }
 
-void frontend::rendJoinLists(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendJoinLists(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4bbec0", 0x10, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEdx | fe::kRestoreEdi };
     const reg32 firstHead = app->getMemory<reg32>(cpu.esp + 4), firstTail = app->getMemory<reg32>(cpu.esp + 8);
     const reg32 secondHead = app->getMemory<reg32>(cpu.esp + 0xc), secondTail = app->getMemory<reg32>(cpu.esp + 0x10);
-    const reg32 list = cpu.esi;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendd::joinLists(app, cpu, list, firstHead, firstTail, secondHead, secondTail); });
+    const reg32 list = args.esi;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendd::joinLists(app, cpu, list, firstHead, firstTail, secondHead, secondTail); });
 }
 
 /* sub_4bbf20: the open list empty. */
@@ -2201,21 +2198,26 @@ x86::reg32 frontend::rendd::openListStart(App* app, CPU& cpu)
     Guest guest(app, cpu);
     guest.setDword(kOpenListTail, 0);
     guest.setDword(kOpenListHead, 0);
-    return guest.eax();
+    return 0;  // nothing: the thunk leaves eax as it came
 }
 
-void frontend::rendOpenListStart(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendOpenListStart(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4bbf20", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendd::openListStart(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { rendd::openListStart(app, cpu); return args.eax; });
 }
 
 /* sub_4bbf40: the list on the stack put on the end of the open one. */
 x86::reg32 frontend::rendd::openListAppend(App* app, CPU& cpu, reg32 head, reg32 tail)
 {
+    return openListAppendKeeping(app, cpu, head, tail, 0);
+}
+
+x86::reg32 frontend::rendd::openListAppendKeeping(App* app, CPU& cpu, reg32 head, reg32 tail, reg32 eax)
+{
     Guest guest(app, cpu);
     if (head == 0 || tail == 0)
-        return guest.eax();
+        return eax;
     if (guest.dword(kOpenListHead) == 0)
         guest.setDword(kOpenListHead, head);
     else
@@ -2224,11 +2226,11 @@ x86::reg32 frontend::rendd::openListAppend(App* app, CPU& cpu, reg32 head, reg32
     return tail;
 }
 
-void frontend::rendOpenListAppend(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendOpenListAppend(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4bbf40", 8, 0, nullptr, 0, fe::kRestoreEdx };
     const reg32 head = app->getMemory<reg32>(cpu.esp + 4), tail = app->getMemory<reg32>(cpu.esp + 8);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendd::openListAppend(app, cpu, head, tail); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendd::openListAppendKeeping(app, cpu, head, tail, args.eax); });
 }
 
 /* sub_4bbf80: edx bytes of the arena to *eax, on the end of the open list; 1, or 0 when the
@@ -2244,18 +2246,17 @@ x86::reg32 frontend::rendd::openListTake(App* app, CPU& cpu, reg32 slot, reg32 b
     else
     {
         const reg32 tail = guest.dword(kOpenListTail);
-        guest.leaveEdx(tail);
         guest.setDword(tail, guest.dword(slot));
     }
     guest.setDword(kOpenListTail, guest.dword(slot));
     return 1;
 }
 
-void frontend::rendOpenListTake(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendOpenListTake(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4bbf80", 0, 0, nullptr, 0, fe::kRestoreEcx };
-    const reg32 slot = cpu.eax, bytes = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendd::openListTake(app, cpu, slot, bytes); });
+    const reg32 slot = args.eax, bytes = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendd::openListTake(app, cpu, slot, bytes); });
 }
 
 /* sub_4bbfc0: the open list closed, to *esi. */
@@ -2268,15 +2269,14 @@ x86::reg32 frontend::rendd::openListClose(App* app, CPU& cpu, reg32 list)
         guest.setDword(tail, 0);
     guest.setDword(list, head);
     guest.setDword(list + 4, tail);
-    guest.setEsi(guest.frame() + 8);
     return list;
 }
 
-void frontend::rendOpenListClose(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendOpenListClose(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4bbfc0", 0, 0, nullptr, 0, fe::kRestoreEdi };
-    const reg32 list = cpu.esi;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendd::openListClose(app, cpu, list); });
+    const reg32 list = args.esi;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendd::openListClose(app, cpu, list); });
 }
 
 /* sub_4bc000: the vertices of mesh eax flushed and listed, the list to *esi. */
@@ -2285,22 +2285,22 @@ x86::reg32 frontend::rendd::flushAndList(App* app, CPU& cpu, reg32 mesh, reg32 o
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0x18);
     const reg32 list = guest.frame();
-    guest.setEsi(list);
-    guest.call(kFlushVertices);
-    guest.setEsi(list);
-    guest.call(kListVertices, args({ mesh }));
-    const reg32 from = cpu.esi;
+    // esi is where the flush puts what it gathers, and the listing keeps it
+    // eax as the code has it at the call: the mesh it came with, which the flush reads as deep (non-zero: the far
+    // buckets too, where the trees and fences are).
+    callAt(guest, kFlushVertices, args({ mesh }), list);
+    callAt(guest, kListVertices, args({ mesh }), list);
+    const reg32 from = list;  // the esi the listing keeps
     guest.setDword(out, guest.dword(from));
     guest.setDword(out + 4, guest.dword(from + 4));
-    guest.setEsi(from + 8);
     return out;
 }
 
-void frontend::rendFlushAndList(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendFlushAndList(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4bc000", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEdx | fe::kRestoreEdi };
-    const reg32 mesh = cpu.eax, out = cpu.esi;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendd::flushAndList(app, cpu, mesh, out); });
+    const reg32 mesh = args.eax, out = args.esi;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendd::flushAndList(app, cpu, mesh, out); });
 }
 
 namespace
@@ -2310,7 +2310,6 @@ namespace
 inline reg32 emptyThroughFrame(win32::WinApplication* app, x86::CPU& cpu, Guest& guest, reg32 list)
 {
     const reg32 copy = guest.frame();
-    guest.setEsi(copy);
     const reg32 left = guest::direct<0x4bbe70, frontend::rendd::emptyList>(app, cpu, copy);
     guest.setDword(list, guest.dword(copy));
     guest.setDword(list + 4, guest.dword(copy + 4));
@@ -2325,18 +2324,15 @@ x86::reg32 frontend::rendd::drawListPlain(App* app, CPU& cpu, reg32 view, reg32 
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0x1c);
     const reg32 tail = guest.dword(list + 4), head = guest.dword(list);
-    guest.leaveEcx(tail);
-    guest.leaveEbx(head);
-    guest.setEsi(guest.frame());
-    guest.call(kDrawListSoftware, args({ view }, { head, tail }));
+    fe::direct<kDrawListSoftware, collide::listDrawnMirrored>(guest.app(), guest.cpu(), view, head);
     return emptyThroughFrame(app, cpu, guest, list);
 }
 
-void frontend::rendDrawListPlain(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendDrawListPlain(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4bc030", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 view = cpu.eax, list = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendd::drawListPlain(app, cpu, view, list); });
+    const reg32 view = args.eax, list = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendd::drawListPlain(app, cpu, view, list); });
 }
 
 /* sub_4bc060: the list edx drawn in view eax, by the card's driver at the depth on the stack,
@@ -2346,23 +2342,21 @@ x86::reg32 frontend::rendd::drawListAt(App* app, CPU& cpu, reg32 view, reg32 lis
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0x18);
     if (guest.dword(kDriverOnCard) == 0)
-        guest.call(kDrawListAtDepth, args({ guest.dword(list) }, { depth }));
+        callAt(guest, kDrawListAtDepth, args({ guest.dword(list) }, { depth }));
     else
     {
         const reg32 head = guest.dword(list), tail = guest.dword(list + 4);
-        guest.leaveEbx(tail);
-        guest.setEsi(head);
-        guest.call(kDrawListSoftware, args({ view }, { head, tail }));
+        fe::direct<kDrawListSoftware, collide::listDrawnMirrored>(guest.app(), guest.cpu(), view, head);
     }
     return emptyThroughFrame(app, cpu, guest, list);
 }
 
-void frontend::rendDrawListAt(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendDrawListAt(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4bc060", 4, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEsi | fe::kRestoreEdi };
     const reg32 depth = app->getMemory<reg32>(cpu.esp + 4);
-    const reg32 view = cpu.eax, list = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendd::drawListAt(app, cpu, view, list, depth); });
+    const reg32 view = args.eax, list = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendd::drawListAt(app, cpu, view, list, depth); });
 }
 
 /* sub_4bc0b0: the list edx drawn in view eax, by the card's driver as a list of the depth on
@@ -2374,24 +2368,21 @@ x86::reg32 frontend::rendd::drawListMirrored(App* app, CPU& cpu, reg32 view, reg
     const reg32 head = guest.dword(list), tail = guest.dword(list + 4);
     if (guest.dword(kDriverOnCard) == 0)
     {
-        guest.leaveEbx(tail);
-        guest.setEsi(head);
         guest::direct<0x4c7400, rende::depthBucketAppend>(app, cpu, view, head, tail, depth);
     }
     else
     {
-        guest.leaveEcx(head);
-        guest.call(kDrawListSoftware, args({ view }, { head, tail }));
+        fe::direct<kDrawListSoftware, collide::listDrawnMirrored>(guest.app(), guest.cpu(), view, head);
     }
     return emptyThroughFrame(app, cpu, guest, list);
 }
 
-void frontend::rendDrawListMirrored(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendDrawListMirrored(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4bc0b0", 4, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
     const reg32 depth = app->getMemory<reg32>(cpu.esp + 4);
-    const reg32 view = cpu.eax, list = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendd::drawListMirrored(app, cpu, view, list, depth); });
+    const reg32 view = args.eax, list = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendd::drawListMirrored(app, cpu, view, list, depth); });
 }
 
 // ---------------------------------------------------------------------------
@@ -2413,10 +2404,10 @@ x86::reg32 frontend::rendd::fillReciprocals(App* app, CPU& cpu)
     return 0x100;
 }
 
-void frontend::rendFillReciprocals(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendFillReciprocals(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4bf110", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendd::fillReciprocals(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendd::fillReciprocals(app, cpu); });
 }
 
 /* sub_4bf1b0: the numbers of the clip: the view's left, top, right and bottom, then its two
@@ -2444,13 +2435,13 @@ x86::reg32 frontend::rendd::setClipBounds(App* app, CPU& cpu, reg32 left, reg32 
     return kVertexCacheCount;
 }
 
-void frontend::rendSetClipBounds(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendSetClipBounds(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4bf1b0", 0x18, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEdx };
     const reg32 left = app->getMemory<reg32>(cpu.esp + 4), top = app->getMemory<reg32>(cpu.esp + 8);
     const reg32 right = app->getMemory<reg32>(cpu.esp + 0xc), bottom = app->getMemory<reg32>(cpu.esp + 0x10);
     const reg32 nearest = app->getMemory<reg32>(cpu.esp + 0x14), farthest = app->getMemory<reg32>(cpu.esp + 0x18);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendd::setClipBounds(app, cpu, left, top, right, bottom, nearest, farthest); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendd::setClipBounds(app, cpu, left, top, right, bottom, nearest, farthest); });
 }
 
 /* sub_4bf260: the projection's scale and centre: the window's corner and size on the stack, the
@@ -2506,14 +2497,14 @@ x86::reg32 frontend::rendd::setProjection(App* app, CPU& cpu, reg32 cornerXBits,
     return (widthBits & 0xffff00ff) | (reg32(flipped) << 8);
 }
 
-void frontend::rendSetProjection(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendSetProjection(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4bf260", 0x1c, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx };
     const reg32 cornerX = app->getMemory<reg32>(cpu.esp + 4), cornerY = app->getMemory<reg32>(cpu.esp + 8);
     const reg32 width = app->getMemory<reg32>(cpu.esp + 0xc), height = app->getMemory<reg32>(cpu.esp + 0x10);
     const reg32 fovX = app->getMemory<reg32>(cpu.esp + 0x14), fovY = app->getMemory<reg32>(cpu.esp + 0x18);
     const reg32 mirrored = app->getMemory<reg32>(cpu.esp + 0x1c);
-    fe::runWhole(app, cpu, site, [&](Guest&) {
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
         return rendd::setProjection(app, cpu, cornerX, cornerY, width, height, fovX, fovY, mirrored);
     });
 }
@@ -2557,16 +2548,14 @@ x86::reg32 frontend::rendd::projectPoints(App* app, CPU& cpu, reg32 count, reg32
         point += 0xc;
         vertex += 0x20;
     }
-    cpu.ebx = 0xffffffff;
-    guest.leaveEdx(vertex);
     return point;
 }
 
-void frontend::rendProjectPoints(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendProjectPoints(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4bf370", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 count = cpu.eax, points = cpu.edx, vertices = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendd::projectPoints(app, cpu, count, points, vertices); });
+    const reg32 count = args.eax, points = args.edx, vertices = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendd::projectPoints(app, cpu, count, points, vertices); });
 }
 
 }

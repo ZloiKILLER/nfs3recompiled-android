@@ -31,7 +31,7 @@ namespace
 }  // namespace
 
 #define DEAD(address) \
-    void dead_##address(App*, CPU&) { deadCode(address); }
+    x86::reg32 dead_##address(App*, CPU&, x86::Args&) { deadCode(address); return 0; }
 #include "native_snd_dead.inc"
 #undef DEAD
 

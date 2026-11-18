@@ -18,7 +18,7 @@ constexpr const char* kDynamicFullscreenName = "Dynamic Fullscreen";
 /* Dynamic Fullscreen put in the Voodoo2 driver's mode table (main). */
 void dynamicFullscreenStart(win32::WinApplication* app);
 
-/* sub_4bee80's answer for the saved size (tools/apply_widescreen.py). */
+/* sub_4bee80's answer for the saved size (the port's widescreen change). */
 x86::reg32 dynamicSavedMode(x86::reg32 found, x86::reg32 width);
 
 /* Whether the driver's mode `mode` (an index into its table) is Dynamic

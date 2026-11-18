@@ -21,17 +21,18 @@ class Mutex;
 class MemMap;
 class RegistryValue;
 
-typedef void (*MethodPtr)(WinApplication* application, x86::CPU& cpu);
+/* A function the game calls through a pointer (its tables, callbacks, threads, imports): its
+ * arguments in `args` by Watcom's convention, its stack words where cpu.esp points; its eax
+ * returned, what else it leaves for the caller in `args`. */
+typedef x86::reg32 (*ThunkPtr)(WinApplication* application, x86::CPU& cpu, x86::Args& args);
 
 struct Method
 {
     std::string name;
-    MethodPtr method;
+    ThunkPtr thunk = nullptr;
 
-    void operator()(WinApplication* application, x86::CPU& cpu) const
-    {
-        method(application, cpu);
-    }
+    Method() = default;
+    Method(std::string n, ThunkPtr t) : name(std::move(n)), thunk(t) {}
 };
 
 class GenericResource
@@ -186,7 +187,7 @@ public:
      * showcase's exit waiting for the sound thread to stop the narration
      * (sub_4e7b28) -- could keep that thread out for good, where Windows 98
      * would have taken the processor away from it at the end of its time slice.
-     * The generator puts a check at the head of every loop: whether a thread is
+     * Such a loop has a safepoint at its head: whether a thread is
      * waiting for the context, a load and a branch; and when one is, and has
      * waited longer than a slice, yieldContext hands the context over. */
     inline bool contextWanted() const
@@ -195,10 +196,7 @@ public:
     }
     void yieldContext(const x86::CPU& cpu);
     /* While one is alive, this thread keeps the context, at its safepoints and
-     * in the API calls that would let it go while they wait: a native
-     * checked against the generated code (NFS_NATIVE_CHECK) runs a call twice
-     * and puts guest memory back in between, which no other guest thread -- the
-     * sound's timer and mixer -- may see or write half done. */
+     * in the API calls that would let it go while they wait. */
     struct KeepContext
     {
         KeepContext();
@@ -212,9 +210,9 @@ public:
 public:
     // Set NFS_TRACE_API=1 in the environment to log every win32 call by name.
     // Compiled in unconditionally so it can be toggled without a full rebuild of
-    // the ~60 MB of generated code that includes this header.  Read once, on
-    // first use; after that a load and a compare, since dynamic_call asks it on
-    // every indirect call.
+    // the ~60 MB of the game's code that includes this header.  Read once, on
+    // first use; after that a load and a compare, since app->callAddress asks it on
+    // every call through a pointer.
     static bool traceApi()
     {
         return (s_traceApi < 0 ? readTraceApi() : s_traceApi) != 0;
@@ -224,20 +222,17 @@ public:
      * ([CALL]), instead of nothing or (NFS_TRACE_API) every call: what a
      * network race runs, to compare two machines.  Starts the list over. */
     static void traceNewCalls();
-    void traceCall(const Method& method, x86::reg32 address);
+    void traceCall(x86::reg32 address);
 
     /* Reports an indirect call whose target is in no table.  Out of line and
-     * cold on purpose: dynamic_call is inlined into tens of thousands of
-     * generated call sites, so the miss path must add no code of its own to
-     * any of them. */
+     * cold on purpose: the miss path adds no code to the callers. */
     void reportMissingMethod(x86::reg32 address);
 
-    /* An indirect call: a function pointer, a vtable or an import.  It is on
-     * the hot path -- every triangle takes at least two, the game's pointer to
-     * the driver and the driver's import of Glide -- so the target comes out of
-     * a table of pages, two loads, rather than the hash map it used to be
-     * looked up in, a division and a chase along a bucket's nodes. */
-    inline void dynamic_call(uint32_t address, x86::CPU& cpu)
+    /* The function registered at `address`, or null.  It is on the hot path --
+     * every triangle takes at least two pointer calls, the game's pointer to the
+     * driver and the driver's import of Glide -- so it comes out of a table of
+     * pages, two loads, rather than the hash map. */
+    inline ThunkPtr thunkAt(uint32_t address) const
     {
         const x86::reg32 offset = address - kMethodBase;
         if (offset < kMethodSpan)
@@ -245,31 +240,25 @@ public:
             const std::uint16_t* page = m_methodPages[offset >> kMethodPageBits];
             const std::uint16_t index = page ? page[offset & kMethodPageMask] : 0;
             if (index)
-            {
-                const win32::Method& m = m_methodList[index];
-                if (traceApi())
-                    traceCall(m, address);
-                m(this, cpu);
-                return;
-            }
+                return m_methodList[index].thunk;
         }
-        dynamicCallElsewhere(address, cpu);
+        return thunkElsewhere(address);
     }
 
-    /* The function dynamic_call would call at `address` from its table, or null: for a caller
-     * that calls a method as C++ to see that a COM object's table has that method there
-     * (src/nfs3hp/native_windows.h, guest::method). */
-    inline MethodPtr methodAt(uint32_t address) const
+    /* A call through a pointer (a function pointer, a vtable, an import): the
+     * function at `address` run on `args`; its eax.  An address with nothing
+     * registered is reported once and skipped, `args` left as they were. */
+    inline x86::reg32 callAddress(uint32_t address, x86::CPU& cpu, x86::Args& args)
     {
-        const x86::reg32 offset = address - kMethodBase;
-        if (offset < kMethodSpan)
+        const ThunkPtr thunk = thunkAt(address);
+        if (!thunk)
         {
-            const std::uint16_t* page = m_methodPages[offset >> kMethodPageBits];
-            const std::uint16_t index = page ? page[offset & kMethodPageMask] : 0;
-            if (index)
-                return m_methodList[index].method;
+            reportMissingMethod(address);
+            return args.eax;
         }
-        return nullptr;
+        if (traceApi())
+            traceCall(address);
+        return thunk(this, cpu, args);
     }
 
 protected:
@@ -282,9 +271,8 @@ private:
     static bool readTraceApi();
     int runOn(x86::CPU& cpu, const MemMap& threadStorage, const MemMap& threadStack,
               x86::reg32 entryPoint, x86::reg32 parameter, bool threadLock);
-    /* A target outside the page table, or not in it: the map, and the report
-     * when that has nothing either. */
-    void dynamicCallElsewhere(x86::reg32 address, x86::CPU& cpu);
+    /* A target outside the page table, or not in it: the map's, or null. */
+    ThunkPtr thunkElsewhere(x86::reg32 address) const;
 
     /* Guest code, and the addresses the port gives the methods of its own
      * libraries, lie between 0x400000 and 0xc00000: the exe from its base and
@@ -318,7 +306,7 @@ protected:
     x86::CPU                                m_cpu;
 
 private:
-    /* Every registered method once more, for dynamic_call: a page of 4096
+    /* Every registered method once more, for app->callAddress: a page of 4096
      * guest addresses holds, for each, the method's place in m_methodList, 0
      * for none; a page with no method is not allocated.  Filled as methods are
      * registered, which is all done while the application is built. */

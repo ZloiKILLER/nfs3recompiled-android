@@ -12,9 +12,8 @@
  * a text placed on the menus' 640 by 480 screen and on the screen's own, a
  * text wrapped into a box, the menus' key from the keyboard and the mouse.
  *
- * disassemble_nfs3hp.py binds each address to the adapter of that name here
- * (PORT_TEXT_NATIVES), and the generated code calls it by name; the other
- * natives call these adapters as the game's code would call the address. */
+ * The game's code calls each by the name it has here; the other
+ * natives call these thunks as the game's code would call the address. */
 namespace nfs3hp
 {
 namespace port
@@ -22,54 +21,53 @@ namespace port
 namespace text
 {
 
-/* The adapters, under the game's functions' names. */
-void textWidth(App* app, CPU& cpu);              // 0x452020
-void selectFont(App* app, CPU& cpu);             // 0x452100
-void measureText(App* app, CPU& cpu);            // 0x4d1430
-void textWidthWithOverhang(App* app, CPU& cpu);  // 0x4d1480
-void drawText(App* app, CPU& cpu);               // 0x4d1000
-void drawCharacter(App* app, CPU& cpu);          // 0x4d06f0
-void takeQuad(App* app, CPU& cpu);               // 0x49bcd0
-void viewport(App* app, CPU& cpu);               // 0x4beb80
-void toScreenX(App* app, CPU& cpu);              // 0x451400
-void toScreenY(App* app, CPU& cpu);              // 0x451440
-void specialText(App* app, CPU& cpu);            // 0x4d17b0
-void languageText(App* app, CPU& cpu);           // 0x4d1850
-void flushFonts(App* app, CPU& cpu);             // 0x4d1340
-void setTextScale(App* app, CPU& cpu);           // 0x4d1390
-void keepTextScale(App* app, CPU& cpu);          // 0x4d1400
-void restoreTextScale(App* app, CPU& cpu);       // 0x4d1410
-void characterWidth(App* app, CPU& cpu);         // 0x4d1540
-void characterOverhang(App* app, CPU& cpu);      // 0x4d1590
-void setTextColour(App* app, CPU& cpu);          // 0x4513c0
-void screenToMenuX(App* app, CPU& cpu);          // 0x451480
-void screenToMenuY(App* app, CPU& cpu);          // 0x4514c0
-void readMenuMouse(App* app, CPU& cpu);          // 0x451500
-void dimBackground(App* app, CPU& cpu);          // 0x451530
-void drawTextAt(App* app, CPU& cpu);             // 0x451590
-void drawMenuText(App* app, CPU& cpu);           // 0x452190
-void flushQuads(App* app, CPU& cpu);             // 0x49be40
-void joystickKey(App* app, CPU& cpu);            // 0x451700
-void captureKeys(App* app, CPU& cpu);            // 0x451810
-void scanCodeOfKey(App* app, CPU& cpu);          // 0x451840
-void keyOfScanCode(App* app, CPU& cpu);          // 0x4518c0
-void menuKey(App* app, CPU& cpu);                // 0x451960
-void resetMenuKey(App* app, CPU& cpu);           // 0x451b20
-void nextWord(App* app, CPU& cpu);               // 0x451b50
-void drawWrappedText(App* app, CPU& cpu);        // 0x451cd0
-void drawTextBox(App* app, CPU& cpu);            // 0x451fc0
-void measureTextBox(App* app, CPU& cpu);         // 0x451ff0
-void menusEnd(App* app, CPU& cpu);               // 0x452110
-void queueQuad(App* app, CPU& cpu);              // 0x49bd30
-void unqueueQuad(App* app, CPU& cpu);            // 0x49bdc0
-void mouseMenuKey(App* app, CPU& cpu);           // 0x49c000
-void loadLanguageText(App* app, CPU& cpu);       // 0x4d1750
+/* The thunks, under the game's functions' names. */
+x86::reg32 textWidth(App* app, CPU& cpu, x86::Args& args);              // 0x452020
+x86::reg32 selectFont(App* app, CPU& cpu, x86::Args& args);             // 0x452100
+x86::reg32 measureText(App* app, CPU& cpu, x86::Args& args);            // 0x4d1430
+x86::reg32 textWidthWithOverhang(App* app, CPU& cpu, x86::Args& args);  // 0x4d1480
+x86::reg32 drawText(App* app, CPU& cpu, x86::Args& args);               // 0x4d1000
+x86::reg32 drawCharacter(App* app, CPU& cpu, x86::Args& args);          // 0x4d06f0
+x86::reg32 takeQuad(App* app, CPU& cpu, x86::Args& args);               // 0x49bcd0
+x86::reg32 viewport(App* app, CPU& cpu, x86::Args& args);               // 0x4beb80
+x86::reg32 toScreenX(App* app, CPU& cpu, x86::Args& args);              // 0x451400
+x86::reg32 toScreenY(App* app, CPU& cpu, x86::Args& args);              // 0x451440
+x86::reg32 specialText(App* app, CPU& cpu, x86::Args& args);            // 0x4d17b0
+x86::reg32 languageText(App* app, CPU& cpu, x86::Args& args);           // 0x4d1850
+x86::reg32 flushFonts(App* app, CPU& cpu, x86::Args& args);             // 0x4d1340
+x86::reg32 setTextScale(App* app, CPU& cpu, x86::Args& args);           // 0x4d1390
+x86::reg32 keepTextScale(App* app, CPU& cpu, x86::Args& args);          // 0x4d1400
+x86::reg32 restoreTextScale(App* app, CPU& cpu, x86::Args& args);       // 0x4d1410
+x86::reg32 characterWidth(App* app, CPU& cpu, x86::Args& args);         // 0x4d1540
+x86::reg32 characterOverhang(App* app, CPU& cpu, x86::Args& args);      // 0x4d1590
+x86::reg32 setTextColour(App* app, CPU& cpu, x86::Args& args);          // 0x4513c0
+x86::reg32 screenToMenuX(App* app, CPU& cpu, x86::Args& args);          // 0x451480
+x86::reg32 screenToMenuY(App* app, CPU& cpu, x86::Args& args);          // 0x4514c0
+x86::reg32 readMenuMouse(App* app, CPU& cpu, x86::Args& args);          // 0x451500
+x86::reg32 dimBackground(App* app, CPU& cpu, x86::Args& args);          // 0x451530
+x86::reg32 drawTextAt(App* app, CPU& cpu, x86::Args& args);             // 0x451590
+x86::reg32 drawMenuText(App* app, CPU& cpu, x86::Args& args);           // 0x452190
+x86::reg32 flushQuads(App* app, CPU& cpu, x86::Args& args);             // 0x49be40
+x86::reg32 joystickKey(App* app, CPU& cpu, x86::Args& args);            // 0x451700
+x86::reg32 captureKeys(App* app, CPU& cpu, x86::Args& args);            // 0x451810
+x86::reg32 scanCodeOfKey(App* app, CPU& cpu, x86::Args& args);          // 0x451840
+x86::reg32 keyOfScanCode(App* app, CPU& cpu, x86::Args& args);          // 0x4518c0
+x86::reg32 menuKey(App* app, CPU& cpu, x86::Args& args);                // 0x451960
+x86::reg32 resetMenuKey(App* app, CPU& cpu, x86::Args& args);           // 0x451b20
+x86::reg32 nextWord(App* app, CPU& cpu, x86::Args& args);               // 0x451b50
+x86::reg32 drawWrappedText(App* app, CPU& cpu, x86::Args& args);        // 0x451cd0
+x86::reg32 drawTextBox(App* app, CPU& cpu, x86::Args& args);            // 0x451fc0
+x86::reg32 measureTextBox(App* app, CPU& cpu, x86::Args& args);         // 0x451ff0
+x86::reg32 menusEnd(App* app, CPU& cpu, x86::Args& args);               // 0x452110
+x86::reg32 queueQuad(App* app, CPU& cpu, x86::Args& args);              // 0x49bd30
+x86::reg32 unqueueQuad(App* app, CPU& cpu, x86::Args& args);            // 0x49bdc0
+x86::reg32 mouseMenuKey(App* app, CPU& cpu, x86::Args& args);           // 0x49c000
+x86::reg32 loadLanguageText(App* app, CPU& cpu, x86::Args& args);       // 0x4d1750
 
-/* The typed cores the menus call as C++ (guest::direct), and how the game's code calls each by address
- * (ByAddress below, for the checks' stand-ins).  A Result is nullopt when the game stopped in a call.  A core's
- * `esp` is the frame base its adapter hands it: the game's esp on entry, at the return address.  A caller
+/* The typed cores the menus call as C++ (guest::direct), and how the game's code calls each by address.  A Result is nullopt when the game stopped in a call.  A core's
+ * `esp` is the frame base its thunk hands it: the game's esp on entry, at the return address.  A caller
  * through guest::direct passes cpu.esp - 4 - 4 * N, N the stack words the game's call pushes: the esp the
- * adapter hands it, so the core's frame lies where the game's does; by address the call makes it. */
+ * thunk hands it, so the core's frame lies where the game's does; by address the call makes it. */
 
 // The game's 0x452020: how wide `text` is in font `font` (5 for none); esp the frame base.
 Result menuTextWidth(App* app, CPU& cpu, reg32 esp, reg32 text, reg32 font);
@@ -88,6 +86,14 @@ void restoreTextScaleOf(App* app, CPU& cpu);
 Result loadedLanguageText(App* app, CPU& cpu, reg32 esp, int32_t language);
 // The game's 0x4d1850: line `number` of the language's text, or a name past them (`edx` handed on to those); esp the frame base.
 Result lineText(App* app, CPU& cpu, reg32 esp, int32_t number, reg32 edx);
+// 0x451400 and 0x451440 as plain functions: x on the 640 wide menu screen, y on the 480 high one, to the screen's own.
+bool mouseRead(App* app, CPU& cpu, reg32 esp, reg32 buttons, reg32 x, reg32 y, reg32 wheel);  // 0x451500
+int32_t screenX(App* app, int32_t x);
+int32_t screenY(App* app, int32_t y);
+// The game's 0x4513c0: the menus' text's colour set to `colour` (eax left as it came).
+void textColourSet(App* app, reg32 colour);
+// The game's 0x451590: `text` at x, y of the menus' screen; esp the frame base.
+Result textDrawnAt(App* app, CPU& cpu, reg32 esp, reg32 text, int32_t x, int32_t y);
 // The game's 0x451530: the screen behind the menus dimmed by the float at `slot` (its stack argument's place, where a
 // race's pause screens put their shade instead): that shade, else `eax`.
 reg32 dimmed(App* app, CPU& cpu, reg32 slot, reg32 eax);
@@ -95,8 +101,7 @@ reg32 dimmed(App* app, CPU& cpu, reg32 slot, reg32 eax);
 Result menuKeyOf(App* app, CPU& cpu, reg32 esp, reg32 repeating);
 
 /* Those whose code leaves a value on the x87's stack (Watcom's float result): the value comes back
- * as a double, and eax as the code leaves it; their adapters put it on the x87's stack, and their
- * ByAddress take it off. */
+ * as a double, and eax as the code leaves it; their thunks hand it back in Args::floatResult. */
 struct Width
 {
     reg32 eax;
@@ -129,223 +134,44 @@ WidthResult textMeasuredWithOverhang(App* app, CPU& cpu, reg32 esp, reg32 text);
 // The game's 0x4d1000: `text` at x, y in the font's colour, or only measured; how wide; esp the frame base.
 WidthResult textDrawn(App* app, CPU& cpu, reg32 esp, reg32 text, int32_t x, int32_t y);
 
+// The game's 0x49bd30 (stdcall 4): the quad a, b, c, d queued on `list` (`d` the stack's word); esp the frame base.
+Result quadQueued(App* app, CPU& cpu, reg32 esp, reg32 list, reg32 a, reg32 b, reg32 c, reg32 d);
+// The game's 0x49bdc0 (stdcall 4): the quad taken off `list`'s queue; esp the frame base.
+Result quadUnqueued(App* app, CPU& cpu, reg32 esp, reg32 list, reg32 a, reg32 b, reg32 c, reg32 d);
+// The game's 0x49be40: `list`'s quads drawn; esp the frame base.
+Result quadsFlushed(App* app, CPU& cpu, reg32 esp, reg32 list);
+
+/* What 0x451cd0 is handed: the text, its font, colour and place (y moves a
+ * line down as each is drawn, in the argument's place on the stack), how wide
+ * a line may be; where to put how wide the widest line is, how high the box,
+ * how many lines; whether it is only measured; which lines are drawn, from
+ * the first. */
+struct Box
+{
+    reg32 text, font, colour;
+    int32_t x, y;
+    int32_t width;
+    reg32 widest, height, lines;
+    int32_t measureOnly;
+    int32_t count, first;
+};
+// The game's 0x451cd0 (stdcall 0x20): `b`'s text wrapped into its box; eax as the code leaves it; esp the frame base.
+Result wrappedText(App* app, CPU& cpu, reg32 esp, Box b);
+// The game's 0x451fc0 (stdcall 0x18): `text` in `font` and `colour` wrapped into a box `width` wide at x, y, every line
+// drawn (`measureOnly` 0); where the widest line, the height and the lines go; esp the frame base.
+Result wrappedBoxDrawn(App* app, CPU& cpu, reg32 esp, reg32 text, reg32 font, reg32 colour, int32_t x, int32_t y,
+                       int32_t width, reg32 widest, reg32 height, reg32 lines, int32_t measureOnly);
+// The game's 0x451ff0 (stdcall 8): `text` in `font` measured in a box `width` wide: the widest line, the height and
+// the lines to the three places; esp the frame base.
+Result boxMeasured(App* app, CPU& cpu, reg32 esp, reg32 text, reg32 font, int32_t width, reg32 widest, reg32 height,
+                   reg32 lines);
+// The game's 0x4d1540 and 0x4d1590: character `character`'s height (less one) and its drop, in pixels of the font as drawn.
+int32_t characterHeight(App* app, CPU& cpu, reg32 character);
+int32_t characterDrop(App* app, CPU& cpu, reg32 character);
+// The game's 0x4beb80: the screen's viewport left, top, width and height put at the four places; the height.
+reg32 viewportOf(App* app, reg32 leftAt, reg32 topAt, reg32 widthAt, reg32 heightAt);
 }  // namespace text
 }  // namespace port
-
-namespace guest
-{
-
-// The text in eax, the font in edx; the width in eax.
-template <>
-struct ByAddress<port::text::menuTextWidth>
-{
-    template <x86::reg32 Address>
-    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, x86::reg32 text, x86::reg32 font)
-    {
-        return watcomEax(app, cpu, Address, {text, font});
-    }
-};
-
-// The font in eax (eax left as it came).
-template <>
-struct ByAddress<port::text::selectFontOf>
-{
-    template <x86::reg32 Address>
-    static void call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 font)
-    {
-        watcom(app, cpu, Address, {font});
-    }
-};
-
-// Stdcall: the text in eax, x in edx, y in ebx, the font in ecx; the alignment and the colour pushed (ret 8).
-template <>
-struct ByAddress<port::text::menuTextDrawn>
-{
-    template <x86::reg32 Address>
-    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, x86::reg32 text, std::int32_t x,
-                             std::int32_t y, x86::reg32 font, std::int32_t align, x86::reg32 colour)
-    {
-        const KeptRegisters kept(cpu);
-        cpu.eax = text;
-        cpu.edx = x86::reg32(x);
-        cpu.ebx = x86::reg32(y);
-        cpu.ecx = font;
-        if (!guest::call(app, cpu, Address, {x86::reg32(align), colour}))
-            return std::nullopt;
-        return std::int32_t(cpu.eax);
-    }
-};
-
-// Nothing handed over; eax back.
-template <>
-struct ByAddress<port::text::fontsDrawn>
-{
-    template <x86::reg32 Address>
-    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32)
-    {
-        return watcomEax(app, cpu, Address, {});
-    }
-};
-
-// Nothing handed over; the scale in eax.
-template <>
-struct ByAddress<port::text::keepTextScaleOf>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        watcom(app, cpu, Address, {});
-        return cpu.eax;
-    }
-};
-
-// Nothing handed over (eax left as it came).
-template <>
-struct ByAddress<port::text::restoreTextScaleOf>
-{
-    template <x86::reg32 Address>
-    static void call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        watcom(app, cpu, Address, {});
-    }
-};
-
-// The language in eax; eax back.
-template <>
-struct ByAddress<port::text::loadedLanguageText>
-{
-    template <x86::reg32 Address>
-    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, std::int32_t language)
-    {
-        return watcomEax(app, cpu, Address, {x86::reg32(language)});
-    }
-};
-
-// The number in eax, `edx` in edx; the text in eax.
-template <>
-struct ByAddress<port::text::lineText>
-{
-    template <x86::reg32 Address>
-    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, std::int32_t number,
-                             x86::reg32 edx)
-    {
-        return watcomEax(app, cpu, Address, {x86::reg32(number), edx});
-    }
-};
-
-// Stdcall: `eax` in eax, the float at `slot` pushed (ret 4); what the function leaves in the argument's place
-// written back to `slot`, where the core writes it; eax back.
-template <>
-struct ByAddress<port::text::dimmed>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 slot, x86::reg32 eax)
-    {
-        const KeptRegisters kept(cpu);
-        const x86::reg32 pushed = cpu.esp - 4;
-        cpu.eax = eax;
-        guest::call(app, cpu, Address, {guest::at(app, slot)});
-        guest::put(app, slot, guest::at(app, pushed));
-        return cpu.eax;
-    }
-};
-
-// Whether a held key repeats in eax; the key in eax.
-template <>
-struct ByAddress<port::text::menuKeyOf>
-{
-    template <x86::reg32 Address>
-    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, x86::reg32 repeating)
-    {
-        return watcomEax(app, cpu, Address, {repeating});
-    }
-};
-
-/* What a call by address left: eax, and the value taken off the x87's stack. */
-inline port::text::WidthResult textWidthLeft(x86::CPU& cpu)
-{
-    const x86::reg32 eax = cpu.eax;
-    return port::text::Width{eax, double(cpu.fpu.take())};
-}
-
-// Stdcall: the scale pushed (ret 4); the one before off the x87's stack.
-template <>
-struct ByAddress<port::text::textScaleSet>
-{
-    template <x86::reg32 Address>
-    static double call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 scale)
-    {
-        const KeptRegisters kept(cpu);
-        if (!guest::call(app, cpu, Address, {scale}))
-            return 0.0;
-        return double(cpu.fpu.take());
-    }
-};
-
-// Stdcall: the number in eax, the texture's square in edx and ebx; x (a float's bits), y, the width, the height,
-// the colour and whether only measured pushed (ret 0x18); eax back and the advance off the x87's stack.
-template <>
-struct ByAddress<port::text::characterDrawn>
-{
-    template <x86::reg32 Address>
-    static port::text::WidthResult call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32,
-                                        port::text::Character ch)
-    {
-        const KeptRegisters kept(cpu);
-        cpu.eax = ch.number;
-        cpu.edx = x86::reg32(ch.textureX);
-        cpu.ebx = x86::reg32(ch.textureY);
-        x86::reg32 x;
-        std::memcpy(&x, &ch.x, sizeof x);
-        if (!guest::call(app, cpu, Address,
-                         {x, x86::reg32(ch.y), x86::reg32(ch.width), x86::reg32(ch.height), ch.colour,
-                          x86::reg32(ch.measured)}))
-            return std::nullopt;
-        return textWidthLeft(cpu);
-    }
-};
-
-// The text in eax; eax back and the width off the x87's stack.
-template <>
-struct ByAddress<port::text::textMeasured>
-{
-    template <x86::reg32 Address>
-    static port::text::WidthResult call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, x86::reg32 text)
-    {
-        if (!watcom(app, cpu, Address, {text}))
-            return std::nullopt;
-        return textWidthLeft(cpu);
-    }
-};
-
-// The text in eax; eax back and the width off the x87's stack.
-template <>
-struct ByAddress<port::text::textMeasuredWithOverhang>
-{
-    template <x86::reg32 Address>
-    static port::text::WidthResult call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, x86::reg32 text)
-    {
-        if (!watcom(app, cpu, Address, {text}))
-            return std::nullopt;
-        return textWidthLeft(cpu);
-    }
-};
-
-// The text in eax, x in edx, y in ebx; eax back and the width off the x87's stack.
-template <>
-struct ByAddress<port::text::textDrawn>
-{
-    template <x86::reg32 Address>
-    static port::text::WidthResult call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, x86::reg32 text,
-                                        std::int32_t x, std::int32_t y)
-    {
-        if (!watcom(app, cpu, Address, {text, x86::reg32(x), x86::reg32(y)}))
-            return std::nullopt;
-        return textWidthLeft(cpu);
-    }
-};
-
-}  // namespace guest
 }  // namespace nfs3hp
 
 #endif

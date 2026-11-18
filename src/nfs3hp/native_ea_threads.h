@@ -4,7 +4,7 @@
 #include "native_guest.h"
 
 /* native_ea_threads.cpp's typed functions that other files call as C++ (guest::direct), and how the
- * game's code calls each by address (ByAddress, for the check's stand-ins).  Each may call the
+ * game's code calls each by address.  Each may call the
  * game's other functions by address on `cpu`, and is nullopt when the game stopped in one. */
 namespace nfs3hp
 {
@@ -18,8 +18,12 @@ std::optional<x86::reg32> endThread(win32::WinApplication* app, x86::CPU& cpu, x
 std::optional<x86::reg32> sleepFor(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 ms);
 // The game's 0x4df930: whether this is `thread`'s (0 the main thread; -1 any).
 std::optional<bool> isThreadNow(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 thread);
+// The game's 0x4df740: the threads set up, once: the lock; `eax` (as the code has it) when they are up already.
+std::optional<x86::reg32> threadsSetUp(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 eax);
 // The game's 0x4dfb00: an event, auto-reset: its handle.
 std::optional<x86::reg32> newAutoEvent(win32::WinApplication* app, x86::CPU& cpu);
+// The game's 0x4dfc10: an event that stays set until it is reset (manual-reset): its handle.
+std::optional<x86::reg32> newManualEvent(win32::WinApplication* app, x86::CPU& cpu);
 // The game's 0x4dfb20: event `event` set: what SetEvent gives back.
 std::optional<x86::reg32> eventPosted(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 event);
 // The game's 0x4dfb30: event `event` set: what SetEvent gives back.
@@ -45,6 +49,14 @@ bool surfaceIsLocked(win32::WinApplication* app);
 std::optional<x86::reg32> physicalBytes(win32::WinApplication* app, x86::CPU& cpu);
 // The game's 0x4dfc00: the event `event` closed (CloseHandle): Windows' answer.
 std::optional<x86::reg32> eventClosed(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 event);
+// The game's 0x4df7a0: a thread running `function`, with a stack of `stackBytes` and EA's priority `priority`,
+// into the record at `record` (a stack word): 1 if it was made, else 0.
+std::optional<x86::reg32> threadStarted(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 function,
+                                        x86::reg32 stackBytes, x86::reg32 priority, x86::reg32 record);
+// The game's 0x4dfc50: the event `event` pulsed (PulseEvent): Windows' answer.
+std::optional<x86::reg32> eventPulse(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 event);
+// The game's 0x4dfc80: the event `event` set and its handle closed: CloseHandle's answer.
+std::optional<x86::reg32> eventSetClosed(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 event);
 // The game's 0x4dfcf0: Windows' last error (GetLastError).
 std::optional<x86::reg32> lastErrorOf(win32::WinApplication* app, x86::CPU& cpu);
 
@@ -52,206 +64,6 @@ std::optional<x86::reg32> lastErrorOf(win32::WinApplication* app, x86::CPU& cpu)
 
 namespace guest
 {
-
-// The thread in eax, the stale handle in ebx; eax back.
-template <>
-struct ByAddress<ea::endThread>
-{
-    template <x86::reg32 Address>
-    static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 thread,
-                                          x86::reg32 stale)
-    {
-        const KeptRegisters kept(cpu);
-        cpu.eax = thread;
-        cpu.ebx = stale;
-        if (!guest::call(app, cpu, Address))
-            return std::nullopt;
-        return cpu.eax;
-    }
-};
-
-// The ms in eax; eax back.
-template <>
-struct ByAddress<ea::sleepFor>
-{
-    template <x86::reg32 Address>
-    static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 ms)
-    {
-        return watcomEax(app, cpu, Address, {ms});
-    }
-};
-
-// The thread in eax; eax 1 if so, else 0.
-template <>
-struct ByAddress<ea::isThreadNow>
-{
-    template <x86::reg32 Address>
-    static std::optional<bool> call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 thread)
-    {
-        const std::optional<x86::reg32> is = watcomEax(app, cpu, Address, {thread});
-        if (!is)
-            return std::nullopt;
-        return *is != 0;
-    }
-};
-
-// Nothing handed; the event back in eax.
-template <>
-struct ByAddress<ea::newAutoEvent>
-{
-    template <x86::reg32 Address>
-    static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        return watcomEax(app, cpu, Address, {});
-    }
-};
-
-// The event in edx (eax as it is); eax back.
-template <>
-struct ByAddress<ea::eventPosted>
-{
-    template <x86::reg32 Address>
-    static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 event)
-    {
-        const KeptRegisters kept(cpu);
-        cpu.edx = event;
-        if (!guest::call(app, cpu, Address))
-            return std::nullopt;
-        return cpu.eax;
-    }
-};
-
-// The event in eax; eax back.
-template <>
-struct ByAddress<ea::eventSet>
-{
-    template <x86::reg32 Address>
-    static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 event)
-    {
-        return watcomEax(app, cpu, Address, {event});
-    }
-};
-
-// The event in eax; eax back.
-template <>
-struct ByAddress<ea::eventWaited>
-{
-    template <x86::reg32 Address>
-    static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 event)
-    {
-        return watcomEax(app, cpu, Address, {event});
-    }
-};
-
-// The matrix in eax, the angle pushed (stdcall, 1 word); eax back.
-template <>
-struct ByAddress<ea::rotateAboutX>
-{
-    template <x86::reg32 Address>
-    static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 matrix,
-                                          x86::reg32 angle)
-    {
-        const KeptRegisters kept(cpu);
-        cpu.eax = matrix;
-        if (!guest::call(app, cpu, Address, {at(app, angle)}))
-            return std::nullopt;
-        return cpu.eax;
-    }
-};
-
-// The matrix in eax, the angle pushed (stdcall, 1 word); eax back.
-template <>
-struct ByAddress<ea::rotateAboutY>
-{
-    template <x86::reg32 Address>
-    static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 matrix,
-                                          x86::reg32 angle)
-    {
-        const KeptRegisters kept(cpu);
-        cpu.eax = matrix;
-        if (!guest::call(app, cpu, Address, {at(app, angle)}))
-            return std::nullopt;
-        return cpu.eax;
-    }
-};
-
-// Nothing handed; the fraction left on the x87's stack.
-template <>
-struct ByAddress<ea::randomFractionOf>
-{
-    template <x86::reg32 Address>
-    static std::optional<x86::Float> call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        return watcomFloat(app, cpu, Address, {});
-    }
-};
-
-// Nothing handed; the lock back in eax.
-template <>
-struct ByAddress<ea::newLock>
-{
-    template <x86::reg32 Address>
-    static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        return watcomEax(app, cpu, Address, {});
-    }
-};
-
-// The lock in eax; eax back.
-template <>
-struct ByAddress<ea::lockFreed>
-{
-    template <x86::reg32 Address>
-    static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 lock)
-    {
-        return watcomEax(app, cpu, Address, {lock});
-    }
-};
-
-// Nothing handed; eax 1 if so, else 0.
-template <>
-struct ByAddress<ea::surfaceIsLocked>
-{
-    template <x86::reg32 Address>
-    static bool call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        const std::optional<x86::reg32> locked = watcomEax(app, cpu, Address, {});
-        return locked && *locked != 0;
-    }
-};
-
-// Nothing handed; the bytes back in eax.
-template <>
-struct ByAddress<ea::physicalBytes>
-{
-    template <x86::reg32 Address>
-    static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        return watcomEax(app, cpu, Address, {});
-    }
-};
-
-// The event in eax; Windows' answer back in eax, every other register kept.
-template <>
-struct ByAddress<ea::eventClosed>
-{
-    template <x86::reg32 Address>
-    static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 event)
-    {
-        return watcomEax(app, cpu, Address, {event});
-    }
-};
-
-// Nothing handed; the error back in eax, every other register kept.
-template <>
-struct ByAddress<ea::lastErrorOf>
-{
-    template <x86::reg32 Address>
-    static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        return watcomEax(app, cpu, Address, {});
-    }
-};
 
 }  // namespace guest
 }  // namespace nfs3hp

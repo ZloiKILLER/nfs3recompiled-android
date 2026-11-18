@@ -2,7 +2,9 @@
 #include "native_controls_devices.h"
 #include "native_controls_input.h"
 #include "native_controls_race.h"
+#include "native_frontend_glue.h"
 #include "native_frontend_simd.h"
+#include "native_game.h"
 #include "native_guest.h"
 #include "native_trackdata.h"
 #include "native_vertices.h"
@@ -20,13 +22,10 @@
  * controller a race plays its forces on -- the four effects the game makes on
  * it, a jolt, the engine's rumble, the road's rumble, the steering's spring --
  * what each frame of a race plays on them from the player's car, and the
- * controllers found compared with config.dat's.  disassemble_nfs3hp.py binds
- * each address to the function of that name here (CONTROLS_RACE_NATIVES),
- * and the generated code calls it by name.  tools/game_checks holds each
- * against its generated code.
+ * controllers found compared with config.dat's.
  *
- * Each is a typed function under a name of its own, with an adapter under the
- * game's name for the callers still on registers and the dispatch: it leaves
+ * Each is a typed function under a name of its own, with a thunk under the
+ * game's name for the callers still on registers and the calls through a pointer: it leaves
  * eax -- for some ebx, ecx and edx too, as the code leaves them, which no
  * caller reads -- the x87's stack and its status word as the game's code
  * does.  What they call of other files' typed functions for their answer
@@ -34,7 +33,7 @@
  * found and described, an axis's force and a device's gain set where nothing
  * keeps its eax, an effect created, the device sets, vectors less another,
  * what a car is on.  The rest of DirectInput's layer and of the game is called
- * by address, the registers kept (KeptRegisters), eax handed over as the code
+ * by address, the registers kept (EspKept), eax handed over as the code
  * has it where the callee may leave it: what the code keeps of an effect
  * started or stopped, of the actuators, of a gain set, is the eax their code
  * leaves (ebx and edx too of an effect's parameters set), which their headers
@@ -51,15 +50,6 @@
  * reads. */
 namespace nfs3hp
 {
-void fillZero(win32::WinApplication* app, x86::CPU& cpu);  // 0x4e070c, native_game.cpp
-
-namespace watcom
-{
-void CHP(win32::WinApplication* app, x86::CPU& cpu);      // __CHP
-void strstr(win32::WinApplication* app, x86::CPU& cpu);   // 0x4e0820
-void strncmp(win32::WinApplication* app, x86::CPU& cpu);  // 0x4eb390
-}
-
 namespace controls
 {
 
@@ -199,10 +189,9 @@ reg32 integerOf(const Float& value)
 /* fcom of a with b and fnstsw ax: the status word, which the code leaves in
  * ax; ja on it (a above b, neither below, equal nor unordered), jb (below or
  * unordered). */
-reg16 compare(CPU& cpu, const Float& a, const Float& b)
+reg16 compare(const Float& a, const Float& b)
 {
-    cpu.fpu.compare(a, b);
-    return cpu.fpu.status.word;
+    return fp::compare(a, b);
 }
 
 bool above(reg16 status)
@@ -235,63 +224,14 @@ reg32 kindOf(reg32 control)
     return reg32(sreg32(control << 24) >> 24);
 }
 
-bool direct(App* app, CPU& cpu, void (*function)(App*, CPU&))
-{
-    cpu.esp -= 4;
-    function(app, cpu);
-    return !cpu.terminate;
-}
-
-bool byAddress(App* app, CPU& cpu, reg32 target)
-{
-    cpu.esp -= 4;
-    app->dynamic_call(target, cpu);
-    return !cpu.terminate;
-}
-
-/* What a function's frame keeps of its caller's across a call: every register but eax. */
-class KeptRegisters
-{
-public:
-    explicit KeptRegisters(CPU& cpu)
-        : cpu_(cpu), ebx_(cpu.ebx), ecx_(cpu.ecx), edx_(cpu.edx), esi_(cpu.esi), edi_(cpu.edi), ebp_(cpu.ebp), esp_(cpu.esp)
-    {
-    }
-    ~KeptRegisters()
-    {
-        cpu_.ebx = ebx_;
-        cpu_.ecx = ecx_;
-        cpu_.edx = edx_;
-        cpu_.esi = esi_;
-        cpu_.edi = edi_;
-        cpu_.ebp = ebp_;
-        cpu_.esp = esp_;
-    }
-
-private:
-    CPU& cpu_;
-    reg32 ebx_, ecx_, edx_, esi_, edi_, ebp_, esp_;
-};
-
-Saved savedOf(const CPU& cpu)
-{
-    return {cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp};
-}
-
-/* A function's frame on the guest's stack at the code's depth: the values
- * it pushes, ebp's last (the frame's base), then `bytes` of locals. */
+/* A function's frame on the guest's stack at the code's depth: the words it pushes (`pushed` of them,
+ * ebp's last, the frame's base; their values are not written), then `bytes` of locals. */
 class GuestFrame
 {
 public:
-    GuestFrame(App* app, CPU& cpu, std::initializer_list<reg32> pushed, reg32 bytes) : cpu_(cpu), esp_(cpu.esp)
+    GuestFrame(CPU& cpu, unsigned pushed, reg32 bytes) : cpu_(cpu), esp_(cpu.esp)
     {
-        reg32 top = cpu.esp;
-        for (const reg32 value : pushed)
-        {
-            top -= 4;
-            put(app, top, value);
-        }
-        base_ = top;
+        base_ = cpu.esp - 4 * pushed;
         cpu_.esp = base_ - bytes;
     }
     ~GuestFrame() { cpu_.esp = esp_; }
@@ -317,78 +257,29 @@ private:
     CPU& cpu_;
 };
 
-/* A Watcom function called by address with its arguments in eax, edx, ebx,
- * ecx, in that order; eax as it leaves it.  nullopt when the game stopped. */
-std::optional<reg32> call(App* app, CPU& cpu, reg32 target, std::initializer_list<reg32> arguments)
-{
-    const KeptRegisters kept(cpu);
-    reg32* const registers[] = {&cpu.eax, &cpu.edx, &cpu.ebx, &cpu.ecx};
-    std::size_t i = 0;
-    for (const reg32 argument : arguments)
-        *registers[i++] = argument;
-    if (!byAddress(app, cpu, target))
-        return std::nullopt;
-    return cpu.eax;
-}
-
-/* The same, of a native called as the code calls it. */
-std::optional<reg32> call(App* app, CPU& cpu, void (*function)(App*, CPU&), std::initializer_list<reg32> arguments)
-{
-    const KeptRegisters kept(cpu);
-    reg32* const registers[] = {&cpu.eax, &cpu.edx, &cpu.ebx, &cpu.ecx};
-    std::size_t i = 0;
-    for (const reg32 argument : arguments)
-        *registers[i++] = argument;
-    if (!direct(app, cpu, function))
-        return std::nullopt;
-    return cpu.eax;
-}
-
 /* A native_frontend_* file's typed core called as C++ (guest::direct): nothing (false) when the
- * game stopped in it (its calls into the game throw fe::Terminated).  tools/game_checks does not
- * build those files: there it goes by address, through its ByAddress, as the game's code calls it,
- * every register but eax kept.  A reg32 result is the eax the function leaves: eax set to it (in the
- * game too); after any other, eax spoilt there, so that code still reading what the callee left in
- * eax differs there. */
+ * game stopped in it (its calls into the game throw fe::Terminated). */
 template <reg32 Address, auto Core, typename... Args>
 auto feCore(App* app, CPU& cpu, Args... args)
 {
-    const auto run = [&] {
-#ifdef NFS_GAME_CHECKS
-        const guest::KeptRegisters kept(cpu);
-        return guest::ByAddress<Core>::template call<Address>(app, cpu, args...);
-#else
-        return guest::direct<Address, Core>(app, cpu, args...);
-#endif
-    };
-    using Result = decltype(run());
-    const auto spoil = [&] {
-#ifdef NFS_GAME_CHECKS
-        cpu.eax = 0x5b0115edu;
-#endif
-    };
+    using Result = decltype(guest::direct<Address, Core>(app, cpu, args...));
     if constexpr (std::is_void_v<Result>)
     {
         try
         {
-            run();
+            guest::direct<Address, Core>(app, cpu, args...);
         }
         catch (const fe::Terminated&)
         {
             return false;
         }
-        spoil();
         return !cpu.terminate;
     }
     else
     {
         try
         {
-            const Result result = run();
-            if constexpr (std::is_same_v<Result, x86::reg32>)
-                cpu.eax = result;  // a menu core's result: the eax it leaves, as the call by address does
-            else
-                spoil();
+            const Result result = guest::direct<Address, Core>(app, cpu, args...);
             return cpu.terminate ? std::optional<Result>() : std::optional<Result>(result);
         }
         catch (const fe::Terminated&)
@@ -410,41 +301,46 @@ std::optional<Float> atan2Of(App* app, CPU& cpu, reg32 first, reg32 second)
     return feCore<0x4ea9c0, frontend::simd::angleOfFloatsValue>(app, cpu, first, second);
 }
 
-/* What setEffect leaves in eax, ebx and edx -- a stdcall that may change ebx,
- * ecx and edx -- which playJolt's callers keep. */
-struct Leftover
-{
-    reg32 answer;
-    reg32 ebxLeft;
-    reg32 edxLeft;
-};
-
 /* Effect `effect`'s parameters set (0x436330, stdcall): `how` (1 played),
  * its direction at [directionAt], its duration at [durationAt], and the
  * stack's words -- its strength's percent's address, its parameters, its
- * button, its envelope -- pushed as the code pushes them. */
-std::optional<Leftover> setEffect(App* app, CPU& cpu, reg32 effect, reg32 how, reg32 directionAt, reg32 durationAt,
-                                  const std::array<reg32, 4>& words)
+ * button, its envelope -- pushed as the code pushes them.  Whether anything
+ * changed (1, else 0, as the game leaves it in eax: 0 for no effect, below
+ * 0); nullopt when the game stopped. */
+std::optional<reg32> setEffect(App* app, CPU& cpu, reg32 effect, reg32 how, reg32 directionAt, reg32 durationAt,
+                               const std::array<reg32, 4>& words)
 {
-    const KeptRegisters kept(cpu);
+    const reg32 esp = cpu.esp;
     for (auto word = words.rbegin(); word != words.rend(); ++word)
     {
         cpu.esp -= 4;
         put(app, cpu.esp, *word);
     }
-    cpu.eax = effect;
-    cpu.edx = how;
-    cpu.ebx = directionAt;
-    cpu.ecx = durationAt;
-    if (!byAddress(app, cpu, kSetEffect))
-        return std::nullopt;
-    return Leftover{cpu.eax, cpu.ebx, cpu.edx};
+    bool changed = false;
+    const reg32 number = reg32(sreg32(std::int16_t(effect)));
+    if (sreg32(number) >= 0)
+    {
+        const std::optional<bool> done = guest::direct<0x436330, controls::changeEffect>(
+            app, cpu, number, how, directionAt, durationAt, words[0], words[1], words[2], words[3]);
+        if (!done)
+        {
+            cpu.esp = esp;
+            return std::nullopt;
+        }
+        changed = *done;
+    }
+    cpu.esp = esp;
+    return reg32(changed ? 1 : 0);
 }
 
 /* Whether controller's name has "Microsoft" in it (strstr): nonzero if so. */
 std::optional<reg32> microsoftName(App* app, CPU& cpu, reg32 controller)
 {
-    return call(app, cpu, watcom::strstr, {controller * kControllerBytes + SETTINGS_ADDRESS(devices[0].name), kMicrosoft});
+    const reg32 found = guest::direct<0x4e0820, watcom::clib::strstr>(
+        app, cpu, controller * kControllerBytes + SETTINGS_ADDRESS(devices[0].name), kMicrosoft);
+    if (cpu.terminate)
+        return std::nullopt;
+    return found;
 }
 
 }  // namespace
@@ -472,7 +368,7 @@ std::optional<reg32> stopEngine(App* app, CPU& cpu, reg32 unchanged)
     reg32 left = unchanged;
     if (at(app, kEnginePlaying) != 0)
     {
-        const auto stopped = call(app, cpu, kStopEffect, {handle(app, at(app, kForceController), kEngineHandle)});
+        const auto stopped = guest::direct<0x436230, controls::stopOne>(app, cpu, handle(app, at(app, kForceController), kEngineHandle));
         if (!stopped)
             return std::nullopt;
         left = *stopped;
@@ -489,7 +385,7 @@ std::optional<reg32> stopSpring(App* app, CPU& cpu, reg32 unchanged)
     reg32 left = unchanged;
     if (at(app, kSpringPlaying) != 0)
     {
-        const auto stopped = call(app, cpu, kStopEffect, {handle(app, at(app, kForceController), kSpringHandle)});
+        const auto stopped = guest::direct<0x436230, controls::stopOne>(app, cpu, handle(app, at(app, kForceController), kSpringHandle));
         if (!stopped)
             return std::nullopt;
         left = *stopped;
@@ -523,7 +419,9 @@ std::optional<reg32> setGain(App* app, CPU& cpu, reg32 gain)
 {
     if (at(app, kForceController) == kNoController)
         return gain;
-    return call(app, cpu, kSetGain, {kAllDevices, gain});
+    if (!guest::direct<0x435df0, controls::gain>(app, cpu, kAllDevices, gain))
+        return std::nullopt;
+    return 0;  // the HRESULT it leaves
 }
 
 /* 0x470c60: the force controller's gain set to `gain` and, but on a
@@ -537,7 +435,7 @@ std::optional<reg32> startEngine(App* app, CPU& cpu, reg32 gain)
     const auto microsoft = microsoftName(app, cpu, at(app, kForceController));
     if (!microsoft || *microsoft != 0)
         return microsoft;
-    return call(app, cpu, kStartEffect, {handle(app, at(app, kForceController), kEngineHandle)});
+    return guest::direct<0x4361e0, controls::startOnce>(app, cpu, handle(app, at(app, kForceController), kEngineHandle));
 }
 
 /* 0x470bc0: the engine's rumble set to a steady one -- 5000 for 0x72e4,
@@ -545,7 +443,7 @@ std::optional<reg32> startEngine(App* app, CPU& cpu, reg32 gain)
  * device's with its duration too.  Its parameters in its frame. */
 std::optional<reg32> steadyEngine(App* app, CPU& cpu, reg32 unchanged)
 {
-    const GuestFrame frame(app, cpu, {cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.ebp}, 0x20);
+    const GuestFrame frame(cpu, 5, 0x20);
     const reg32 controller = at(app, kForceController);
     put(app, frame - 8, kForEver);
     put(app, frame - 4, 0);
@@ -562,14 +460,14 @@ std::optional<reg32> steadyEngine(App* app, CPU& cpu, reg32 unchanged)
                                *microsoft != 0 ? 3 : kPlay, 0, frame - 8, {0, frame - 0x20, frame - 4, 0});
     if (!set)
         return std::nullopt;
-    return set->answer;
+    return *set;
 }
 
 /* 0x470cb0: the engine's rumble unloaded from the force controller, and its
  * parameters set to nothing. */
 std::optional<reg32> silenceEngine(App* app, CPU& cpu, reg32 unchanged)
 {
-    const GuestFrame frame(app, cpu, {cpu.ebx, cpu.ecx, cpu.edx, cpu.ebp}, 4);
+    const GuestFrame frame(cpu, 4, 4);
     put(app, frame - 4, 0xffffffff);
     const reg32 controller = at(app, kForceController);
     if (controller == kNoController)
@@ -581,7 +479,7 @@ std::optional<reg32> silenceEngine(App* app, CPU& cpu, reg32 unchanged)
                                {0, 0, frame - 4, 0});
     if (!set)
         return std::nullopt;
-    return set->answer;
+    return *set;
 }
 
 /* 0x470d30: the force feedback's state cleared -- no force controller, every
@@ -589,7 +487,8 @@ std::optional<reg32> silenceEngine(App* app, CPU& cpu, reg32 unchanged)
  * the force controller, if any has. */
 std::optional<bool> findController(App* app, CPU& cpu)
 {
-    if (!call(app, cpu, fillZero, {kForceController, kInputStateBytes}))
+    guest::direct<0x4e070c, ea::clearBytes>(app, cpu, kForceController, kInputStateBytes);
+    if (cpu.terminate)
         return std::nullopt;
     put(app, kForceController, kNoController);
     for (reg32 controller = 0; controller < kControllerEffects; ++controller)
@@ -611,7 +510,7 @@ std::optional<bool> findController(App* app, CPU& cpu)
  * effect's description in its frame, at -0x5c. */
 std::optional<reg32> createEffects(App* app, CPU& cpu)
 {
-    const GuestFrame frame(app, cpu, {cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp}, 0x5c);
+    const GuestFrame frame(cpu, 6, 0x5c);
     const auto found = findController(app, cpu);
     if (!found)
         return std::nullopt;
@@ -684,15 +583,16 @@ std::optional<reg32> stopAll(App* app, CPU& cpu, reg32 unchanged)
         return unchanged;
     if (!stopEffects(app, cpu, unchanged))
         return std::nullopt;
-    guest::direct<0x436230, controls::stopOne>(app, cpu, handle(app, at(app, kForceController), kRoadHandle));
+    if (!guest::direct<0x436230, controls::stopOne>(app, cpu, handle(app, at(app, kForceController), kRoadHandle)))
+        return std::nullopt;
     if (cpu.terminate)
         return std::nullopt;
-    return call(app, cpu, kStopEffect, {handle(app, at(app, kForceController), kJoltHandle)});
+    return guest::direct<0x436230, controls::stopOne>(app, cpu, handle(app, at(app, kForceController), kJoltHandle));
 }
 
 /* 0x471000, 0x471070: every effect stopped -- or, on a Microsoft device,
  * every device's actuators turned on or off instead (`actuators`). */
-std::optional<reg32> stopAllOr(App* app, CPU& cpu, reg32 unchanged, reg32 actuators)
+std::optional<reg32> stopAllOr(App* app, CPU& cpu, reg32 unchanged, bool actuatorsOn)
 {
     const reg32 controller = at(app, kForceController);
     if (controller == kNoController)
@@ -701,20 +601,26 @@ std::optional<reg32> stopAllOr(App* app, CPU& cpu, reg32 unchanged, reg32 actuat
     if (!microsoft)
         return std::nullopt;
     if (*microsoft != 0)
-        return call(app, cpu, actuators, {kAllDevices});
+    {
+        if (!(actuatorsOn ? guest::direct<0x435d20, controls::actuatorsOnFor>(app, cpu, kAllDevices)
+                          : guest::direct<0x435d90, controls::actuatorsOffFor>(app, cpu, kAllDevices)))
+            return std::nullopt;
+        return 0;  // the HRESULT it leaves
+    }
     if (!stopEffects(app, cpu, *microsoft))
         return std::nullopt;
-    guest::direct<0x436230, controls::stopOne>(app, cpu, handle(app, at(app, kForceController), kRoadHandle));
+    if (!guest::direct<0x436230, controls::stopOne>(app, cpu, handle(app, at(app, kForceController), kRoadHandle)))
+        return std::nullopt;
     if (cpu.terminate)
         return std::nullopt;
-    return call(app, cpu, kStopEffect, {handle(app, at(app, kForceController), kJoltHandle)});
+    return guest::direct<0x436230, controls::stopOne>(app, cpu, handle(app, at(app, kForceController), kJoltHandle));
 }
 
 /* 0x4710f0: the car the force controller's player drives, to [0x678b54] and
  * returned: of the device set of the game's mode the first entry of that
  * controller (an axis, its controller in the top four bits) -- in two
  * players' mode its last, the player the entry's half says -- or 0.  The
- * port's change (tools/apply_force_feedback_car.py): the scan starts from
+ * port's change (the port's force feedback car change): the scan starts from
  * the player who would have had the pad, not from nobody, so a race driven on
  * keys still gets its car. */
 std::optional<reg32> findForceCar(App* app, CPU& cpu)
@@ -781,7 +687,9 @@ std::optional<reg32> actuatorsOff(App* app, CPU& cpu, reg32 unchanged)
 {
     if (at(app, kForceController) == kNoController)
         return unchanged;
-    return call(app, cpu, kActuatorsOff, {kAllDevices});
+    if (!guest::direct<0x435d90, controls::actuatorsOffFor>(app, cpu, kAllDevices))
+        return std::nullopt;
+    return 0;  // the HRESULT it leaves
 }
 
 namespace
@@ -801,7 +709,7 @@ Mph carMph(App* app, CPU& cpu, reg32 car)
 {
     const reg32 bits = sreg32(at(app, kClock)) > sreg32(gameSettings(app).localPlayer) ? at(app, car + kCarSpeedAhead)
                                                                                          : at(app, car + kCarSpeed);
-    const reg16 status = compare(cpu, Float(0.0), fromBits(bits));
+    const reg16 status = compare(Float(0.0), fromBits(bits));
     const reg32 speed = above(status) ? bits ^ 0x80000000 : bits;  // its sign bit flipped below 0
     return {fp::mul(fromBits(speed), floatAt(app, kToMph)), withStatus(bits, status)};
 }
@@ -824,9 +732,9 @@ std::optional<reg32> steering(App* app, CPU& cpu, reg32 car, reg32 amountAt, reg
     const reg32 negated = bitsOf(-fromBits(wheel));
     const Float product = fp::mul(range, fromBits(negated));
     reg32 amount = bitsOf(product);
-    if (above(compare(cpu, product, floatAt(app, kTenThousandF))))
+    if (above(compare(product, floatAt(app, kTenThousandF))))
         amount = kPlusTenThousand;
-    else if (below(compare(cpu, fromBits(amount), doubleAt(app, kMinusTenThousand))))
+    else if (below(compare(fromBits(amount), doubleAt(app, kMinusTenThousand))))
         amount = kMinusTenThousandBits;
     const auto chopped = chop(app, cpu, fromBits(amount));
     if (!chopped)
@@ -847,9 +755,9 @@ std::optional<reg32> steering(App* app, CPU& cpu, reg32 car, reg32 amountAt, reg
  * -0x500's times the spring's scale over 8, by 10000 over the scale; 250 to
  * 10000, a quarter of it while the car is off the ground (0x5c0 above 0) --
  * at the steering's strength.  Its parameters in its frame, at -0x44. */
-std::optional<reg32> steeringSpring(App* app, CPU& cpu, reg32 car, const Saved& held)
+std::optional<reg32> steeringSpring(App* app, CPU& cpu, reg32 car)
 {
-    const GuestFrame frame(app, cpu, {held.ebx, held.ecx, held.edx, held.ebp}, 0x44);
+    const GuestFrame frame(cpu, 4, 0x44);
     put(app, frame - 0x14, 0);
     put(app, frame - 0x10, 0);
     put(app, frame - 0xc, at(app, car + kCarCentre));
@@ -871,9 +779,9 @@ std::optional<reg32> steeringSpring(App* app, CPU& cpu, reg32 car, const Saved& 
     put(app, frame - 4, bitsOf(-floatAt(app, frame - 0xc)));
     const Float product = fp::mul(scaled, floatAt(app, frame - 4));
     put(app, frame - 4, bitsOf(product));
-    if (above(compare(cpu, product, range)))
+    if (above(compare(product, range)))
         put(app, frame - 4, kPlusTenThousand);
-    else if (below(compare(cpu, floatAt(app, frame - 4), doubleAt(app, kSpringMinus))))
+    else if (below(compare(floatAt(app, frame - 4), doubleAt(app, kSpringMinus))))
         put(app, frame - 4, kMinusTenThousandBits);
     const auto chopped = chop(app, cpu, floatAt(app, frame - 4));
     if (!chopped)
@@ -886,7 +794,7 @@ std::optional<reg32> steeringSpring(App* app, CPU& cpu, reg32 car, const Saved& 
         stiffness = 0xfa;
     else if (sreg32(stiffness) > kTenThousand)
         stiffness = kTenThousand;
-    if (below(compare(cpu, Float(0.0), floatAt(app, car + kCarLift))))
+    if (below(compare(Float(0.0), floatAt(app, car + kCarLift))))
         stiffness = reg32(sreg32(stiffness) >> 2);
     for (const reg32 local : {0x40u, 0x3cu, 0x38u, 0x34u})
         put(app, frame - local, stiffness);
@@ -902,7 +810,7 @@ std::optional<reg32> steeringSpring(App* app, CPU& cpu, reg32 car, const Saved& 
     if (!set)
         return std::nullopt;
     put(app, kSpringPlaying, 1);
-    return set->answer;
+    return *set;
 }
 
 /* 0x471860: the steering's spring of `car` played as the road pulls it: its
@@ -911,9 +819,9 @@ std::optional<reg32> steeringSpring(App* app, CPU& cpu, reg32 car, const Saved& 
  * (0x99c) -- its stiffness 10000 less what the surface takes, less again for
  * the car's state (0x160); at the slide's strength.  Its parameters in its
  * frame, at -0x38. */
-std::optional<reg32> slideSpring(App* app, CPU& cpu, reg32 car, const Saved& held)
+std::optional<reg32> slideSpring(App* app, CPU& cpu, reg32 car)
 {
-    const GuestFrame frame(app, cpu, {held.ebx, held.ecx, held.edx, held.esi, held.edi, held.ebp}, 0x38);
+    const GuestFrame frame(cpu, 6, 0x38);
     put(app, frame - 4, 0);
     put(app, frame - 8, 0);
     {
@@ -953,7 +861,7 @@ std::optional<reg32> slideSpring(App* app, CPU& cpu, reg32 car, const Saved& hel
     }
     if (at(app, at(app, car + kCarHandling) + kHandlingSoftSpring) != 0)
         stiffness += sreg32(stiffness) < 0 ? 0x1f4 : 0xfffffe0c;
-    if (below(compare(cpu, Float(0.0), floatAt(app, car + kCarLift))))
+    if (below(compare(Float(0.0), floatAt(app, car + kCarLift))))
     {
         const sreg32 camber = sreg32(at(app, kRoadCamber)) >> 24;
         side = reg32(camber * kTenThousand / 0x7f);
@@ -988,16 +896,16 @@ std::optional<reg32> slideSpring(App* app, CPU& cpu, reg32 car, const Saved& hel
     if (!set)
         return std::nullopt;
     put(app, kSpringPlaying, 1);
-    return set->answer;
+    return *set;
 }
 
 /* 0x4719f0: the road's rumble of `car` set by its engine's revs (0x590): its
  * period a million over (revs / 375 + 10), and a half; its magnitude 10
  * doubled each 180 revs past 5000, and 1700 -- 5000 at most -- at the road's
  * strength.  Its parameters in its frame, at -0x1c. */
-std::optional<reg32> roadRumble(App* app, CPU& cpu, reg32 car, const Saved& held)
+std::optional<reg32> roadRumble(App* app, CPU& cpu, reg32 car)
 {
-    const GuestFrame frame(app, cpu, {held.ebx, held.ecx, held.edx, held.esi, held.ebp}, 0x1c);
+    const GuestFrame frame(cpu, 5, 0x1c);
     const reg32 period = reg32(sreg32(at(app, car + kCarRevs)) / 0x177) + 0xa;
     reg32 excess = at(app, car + kCarRevs) - 0x1388;
     if (sreg32(excess) < 0)
@@ -1019,7 +927,7 @@ std::optional<reg32> roadRumble(App* app, CPU& cpu, reg32 car, const Saved& held
     const auto set = setEffect(app, cpu, effect, kPlay, 0, 0, {SETTINGS_ADDRESS(forceEngine), frame - 0x1c, 0, 0});
     if (!set)
         return std::nullopt;
-    return set->answer;
+    return *set;
 }
 
 /* 0x471af0: the engine's rumble of `car` set by its speed: none below 2 mph,
@@ -1027,12 +935,12 @@ std::optional<reg32> roadRumble(App* app, CPU& cpu, reg32 car, const Saved& held
  * is on, the surface 0x420840 finds (else the car's own, 0x18c; 0x11 against
  * a wall), stopped on some -- played at the engine's strength if they
  * changed.  Its parameters in its frame, at -0x24. */
-std::optional<reg32> engineRumble(App* app, CPU& cpu, reg32 car, const Saved& held)
+std::optional<reg32> engineRumble(App* app, CPU& cpu, reg32 car)
 {
-    const GuestFrame frame(app, cpu, {held.ebx, held.ecx, held.edx, held.esi, held.edi, held.ebp}, 0x24);
+    const GuestFrame frame(cpu, 6, 0x24);
     const Mph speed = carMph(app, cpu, car);
     put(app, frame - 4, bitsOf(speed.mph));
-    const reg16 slowest = compare(cpu, speed.mph, floatAt(app, kSpeeds));
+    const reg16 slowest = compare(speed.mph, floatAt(app, kSpeeds));
     reg32 left = withStatus(speed.eaxLeft, slowest);
     if (below(slowest))
         return stopEngine(app, cpu, left);
@@ -1042,7 +950,7 @@ std::optional<reg32> engineRumble(App* app, CPU& cpu, reg32 car, const Saved& he
         {0xfa0, 0xc}, {0xfa0, 0xd}, {0xdac, 0xe}, {0xdac, 0xf}, {0xdac, 0x10}, {0xbb8, 0x11}};
     reg32 band = 0;
     for (; band < 12; ++band)
-        if (below(compare(cpu, floatAt(app, frame - 4), floatAt(app, kSpeeds + 4 + 4 * band))))
+        if (below(compare(floatAt(app, frame - 4), floatAt(app, kSpeeds + 4 + 4 * band))))
             break;
     reg32 magnitude = bands[band][0];
     reg32 period = bands[band][1];
@@ -1133,7 +1041,7 @@ std::optional<reg32> engineRumble(App* app, CPU& cpu, reg32 car, const Saved& he
         const auto set = setEffect(app, cpu, effect, kPlay, 0, 0, {SETTINGS_ADDRESS(forceRoad), frame - 0x24, 0, 0});
         if (!set)
             return std::nullopt;
-        left = set->answer;
+        left = *set;
         put(app, kEnginePlaying, 1);
     }
     put(app, kEngineMagnitude, magnitude);
@@ -1147,14 +1055,14 @@ std::optional<reg32> engineRumble(App* app, CPU& cpu, reg32 car, const Saved& he
  * wheel's from the side: ahead and behind made left or right as the frame's
  * parity says, else the side it leans to.  Its frame keeps ecx, esi and edi
  * as `held` has them; eax, ebx and edx as the code leaves them. */
-std::optional<Leftover> jolt(App* app, CPU& cpu, reg32 angleAt, reg32 durationAt, reg32 hardnessAt, const Saved& held)
+std::optional<reg32> jolt(App* app, CPU& cpu, reg32 angleAt, reg32 durationAt, reg32 hardnessAt)
 {
-    const GuestFrame frame(app, cpu, {held.ecx, held.esi, held.edi, held.ebp}, 0);
+    const GuestFrame frame(cpu, 4, 0);
     if (gameSettings(app).forceCollision == 0)
-        return Leftover{angleAt, hardnessAt, durationAt};
+        return angleAt;
     const reg32 now = at(app, kFrame);
     if (sreg32(now) < sreg32(at(app, kNextJolt)))
-        return Leftover{angleAt, hardnessAt, now};
+        return angleAt;
     const reg32 wait = reg32(sreg32(at(app, durationAt)) >> 3);
     const reg32 next = at(app, kFrame) + wait;
     const reg32 controller = at(app, kForceController);
@@ -1173,14 +1081,6 @@ std::optional<Leftover> jolt(App* app, CPU& cpu, reg32 angleAt, reg32 durationAt
                      {SETTINGS_ADDRESS(forceCollision), hardnessAt, 0, 0});
 }
 
-/* The registers a core holds as it calls jolt, its frame's base in ebp. */
-Saved heldIn(const CPU& cpu, reg32 base)
-{
-    Saved held = savedOf(cpu);
-    held.ebp = base;
-    return held;
-}
-
 }  // namespace
 
 /* 0x471270: the jolt of `car` hit, the blow's vector at the stack's words
@@ -1190,7 +1090,7 @@ Saved heldIn(const CPU& cpu, reg32 base)
  * car's orientation transposed and the jolt's numbers. */
 std::optional<reg32> crash(App* app, CPU& cpu, reg32 car)
 {
-    const GuestFrame frame(app, cpu, {cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp}, 0x64);
+    const GuestFrame frame(cpu, 6, 0x64);
     const reg32 blow = frame + 0x1c, strengthAt = frame + 0x28;
     const reg32 vector = frame - 0x28, matrix = frame - 0x64;
     reg32 flags = at(app, car + kCarFlags);
@@ -1225,14 +1125,14 @@ std::optional<reg32> crash(App* app, CPU& cpu, reg32 car)
     if (!angle)
         return std::nullopt;
     put(app, frame - 4, bitsOf(*angle));
-    if (above(compare(cpu, Float(0.0), floatAt(app, frame - 4))))
+    if (above(compare(Float(0.0), floatAt(app, frame - 4))))
         put(app, frame - 4, bitsOf(fp::add(floatAt(app, frame - 4), doubleAt(app, kTwo))));
-    if (above(compare(cpu, Float(0.0), floatAt(app, frame - 4))))
+    if (above(compare(Float(0.0), floatAt(app, frame - 4))))
         put(app, frame - 8, 0);
     else
     {
         put(app, frame - 0xc,
-            above(compare(cpu, floatAt(app, frame - 4), floatAt(app, kTwoF))) ? kTwoBits : at(app, frame - 4));
+            above(compare(floatAt(app, frame - 4), floatAt(app, kTwoF))) ? kTwoBits : at(app, frame - 4));
         put(app, frame - 8, at(app, frame - 0xc));
     }
     // In degrees, 0 to 360.
@@ -1264,10 +1164,10 @@ std::optional<reg32> crash(App* app, CPU& cpu, reg32 car)
     if (flags == kFromAhead)
         put(app, frame - 0x14, 0);
     const CallSlot slot(cpu);
-    const auto played = jolt(app, cpu, frame - 0x14, frame - 0x10, frame - 0x40, heldIn(cpu, frame.base()));
+    const auto played = jolt(app, cpu, frame - 0x14, frame - 0x10, frame - 0x40);
     if (!played)
         return std::nullopt;
-    return played->answer;
+    return *played;
 }
 
 /* 0x471440: the jolt of `car` bumped, at its speed: from the right (45
@@ -1275,11 +1175,11 @@ std::optional<reg32> crash(App* app, CPU& cpu, reg32 car)
  * (600 less twice the mph, 200 at least) and the harder (7000 and 16 times
  * the mph, 10000 at most); a softer, shorter one for `softness` 0, a softer
  * one for 2.  None at 0 mph.  Its numbers in its frame. */
-std::optional<BumpLeft> bump(App* app, CPU& cpu, reg32 car, reg32 side, reg32 softness)
+std::optional<reg32> bump(App* app, CPU& cpu, reg32 car, reg32 side, reg32 softness)
 {
-    const GuestFrame frame(app, cpu, {cpu.esi, cpu.edi, cpu.ebp}, 0x24);
+    const GuestFrame frame(cpu, 3, 0x24);
     if (!forceCar(app, car))
-        return BumpLeft{0, side, cpu.ecx, softness};
+        return 0;
     const Mph speed = carMph(app, cpu, car);
     const auto chopped = chop(app, cpu, speed.mph);
     if (!chopped)
@@ -1287,7 +1187,7 @@ std::optional<BumpLeft> bump(App* app, CPU& cpu, reg32 car, reg32 side, reg32 so
     put(app, frame - 4, integerOf(*chopped));
     const reg32 mph = at(app, frame - 4);
     if (mph == 0)
-        return BumpLeft{speed.eaxLeft, side, 0, softness};
+        return speed.eaxLeft;
     const reg32 shorter = 0x258 - (mph + mph);
     put(app, frame - 8, shorter);
     if (shorter < 0xc8)
@@ -1305,10 +1205,10 @@ std::optional<BumpLeft> bump(App* app, CPU& cpu, reg32 car, reg32 side, reg32 so
     if (softness == 2)
         put(app, frame - 0x24, reg32(sreg32(at(app, frame - 0x24)) >> 1));
     const CallSlot slot(cpu);
-    const auto played = jolt(app, cpu, frame - 0xc, frame - 8, frame - 0x24, heldIn(cpu, frame.base()));
+    const auto played = jolt(app, cpu, frame - 0xc, frame - 8, frame - 0x24);
     if (!played)
         return std::nullopt;
-    return BumpLeft{played->answer, played->ebxLeft, shorter, played->edxLeft};
+    return *played;
 }
 
 /* 0x4714f0: the kick of `car`'s gear changed, its gear at 0x50b against the
@@ -1318,7 +1218,7 @@ std::optional<BumpLeft> bump(App* app, CPU& cpu, reg32 car, reg32 side, reg32 so
  * speed of 0.1, nor for the race's first gear.  Its numbers in its frame. */
 std::optional<reg32> gearKick(App* app, CPU& cpu, reg32 car)
 {
-    const GuestFrame frame(app, cpu, {cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp}, 0x20);
+    const GuestFrame frame(cpu, 6, 0x20);
     const reg8 lastGear = byte(app, kLastGear);
     if (!forceCar(app, car))
         return 0;
@@ -1347,7 +1247,7 @@ std::optional<reg32> gearKick(App* app, CPU& cpu, reg32 car)
         if (!set)
             return std::nullopt;
         put(app, kEnginePlaying, 1);
-        return set->answer;
+        return *set;
     }
     put(app, frame - 8, lastGear > gear ? 0xb5 : 1);
     const sreg32 revs = sreg32(at(app, car + kCarRevs));
@@ -1356,10 +1256,10 @@ std::optional<reg32> gearKick(App* app, CPU& cpu, reg32 car)
     put(app, frame - 4, kick[step][0]);
     put(app, frame - 0x20, kick[step][1]);
     const CallSlot slot(cpu);
-    const auto played = jolt(app, cpu, frame - 8, frame - 4, frame - 0x20, heldIn(cpu, frame.base()));
+    const auto played = jolt(app, cpu, frame - 8, frame - 4, frame - 0x20);
     if (!played)
         return std::nullopt;
-    return played->answer;
+    return *played;
 }
 
 /* 0x471e10: a frame of the race's forces, on the game's timers: none while
@@ -1370,13 +1270,10 @@ std::optional<reg32> gearKick(App* app, CPU& cpu, reg32 car)
  * rumble -- each at its strength.  The jolt's numbers in its frame; what the
  * code holds in its registers as it calls is what its callees' frames keep
  * (`held`).  eax as the code leaves it. */
-std::optional<reg32> forcesFrame(App* app, CPU& cpu, const Saved& entry)
+std::optional<reg32> forcesFrame(App* app, CPU& cpu)
 {
-    const GuestFrame frame(app, cpu, {entry.ebx, entry.ecx, entry.edx, entry.esi, entry.edi, entry.ebp}, 0x20);
-    Saved held = entry;
-    held.ebp = frame.base();
+    const GuestFrame frame(cpu, 6, 0x20);
     const reg32 car = at(app, kForceCar);
-    held.ecx = car;
     reg32 left = forceCar(app, car) ? 1 : 0;
     if (left == 0 || car != at(app, kForceCar))
         return left;
@@ -1388,7 +1285,7 @@ std::optional<reg32> forcesFrame(App* app, CPU& cpu, const Saved& entry)
     };
     if (sreg32(gameSettings(app).replayMode) > 1 && at(app, kViewMode) != kBothViews)
         return stopBoth();
-    const reg16 status = compare(cpu, Float(0.0), floatAt(app, car + kCarHeight));
+    const reg16 status = compare(Float(0.0), floatAt(app, car + kCarHeight));
     left = withStatus(left, status);
     if (above(status))
     {
@@ -1400,7 +1297,6 @@ std::optional<reg32> forcesFrame(App* app, CPU& cpu, const Saved& entry)
         put(app, kAirborne, 1);
         return stopped;
     }
-    held.edx = 0;
     put(app, kAirborne, 0);
     if (half(app, car + kCarHeld) != 0)
     {
@@ -1415,19 +1311,14 @@ std::optional<reg32> forcesFrame(App* app, CPU& cpu, const Saved& entry)
         put(app, frame - 0x20, 0x2710);
         put(app, frame - 8, 0x1f4);
         put(app, frame - 4, (at(app, kFrame) & 1) != 0 ? 0x2d : 0x13b);
-        held.esi = 2;
-        held.edi = 0x1f4;
-        std::optional<Leftover> played;
+        std::optional<reg32> played;
         {
             const CallSlot slot(cpu);
-            played = jolt(app, cpu, frame - 4, frame - 8, frame - 0x20, held);
+            played = jolt(app, cpu, frame - 4, frame - 8, frame - 0x20);
         }
         if (!played)
             return std::nullopt;
-        left = played->answer;
-        held.ebx = played->ebxLeft;
-        held.edx = played->edxLeft;
-        held.edi = 0;
+        left = *played;
         put(app, kJoltWait, 2);
         put(app, kBumped, 0);
     }
@@ -1435,7 +1326,6 @@ std::optional<reg32> forcesFrame(App* app, CPU& cpu, const Saved& entry)
     left = kick;
     if (kick != 0)
     {
-        held.edx = kick - 1;
         put(app, kGearKick, kick - 1);
         if (kick - 1 == 0)
         {
@@ -1446,9 +1336,9 @@ std::optional<reg32> forcesFrame(App* app, CPU& cpu, const Saved& entry)
         }
     }
     // Each callee's frame at the depth the call makes.
-    const auto play = [&](std::optional<reg32> (*effect)(App*, CPU&, reg32, const Saved&)) {
+    const auto play = [&](std::optional<reg32> (*effect)(App*, CPU&, reg32)) {
         const CallSlot slot(cpu);
-        const auto played = effect(app, cpu, car, held);
+        const auto played = effect(app, cpu, car);
         if (played)
             left = *played;
         return played.has_value();
@@ -1456,7 +1346,6 @@ std::optional<reg32> forcesFrame(App* app, CPU& cpu, const Saved& entry)
     if (at(app, kBumped) == 0 && at(app, kAirborne) == 0 && gameSettings(app).forceRoad != 0 && !play(engineRumble))
         return std::nullopt;
     const reg32 wait = at(app, kJoltWait);
-    held.edx = wait;
     if (sreg32(wait) > 0)
     {
         left = wait - 1;
@@ -1471,7 +1360,6 @@ std::optional<reg32> forcesFrame(App* app, CPU& cpu, const Saved& entry)
         }
         else if (gameSettings(app).forceRoadGrip != 0 && !play(slideSpring))
             return std::nullopt;
-        held.edi = 0;
         put(app, kJoltWait, 0);
     }
     if (gameSettings(app).forceEngine != 0 && !play(roadRumble))
@@ -1504,7 +1392,7 @@ reg32 lengthOf(App* app, reg32 from)
  * createEffects'. */
 std::optional<reg32> loadDevices(App* app, CPU& cpu)
 {
-    const GuestFrame frame(app, cpu, {cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp}, 0x14);
+    const GuestFrame frame(cpu, 6, 0x14);
     const reg32 before = gameSettings(app).deviceCount;
     // (The code has the count config.dat has in edx at the call, which the callee does not read.)
     const std::optional<reg32> found = guest::direct<0x435600, controls::lookForJoysticks>(app, cpu);
@@ -1527,7 +1415,8 @@ std::optional<reg32> loadDevices(App* app, CPU& cpu)
         const reg32 mine = controller * kControllerBytes + SETTINGS_ADDRESS(devices);
         if (record == 0)
         {
-            if (!call(app, cpu, fillZero, {mine, kControllerBytes}))
+            guest::direct<0x4e070c, ea::clearBytes>(app, cpu, mine, kControllerBytes);
+            if (cpu.terminate)
                 return std::nullopt;
             continue;
         }
@@ -1537,11 +1426,11 @@ std::optional<reg32> loadDevices(App* app, CPU& cpu)
             && at(app, record + kControllerAxes) == at(app, mine + kControllerAxes))
         {
             const reg32 length = lengthOf(app, record + kControllerName);
-            const auto compared =
-                call(app, cpu, watcom::strncmp, {mine + kControllerName, record + kControllerName, length});
-            if (!compared)
+            const reg32 compared = guest::direct<0x4eb390, watcom::clib::strncmp>(
+                app, cpu, mine + kControllerName, record + kControllerName, length);
+            if (cpu.terminate)
                 return std::nullopt;
-            same = *compared == 0;
+            same = compared == 0;
         }
         if (!same)
         {
@@ -1591,257 +1480,400 @@ std::optional<reg32> loadDevices(App* app, CPU& cpu)
             return std::nullopt;
     }
     // The menus told, eax as the code has it, which the call may leave.
-    return call(app, cpu, kControllersChanged, {*left});
+    return feCore<0x43c040, frontend::glue::noteDigitalControls>(app, cpu);
 }
 
 namespace
 {
 
-/* The adapters' end: eax the core's answer, ret `popped` more. */
-void answer(CPU& cpu, const std::optional<reg32>& result, reg32 popped = 0)
-{
-    if (!result)
-        return;
-    cpu.eax = *result;
-    cpu.esp += 4 + popped;
-}
-
-/* playEngineRumble's and its like's adapter: the effect of car eax, its
- * frame keeping the caller's registers. */
-void playAdapter(App* app, CPU& cpu, std::optional<reg32> (*effect)(App*, CPU&, reg32, const Saved&))
-{
-    answer(cpu, effect(app, cpu, cpu.eax, savedOf(cpu)));
-}
-
 }  // namespace
 
-void steadyEngineRumble(App* app, CPU& cpu);
-void startEngineRumble(App* app, CPU& cpu);
-void silenceEngineRumble(App* app, CPU& cpu);
-void setForceGain(App* app, CPU& cpu);
-void findForceController(App* app, CPU& cpu);
-void createForceEffects(App* app, CPU& cpu);
-void stopForces(App* app, CPU& cpu);
-void stopForcesAgain(App* app, CPU& cpu);
-void stopForcesOnceMore(App* app, CPU& cpu);
-void stopForcesOrActuatorsOn(App* app, CPU& cpu);
-void stopForcesOrActuatorsOff(App* app, CPU& cpu);
-void forcePlayerCar(App* app, CPU& cpu);
-void startRaceForces(App* app, CPU& cpu);
-void stopRaceEffects(App* app, CPU& cpu);
-void crashJolt(App* app, CPU& cpu);
-void bumpJolt(App* app, CPU& cpu);
-void gearChangeKick(App* app, CPU& cpu);
-void steeringAmount(App* app, CPU& cpu);
-void playSteeringSpring(App* app, CPU& cpu);
-void playSlideSpring(App* app, CPU& cpu);
-void playRoadRumble(App* app, CPU& cpu);
-void playEngineRumble(App* app, CPU& cpu);
-void isForceCar(App* app, CPU& cpu);
-void raceForcesFrame(App* app, CPU& cpu);
-void allActuatorsOff(App* app, CPU& cpu);
-void playJolt(App* app, CPU& cpu);
-void stopEngineRumble(App* app, CPU& cpu);
-void stopSteeringSpring(App* app, CPU& cpu);
-void carSpeedMph(App* app, CPU& cpu);
-void loadControllers(App* app, CPU& cpu);
+x86::reg32 steadyEngineRumble(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 startEngineRumble(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 silenceEngineRumble(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 setForceGain(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 findForceController(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 createForceEffects(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 stopForces(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 stopForcesAgain(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 stopForcesOnceMore(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 stopForcesOrActuatorsOn(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 stopForcesOrActuatorsOff(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 forcePlayerCar(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 startRaceForces(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 stopRaceEffects(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 crashJolt(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 bumpJolt(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 gearChangeKick(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 steeringAmount(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 playSteeringSpring(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 playSlideSpring(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 playRoadRumble(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 playEngineRumble(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 isForceCar(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 raceForcesFrame(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 allActuatorsOff(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 playJolt(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 stopEngineRumble(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 stopSteeringSpring(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 carSpeedMph(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 loadControllers(App* app, CPU& cpu, x86::Args& args);
 
 /* 0x470bc0: steadyEngine. */
-void steadyEngineRumble(App* app, CPU& cpu)
+x86::reg32 steadyEngineRumble(App* app, CPU& cpu, x86::Args& args)
 {
-    answer(cpu, steadyEngine(app, cpu, cpu.eax));
+    if (const auto result = steadyEngine(app, cpu, args.eax))
+    {
+        args.eax = *result;
+        cpu.esp += 4;
+    }
+    return args.eax;
 }
 
 /* 0x470c60: startEngine at gain eax. */
-void startEngineRumble(App* app, CPU& cpu)
+x86::reg32 startEngineRumble(App* app, CPU& cpu, x86::Args& args)
 {
-    answer(cpu, startEngine(app, cpu, cpu.eax));
+    if (const auto result = startEngine(app, cpu, args.eax))
+    {
+        args.eax = *result;
+        cpu.esp += 4;
+    }
+    return args.eax;
 }
 
 /* 0x470cb0: silenceEngine. */
-void silenceEngineRumble(App* app, CPU& cpu)
+x86::reg32 silenceEngineRumble(App* app, CPU& cpu, x86::Args& args)
 {
-    answer(cpu, silenceEngine(app, cpu, cpu.eax));
+    if (const auto result = silenceEngine(app, cpu, args.eax))
+    {
+        args.eax = *result;
+        cpu.esp += 4;
+    }
+    return args.eax;
 }
 
 /* 0x470d10: setGain to eax. */
-void setForceGain(App* app, CPU& cpu)
+x86::reg32 setForceGain(App* app, CPU& cpu, x86::Args& args)
 {
-    answer(cpu, setGain(app, cpu, cpu.eax));
+    if (const auto result = setGain(app, cpu, args.eax))
+    {
+        args.eax = *result;
+        cpu.esp += 4;
+    }
+    return args.eax;
 }
 
 /* 0x470d30: findController: 1 if found, else 0. */
-void findForceController(App* app, CPU& cpu)
+x86::reg32 findForceController(App* app, CPU& cpu, x86::Args& args)
 {
     const auto found = findController(app, cpu);
     if (found)
-        answer(cpu, reg32(*found ? 1 : 0));
+    {
+        args.eax = *found ? 1 : 0;
+        cpu.esp += 4;
+    }
+    return args.eax;
 }
 
 /* 0x470dc0: createEffects. */
-void createForceEffects(App* app, CPU& cpu)
+x86::reg32 createForceEffects(App* app, CPU& cpu, x86::Args& args)
 {
-    answer(cpu, createEffects(app, cpu));
+    if (const auto result = createEffects(app, cpu))
+    {
+        args.eax = *result;
+        cpu.esp += 4;
+    }
+    return args.eax;
 }
 
 /* 0x470f40: the forces stopped (as the race is paused). */
-void stopForces(App* app, CPU& cpu)
+x86::reg32 stopForces(App* app, CPU& cpu, x86::Args& args)
 {
-    answer(cpu, stopAll(app, cpu, cpu.eax));
+    if (const auto result = stopAll(app, cpu, args.eax))
+    {
+        args.eax = *result;
+        cpu.esp += 4;
+    }
+    return args.eax;
 }
 
 /* 0x470f80: the forces stopped, again. */
-void stopForcesAgain(App* app, CPU& cpu)
+x86::reg32 stopForcesAgain(App* app, CPU& cpu, x86::Args& args)
 {
-    answer(cpu, stopAll(app, cpu, cpu.eax));
+    if (const auto result = stopAll(app, cpu, args.eax))
+    {
+        args.eax = *result;
+        cpu.esp += 4;
+    }
+    return args.eax;
 }
 
 /* 0x470fc0: the forces stopped, a third time. */
-void stopForcesOnceMore(App* app, CPU& cpu)
+x86::reg32 stopForcesOnceMore(App* app, CPU& cpu, x86::Args& args)
 {
-    answer(cpu, stopAll(app, cpu, cpu.eax));
+    if (const auto result = stopAll(app, cpu, args.eax))
+    {
+        args.eax = *result;
+        cpu.esp += 4;
+    }
+    return args.eax;
 }
 
 /* 0x471000: the forces stopped, or a Microsoft device's actuators on. */
-void stopForcesOrActuatorsOn(App* app, CPU& cpu)
+x86::reg32 stopForcesOrActuatorsOn(App* app, CPU& cpu, x86::Args& args)
 {
-    answer(cpu, stopAllOr(app, cpu, cpu.eax, kActuatorsOn));
+    if (const auto result = stopAllOr(app, cpu, args.eax, true))
+    {
+        args.eax = *result;
+        cpu.esp += 4;
+    }
+    return args.eax;
 }
 
 /* 0x471070: the forces stopped, or a Microsoft device's actuators off. */
-void stopForcesOrActuatorsOff(App* app, CPU& cpu)
+x86::reg32 stopForcesOrActuatorsOff(App* app, CPU& cpu, x86::Args& args)
 {
-    answer(cpu, stopAllOr(app, cpu, cpu.eax, kActuatorsOff));
+    if (const auto result = stopAllOr(app, cpu, args.eax, false))
+    {
+        args.eax = *result;
+        cpu.esp += 4;
+    }
+    return args.eax;
 }
 
 /* 0x4710f0: findForceCar. */
-void forcePlayerCar(App* app, CPU& cpu)
+x86::reg32 forcePlayerCar(App* app, CPU& cpu, x86::Args& args)
 {
-    answer(cpu, findForceCar(app, cpu));
+    if (const auto result = findForceCar(app, cpu))
+    {
+        args.eax = *result;
+        cpu.esp += 4;
+    }
+    return args.eax;
 }
 
 /* 0x4711e0: startForces. */
-void startRaceForces(App* app, CPU& cpu)
+x86::reg32 startRaceForces(App* app, CPU& cpu, x86::Args& args)
 {
-    answer(cpu, startForces(app, cpu, cpu.eax));
+    if (const auto result = startForces(app, cpu, args.eax))
+    {
+        args.eax = *result;
+        cpu.esp += 4;
+    }
+    return args.eax;
 }
 
 /* 0x471240: stopEffects. */
-void stopRaceEffects(App* app, CPU& cpu)
+x86::reg32 stopRaceEffects(App* app, CPU& cpu, x86::Args& args)
 {
-    answer(cpu, stopEffects(app, cpu, cpu.eax));
+    if (const auto result = stopEffects(app, cpu, args.eax))
+    {
+        args.eax = *result;
+        cpu.esp += 4;
+    }
+    return args.eax;
 }
 
 /* 0x471270: crash of car eax; stdcall's ret 0x10. */
-void crashJolt(App* app, CPU& cpu)
+x86::reg32 crashJolt(App* app, CPU& cpu, x86::Args& args)
 {
-    answer(cpu, crash(app, cpu, cpu.eax), 0x10);
+    if (const auto result = crash(app, cpu, args.eax))
+    {
+        args.eax = *result;
+        cpu.esp += 4 + 0x10;
+    }
+    return args.eax;
 }
 
 /* 0x471440: bump of car eax, side ebx, softness edx; ebx, ecx and edx as it
  * leaves them. */
-void bumpJolt(App* app, CPU& cpu)
+x86::reg32 bumpJolt(App* app, CPU& cpu, x86::Args& args)
 {
-    const auto bumped = bump(app, cpu, cpu.eax, cpu.ebx, cpu.edx);
-    if (!bumped)
-        return;
-    cpu.ebx = bumped->ebxLeft;
-    cpu.ecx = bumped->ecxLeft;
-    cpu.edx = bumped->edxLeft;
-    answer(cpu, bumped->answer);
+    if (const auto result = bump(app, cpu, args.eax, args.ebx, args.edx))
+    {
+        args.eax = *result;
+        cpu.esp += 4;
+    }
+    return args.eax;
 }
 
 /* 0x4714f0: gearKick of car eax. */
-void gearChangeKick(App* app, CPU& cpu)
+x86::reg32 gearChangeKick(App* app, CPU& cpu, x86::Args& args)
 {
-    answer(cpu, gearKick(app, cpu, cpu.eax));
+    if (const auto result = gearKick(app, cpu, args.eax))
+    {
+        args.eax = *result;
+        cpu.esp += 4;
+    }
+    return args.eax;
 }
 
 /* 0x471650: steering of car eax, to [ebx] and [edx]. */
-void steeringAmount(App* app, CPU& cpu)
+x86::reg32 steeringAmount(App* app, CPU& cpu, x86::Args& args)
 {
-    answer(cpu, steering(app, cpu, cpu.eax, cpu.ebx, cpu.edx));
+    if (const auto result = steering(app, cpu, args.eax, args.ebx, args.edx))
+    {
+        args.eax = *result;
+        cpu.esp += 4;
+    }
+    return args.eax;
 }
 
 /* 0x4716e0: steeringSpring of car eax. */
-void playSteeringSpring(App* app, CPU& cpu)
+x86::reg32 playSteeringSpring(App* app, CPU& cpu, x86::Args& args)
 {
-    playAdapter(app, cpu, steeringSpring);
+    if (const auto result = steeringSpring(app, cpu, args.eax))
+    {
+        args.eax = *result;
+        cpu.esp += 4;
+    }
+    return args.eax;
 }
 
 /* 0x471860: slideSpring of car eax. */
-void playSlideSpring(App* app, CPU& cpu)
+x86::reg32 playSlideSpring(App* app, CPU& cpu, x86::Args& args)
 {
-    playAdapter(app, cpu, slideSpring);
+    if (const auto result = slideSpring(app, cpu, args.eax))
+    {
+        args.eax = *result;
+        cpu.esp += 4;
+    }
+    return args.eax;
 }
 
 /* 0x4719f0: roadRumble of car eax. */
-void playRoadRumble(App* app, CPU& cpu)
+x86::reg32 playRoadRumble(App* app, CPU& cpu, x86::Args& args)
 {
-    playAdapter(app, cpu, roadRumble);
+    if (const auto result = roadRumble(app, cpu, args.eax))
+    {
+        args.eax = *result;
+        cpu.esp += 4;
+    }
+    return args.eax;
 }
 
 /* 0x471af0: engineRumble of car eax. */
-void playEngineRumble(App* app, CPU& cpu)
+x86::reg32 playEngineRumble(App* app, CPU& cpu, x86::Args& args)
 {
-    playAdapter(app, cpu, engineRumble);
+    if (const auto result = engineRumble(app, cpu, args.eax))
+    {
+        args.eax = *result;
+        cpu.esp += 4;
+    }
+    return args.eax;
 }
 
 /* 0x471dc0: forceCar of car eax: 1 if so, else 0. */
-void isForceCar(App* app, CPU& cpu)
+x86::reg32 isForceCar(App* app, CPU& cpu, x86::Args& args)
 {
-    answer(cpu, reg32(forceCar(app, cpu.eax) ? 1 : 0));
+    args.eax = forceCar(app, args.eax) ? 1 : 0;
+    cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x471e10: forcesFrame. */
-void raceForcesFrame(App* app, CPU& cpu)
+x86::reg32 raceForcesFrame(App* app, CPU& cpu, x86::Args& args)
 {
-    answer(cpu, forcesFrame(app, cpu, savedOf(cpu)));
+    if (const auto result = forcesFrame(app, cpu))
+    {
+        args.eax = *result;
+        cpu.esp += 4;
+    }
+    return args.eax;
 }
 
 /* 0x471fb0: actuatorsOff. */
-void allActuatorsOff(App* app, CPU& cpu)
+x86::reg32 allActuatorsOff(App* app, CPU& cpu, x86::Args& args)
 {
-    answer(cpu, actuatorsOff(app, cpu, cpu.eax));
+    if (const auto result = actuatorsOff(app, cpu, args.eax))
+    {
+        args.eax = *result;
+        cpu.esp += 4;
+    }
+    return args.eax;
 }
 
 /* 0x471fd0: jolt of the direction at [eax], the duration at [edx], the
  * hardness at [ebx]; ebx and edx as it leaves them. */
-void playJolt(App* app, CPU& cpu)
+x86::reg32 playJolt(App* app, CPU& cpu, x86::Args& args)
 {
-    const auto played = jolt(app, cpu, cpu.eax, cpu.edx, cpu.ebx, savedOf(cpu));
-    if (!played)
-        return;
-    cpu.ebx = played->ebxLeft;
-    cpu.edx = played->edxLeft;
-    answer(cpu, played->answer);
+    if (const auto result = jolt(app, cpu, args.eax, args.edx, args.ebx))
+    {
+        args.eax = *result;
+        cpu.esp += 4;
+    }
+    return args.eax;
 }
 
 /* 0x4720a0: stopEngine. */
-void stopEngineRumble(App* app, CPU& cpu)
+x86::reg32 stopEngineRumble(App* app, CPU& cpu, x86::Args& args)
 {
-    answer(cpu, stopEngine(app, cpu, cpu.eax));
+    if (const auto result = stopEngine(app, cpu, args.eax))
+    {
+        args.eax = *result;
+        cpu.esp += 4;
+    }
+    return args.eax;
 }
 
 /* 0x4720e0: stopSpring. */
-void stopSteeringSpring(App* app, CPU& cpu)
+x86::reg32 stopSteeringSpring(App* app, CPU& cpu, x86::Args& args)
 {
-    answer(cpu, stopSpring(app, cpu, cpu.eax));
+    if (const auto result = stopSpring(app, cpu, args.eax))
+    {
+        args.eax = *result;
+        cpu.esp += 4;
+    }
+    return args.eax;
 }
 
 /* 0x472110: carMph of car eax onto the x87's stack; ax left the status word
  * of its compare. */
-void carSpeedMph(App* app, CPU& cpu)
+x86::reg32 carSpeedMph(App* app, CPU& cpu, x86::Args& args)
 {
-    const Mph speed = carMph(app, cpu, cpu.eax);
-    cpu.fpu.push(speed.mph);
-    answer(cpu, speed.eaxLeft);
+    const Mph speed = carMph(app, cpu, args.eax);
+    args.floatSet = true;
+    args.floatResult = speed.mph;
+    args.eax = speed.eaxLeft;
+    cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x472b60: loadDevices. */
-void loadControllers(App* app, CPU& cpu)
+x86::reg32 loadControllers(App* app, CPU& cpu, x86::Args& args)
 {
-    answer(cpu, loadDevices(app, cpu));
+    if (const auto result = loadDevices(app, cpu))
+    {
+        args.eax = *result;
+        cpu.esp += 4;
+    }
+    return args.eax;
+}
+
+/* The typed cores of the thunks above, for callers that call them as C++ (native_controls_race.h). */
+std::optional<reg32> forcesStopped(App* app, CPU& cpu, reg32 unchanged)
+{
+    return stopAll(app, cpu, unchanged);
+}
+
+std::optional<reg32> forcesStoppedOrActuatorsOn(App* app, CPU& cpu, reg32 unchanged)
+{
+    return stopAllOr(app, cpu, unchanged, true);
+}
+
+std::optional<reg32> forcesStoppedOrActuatorsOff(App* app, CPU& cpu, reg32 unchanged)
+{
+    return stopAllOr(app, cpu, unchanged, false);
+}
+
+std::optional<reg32> forceCarFound(App* app, CPU& cpu)
+{
+    return findForceCar(app, cpu);
+}
+
+std::optional<reg32> raceForcesStarted(App* app, CPU& cpu, reg32 unchanged)
+{
+    return startForces(app, cpu, unchanged);
 }
 
 }  // namespace controls

@@ -4,12 +4,12 @@
 /* iSNDdirect: the interface between nfs3.exe and its sound driver, eacsnd.dll
  * -- 16 stdcall exports the game finds with GetProcAddress (iSNDloaddll,
  * pointers at 0x9ef61c..).  The game mixes everything itself; the driver only
- * feeds the mix to the card.  eacsnd has no generated code: its exports are
- * the port's functions of the same names (disassemble_nfs3hp.py), in
+ * feeds the mix to the card.  eacsnd has no code of its own in the port: its exports are
+ * the port's functions of the same names, in
  * native_sound.cpp (the driver proper: caps, start, stop, serve) and
  * port_snd_isnd.cpp (the rest).
  *
- * Each name is checked against eacsnd's generated code.  eacsnd's start
+ * eacsnd's start
  * (sub_a33150) tries 22050 first, then 16000, 32000, 44100 and 11025, and so
  * does the port.
  *

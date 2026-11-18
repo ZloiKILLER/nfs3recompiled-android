@@ -7,8 +7,8 @@
 #include <cstring>
 
 /* native_vertices.cpp's typed functions that other files call as C++ (guest::direct), and how the
- * game's code calls each by address (ByAddress, for the check's stand-ins).  None of these calls
- * the game's other functions; those that take `cpu` read only its x87 mode, as their adapters do:
+ * game's code calls each by address.  None of these calls
+ * the game's other functions; those that take `cpu` read only its x87 mode, as their thunks do:
  * floats at single precision to nearest, again through the emulated FPU should a value leave a
  * float's range. */
 namespace nfs3hp
@@ -69,6 +69,14 @@ inline void scaleVectorsBy(win32::WinApplication* app, std::int32_t count, x86::
     scaleVectorList(app, count, in, scale, out);
 }
 // The game's 0x4e01c0: the vector at `from` divided by its length into `to`.
+// 0x4dffb0 (Add) and 0x4e0000 as the code leaves eax: `in` past the vectors read.
+template <bool Add>
+x86::reg32 offsetVectorsEax(win32::WinApplication* app, std::int32_t count, x86::reg32 in, x86::reg32 by, x86::reg32 out);
+// 0x4e0050 as the code leaves eax: `out` past the vectors written.
+x86::reg32 scaleVectorsEax(win32::WinApplication* app, std::int32_t count, x86::reg32 in, float scale, x86::reg32 out);
+// 0x4e0280 as the code leaves eax: `a`, or when `c` is `a` the copy of it in the code's frame, which lies as deep
+// as the stack pointer at the call (cpu.esp as the callee has it, the return address's slot) puts it.
+x86::reg32 multiplyMatrixEax(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 a, x86::reg32 b, x86::reg32 c);
 void makeUnitVector(win32::WinApplication* app, x86::reg32 from, x86::reg32 to);
 // The game's 0x4e01f0: the dot product of the vectors at `a` and `b`, as wide as the x87 holds it.
 double dotProduct(win32::WinApplication* app, x86::reg32 a, x86::reg32 b);
@@ -86,242 +94,53 @@ void transformPointList(win32::WinApplication* app, std::int32_t count, x86::reg
 // The game's 0x4e06a0: the length of the vector at `vector`, as wide as the x87 holds it.
 double vectorLength(win32::WinApplication* app, x86::reg32 vector);
 
-/* For the ByAddress below: a call of the game's by address with `registers` in eax, edx, ebx and
- * ecx in turn and `words` on the stack (the callee's ret takes them off), every register but eax
- * kept; false when the game stopped in it.  And a float's bits, as the stack holds it. */
-inline bool stackCallKeeping(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 address,
-                             std::initializer_list<x86::reg32> registers, std::initializer_list<x86::reg32> words)
-{
-    const guest::KeptRegisters kept(cpu);
-    x86::reg32* const into[] = {&cpu.eax, &cpu.edx, &cpu.ebx, &cpu.ecx};
-    unsigned i = 0;
-    for (const x86::reg32 value : registers)
-        *into[i++] = value;
-    return guest::call(app, cpu, address, words);
-}
+// The game's 0x4c11b0: the triangle a, b, c to the screen; eax what the code leaves there.
+x86::reg32 triangleClipped(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 a, x86::reg32 b, x86::reg32 c);
+// The game's 0x4c12e0: the quad a, b, c, d to the screen; eax what the code leaves there.
+x86::reg32 quadClipped(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 a, x86::reg32 b, x86::reg32 c, x86::reg32 d);
+// The game's 0x4c7610: the polygons of the list `list` into the buckets, `start` the stack's word (ret 4); eax.
+x86::reg32 bucketsSortedInto(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 list, x86::reg32 start);
+// The game's 0x4c7790: the frame's polygons of `list` into the depth buckets, `start` the stack's word (ret 4).
+void bucketsDepthedInto(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 list, x86::reg32 start);
+// The game's 0x492370: a light's glow for view `view`; `w0` (the lowest) to `w6` the seven stack words (ret 0x1c); eax.
+x86::reg32 lightGlowDrawn(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 view, x86::reg32 w0, x86::reg32 w1,
+                          x86::reg32 w2, x86::reg32 w3, x86::reg32 w4, x86::reg32 w5, x86::reg32 w6);
 
-inline x86::reg32 floatWord(float value)
-{
-    x86::reg32 bits;
-    std::memcpy(&bits, &value, sizeof bits);
-    return bits;
-}
+// The game's 0x4c12e0: the quad of the four vertices at a, b, c and d clipped and drawn; its answer; esp the frame base.
+x86::reg32 quadClippedAt(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 esp, x86::reg32 a, x86::reg32 b,
+                       x86::reg32 c, x86::reg32 d);
+// The game's 0x4c11b0: the triangle of the vertices at a, b and c clipped and drawn; its answer; esp the frame base.
+x86::reg32 triangleClippedAt(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 esp, x86::reg32 a, x86::reg32 b,
+                           x86::reg32 c);
+// The game's 0x4c1e20: `count` quads of the mesh (vertices, quad numbers) drawn; its answer; esp the frame base.
+x86::reg32 quadMeshDrawn(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 esp, x86::sreg32 count,
+                         x86::reg32 vertices, x86::reg32 quads);
 
+// 0x41a550 (stdcall, 1 word), 0x4dbef0 (2), 0x41b640 (1), 0x41b300 (2), 0x41ae90 (3), 0x41bf30, 0x4c7790 (1), 0x4c79a0
+// as typed cores (their thunks' registers and stack words as parameters); the eax each leaves is the result.
+void trackVerticesCore(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 view, x86::reg32 count, x86::reg32 in,
+                       x86::reg32 out, x86::reg32 record);
+x86::reg32 objectVerticesListCore(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 matrix, x86::reg32 move,
+                                  x86::reg32 count, x86::reg32 vertices, x86::reg32 colours, x86::reg32 out);
+x86::reg32 objectRecordsCore(win32::WinApplication* app, x86::CPU& cpu, x86::sreg32 count, x86::reg32 polygon,
+                             x86::reg32 record, x86::reg32 base);
+x86::reg32 trackRecordsCore(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 records, x86::reg32 pieceRow,
+                            x86::reg32 pieceColumn, x86::reg32 tail, x86::reg32 head);
+x86::reg32 trackPolygonsCore(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 view, x86::reg32 pieceRow,
+                             x86::reg32 pieceColumn, x86::reg32 records, x86::reg32 tail, x86::reg32 head);
+x86::reg32 boxOutsideCore(win32::WinApplication* app, x86::reg32 view, x86::reg32 corners, x86::reg32 matrix,
+                          x86::reg32 move);
+void depthBucketsCore(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 list, x86::reg32 start);
+void gatherBucketsCore(win32::WinApplication* app, x86::reg32 deep, x86::reg32 out);
+// 0x4c11b0, 0x4c1aa0, 0x4c12e0, 0x434380: a triangle, a triangle by z, a quad to the screen; the polygon records
+// from `first` on drawn (the record it stopped at).
+x86::reg32 clipTriangleCore(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 a, x86::reg32 b, x86::reg32 c);
+void clipTriangleByZCore(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 a, x86::reg32 b, x86::reg32 c);
+x86::reg32 clipQuadCore(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 a, x86::reg32 b, x86::reg32 c,
+                        x86::reg32 d);
+x86::reg32 submitPolygonsCore(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 first);
 }  // namespace vertices
 
-namespace guest
-{
-
-// The view in eax, the count in edx, the vertices in ebx, the colours in ecx; out on the stack (ret 4).
-template <>
-struct ByAddress<vertices::colouredVerticesOf>
-{
-    template <x86::reg32 Address>
-    static void call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 view, x86::reg32 count, x86::reg32 in,
-                     x86::reg32 colours, x86::reg32 out)
-    {
-        vertices::stackCallKeeping(app, cpu, Address, {view, count, in, colours}, {out});
-    }
-};
-
-// The points in eax and edx; the distance in eax.
-template <>
-struct ByAddress<vertices::groundDistanceAt>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 a, x86::reg32 b)
-    {
-        watcom(app, cpu, Address, {a, b});
-        return cpu.eax;
-    }
-};
-
-// The point in eax; the block in eax.
-template <>
-struct ByAddress<vertices::nearestBlockTo>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 point)
-    {
-        watcom(app, cpu, Address, {point});
-        return cpu.eax;
-    }
-};
-
-// The matrix in eax, o and p on the stack (ret 0x18); the height left on the x87's stack.
-template <>
-struct ByAddress<vertices::groundHeightAt>
-{
-    template <x86::reg32 Address>
-    static float call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 matrix, float ox, float oy, float oz,
-                      float px, float py, float pz)
-    {
-        using vertices::floatWord;
-        if (!vertices::stackCallKeeping(app, cpu, Address, {matrix},
-                                        {floatWord(ox), floatWord(oy), floatWord(oz), floatWord(px), floatWord(py),
-                                         floatWord(pz)}))
-            return 0.0f;
-        return float(cpu.fpu.take());
-    }
-};
-
-// The vector in eax; the length left on the x87's stack.
-template <>
-struct ByAddress<vertices::normaliseVector>
-{
-    template <x86::reg32 Address>
-    static float call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 vector)
-    {
-        const std::optional<x86::Float> length = watcomFloat(app, cpu, Address, {vector});
-        return length ? float(*length) : 0.0f;
-    }
-};
-
-// The count in eax, the vertices in edx, out in ebx, the matrix in ecx; the position and the colour on the
-// stack (ret 8); the nearest z left on the x87's stack.
-template <>
-struct ByAddress<vertices::colouredNearestZ>
-{
-    template <x86::reg32 Address>
-    static float call(win32::WinApplication* app, x86::CPU& cpu, std::int32_t count, x86::reg32 in, x86::reg32 out,
-                      x86::reg32 matrix, x86::reg32 position, x86::reg32 colour)
-    {
-        if (!vertices::stackCallKeeping(app, cpu, Address, {x86::reg32(count), in, out, matrix}, {position, colour}))
-            return 0.0f;
-        return float(cpu.fpu.take());
-    }
-};
-
-// The count in eax, the vertices in edx, the matrix in ebx, the position in ecx; out on the stack (ret 4).
-template <>
-struct ByAddress<vertices::objectVerticesOf>
-{
-    template <x86::reg32 Address>
-    static void call(win32::WinApplication* app, x86::CPU& cpu, std::int32_t count, x86::reg32 in, x86::reg32 matrix,
-                     x86::reg32 position, x86::reg32 out)
-    {
-        vertices::stackCallKeeping(app, cpu, Address, {x86::reg32(count), in, matrix, position}, {out});
-    }
-};
-
-// The count in eax, the vectors in edx, the one in ebx, out in ecx.
-template <>
-struct ByAddress<vertices::offsetVectorList<true>>
-{
-    template <x86::reg32 Address>
-    static void call(win32::WinApplication* app, x86::CPU& cpu, std::int32_t count, x86::reg32 in, x86::reg32 by,
-                     x86::reg32 out)
-    {
-        watcom(app, cpu, Address, {x86::reg32(count), in, by, out});
-    }
-};
-
-template <>
-struct ByAddress<vertices::offsetVectorList<false>>
-{
-    template <x86::reg32 Address>
-    static void call(win32::WinApplication* app, x86::CPU& cpu, std::int32_t count, x86::reg32 in, x86::reg32 by,
-                     x86::reg32 out)
-    {
-        watcom(app, cpu, Address, {x86::reg32(count), in, by, out});
-    }
-};
-
-// The count in eax, the vectors in edx; the scale and out on the stack (ret 8).
-template <>
-struct ByAddress<vertices::scaleVectorsBy>
-{
-    template <x86::reg32 Address>
-    static void call(win32::WinApplication* app, x86::CPU& cpu, std::int32_t count, x86::reg32 in, float scale,
-                     x86::reg32 out)
-    {
-        vertices::stackCallKeeping(app, cpu, Address, {x86::reg32(count), in}, {vertices::floatWord(scale), out});
-    }
-};
-
-// The vector in eax, to in edx.
-template <>
-struct ByAddress<vertices::makeUnitVector>
-{
-    template <x86::reg32 Address>
-    static void call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 from, x86::reg32 to)
-    {
-        watcom(app, cpu, Address, {from, to});
-    }
-};
-
-// The vectors in eax and edx; the product left on the x87's stack.
-template <>
-struct ByAddress<vertices::dotProduct>
-{
-    template <x86::reg32 Address>
-    static double call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 a, x86::reg32 b)
-    {
-        const std::optional<x86::Float> product = watcomFloat(app, cpu, Address, {a, b});
-        return product ? double(*product) : 0.0;
-    }
-};
-
-// The count in eax, the vectors in edx, the one in ebx, out in ecx.
-template <>
-struct ByAddress<vertices::dotProductsOf>
-{
-    template <x86::reg32 Address>
-    static void call(win32::WinApplication* app, x86::CPU& cpu, std::int32_t count, x86::reg32 in, x86::reg32 d,
-                     x86::reg32 out)
-    {
-        watcom(app, cpu, Address, {x86::reg32(count), in, d, out});
-    }
-};
-
-// a in eax, b in edx, c in ebx.
-template <>
-struct ByAddress<vertices::multiplyMatrix>
-{
-    template <x86::reg32 Address>
-    static void call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 a, x86::reg32 b, x86::reg32 c)
-    {
-        watcom(app, cpu, Address, {a, b, c});
-    }
-};
-
-// The count in eax, the vectors in edx, the matrix in ebx, out in ecx.
-template <>
-struct ByAddress<vertices::turnVectors>
-{
-    template <x86::reg32 Address>
-    static void call(win32::WinApplication* app, x86::CPU& cpu, std::int32_t count, x86::reg32 in, x86::reg32 matrix,
-                     x86::reg32 out)
-    {
-        watcom(app, cpu, Address, {x86::reg32(count), in, matrix, out});
-    }
-};
-
-// The count in eax, the points in edx, the matrix in ebx, the move in ecx; out on the stack (ret 4).
-template <>
-struct ByAddress<vertices::transformPointList>
-{
-    template <x86::reg32 Address>
-    static void call(win32::WinApplication* app, x86::CPU& cpu, std::int32_t count, x86::reg32 in, x86::reg32 matrix,
-                     x86::reg32 move, x86::reg32 out)
-    {
-        vertices::stackCallKeeping(app, cpu, Address, {x86::reg32(count), in, matrix, move}, {out});
-    }
-};
-
-// The vector in eax; the length left on the x87's stack.
-template <>
-struct ByAddress<vertices::vectorLength>
-{
-    template <x86::reg32 Address>
-    static double call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 vector)
-    {
-        const std::optional<x86::Float> length = watcomFloat(app, cpu, Address, {vector});
-        return length ? double(*length) : 0.0;
-    }
-};
-
-}  // namespace guest
 }  // namespace nfs3hp
 
 #endif

@@ -4,7 +4,7 @@
 
 /* The THRASH driver's texture records as the game's memory has them (see
  * port_thrash.h): apart from port_thrash.cpp, which draws through the
- * renderer, so that tools/game_checks builds them. */
+ * renderer. */
 namespace nfs3hp
 {
 namespace port

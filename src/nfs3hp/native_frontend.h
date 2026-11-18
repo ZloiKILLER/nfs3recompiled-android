@@ -17,18 +17,16 @@
  * These are not about speed.  They are there to be read and changed.  The menus' state stays in guest memory, where the rest of
  * the game reads it, and what the menu engine does for a screen -- finding an
  * item, a line of text, a dialog box -- is a call into the game's own function
- * at its address.  A stand-in leaves memory and registers as the generated
- * function does: eax its result, the registers it saves as they came (see
+ * at its address.  A stand-in leaves memory and registers as the game's function does: eax its result, the registers it saves as they came (see
  * Restores), the return address and any stack arguments popped.  Not the
- * flags, which no caller of a C function reads (the generator computes none
- * of them at a return), and not the stack below the returned esp. */
+ * flags, which no caller of a C function reads, and not the stack below the returned esp. */
 namespace nfs3hp
 {
 namespace fe
 {
 
 /* The game was told to stop (cpu.terminate) inside a call into it: the
- * stand-in returns at once, as the generated code does. */
+ * stand-in returns at once, as the game's code does. */
 struct Terminated
 {
 };
@@ -68,16 +66,6 @@ public:
     std::uint8_t byte(x86::reg32 address) const { return m_app->getMemory<x86::reg8>(address); }
     std::uint16_t word(x86::reg32 address) const { return m_app->getMemory<x86::reg16>(address); }
     std::uint32_t dword(x86::reg32 address) const { return m_app->getMemory<x86::reg32>(address); }
-    x86::reg32 eax() const { return m_cpu.eax; }
-    x86::reg32 edx() const { return m_cpu.edx; }
-    /* A register the stand-in does not restore, left as the generated
-     * function leaves it, for callers that go on with it. */
-    void leaveEbx(x86::reg32 value) { m_cpu.ebx = value; }
-    void leaveEcx(x86::reg32 value) { m_cpu.ecx = value; }
-    void leaveEdx(x86::reg32 value) { m_cpu.edx = value; }
-    /* A register argument past Watcom's four, set before a call: sub_448330
-     * takes the buffer it fills in esi. */
-    void setEsi(x86::reg32 value) { m_cpu.esi = value; }
     void setByte(x86::reg32 address, std::uint8_t value) { m_app->getMemory<x86::reg8>(address) = value; }
     void setWord(x86::reg32 address, std::uint16_t value) { m_app->getMemory<x86::reg16>(address) = value; }
     void setDword(x86::reg32 address, std::uint32_t value) { m_app->getMemory<x86::reg32>(address) = value; }
@@ -98,17 +86,11 @@ public:
      * stops. */
     x86::reg32 call(x86::reg32 function, const Arguments& arguments = Arguments());
 
-    /* The lowest address of the stand-in's frame, laid out as the generated
-     * function's: its locals, where they were, for what the stand-in hands
+    /* The lowest address of the stand-in's frame, laid out as the game's function's: its locals, where they were, for what the stand-in hands
      * to the game by address. */
     x86::reg32 frame() const { return m_frame; }
     void setFrame(x86::reg32 frame) { m_frame = frame; }
 
-    /* A float result on the x87 stack, as `fld dword` leaves it, and one
-     * taken off it, as `fstp dword` takes it. */
-    void pushFloat(float value) { m_cpu.fpu.push(x86::Float(value)); }
-    float popFloat() { return float(m_cpu.fpu.pop()); }
-    x86::FPU& fpu() { return m_cpu.fpu; }
 
 private:
     win32::WinApplication* m_app;
@@ -117,9 +99,9 @@ private:
 };
 
 /* A typed core's own frame on the guest's stack (plan step 5): `bytes` below esp as the core
- * starts -- the generated function's pushes and locals, its Site's frameBytes -- made guest's
+ * starts -- the game's function's pushes and locals, its Site's frameBytes -- made guest's
  * frame(), and esp back as the core ends, however it ends.  Called as the game's code calls it
- * (an adapter, or guest::direct, which leaves the return address's slot under esp), the frame
+ * (a thunk, or guest::direct, which leaves the return address's slot under esp), the frame
  * lies where the game's does.  Only for a frame whose address something called is handed (a
  * buffer, a string, strtok's pointer); C++ locals otherwise. */
 class Frame
@@ -138,17 +120,6 @@ private:
     x86::CPU& m_cpu;
     const x86::reg32 m_esp;
 };
-
-/* How a menu file's header (native_frontend_<file>.h) calls one of its typed cores by address,
- * in guest::ByAddress<core>::call, for the checks' stand-ins: as Guest::call calls -- the
- * arguments in eax, edx, ebx, ecx and on the stack, the registers left as the function leaves
- * them, eax back, Terminated thrown when the game stopped in it. */
-inline x86::reg32 callByAddress(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 address,
-                                const Arguments& arguments)
-{
-    Guest guest(app, cpu);
-    return guest.call(address, arguments);
-}
 
 /* A typed core called as C++ from a menu's core (guest::direct, native_guest.h): another menu
  * file's, the port's, a library's.  Terminated thrown when the game stopped in it, as Guest::call
@@ -181,17 +152,17 @@ inline GameSettings& gameSettings(const fe::Guest& guest)
 namespace fe
 {
 
-/* The x87 as the generated code uses it, for a stand-in that computes in
+/* The x87 as the game's code uses it, for a stand-in that computes in
  * floating point as the game does: each sum and product rounded as the
  * control word asks (a float's precision in a race's pause screens, see
- * x86::FPU), a comparison leaving the status word as fcom leaves it, and
+ * x86::FloatEnv), a comparison leaving the status word as fcom leaves it, and
  * sub_4dfd56 -- frndint towards zero -- called where it is, the value on the
  * x87's stack.  A float in guest memory comes in and goes out as fld and
  * fst move it: Float(guest.floatAt(...)), float(value). */
-class X87
+class FloatMath
 {
 public:
-    explicit X87(Guest& guest) : m_guest(guest), m_fpu(guest.fpu()) {}
+    explicit FloatMath(Guest& guest) : m_guest(guest) {}
 
     // fild
     static x86::Float integer(std::int32_t value) { return x86::Float(x86::sreg32(value)); }
@@ -211,7 +182,6 @@ public:
 
 private:
     Guest& m_guest;
-    x86::FPU& m_fpu;
 };
 
 /* A string of the game's own data, at the address the game keeps it: a
@@ -357,7 +327,7 @@ constexpr x86::reg32 kInputFromMouse = 0x664658;
  * Running a stand-in
  * ------------------------------------------------------------------------- */
 
-/* The registers a generated function hands back as it found them: the ones
+/* The registers the game's function hands back as it found them: the ones
  * it pushes.  Watcom knows which registers a function of its own module
  * changes, and the callers do not count on the others -- a parameter
  * register, say, or scratch the function leaves behind -- so a stand-in that
@@ -372,7 +342,7 @@ enum Restores : std::uint8_t
     kRestoreAll = 0x1f,
 };
 
-/* A stand-in: the generated function it stands in for, what that one pops,
+/* A stand-in: the game's function it stands in for, what that one pops,
  * its frame, the game's strings it hands to the game and the registers it
  * restores.  Kept in a static, one per stand-in, so the switches and the
  * strings are looked at once. */
@@ -380,10 +350,10 @@ struct Site
 {
     const char* name;                 // "sub_437e00"
     x86::reg32 stackBytes;            // the arguments its ret pops
-    /* What the generated function's prologue puts on the stack (the registers
+    /* What the game's function's prologue puts on the stack (the registers
      * it pushes, its locals) before it calls anything.  The stand-in leaves
      * the same room, so what it calls runs at the same stack addresses as it
-     * did from the generated code: the C library's strtok keeps a pointer
+     * did from the game's code: the C library's strtok keeps a pointer
      * into the stack between calls (the item lookup splits codelinks with it). */
     x86::reg32 frameBytes;
     const GuestString* strings;
@@ -394,58 +364,41 @@ struct Site
 
 /* Whether the strings a screen that is native whole hands to the game are
  * where it expects them: logged the first time, not, and the screen runs all
- * the same -- there is no generated code to leave it to. */
+ * the same -- there is no other code to leave it to. */
 void checkStrings(Guest& guest, Site& site);
 
-/* `body` run as the generated function runs: in a frame of its size, its
- * result in eax, the registers it restores restored, the return address and
- * the arguments popped.  A function with nothing to return returns
- * guest.eax(), what the calls it made left there. */
+/* `body` run as the game's function runs, for a thunk (win32::ThunkPtr): in a frame of its size,
+ * its result returned, the registers the function keeps left in `args` as they came (the others as
+ * they came too: no caller reads them), esp moved on as its ret moves it; 0 when the game stopped
+ * in it. */
 template <typename Body>
-void perform(Guest& guest, x86::CPU& cpu, const Site& site, Body body)
+x86::reg32 runThunk(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args, Site& site, Body body)
 {
-    const x86::reg32 ebx = cpu.ebx, ecx = cpu.ecx, edx = cpu.edx;
-    const x86::reg32 esi = cpu.esi, edi = cpu.edi, ebp = cpu.ebp, esp = cpu.esp;
+    Guest guest(app, cpu);
+    if (site.ready == 0)
+        checkStrings(guest, site);
+    const x86::reg32 esp = cpu.esp;
     try
     {
         cpu.esp -= site.frameBytes;
         guest.setFrame(cpu.esp);
         const x86::reg32 result = body(guest);
-        cpu.eax = result;
-        if (site.restores & kRestoreEbx)
-            cpu.ebx = ebx;
-        if (site.restores & kRestoreEcx)
-            cpu.ecx = ecx;
-        if (site.restores & kRestoreEdx)
-            cpu.edx = edx;
-        if (site.restores & kRestoreEsi)
-            cpu.esi = esi;
-        if (site.restores & kRestoreEdi)
-            cpu.edi = edi;
-        cpu.ebp = ebp;
         cpu.esp = esp + 4 + site.stackBytes;
+        args.eax = result;
+        return result;
     }
     catch (const Terminated&)
     {
+        cpu.esp = esp;
+        return 0;
     }
-}
-
-/* A function native whole: `body` performed, always. */
-template <typename Body>
-void runWhole(win32::WinApplication* app, x86::CPU& cpu, Site& site, Body body)
-{
-    Guest guest(app, cpu);
-    if (site.ready == 0)
-        checkStrings(guest, site);
-    perform(guest, cpu, site, body);
 }
 
 }
 
 /* The main menu in its three forms (native_frontend_main.cpp) -- MAIN.MNU,
  * MAINSPLT.MNU, MAINMULT.MNU -- is native whole: its handlers are
- * disassemble_nfs3hp.py's MENU_NATIVES, in nfs3hp::frontend, declared with
- * the game's (nfs3hp.h).  So is what it calls of the menu loop (a screen's
+ * in nfs3hp::frontend, declared with the game's (nfs3hp.h).  So is what it calls of the menu loop (a screen's
  * items shown, the shown screen's name: native_frontend_loop.cpp; the loop
  * itself is port::loop, port_loop.cpp) and of the dialogs (the dialogs
  * themselves are port::dialogs, port_dialogs.cpp): a question, a message and a
@@ -454,95 +407,95 @@ void runWhole(win32::WinApplication* app, x86::CPU& cpu, Site& site, Body body)
 
 /* The options screens (native_frontend_options.cpp): the options screen and
  * the audio feed's keys (audfeed), */
-namespace frontend { void optionsOnEnter(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void feedOnEnter(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void feedOnExit(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void feedSeparate(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void feedTimeButtonKey(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void feedPositionButtonKey(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void feedSpeedButtonKey(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void feedTimeListKey(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void feedPositionListKey(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void feedSpeedListKey(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { x86::reg32 optionsOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 feedOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 feedOnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 feedSeparate(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 feedTimeButtonKey(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 feedPositionButtonKey(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 feedSpeedButtonKey(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 feedTimeListKey(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 feedPositionListKey(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 feedSpeedListKey(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
 /* the sound and its sliders, */
-namespace frontend { void audioOnEnter(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void audioOnExit(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void audioOnFrame(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void audioVolumeDraw(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void audioMenuMusicMoved(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void audioRaceMusicMoved(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void audioEffectsMoved(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void audioEngineMoved(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void audioSpeechMoved(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { x86::reg32 audioOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 audioOnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 audioOnFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 audioVolumeDraw(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 audioMenuMusicMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 audioRaceMusicMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 audioEffectsMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 audioEngineMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 audioSpeechMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
 /* and the graphics.  (The controls' screens -- the function keys, the fixed
  * ones, the controllers, their dead zones and force feedback -- are native
- * whole: disassemble_nfs3hp.py's MENU_NATIVES, declared with the game's.) */
-namespace frontend { void graphicsOnEnter(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void graphicsOnExit(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void graphicsOnFrame(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void advancedOnEnter(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void advancedOnExit(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void advancedOnFrame(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void advancedIntensityMoved(win32::WinApplication* app, x86::CPU& cpu); }
+ * whole, declared with the game's.) */
+namespace frontend { x86::reg32 graphicsOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 graphicsOnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 graphicsOnFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 advancedOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 advancedOnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 advancedOnFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 advancedIntensityMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
 
 /* The cars' screens (native_frontend_cars.cpp): car1 and car2, the music, the
  * developer's recorder, opponent, and cedbasic, a car's tuning, */
-namespace frontend { void carMenuMusicBack(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void carSaveFrame(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void trackSaveFrame(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void carRecord(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void trackRecord(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void car1OnEnter(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void car2OnEnter(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void car1OnFrame(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void car2OnFrame(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void car1OnExit(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void car2OnExit(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void car1EditClicked(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void car2EditClicked(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void car1ColourClicked(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void car2ColourClicked(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void opponentFitCar(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void opponentFitArt(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void opponentOnEnter(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void opponentOnExit(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void opponentOnFrame(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void tuningLoad(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void tuningSave(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void tuningEngineMoved(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void tuningBrakesMoved(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void tuningSteeringMoved(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void tuningGearsMoved(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void tuningSuspensionMoved(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void tuningAeroMoved(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void tuningTiresMoved(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void tuningSetSliders(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void tuningRememberSliders(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void tuningSlidersMoved(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void tuningBindSliders(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void tuningLoadAdvanced(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void tuningDefaultsAnswered(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void tuningDoneKey(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void tuningCancelKey(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void tuningCarListKey(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void tuningDefaultsKey(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void tuningBindDoneCancel(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void tuningFitButtons(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void tuningPrepare(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void tuningOnEnter(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void tuningOnExit(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void tuningAdvancedDiffers(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void tuningCopyAdvanced(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { x86::reg32 carMenuMusicBack(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 carSaveFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 trackSaveFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 carRecord(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 trackRecord(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 car1OnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 car2OnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 car1OnFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 car2OnFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 car1OnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 car2OnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 car1EditClicked(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 car2EditClicked(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 car1ColourClicked(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 car2ColourClicked(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 opponentFitCar(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 opponentFitArt(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 opponentOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 opponentOnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 opponentOnFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 tuningLoad(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 tuningSave(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 tuningEngineMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 tuningBrakesMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 tuningSteeringMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 tuningGearsMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 tuningSuspensionMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 tuningAeroMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 tuningTiresMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 tuningSetSliders(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 tuningRememberSliders(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 tuningSlidersMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 tuningBindSliders(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 tuningLoadAdvanced(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 tuningDefaultsAnswered(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 tuningDoneKey(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 tuningCancelKey(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 tuningCarListKey(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 tuningDefaultsKey(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 tuningBindDoneCancel(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 tuningFitButtons(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 tuningPrepare(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 tuningOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 tuningOnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 tuningAdvancedDiffers(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 tuningCopyAdvanced(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
 /* and the track's (native_frontend_tracks.cpp): location and trkinfo. */
-namespace frontend { void locationOnEnter(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void locationOnFrame(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void locationOnExit(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void infoPlaceTrackPlaces(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void infoOnEnter(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void infoOnFrame(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void infoOnExit(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void infoSpeak(win32::WinApplication* app, x86::CPU& cpu); }
-namespace frontend { void infoStopSpeaking(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { x86::reg32 locationOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 locationOnFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 locationOnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 infoPlaceTrackPlaces(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 infoOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 infoOnFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 infoOnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 infoSpeak(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { x86::reg32 infoStopSpeaking(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
 
 }
 

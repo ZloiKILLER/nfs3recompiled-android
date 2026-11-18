@@ -1,4 +1,5 @@
 #include "native_controls_host.h"
+#include "native_guest.h"
 #include <lib/forcefeedback.h>
 #include <lib/gamepad.h>
 #include <lib/memmap.h>
@@ -269,12 +270,10 @@ HRESULT enumDevices(win32::WinApplication* app, x86::CPU& cpu, const Arguments& 
         device->guidFFDriver = kForceDriver;
         device->wUsagePage = 0;
         device->wUsage = 0;
-        cpu.esp -= 12;
-        app->getMemory<reg32>(cpu.esp + 0) = callback;
-        app->getMemory<reg32>(cpu.esp + 4) = memory.getBlockStart();
-        app->getMemory<reg32>(cpu.esp + 8) = word;
-        app->dynamic_call(callback, cpu);
-        if (cpu.terminate || !cpu.eax)
+        x86::Args registers;
+        const std::optional<reg32> answer =
+            guest::pointerCall(app, cpu, callback, registers, {callback, memory.getBlockStart(), word});
+        if (!answer || !*answer)
             break;
     }
     return kOk;
@@ -603,7 +602,7 @@ Answer effectCall(win32::WinApplication* app, reg32 method, const Arguments& a)
 
 }  // namespace
 
-bool directInput(win32::WinApplication* app, x86::CPU& cpu, Object object, reg32 method)
+std::optional<reg32> directInputResult(win32::WinApplication* app, x86::CPU& cpu, Object object, reg32 method)
 {
     cpu.esp -= 4;  // the return address's slot
     const Arguments a{app, cpu.esp + 4};
@@ -627,10 +626,9 @@ bool directInput(win32::WinApplication* app, x86::CPU& cpu, Object object, reg32
     else
         answer = effectCall(app, method, a);
     if (cpu.terminate)
-        return false;
-    cpu.eax = answer.result;
+        return std::nullopt;
     cpu.esp += 4 + 4 * answer.words;
-    return true;
+    return answer.result;
 }
 
 }  // namespace controls

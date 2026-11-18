@@ -1,9 +1,9 @@
 // The game's graphics code that never runs on the port, one DEAD(address) a
 // function: native_graphics_dead.cpp makes each a stub that stops the game
-// with its address, and disassemble_nfs3hp.py generates no code for it.
+// with its address, and it has no code of its own.
 //
 // The first part is what nothing calls: no call, jump or address of it in code
-// that is still generated, and none in the game's data.  The last part is not
+// that runs, and none in the game's data.  The last part is not
 // proved so: see its comment.
 
 // The software renderers' blend colour by mode (state 0x2bd).

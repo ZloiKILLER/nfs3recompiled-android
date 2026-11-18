@@ -14,6 +14,9 @@
 #include "native_pursuit.h"
 #include "native_vertices.h"
 #include "native_watcom.h"
+#include "port_snd_calls.h"
+#include "port_sound_calls.h"
+#include "port_sound_effects.h"
 
 #include <cstdint>
 #include <cstddef>
@@ -26,9 +29,7 @@
 
 /* The traffic and the opponents' lane driving, the track's animation paths
  * and the sound's start-up, native whole (0x40c4f0..0x40fcf0).
- * disassemble_nfs3hp.py binds each address to the function of that name here
- * (AIPLAN_NATIVES), and the generated code calls it by name.
- * tools/game_checks holds each against its generated code (aiplan.inc).
+ * The game's code calls each by the name it has here.
  *
  *  - The traffic cars' driver (advanceCarAi, 0x40c9f0, each tick through a
  *    traffic car's +0x600 hook): a state machine on +0x6dc (0/1 placed and
@@ -63,7 +64,7 @@
  * The name `aiplan` fits the first two; kept for the merge.
  *
  * Each is a typed function under a name of its own (a core: named arguments,
- * its result returned, C++ locals) with an adapter under the game's name for
+ * its result returned, C++ locals) with a thunk under the game's name for
  * the dispatch and the callers still on registers: it takes the registers and
  * the words pushed, calls the core and leaves eax, the x87's stack and esp as
  * the game's code does (eax only where a caller can read it: aiplan.inc's
@@ -71,7 +72,7 @@
  * the code's order, a float kept where the code stores one.  The cores call
  * each other as C++, and other typed files' functions as C++ too
  * (guest::direct, their headers) but where the eax a callee leaves, which its
- * core does not give back, is what an adapter here leaves; every other
+ * core does not give back, is what a thunk here leaves; every other
  * function of the game's by address (callGame: the registers and words
  * handed over, the rest kept), and a frame
  * whose address a callee is handed stays on the guest's stack at the code's
@@ -139,23 +140,20 @@ constexpr reg32 kVoiceRecords = 0x571124;
 constexpr reg32 kVolume = 0x53684c, kTicks = 0x79c1a4;
 
 // What is called by address: the AI-votes trace hook (0x40de30, its
-// adapter's NFS_CAR_TRACE record), the police chase (0x411750, no core), the
+// thunk's NFS_CAR_TRACE record), the police chase (0x411750, no core), the
 // traffic's top speed (0x40bfe0, its eax left by slowForPolice), and
 // the game's/other parts' natives (stood in for where they would run on a
 // made-up world): a traffic car linked (0x404690, whose eax resetTrafficCar
-// leaves) and vectors scaled (0x4e0050) where the eax they leave is an
-// adapter's.  The other chunks' AI functions (0x40c160, 0x40c2f0, 0x40bff0,
+// leaves) and vectors scaled (0x4e0050) where the eax they leave is a
+// thunk's.  The other chunks' AI functions (0x40c160, 0x40c2f0, 0x40bff0,
 // 0x40c270, 0x401240, 0x405cd0..0x405e20),
 // the drive reset (0x4aa79f), the opponents' speeds (0x40e000), the free
 // (0x4e1890), the trace (0x42d510), memset (0x4e0640) and vectors scaled
 // elsewhere are called as C++ (guest::direct); the menu files' (a car put on
 // the road 0x4a0aa0, the poses 0x4b70f0, 0x4b7590, 0x4b6a30, 0x4b6ca0) too
 // (feCore).
-constexpr reg32 kAiVotes = 0x40de30;
-constexpr reg32 kCopChaseSet = 0x411750;
-constexpr reg32 kScaleAdd = 0x4e0050;
 constexpr reg32 kChop = 0x4dfd56;
-constexpr reg32 kSndInit = 0x4e2630, kSndCaps = 0x4e21b0, kSndRate = 0x4e2228, kBusInit = 0x418740;
+constexpr reg32 kSndCaps = 0x4e21b0;  // native_game.cpp's SNDcaps: no typed core
 
 // The game's floats and doubles where it keeps them, as the x87 loads them.
 Float f32(App* app, reg32 a) { return Float(app->getMemory<float>(a)); }
@@ -187,7 +185,7 @@ reg32 bitsOf(float f)
 /* A signed byte, as movsx has it. */
 i32 signedByte(App* app, reg32 a) { return i32(std::int8_t(byte(app, a))); }
 
-/* An adapter's run of its core: every register but eax as the caller had it after it (the game's
+/* A thunk's run of its core: every register but eax as the caller had it after it (the game's
  * code pops what it pushed; its other registers are its arguments, which no caller reads), eax what
  * the core gives -- a core that gives nothing, or answers only whether the game went on (a bool),
  * leaves eax as it is -- and the return address and `popped` bytes of the caller's words popped.
@@ -203,12 +201,12 @@ struct IsOptional<std::optional<T>> : std::true_type
 };
 
 template <typename Core>
-bool adapts(CPU& cpu, Core&& core, reg32 popped = 0)
+bool asThunk(CPU& cpu, x86::Args& args, Core&& core, reg32 popped = 0)
 {
     using Result = std::decay_t<decltype(core())>;
+    const reg32 esp = cpu.esp;
     std::optional<reg32> left;
     {
-        const guest::KeptRegisters kept(cpu);
         if constexpr (std::is_void_v<Result>)
             core();
         else if constexpr (std::is_same_v<Result, bool>)
@@ -226,14 +224,15 @@ bool adapts(CPU& cpu, Core&& core, reg32 popped = 0)
         else
             left = reg32(core());
     }
+    cpu.esp = esp;
     if (left)
-        cpu.eax = *left;
+        args.eax = *left;
     cpu.esp += 4 + popped;
     return true;
 }
 
 /* The caller's word `n` (from 1) on the guest's stack, above the return address: a stdcall
- * adapter's. */
+ * thunk's. */
 reg32 word(App* app, const CPU& cpu, reg32 n) { return at(app, cpu.esp + 4 * n); }
 
 /* 0x4e1890 (ea::purgememadr): the handle freed; the eax the free leaves, what it gives back; nullopt
@@ -325,13 +324,11 @@ constexpr reg32 kPlaceOnTrackHeight = 0x40cb08, kGridPlace = 0x40cb0c;
 constexpr reg32 kHornClosing = 0x5366e4, kChaseClosing = 0x5366ec, kToFixedA = 0x5366f4, kToFixedB = 0x5366fc,
                 kFirmGrip = 0x536704;
 constexpr reg32 kPullOverSpeed = 0x40d6930c, kHalf = 0x3f000000;
-constexpr reg32 kLinkTraffic = 0x404690;
 
 /* fcom of a and b, as fnstsw leaves the status word: what a code that ends on a compare leaves in ax. */
-reg16 statusWord(CPU& cpu, const Float& a, const Float& b)
+reg16 statusWord(const Float& a, const Float& b)
 {
-    cpu.fpu.compare(a, b);
-    return cpu.fpu.status.word;
+    return fp::compare(a, b);
 }
 
 /* 0x4dfd56 (__CHP): value to an integer towards 0, as a whole value; never nullopt (the optional
@@ -341,45 +338,26 @@ std::optional<Float> chop(App* app, CPU& cpu, const Float& value)
     return Float(guest::direct<kChop, watcom::clib::chop>(app, cpu, double(value)));
 }
 
-/* A call by address as the code makes it: the registers handed over (eax, edx, ebx, ecx in that
- * order) and the words pushed; every register but eax kept (guest::KeptRegisters).  The eax the
- * callee leaves; nullopt when the game stopped. */
+/* A call by address (the callee has no typed core) as the code makes it: the registers handed over
+ * (eax, edx, ebx, ecx in that order) and the words pushed (the first lowest); every register but eax
+ * kept.  The eax the callee leaves; nullopt when the game stopped. */
 std::optional<reg32> callGame(App* app, CPU& cpu, reg32 target, std::initializer_list<reg32> registers,
                               std::initializer_list<reg32> words = {})
 {
-    const guest::KeptRegisters kept(cpu);
-    reg32* const handed[] = {&cpu.eax, &cpu.edx, &cpu.ebx, &cpu.ecx};
-    std::size_t i = 0;
-    for (const reg32 value : registers)
-        *handed[i++] = value;
-    if (!guest::call(app, cpu, target, words))
-        return std::nullopt;
-    return cpu.eax;
+    return guest::pointerCall(app, cpu, target, registers, words);
 }
 
 /* A native_frontend_* file's typed core called as C++ (guest::direct): nothing (false) when the
- * game stopped in it (its calls into the game throw fe::Terminated).  tools/game_checks does not
- * build those files: there it goes by address, through its ByAddress, as the game's code calls it,
- * every register but eax kept.  A reg32 result is the eax the function leaves: eax set to it (in the
- * game too); after any other, eax spoilt there, so that code still reading what the callee left in
- * eax differs there. */
+ * game stopped in it (its calls into the game throw fe::Terminated), every register but eax kept.
+ * A reg32 result is the eax the function leaves, set to it; after any other, eax is left alone. */
 template <reg32 Address, auto Core, typename... Args>
 auto feCore(App* app, CPU& cpu, Args... args)
 {
     const auto run = [&] {
-#ifdef NFS_GAME_CHECKS
-        const guest::KeptRegisters kept(cpu);
-        return guest::ByAddress<Core>::template call<Address>(app, cpu, args...);
-#else
         return guest::direct<Address, Core>(app, cpu, args...);
-#endif
     };
     using Result = decltype(run());
-    const auto spoil = [&] {
-#ifdef NFS_GAME_CHECKS
-        cpu.eax = 0x5b0115edu;
-#endif
-    };
+    const auto spoil = [&] {};
     if constexpr (std::is_void_v<Result>)
     {
         try
@@ -399,7 +377,7 @@ auto feCore(App* app, CPU& cpu, Args... args)
         {
             const Result result = run();
             if constexpr (std::is_same_v<Result, x86::reg32>)
-                cpu.eax = result;  // a menu core's result: the eax it leaves, as the call by address does
+                (void)result;  // a menu core's result: the eax it leaves is no longer set (no caller reads it)
             else
                 spoil();
             return cpu.terminate ? std::optional<Result>() : std::optional<Result>(result);
@@ -415,7 +393,10 @@ auto feCore(App* app, CPU& cpu, Args... args)
  * is resetTrafficCar's, and its core gives nothing back.  Nullopt when the game stopped. */
 std::optional<reg32> linkTraffic(App* app, CPU& cpu, reg32 car)
 {
-    return callGame(app, cpu, kLinkTraffic, {car});
+    const reg32 left = guest::direct<0x404690, airace::setRammingRulesLeaving>(app, cpu, car);
+    if (cpu.terminate)
+        return std::nullopt;
+    return left;
 }
 
 /* What 0x40bfe0 leaves: the traffic's top speed, off the x87's stack, and its eax. */
@@ -425,27 +406,28 @@ struct TopSpeed
     reg32 eax;
 };
 
-/* 0x40bfe0: the traffic's top speed; nullopt when the game stopped.  By address: slowForPolice
- * leaves the eax it leaves, which pursuit's core does not give back (the check's stand-in leaves
- * one of its own). */
+/* 0x40bfe0: the traffic's top speed; nullopt when the game stopped.  Its eax: the car it was handed
+ * (slowForPolice leaves it). */
 std::optional<TopSpeed> trafficTopSpeed(App* app, CPU& cpu, reg32 car)
 {
-    const std::optional<reg32> left = callGame(app, cpu, 0x40bfe0, {car});
-    if (!left)
+    const x86::Float speed = guest::direct<0x40bfe0, pursuit::trafficTopSpeed>(app, cpu);
+    if (cpu.terminate)
         return std::nullopt;
-    return TopSpeed{cpu.fpu.pop(), *left};
+    return TopSpeed{speed, car};
 }
 
 /* 0x40de30: the lane votes of car added up and acted on (`kind` 0 driving, 2 pulling over). */
 bool actOnVotes(App* app, CPU& cpu, reg32 car, reg32 kind)
 {
-    return callGame(app, cpu, kAiVotes, {car, kind}).has_value();
+    (void)kind;  // (0x40de30 reads only eax)
+    return feCore<0x40de30, frontend::sima::laneSteer>(app, cpu, car).has_value();
 }
 
 /* 0x411750: a police chase called for car: 1, 100, 8. */
 bool callChase(App* app, CPU& cpu, reg32 car)
 {
-    return callGame(app, cpu, kCopChaseSet, {car, 1, 0x64, 8}).has_value();
+    guest::direct<0x411750, port::copChaseSetOf>(app, cpu, car, 1, 0x64, 8);
+    return !cpu.terminate;
 }
 
 /* 0x4a0aa0: car put on the road at node, at the place (three dwords) at `place`, its direction 1
@@ -455,11 +437,15 @@ bool placeOnRoad(App* app, CPU& cpu, reg32 car, reg32 node, reg32 place, reg32 d
     return feCore<0x4a0aa0, frontend::simb::placeOnRoad>(app, cpu, car, node, place, direction).has_value();
 }
 
+bool scaleVectorsDirect(App* app, CPU& cpu, reg32 count, reg32 from, reg32 scale, reg32 to);
+
 /* 0x4e0050 (stdcall): `count` vectors from `from` scaled by the float of `scale`'s bits into `to`,
  * by address, for a caller that leaves the eax it leaves (brakeToStop): that eax. */
 std::optional<reg32> scaleVectors(App* app, CPU& cpu, reg32 count, reg32 from, reg32 scale, reg32 to)
 {
-    return callGame(app, cpu, kScaleAdd, {count, from}, {scale, to});
+    if (!scaleVectorsDirect(app, cpu, count, from, scale, to))
+        return std::nullopt;
+    return i32(count) > 0 ? to + count * 12 : to;  // the vectors past the last, as the callee leaves it
 }
 
 /* 0x4e0050 (vertices'): the same as C++ (guest::direct).  False when the game stopped. */
@@ -508,78 +494,78 @@ private:
 }  // namespace
 
 // Forward declarations, in address order (address -> name).
-void leastTrafficPlayer(App* app, CPU& cpu);  // 0x40c4f0
-void placeTrafficCar(App* app, CPU& cpu);           // 0x40c590
-void reactToTraffic(App* app, CPU& cpu);       // 0x40c630
-void slowForPolice(App* app, CPU& cpu);             // 0x40c780
-void countStopped(App* app, CPU& cpu);       // 0x40c7f0
-void nearPoliceCar(App* app, CPU& cpu);      // 0x40c830
-void weighLaneVotes(App* app, CPU& cpu);        // 0x40c8a0
-void voteRoadside(App* app, CPU& cpu);        // 0x40c8d0
-void atRoadside(App* app, CPU& cpu);        // 0x40c950
-void advanceCarAi(App* app, CPU& cpu);          // 0x40c9f0
-void clearSensedCars(App* app, CPU& cpu);       // 0x40cb20
-void cacheTrafficSide(App* app, CPU& cpu);       // 0x40cb50
-void resetTrafficCar(App* app, CPU& cpu);              // 0x40cb70
-void clearTrafficRecord(App* app, CPU& cpu);        // 0x40cb90
-void placeOnTrack(App* app, CPU& cpu);        // 0x40cd80
-void brakeToStop(App* app, CPU& cpu);       // 0x40ce70
-void voteCurrentLane(App* app, CPU& cpu);       // 0x40cee0
-void senseTraffic(App* app, CPU& cpu);          // 0x40cfc0
-void planLaneChange(App* app, CPU& cpu);        // 0x40d1f0
-void edgeLaneCost(App* app, CPU& cpu);          // 0x40d2e0
-void scoreLanesByRoad(App* app, CPU& cpu);      // 0x40d3d0
-void scoreLanesByObstacles(App* app, CPU& cpu); // 0x40d720
-void scoreLanesByCars(App* app, CPU& cpu);      // 0x40d800
-void edgePenalty(App* app, CPU& cpu);           // 0x40d9f0
-void sumLaneVotes(App* app, CPU& cpu);          // 0x40da30
-void steerToLane(App* app, CPU& cpu);           // 0x40daf0
-void beginLanePlanning(App* app, CPU& cpu);     // 0x40dd60
-void chooseLane(App* app, CPU& cpu);            // 0x40ddb0
-void startHorn(App* app, CPU& cpu);         // 0x40de50
-void stopHorn(App* app, CPU& cpu);        // 0x40deb0
-void stepTrafficLoading(App* app, CPU& cpu);         // 0x40df10
-void targetSpeedAt(App* app, CPU& cpu);         // 0x40e080
-void roadKindAt(App* app, CPU& cpu);         // 0x40e0c0
-void cacheRoadWidth(App* app, CPU& cpu);        // 0x40e0f0
-void nodeGap(App* app, CPU& cpu);               // 0x40e120
-void nodeOffset(App* app, CPU& cpu);            // 0x40e160
-void nodesAheadBySpeed(App* app, CPU& cpu);     // 0x40e1b0
-void nodeLaneBits(App* app, CPU& cpu);               // 0x40e200
-void nodeHasLane(App* app, CPU& cpu);      // 0x40e220
-void laneBit(App* app, CPU& cpu);        // 0x40e270
-void roadSliceIndex(App* app, CPU& cpu);        // 0x40e2b0
-void carSlices(App* app, CPU& cpu);            // 0x40e350
-void fillTrackTuning(App* app, CPU& cpu);      // 0x40e3c0
-void setupTrackTuning(App* app, CPU& cpu);          // 0x40e410
-void freeSpeedTable(App* app, CPU& cpu);        // 0x40ec40
-void trafficSide(App* app, CPU& cpu);       // 0x40ec70
-void roadIsWide(App* app, CPU& cpu);            // 0x40eca0
-void trafficSpeedAt(App* app, CPU& cpu);    // 0x40ed40
-void tuningSpeed(App* app, CPU& cpu);         // 0x40ee80
-void tuningDistance(App* app, CPU& cpu);           // 0x40eed0
-void tuningFirst(App* app, CPU& cpu);          // 0x40ef10
-void nodeDirectionDot(App* app, CPU& cpu);      // 0x40ef70
-void nodeWithinRange(App* app, CPU& cpu);       // 0x40f000
-void carWithinReach(App* app, CPU& cpu);        // 0x40f050
-void alwaysOne(App* app, CPU& cpu);             // 0x40f100
-void carBoxedIn(App* app, CPU& cpu);       // 0x40f110
-void freeAnimationPaths(App* app, CPU& cpu);       // 0x40f330
-void findFreeAnimation(App* app, CPU& cpu);          // 0x40f370
-void startAnimation(App* app, CPU& cpu);               // 0x40f3b0
-void setAnimationMode(App* app, CPU& cpu);         // 0x40f430
-void stopAnimation(App* app, CPU& cpu);            // 0x40f460
-void animationPose(App* app, CPU& cpu);       // 0x40f4b0
-void animationPlace(App* app, CPU& cpu);        // 0x40f6d0
-void animationProgress(App* app, CPU& cpu);      // 0x40f800
-void animationLastPose(App* app, CPU& cpu);     // 0x40f880
-void pathEndPose(App* app, CPU& cpu);            // 0x40f8d0
-void animationStep(App* app, CPU& cpu);              // 0x40f940
-void animationPlaying(App* app, CPU& cpu);            // 0x40fac0
-void startSound(App* app, CPU& cpu);      // 0x40fb10
-void restartSound(App* app, CPU& cpu);    // 0x40fcf0
+x86::reg32 leastTrafficPlayer(App* app, x86::CPU& cpu, x86::Args& args);  // 0x40c4f0
+x86::reg32 placeTrafficCar(App* app, x86::CPU& cpu, x86::Args& args);           // 0x40c590
+x86::reg32 reactToTraffic(App* app, x86::CPU& cpu, x86::Args& args);       // 0x40c630
+x86::reg32 slowForPolice(App* app, x86::CPU& cpu, x86::Args& args);             // 0x40c780
+x86::reg32 countStopped(App* app, x86::CPU& cpu, x86::Args& args);       // 0x40c7f0
+x86::reg32 nearPoliceCar(App* app, x86::CPU& cpu, x86::Args& args);      // 0x40c830
+x86::reg32 weighLaneVotes(App* app, x86::CPU& cpu, x86::Args& args);        // 0x40c8a0
+x86::reg32 voteRoadside(App* app, x86::CPU& cpu, x86::Args& args);        // 0x40c8d0
+x86::reg32 atRoadside(App* app, x86::CPU& cpu, x86::Args& args);        // 0x40c950
+x86::reg32 advanceCarAi(App* app, x86::CPU& cpu, x86::Args& args);          // 0x40c9f0
+x86::reg32 clearSensedCars(App* app, x86::CPU& cpu, x86::Args& args);       // 0x40cb20
+x86::reg32 cacheTrafficSide(App* app, x86::CPU& cpu, x86::Args& args);       // 0x40cb50
+x86::reg32 resetTrafficCar(App* app, x86::CPU& cpu, x86::Args& args);              // 0x40cb70
+x86::reg32 clearTrafficRecord(App* app, x86::CPU& cpu, x86::Args& args);        // 0x40cb90
+x86::reg32 placeOnTrack(App* app, x86::CPU& cpu, x86::Args& args);        // 0x40cd80
+x86::reg32 brakeToStop(App* app, x86::CPU& cpu, x86::Args& args);       // 0x40ce70
+x86::reg32 voteCurrentLane(App* app, x86::CPU& cpu, x86::Args& args);       // 0x40cee0
+x86::reg32 senseTraffic(App* app, x86::CPU& cpu, x86::Args& args);          // 0x40cfc0
+x86::reg32 planLaneChange(App* app, x86::CPU& cpu, x86::Args& args);        // 0x40d1f0
+x86::reg32 edgeLaneCost(App* app, x86::CPU& cpu, x86::Args& args);          // 0x40d2e0
+x86::reg32 scoreLanesByRoad(App* app, x86::CPU& cpu, x86::Args& args);      // 0x40d3d0
+x86::reg32 scoreLanesByObstacles(App* app, x86::CPU& cpu, x86::Args& args); // 0x40d720
+x86::reg32 scoreLanesByCars(App* app, x86::CPU& cpu, x86::Args& args);      // 0x40d800
+x86::reg32 edgePenalty(App* app, x86::CPU& cpu, x86::Args& args);           // 0x40d9f0
+x86::reg32 sumLaneVotes(App* app, x86::CPU& cpu, x86::Args& args);          // 0x40da30
+x86::reg32 steerToLane(App* app, x86::CPU& cpu, x86::Args& args);           // 0x40daf0
+x86::reg32 beginLanePlanning(App* app, x86::CPU& cpu, x86::Args& args);     // 0x40dd60
+x86::reg32 chooseLane(App* app, x86::CPU& cpu, x86::Args& args);            // 0x40ddb0
+x86::reg32 startHorn(App* app, x86::CPU& cpu, x86::Args& args);         // 0x40de50
+x86::reg32 stopHorn(App* app, x86::CPU& cpu, x86::Args& args);        // 0x40deb0
+x86::reg32 stepTrafficLoading(App* app, x86::CPU& cpu, x86::Args& args);         // 0x40df10
+x86::reg32 targetSpeedAt(App* app, x86::CPU& cpu, x86::Args& args);         // 0x40e080
+x86::reg32 roadKindAt(App* app, x86::CPU& cpu, x86::Args& args);         // 0x40e0c0
+x86::reg32 cacheRoadWidth(App* app, x86::CPU& cpu, x86::Args& args);        // 0x40e0f0
+x86::reg32 nodeGap(App* app, x86::CPU& cpu, x86::Args& args);               // 0x40e120
+x86::reg32 nodeOffset(App* app, x86::CPU& cpu, x86::Args& args);            // 0x40e160
+x86::reg32 nodesAheadBySpeed(App* app, x86::CPU& cpu, x86::Args& args);     // 0x40e1b0
+x86::reg32 nodeLaneBits(App* app, x86::CPU& cpu, x86::Args& args);               // 0x40e200
+x86::reg32 nodeHasLane(App* app, x86::CPU& cpu, x86::Args& args);      // 0x40e220
+x86::reg32 laneBit(App* app, x86::CPU& cpu, x86::Args& args);        // 0x40e270
+x86::reg32 roadSliceIndex(App* app, x86::CPU& cpu, x86::Args& args);        // 0x40e2b0
+x86::reg32 carSlices(App* app, x86::CPU& cpu, x86::Args& args);            // 0x40e350
+x86::reg32 fillTrackTuning(App* app, x86::CPU& cpu, x86::Args& args);      // 0x40e3c0
+x86::reg32 setupTrackTuning(App* app, x86::CPU& cpu, x86::Args& args);          // 0x40e410
+x86::reg32 freeSpeedTable(App* app, x86::CPU& cpu, x86::Args& args);        // 0x40ec40
+x86::reg32 trafficSide(App* app, x86::CPU& cpu, x86::Args& args);       // 0x40ec70
+x86::reg32 roadIsWide(App* app, x86::CPU& cpu, x86::Args& args);            // 0x40eca0
+x86::reg32 trafficSpeedAt(App* app, x86::CPU& cpu, x86::Args& args);    // 0x40ed40
+x86::reg32 tuningSpeed(App* app, x86::CPU& cpu, x86::Args& args);         // 0x40ee80
+x86::reg32 tuningDistance(App* app, x86::CPU& cpu, x86::Args& args);           // 0x40eed0
+x86::reg32 tuningFirst(App* app, x86::CPU& cpu, x86::Args& args);          // 0x40ef10
+x86::reg32 nodeDirectionDot(App* app, x86::CPU& cpu, x86::Args& args);      // 0x40ef70
+x86::reg32 nodeWithinRange(App* app, x86::CPU& cpu, x86::Args& args);       // 0x40f000
+x86::reg32 carWithinReach(App* app, x86::CPU& cpu, x86::Args& args);        // 0x40f050
+x86::reg32 alwaysOne(App* app, x86::CPU& cpu, x86::Args& args);             // 0x40f100
+x86::reg32 carBoxedIn(App* app, x86::CPU& cpu, x86::Args& args);       // 0x40f110
+x86::reg32 freeAnimationPaths(App* app, x86::CPU& cpu, x86::Args& args);       // 0x40f330
+x86::reg32 findFreeAnimation(App* app, x86::CPU& cpu, x86::Args& args);          // 0x40f370
+x86::reg32 startAnimation(App* app, x86::CPU& cpu, x86::Args& args);               // 0x40f3b0
+x86::reg32 setAnimationMode(App* app, x86::CPU& cpu, x86::Args& args);         // 0x40f430
+x86::reg32 stopAnimation(App* app, x86::CPU& cpu, x86::Args& args);            // 0x40f460
+x86::reg32 animationPose(App* app, x86::CPU& cpu, x86::Args& args);       // 0x40f4b0
+x86::reg32 animationPlace(App* app, x86::CPU& cpu, x86::Args& args);        // 0x40f6d0
+x86::reg32 animationProgress(App* app, x86::CPU& cpu, x86::Args& args);      // 0x40f800
+x86::reg32 animationLastPose(App* app, x86::CPU& cpu, x86::Args& args);     // 0x40f880
+x86::reg32 pathEndPose(App* app, x86::CPU& cpu, x86::Args& args);            // 0x40f8d0
+x86::reg32 animationStep(App* app, x86::CPU& cpu, x86::Args& args);              // 0x40f940
+x86::reg32 animationPlaying(App* app, x86::CPU& cpu, x86::Args& args);            // 0x40fac0
+x86::reg32 startSound(App* app, x86::CPU& cpu, x86::Args& args);      // 0x40fb10
+x86::reg32 restartSound(App* app, x86::CPU& cpu, x86::Args& args);    // 0x40fcf0
 
-// The typed cores the adapters above call, where one is used before it is defined.
+// The typed cores the thunks above call, where one is used before it is defined.
 reg32 trackTrafficSide(App* app);
 reg32 trackRoadWide(App* app);
 reg32 sliceBit(reg32 slice);
@@ -639,9 +625,10 @@ reg32 leastFollowedPlayer(App* app)
 }
 
 /* 0x40c4f0: leastFollowedPlayer; every register but eax kept. */
-void leastTrafficPlayer(App* app, CPU& cpu)
+x86::reg32 leastTrafficPlayer(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&] { return leastFollowedPlayer(app); });
+    asThunk(cpu, args, [&] { return leastFollowedPlayer(app); });
+    return args.eax;
 }
 
 /* Traffic car set going: the game's random numbers (the seed 0x554f10 by 0x554f18, 0..99 from the
@@ -668,16 +655,17 @@ std::optional<reg32> placeTrafficEax(App* app, CPU& cpu, reg32 car)
     return guest::direct<0x40c2f0, pursuit::trafficStepOf>(app, cpu, car);
 }
 
-/* placeTrafficEax for the callers that ask only whether the game went on.  False when it stopped. */
-bool placeTraffic(App* app, CPU& cpu, reg32 car)
+/* placeTrafficEax: the eax it leaves; nullopt when the game stopped. */
+std::optional<reg32> placeTraffic(App* app, CPU& cpu, reg32 car)
 {
-    return placeTrafficEax(app, cpu, car).has_value();
+    return placeTrafficEax(app, cpu, car);
 }
 
 /* 0x40c590: placeTraffic for car eax; eax as 0x40c2f0 leaves it. */
-void placeTrafficCar(App* app, CPU& cpu)
+x86::reg32 placeTrafficCar(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { return placeTrafficEax(app, cpu, car); });
+    asThunk(cpu, args, [&, car = args.eax] { return placeTrafficEax(app, cpu, car); });
+    return args.eax;
 }
 
 /* |value| as the code has it of a float it stored: kept when over 0 (or a NaN), negated else. */
@@ -733,9 +721,10 @@ bool reactToCars(App* app, CPU& cpu, reg32 car)
 /* 0x40c630: reactToCars for car eax.  What the code leaves in eax (a compare's status word, the
  * sensed cars' index) no caller reads: its one caller is advanceCarAi's core; aiplan.inc's promise
  * says so. */
-void reactToTraffic(App* app, CPU& cpu)
+x86::reg32 reactToTraffic(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { return reactToCars(app, cpu, car); });
+    asThunk(cpu, args, [&, car = args.eax] { return reactToCars(app, cpu, car); });
+    return args.eax;
 }
 
 /* What slowToPullOver did: the speed asked it compared, the top speed it had, and whether the speed
@@ -771,13 +760,13 @@ std::optional<PullOver> slowToPullOver(App* app, CPU& cpu, reg32 car)
 /* 0x40c780: slowToPullOver for car eax; eax as the code leaves it: 0x40bfe0's with the compare's
  * status word in ax, or the top speed's bits where the speed was cut to it; ah the speed's top byte
  * as the reversed race's flip left it. */
-void slowForPolice(App* app, CPU& cpu)
+x86::reg32 slowForPolice(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax]() -> std::optional<reg32> {
+    asThunk(cpu, args, [&, car = args.eax]() -> std::optional<reg32> {
         const std::optional<PullOver> pullOver = slowToPullOver(app, cpu, car);
         if (!pullOver)
             return std::nullopt;
-        reg32 left = (pullOver->eax & 0xffff0000u) | statusWord(cpu, Float(pullOver->asked), Float(pullOver->topSpeed));
+        reg32 left = (pullOver->eax & 0xffff0000u) | statusWord(Float(pullOver->asked), Float(pullOver->topSpeed));
         if (pullOver->cut)
             left = bitsOf(pullOver->topSpeed);
         if (gameSettings(app).backwards != 0)
@@ -787,6 +776,7 @@ void slowForPolice(App* app, CPU& cpu)
                          << 8;
         return left;
     });
+    return args.eax;
 }
 
 /* How many active traffic cars have pulled over (+0x6dc 4). */
@@ -803,9 +793,10 @@ reg32 stoppedCount(App* app)
 }
 
 /* 0x40c7f0: stoppedCount. */
-void countStopped(App* app, CPU& cpu)
+x86::reg32 countStopped(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&] { return stoppedCount(app); });
+    asThunk(cpu, args, [&] { return stoppedCount(app); });
+    return args.eax;
 }
 
 /* Whether a police car with its siren on (0x5efa88's, [0x5efd88] of them: +0x734 chasing or +0x710
@@ -830,9 +821,10 @@ bool policeNear(App* app, reg32 car, reg32 distance)
 }
 
 /* 0x40c830: policeNear for car eax within edx. */
-void nearPoliceCar(App* app, CPU& cpu)
+x86::reg32 nearPoliceCar(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax, distance = cpu.edx] { return policeNear(app, car, distance) ? 1 : 0; });
+    asThunk(cpu, args, [&, car = args.eax, distance = args.edx] { return policeNear(app, car, distance) ? 1 : 0; });
+    return args.eax;
 }
 
 /* The three lane votes (0x56ee90..98) weighed ten times. */
@@ -843,12 +835,13 @@ void weighVotes(App* app)
 }
 
 /* 0x40c8a0: weighVotes; eax the last vote, as the code leaves it. */
-void weighLaneVotes(App* app, CPU& cpu)
+x86::reg32 weighLaneVotes(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&] {
+    asThunk(cpu, args, [&] {
         weighVotes(app);
         return at(app, kLaneCostC);
     });
+    return args.eax;
 }
 
 /* A node's left and right edge slices: 6 less the high nibble of its +0x13, 7 more the low. */
@@ -871,13 +864,14 @@ void voteForRoadside(App* app, reg32 car)
 
 /* 0x40c8d0: voteForRoadside for car eax; eax as the code leaves it: the node's record when the slice
  * is left of the left edge, else the right edge slice. */
-void voteRoadside(App* app, CPU& cpu)
+x86::reg32 voteRoadside(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] {
+    asThunk(cpu, args, [&, car = args.eax] {
         voteForRoadside(app, car);
         const reg32 record = nodeAddr(app, at(app, car + kCarNode));
         return leftEdgeSlice(app, record) > i32(at(app, car + kCarSlice)) ? record : reg32(rightEdgeSlice(app, record));
     });
+    return args.eax;
 }
 
 /* Whether car has reached the roadside: its place across (+0x7b8, as 16.16) beyond its node's left
@@ -895,9 +889,10 @@ bool reachedRoadside(App* app, reg32 car)
 }
 
 /* 0x40c950: reachedRoadside for car eax. */
-void atRoadside(App* app, CPU& cpu)
+x86::reg32 atRoadside(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { return reachedRoadside(app, car) ? 1 : 0; });
+    asThunk(cpu, args, [&, car = args.eax] { return reachedRoadside(app, car) ? 1 : 0; });
+    return args.eax;
 }
 
 /* Traffic car's driver, each tick: its loading steps first (stepLoading, called at the code's depth:
@@ -967,9 +962,10 @@ bool driveTraffic(App* app, CPU& cpu, reg32 car)
 
 /* 0x40c9f0: driveTraffic for car eax.  What the code leaves in eax (the last yes or no it had) no
  * caller reads: it is the car's tick hook (+0x600); aiplan.inc's promise says so. */
-void advanceCarAi(App* app, CPU& cpu)
+x86::reg32 advanceCarAi(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { return driveTraffic(app, cpu, car); });
+    asThunk(cpu, args, [&, car = args.eax] { return driveTraffic(app, cpu, car); });
+    return args.eax;
 }
 
 /* The sensed cars (0x48 bytes at 0x56ef38) cleared (0x4e0640) and [0x56ebc0] zeroed.  The eax the
@@ -984,9 +980,10 @@ std::optional<reg32> clearSensed(App* app, CPU& cpu)
 }
 
 /* 0x40cb20: clearSensed; eax as the clearing leaves it. */
-void clearSensedCars(App* app, CPU& cpu)
+x86::reg32 clearSensedCars(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&] { return clearSensed(app, cpu); });
+    asThunk(cpu, args, [&] { return clearSensed(app, cpu); });
+    return args.eax;
 }
 
 /* The track's traffic side [0x56f230] (trackTrafficSide) kept and [0x56ebc0] zeroed; the side. */
@@ -999,9 +996,10 @@ reg32 keepTrafficSide(App* app)
 }
 
 /* 0x40cb50: keepTrafficSide. */
-void cacheTrafficSide(App* app, CPU& cpu)
+x86::reg32 cacheTrafficSide(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&] { return keepTrafficSide(app); });
+    asThunk(cpu, args, [&] { return keepTrafficSide(app); });
+    return args.eax;
 }
 
 /* Traffic car reset: its record (clearRecord), then 0x404690 (below this file).  The eax 0x404690
@@ -1019,9 +1017,10 @@ bool resetTraffic(App* app, CPU& cpu, reg32 car)
 }
 
 /* 0x40cb70: resetTraffic for car eax; eax as 0x404690 leaves it. */
-void resetTrafficCar(App* app, CPU& cpu)
+x86::reg32 resetTrafficCar(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { return resetTrafficEax(app, cpu, car); });
+    asThunk(cpu, args, [&, car = args.eax] { return resetTrafficEax(app, cpu, car); });
+    return args.eax;
 }
 
 /* Traffic car's driving state cleared: states, targets, lanes and speeds zeroed, +0x7bc 1.0, its next
@@ -1058,9 +1057,10 @@ void clearRecord(App* app, reg32 car)
 }
 
 /* 0x40cb90: clearRecord for car eax. */
-void clearTrafficRecord(App* app, CPU& cpu)
+x86::reg32 clearTrafficRecord(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { clearRecord(app, car); });
+    asThunk(cpu, args, [&, car = args.eax] { clearRecord(app, car); });
+    return args.eax;
 }
 
 /* Car put on the track at its node +0x1c and its target place across +0x7b4 (as 16.16, with 1 and
@@ -1095,13 +1095,14 @@ bool putOnTrack(App* app, CPU& cpu, reg32 car)
 }
 
 /* 0x40cd80: putOnTrack for car eax, left in eax. */
-void placeOnTrack(App* app, CPU& cpu)
+x86::reg32 placeOnTrack(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax]() -> std::optional<reg32> {
+    asThunk(cpu, args, [&, car = args.eax]() -> std::optional<reg32> {
         if (!putOnTrack(app, cpu, car))
             return std::nullopt;
         return car;
     });
+    return args.eax;
 }
 
 /* What stopPulledOverEax did: whether the car was stopped, and what the code leaves in eax -- the car
@@ -1121,7 +1122,7 @@ std::optional<Stop> stopPulledOverEax(App* app, CPU& cpu, reg32 car)
     if (app->getMemory<reg16>(car + kCarAirborne) != 0)
         return Stop{false, car};
     if (!(f32(app, car + kCarGrip) > f64(app, kFirmGrip)))
-        return Stop{false, (car & 0xffff0000u) | statusWord(cpu, f32(app, car + kCarGrip), f64(app, kFirmGrip))};
+        return Stop{false, (car & 0xffff0000u) | statusWord(f32(app, car + kCarGrip), f64(app, kFirmGrip))};
     put(app, car + 0x64c, 0);
     guest::direct<0x4aa79f, handling::resetDrive>(app, cpu, car);
     if (cpu.terminate)
@@ -1147,14 +1148,19 @@ std::optional<bool> stopPulledOver(App* app, CPU& cpu, reg32 car)
 
 /* 0x40ce70: stopPulledOver for car eax; eax as the code leaves it: the car, with the grip's compare's
  * status word in ax when that ended it, or the last scaling's. */
-void brakeToStop(App* app, CPU& cpu)
+x86::reg32 brakeToStop(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax]() -> std::optional<reg32> {
-        const std::optional<Stop> stop = stopPulledOverEax(app, cpu, car);
-        if (!stop)
-            return std::nullopt;
-        return stop->eax;
-    });
+    asThunk(cpu, args, [&, car = args.eax] { return stopPulledOverLeaving(app, cpu, car); });
+    return args.eax;
+}
+
+/* stopPulledOver with the eax the code leaves; nullopt when the game stopped. */
+std::optional<reg32> stopPulledOverLeaving(App* app, CPU& cpu, reg32 car)
+{
+    const std::optional<Stop> stop = stopPulledOverEax(app, cpu, car);
+    if (!stop)
+        return std::nullopt;
+    return stop->eax;
 }
 
 /* Car's present slice +0x638 votes into the first row of lane votes (0x56ee90..98) for the lanes
@@ -1188,12 +1194,13 @@ void voteForCurrentLane(App* app, reg32 car)
 
 /* 0x40cee0: voteForCurrentLane for car eax; eax the slice right of the car's, as the code leaves
  * it. */
-void voteCurrentLane(App* app, CPU& cpu)
+x86::reg32 voteCurrentLane(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] {
+    asThunk(cpu, args, [&, car = args.eax] {
         voteForCurrentLane(app, car);
         return at(app, car + kCarSlice) + 1;
     });
+    return args.eax;
 }
 
 /* Car senses the traffic about it.  Within a window of nodes set by its look-ahead (+0x7c4 by 2 and
@@ -1281,9 +1288,10 @@ bool senseCars(App* app, CPU& cpu, reg32 car)
 
 /* 0x40cfc0: senseCars for car eax.  What the code leaves in eax (the last lane's index) no caller
  * reads; aiplan.inc's promise says so. */
-void senseTraffic(App* app, CPU& cpu)
+x86::reg32 senseTraffic(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { return senseCars(app, cpu, car); });
+    asThunk(cpu, args, [&, car = args.eax] { return senseCars(app, cpu, car); });
+    return args.eax;
 }
 
 /* Car's way to node `target` costed by lane: the chain of nodes from its own (nodeAhead 1.. until the
@@ -1331,9 +1339,10 @@ void costLaneChange(App* app, reg32 car, reg32 target)
 
 /* 0x40d1f0: costLaneChange for car eax towards node edx.  What the code leaves in eax no caller
  * reads; aiplan.inc's promise says so. */
-void planLaneChange(App* app, CPU& cpu)
+x86::reg32 planLaneChange(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax, target = cpu.edx] { costLaneChange(app, car, target); });
+    asThunk(cpu, args, [&, car = args.eax, target = args.edx] { costLaneChange(app, car, target); });
+    return args.eax;
 }
 
 /* A node's edge slices as edgeLaneCost has them: 7 less the high nibble of its +0x13, 6 more the
@@ -1375,9 +1384,10 @@ void costEdgeLane(App* app, reg32 car, reg32 target)
 
 /* 0x40d2e0: costEdgeLane for car eax towards node edx.  What the code leaves in eax no caller reads;
  * aiplan.inc's promise says so. */
-void edgeLaneCost(App* app, CPU& cpu)
+x86::reg32 edgeLaneCost(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax, target = cpu.edx] { costEdgeLane(app, car, target); });
+    asThunk(cpu, args, [&, car = args.eax, target = args.edx] { costEdgeLane(app, car, target); });
+    return args.eax;
 }
 
 /* A small cut to the second row's outer votes when a car is sensed close ahead in the left lane
@@ -1391,9 +1401,10 @@ void penaliseCloseCars(App* app)
 }
 
 /* 0x40d9f0: penaliseCloseCars. */
-void edgePenalty(App* app, CPU& cpu)
+x86::reg32 edgePenalty(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&] { penaliseCloseCars(app); });
+    asThunk(cpu, args, [&] { penaliseCloseCars(app); });
+    return args.eax;
 }
 
 /* The 14 rows of lane votes summed by lane. */
@@ -1437,9 +1448,9 @@ void takeLane(App* app, reg32 car)
 
 /* 0x40da30: takeLane for car eax; eax as the code leaves it: the better sum of the left two, the
  * slice right of the car's when the right lane won, 0 when the lane came under 0. */
-void sumLaneVotes(App* app, CPU& cpu)
+x86::reg32 sumLaneVotes(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] {
+    asThunk(cpu, args, [&, car = args.eax] {
         const LaneSums sums = laneSums(app);
         takeLane(app, car);
         const reg32 slice = at(app, car + kCarSlice);
@@ -1458,6 +1469,7 @@ void sumLaneVotes(App* app, CPU& cpu)
             left = 0;
         return left;
     });
+    return args.eax;
 }
 
 /* The lane planner started for car: the votes (0xa8 bytes at 0x56ee90) and the sensed cars (0x48
@@ -1476,9 +1488,10 @@ bool beginPlanning(App* app, CPU& cpu, reg32 car)
 
 /* 0x40dd60: beginPlanning for car eax.  What the code leaves in eax (senseTraffic's) no caller
  * reads; aiplan.inc's promise says so. */
-void beginLanePlanning(App* app, CPU& cpu)
+x86::reg32 beginLanePlanning(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { return beginPlanning(app, cpu, car); });
+    asThunk(cpu, args, [&, car = args.eax] { return beginPlanning(app, cpu, car); });
+    return args.eax;
 }
 
 /* Car picks its lane: it looks a number of nodes ahead by its look-ahead (+0x7c4 by 2.5 and 1/6,
@@ -1504,13 +1517,14 @@ bool pickLane(App* app, CPU& cpu, reg32 car)
 
 /* 0x40ddb0: pickLane for car eax; eax as the code leaves it: the car, or for a player's car what
  * scoreLanesByRoad leaves. */
-void chooseLane(App* app, CPU& cpu)
+x86::reg32 chooseLane(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax]() -> std::optional<reg32> {
+    asThunk(cpu, args, [&, car = args.eax]() -> std::optional<reg32> {
         if (!pickLane(app, cpu, car))
             return std::nullopt;
         return (byte(app, car + kCarKindFlags) & kKindPlayer) != 0 ? roadScoreLeft(app, car) : car;
     });
+    return args.eax;
 }
 
 /* Car's horn sounded for 0x40 ticks (+0x620 bit 3, its end +0x644 past the clock), its tone +0x660
@@ -1524,9 +1538,10 @@ void soundHorn(App* app, reg32 car)
 }
 
 /* 0x40de50: soundHorn for car eax. */
-void startHorn(App* app, CPU& cpu)
+x86::reg32 startHorn(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { soundHorn(app, car); });
+    asThunk(cpu, args, [&, car = args.eax] { soundHorn(app, car); });
+    return args.eax;
 }
 
 /* Car's horn ended once the clock passes +0x644: +0x620 bit 3 cleared, its tone +0x660 back (1 -> 0,
@@ -1546,9 +1561,10 @@ void endHorn(App* app, reg32 car)
 }
 
 /* 0x40deb0: endHorn for car eax. */
-void stopHorn(App* app, CPU& cpu)
+x86::reg32 stopHorn(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { endHorn(app, car); });
+    asThunk(cpu, args, [&, car = args.eax] { endHorn(app, car); });
+    return args.eax;
 }
 
 /* Traffic car's loading steps (+0x630; 0x401240 and 0x405cd0..0x405e20 are below this file): 0 when
@@ -1606,9 +1622,10 @@ std::optional<reg32> stepLoading(App* app, CPU& cpu, reg32 car)
 }
 
 /* 0x40df10: stepLoading for car eax. */
-void stepTrafficLoading(App* app, CPU& cpu)
+x86::reg32 stepTrafficLoading(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { return stepLoading(app, cpu, car); });
+    asThunk(cpu, args, [&, car = args.eax] { return stepLoading(app, cpu, car); });
+    return args.eax;
 }
 
 /* What scoreLanesByRoad's code leaves in eax: its node's record, or its right edge slice when it got
@@ -1668,12 +1685,13 @@ void scoreRoad(App* app, reg32 car)
 }
 
 /* 0x40d3d0: scoreRoad for car eax; eax as the code leaves it (roadScoreLeft). */
-void scoreLanesByRoad(App* app, CPU& cpu)
+x86::reg32 scoreLanesByRoad(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] {
+    asThunk(cpu, args, [&, car = args.eax] {
         scoreRoad(app, car);
         return roadScoreLeft(app, car);
     });
+    return args.eax;
 }
 
 /* Car's lanes scored against the parked obstacles (0x7dd850, 8 of 0x50 bytes: +0 in use, +0x34 its
@@ -1705,9 +1723,10 @@ void scoreObstacles(App* app, reg32 car)
 
 /* 0x40d720: scoreObstacles for car eax.  What the code leaves in eax no caller reads; aiplan.inc's
  * promise says so. */
-void scoreLanesByObstacles(App* app, CPU& cpu)
+x86::reg32 scoreLanesByObstacles(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { scoreObstacles(app, car); });
+    asThunk(cpu, args, [&, car = args.eax] { scoreObstacles(app, car); });
+    return args.eax;
 }
 
 /* A cut halved towards 0, as the code's mov, sar 31, sub, sar 1 has it. */
@@ -1775,9 +1794,10 @@ bool scoreCars(App* app, CPU& cpu, reg32 car)
 
 /* 0x40d800: scoreCars for car eax.  What the code leaves in eax (a compare's status word and the
  * like) no caller reads; aiplan.inc's promise says so. */
-void scoreLanesByCars(App* app, CPU& cpu)
+x86::reg32 scoreLanesByCars(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { return scoreCars(app, cpu, car); });
+    asThunk(cpu, args, [&, car = args.eax] { return scoreCars(app, cpu, car); });
+    return args.eax;
 }
 
 /* Car's target place across +0x7b4 set for the chosen lane [0x56ef74].  On an edge slice of its node
@@ -1837,9 +1857,10 @@ void steerForLane(App* app, reg32 car)
 
 /* 0x40daf0: steerForLane for car eax.  What the code leaves in eax (the nodes' pointer, a compare's
  * status word in its low half) no caller reads; aiplan.inc's promise says so. */
-void steerToLane(App* app, CPU& cpu)
+x86::reg32 steerToLane(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { steerForLane(app, car); });
+    asThunk(cpu, args, [&, car = args.eax] { steerForLane(app, car); });
+    return args.eax;
 }
 
 /* The computer cars' target speed at slice `slice`: the byte of the track's speed table [0x552558]
@@ -1853,14 +1874,16 @@ float targetSpeed(App* app, reg32 slice)
 
 /* 0x40e080: targetSpeed at slice eax onto the x87's stack; eax the table's byte, as the code leaves
  * it. */
-void targetSpeedAt(App* app, CPU& cpu)
+x86::reg32 targetSpeedAt(App* app, x86::CPU& cpu, x86::Args& args)
 {
     float speed = 0;
-    adapts(cpu, [&, slice = cpu.eax] {
+    asThunk(cpu, args, [&, slice = args.eax] {
         speed = targetSpeed(app, slice);
         return at(app, kSpeedsFailed) == 0 ? reg32(byte(app, at(app, kSpeeds) + (slice >> 1))) : slice;
     });
-    cpu.fpu.push(Float(speed));
+    args.floatSet = true;
+    args.floatResult = double(Float(speed));
+    return args.eax;
 }
 
 /* The road's kind at slice `slice`: the high nibble of the speed table's second half's (0x55255c)
@@ -1873,9 +1896,10 @@ reg32 roadKind(App* app, reg32 slice)
 }
 
 /* 0x40e0c0: roadKind at slice eax. */
-void roadKindAt(App* app, CPU& cpu)
+x86::reg32 roadKindAt(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, slice = cpu.eax] { return roadKind(app, slice); });
+    asThunk(cpu, args, [&, slice = args.eax] { return roadKind(app, slice); });
+    return args.eax;
 }
 
 /* The track's road kind kept for the race: whether it is wide ([0x56f228], trackRoadWide), its
@@ -1890,9 +1914,10 @@ reg32 cacheRoad(App* app)
 }
 
 /* 0x40e0f0: cacheRoad, the side in eax. */
-void cacheRoadWidth(App* app, CPU& cpu)
+x86::reg32 cacheRoadWidth(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&] { return cacheRoad(app); });
+    asThunk(cpu, args, [&] { return cacheRoad(app); });
+    return args.eax;
 }
 
 /* Node `node` less node `from`, wrapped round the track's [0x5dd940] nodes into -n/2..n/2; the
@@ -1911,9 +1936,10 @@ i32 nodesBetween(App* app, reg32 node, reg32 from)
 }
 
 /* 0x40e120: nodesBetween node eax and node edx. */
-void nodeGap(App* app, CPU& cpu)
+x86::reg32 nodeGap(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, node = cpu.eax, from = cpu.edx] { return reg32(nodesBetween(app, node, from)); });
+    asThunk(cpu, args, [&, node = args.eax, from = args.edx] { return reg32(nodesBetween(app, node, from)); });
+    return args.eax;
 }
 
 /* The node `steps` nodes on from car's node +0x1c in its direction of travel -- back for a car with
@@ -1938,9 +1964,10 @@ reg32 nodeAhead(App* app, reg32 car, reg32 steps)
 }
 
 /* 0x40e160: nodeAhead for car eax by edx nodes. */
-void nodeOffset(App* app, CPU& cpu)
+x86::reg32 nodeOffset(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax, steps = cpu.edx] { return nodeAhead(app, car, steps); });
+    asThunk(cpu, args, [&, car = args.eax, steps = args.edx] { return nodeAhead(app, car, steps); });
+    return args.eax;
 }
 
 /* The node car will reach: its look-ahead +0x7c4 times `scale` and 1/6, rounded, kept within `least`
@@ -1958,13 +1985,14 @@ reg32 nodeAheadBySpeed(App* app, reg32 car, float scale, i32 least, i32 most)
 }
 
 /* 0x40e1b0 (stdcall, 3 words: the scale, the least, the most): nodeAheadBySpeed for car eax. */
-void nodesAheadBySpeed(App* app, CPU& cpu)
+x86::reg32 nodesAheadBySpeed(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(
-        cpu,
-        [&, car = cpu.eax, scale = floatOf(word(app, cpu, 1)), least = i32(word(app, cpu, 2)),
+    asThunk(
+        cpu, args,
+        [&, car = args.eax, scale = floatOf(word(app, cpu, 1)), least = i32(word(app, cpu, 2)),
          most = i32(word(app, cpu, 3))] { return nodeAheadBySpeed(app, car, scale, least, most); },
         0xc);
+    return args.eax;
 }
 
 /* Node `node`'s lane bits (the high half of its dword at +0xa, arithmetically) masked by `mask` --
@@ -1975,9 +2003,10 @@ reg32 laneBitsAt(App* app, reg32 node, reg32 mask)
 }
 
 /* 0x40e200: laneBitsAt node eax by mask edx. */
-void nodeLaneBits(App* app, CPU& cpu)
+x86::reg32 nodeLaneBits(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, node = cpu.eax, mask = cpu.edx] { return laneBitsAt(app, node, mask); });
+    asThunk(cpu, args, [&, node = args.eax, mask = args.edx] { return laneBitsAt(app, node, mask); });
+    return args.eax;
 }
 
 /* Whether node `node` has road in slice `slice`: laneBitsAt with the slice's bit (sliceBit). */
@@ -1987,9 +2016,10 @@ reg32 hasLane(App* app, reg32 node, reg32 slice)
 }
 
 /* 0x40e220: hasLane at node eax in slice edx. */
-void nodeHasLane(App* app, CPU& cpu)
+x86::reg32 nodeHasLane(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, node = cpu.eax, slice = cpu.edx] { return hasLane(app, node, slice); });
+    asThunk(cpu, args, [&, node = args.eax, slice = args.edx] { return hasLane(app, node, slice); });
+    return args.eax;
 }
 
 /* Slice `slice`'s bit among a node's 16 lane bits: bit 15 - (slice + 1), slice + 1 (as the code's
@@ -2005,9 +2035,10 @@ reg32 sliceBit(reg32 slice)
 }
 
 /* 0x40e270: sliceBit of slice eax. */
-void laneBit(App* app, CPU& cpu)
+x86::reg32 laneBit(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, slice = cpu.eax] { return sliceBit(slice); });
+    asThunk(cpu, args, [&, slice = args.eax] { return sliceBit(slice); });
+    return args.eax;
 }
 
 /* The road slice (0..13) `offset` across the road falls in at node `node`: from the centre slice
@@ -2032,9 +2063,10 @@ reg32 roadSlice(App* app, reg32 node, float offset)
 }
 
 /* 0x40e2b0 (stdcall, 1 word: the offset across the road): roadSlice at node eax. */
-void roadSliceIndex(App* app, CPU& cpu)
+x86::reg32 roadSliceIndex(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, node = cpu.eax, offset = floatOf(word(app, cpu, 1))] { return roadSlice(app, node, offset); }, 4);
+    asThunk(cpu, args, [&, node = args.eax, offset = floatOf(word(app, cpu, 1))] { return roadSlice(app, node, offset); }, 4);
+    return args.eax;
 }
 
 /* Car's three road slices at its node +0x1c (roadSlice): of its place across the road +0x7b8
@@ -2053,12 +2085,17 @@ void findCarSlices(App* app, reg32 car)
 }
 
 /* 0x40e350: findCarSlices for car eax; eax the last slice, as the code leaves it. */
-void carSlices(App* app, CPU& cpu)
+x86::reg32 carSlices(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] {
-        findCarSlices(app, car);
-        return at(app, car + kCarRightSlice);
-    });
+    asThunk(cpu, args, [&, car = args.eax] { return findCarSlicesLeaving(app, car); });
+    return args.eax;
+}
+
+/* findCarSlices with the eax the code leaves: the last slice. */
+reg32 findCarSlicesLeaving(App* app, reg32 car)
+{
+    findCarSlices(app, car);
+    return at(app, car + kCarRightSlice);
 }
 
 /* A track's tuning record at `record`: `first` and `distance` (0xf and 0 in a knock-out race,
@@ -2085,15 +2122,16 @@ void fillTuning(App* app, reg32 record, reg32 first, reg32 distance, reg32 roadW
 
 /* 0x40e3c0 (stdcall, 4 words: the side, the speeds, the last): fillTuning of the record at eax with
  * edx, ebx and ecx. */
-void fillTrackTuning(App* app, CPU& cpu)
+x86::reg32 fillTrackTuning(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(
-        cpu,
-        [&, record = cpu.eax, first = cpu.edx, distance = cpu.ebx, roadWide = cpu.ecx, side = word(app, cpu, 1),
+    asThunk(
+        cpu, args,
+        [&, record = args.eax, first = args.edx, distance = args.ebx, roadWide = args.ecx, side = word(app, cpu, 1),
          speed = word(app, cpu, 2), seriesSpeed = word(app, cpu, 3), last = word(app, cpu, 4)] {
             fillTuning(app, record, first, distance, roadWide, side, speed, seriesSpeed, last);
         },
         0x10);
+    return args.eax;
 }
 
 /* The race's tuning set up.  A handicap (-0.005 at night, and for each of the weather, the mirrored
@@ -2186,9 +2224,10 @@ bool setupTuning(App* app, CPU& cpu)
 
 /* 0x40e410: setupTuning.  What the code leaves in eax (a compare's status word) no caller reads;
  * aiplan.inc's promise says so. */
-void setupTrackTuning(App* app, CPU& cpu)
+x86::reg32 setupTrackTuning(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&] { return setupTuning(app, cpu); });
+    asThunk(cpu, args, [&] { return setupTuning(app, cpu); });
+    return args.eax;
 }
 
 /* The opponents' speed table [0x552558] freed and forgotten.  What the code leaves in eax: the free's,
@@ -2208,9 +2247,10 @@ std::optional<reg32> freeSpeeds(App* app, CPU& cpu, reg32 eax)
 }
 
 /* 0x40ec40: freeSpeeds; eax as the free leaves it. */
-void freeSpeedTable(App* app, CPU& cpu)
+x86::reg32 freeSpeedTable(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, eax = cpu.eax] { return freeSpeeds(app, cpu, eax); });
+    asThunk(cpu, args, [&, eax = args.eax] { return freeSpeeds(app, cpu, eax); });
+    return args.eax;
 }
 
 /* The track's traffic side: its tuning record's +0xc; 1 past the records. */
@@ -2223,9 +2263,10 @@ reg32 trackTrafficSide(App* app)
 }
 
 /* 0x40ec70: trackTrafficSide. */
-void trafficSide(App* app, CPU& cpu)
+x86::reg32 trafficSide(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&] { return trackTrafficSide(app); });
+    asThunk(cpu, args, [&] { return trackTrafficSide(app); });
+    return args.eax;
 }
 
 /* Whether the track's road is wide: its tuning record's +8; past the records, whether the second
@@ -2239,9 +2280,10 @@ reg32 trackRoadWide(App* app)
 }
 
 /* 0x40eca0: trackRoadWide. */
-void roadIsWide(App* app, CPU& cpu)
+x86::reg32 roadIsWide(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&] { return trackRoadWide(app); });
+    asThunk(cpu, args, [&] { return trackRoadWide(app); });
+    return args.eax;
 }
 
 /* The traffic's speed at node `node` by the track [0x6fd4ac] (the jump table at 0x40ed14) and the
@@ -2268,11 +2310,13 @@ float trafficSpeed(App* app, reg32 node)
 }
 
 /* 0x40ed40: trafficSpeed at node eax onto the x87's stack. */
-void trafficSpeedAt(App* app, CPU& cpu)
+x86::reg32 trafficSpeedAt(App* app, x86::CPU& cpu, x86::Args& args)
 {
     float speed = 0;
-    adapts(cpu, [&, node = cpu.eax] { speed = trafficSpeed(app, node); });
-    cpu.fpu.push(Float(speed));
+    asThunk(cpu, args, [&, node = args.eax] { speed = trafficSpeed(app, node); });
+    args.floatSet = true;
+    args.floatResult = double(Float(speed));
+    return args.eax;
 }
 
 /* The track's tuning speed: its record's +0x18 in the race types 1 and 2 or in a series race, else
@@ -2286,11 +2330,13 @@ float trackTuningSpeed(App* app)
 }
 
 /* 0x40ee80: trackTuningSpeed onto the x87's stack; every register kept. */
-void tuningSpeed(App* app, CPU& cpu)
+x86::reg32 tuningSpeed(App* app, x86::CPU& cpu, x86::Args& args)
 {
     float speed = 0;
-    adapts(cpu, [&] { speed = trackTuningSpeed(app); });
-    cpu.fpu.push(Float(speed));
+    asThunk(cpu, args, [&] { speed = trackTuningSpeed(app); });
+    args.floatSet = true;
+    args.floatResult = double(Float(speed));
+    return args.eax;
 }
 
 /* The track's tuning distance (its record's +4), +200 with the weather on and +400 at night, as
@@ -2306,9 +2352,10 @@ reg32 trackTuningDistance(App* app)
 }
 
 /* 0x40eed0: trackTuningDistance. */
-void tuningDistance(App* app, CPU& cpu)
+x86::reg32 tuningDistance(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&] { return trackTuningDistance(app); });
+    asThunk(cpu, args, [&] { return trackTuningDistance(app); });
+    return args.eax;
 }
 
 /* The track's tuning record's +0. */
@@ -2318,9 +2365,10 @@ reg32 trackTuningFirst(App* app)
 }
 
 /* 0x40ef10: trackTuningFirst. */
-void tuningFirst(App* app, CPU& cpu)
+x86::reg32 tuningFirst(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&] { return trackTuningFirst(app); });
+    asThunk(cpu, args, [&] { return trackTuningFirst(app); });
+    return args.eax;
 }
 
 /* A node's forward direction's part at +0x14 or +0x16 as the code loads it: the signed byte << 9. */
@@ -2346,14 +2394,16 @@ Float directionDot(App* app, reg32 a, reg32 b)
 
 /* 0x40ef70: directionDot of nodes eax and edx onto the x87's stack; eax node eax's z part, as the
  * code leaves it. */
-void nodeDirectionDot(App* app, CPU& cpu)
+x86::reg32 nodeDirectionDot(App* app, x86::CPU& cpu, x86::Args& args)
 {
     Float dot;
-    adapts(cpu, [&, a = cpu.eax, b = cpu.edx] {
+    asThunk(cpu, args, [&, a = args.eax, b = args.edx] {
         dot = directionDot(app, a, b);
         return reg32(directionPart(app, at(app, kNodes) + a * kNodeSize, kNodeDirectionZ));
     });
-    cpu.fpu.push(dot);
+    args.floatSet = true;
+    args.floatResult = double(dot);
+    return args.eax;
 }
 
 /* Whether node `node` lies in the run of `run` nodes from node `from` (wrapped round the track; a
@@ -2375,9 +2425,10 @@ bool nodeInRun(App* app, reg32 node, reg32 from, reg32 run)
 }
 
 /* 0x40f000: nodeInRun for node eax, from edx, ebx long. */
-void nodeWithinRange(App* app, CPU& cpu)
+x86::reg32 nodeWithinRange(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, node = cpu.eax, from = cpu.edx, run = cpu.ebx] { return nodeInRun(app, node, from, run) ? 1 : 0; });
+    asThunk(cpu, args, [&, node = args.eax, from = args.edx, run = args.ebx] { return nodeInRun(app, node, from, run) ? 1 : 0; });
+    return args.eax;
 }
 
 /* Whether car is within reach of `distance`: its place along the track +8 and 14 times its speed
@@ -2397,9 +2448,10 @@ bool carInReach(App* app, reg32 car, reg32 distance)
 }
 
 /* 0x40f050: carInReach for car eax of distance edx. */
-void carWithinReach(App* app, CPU& cpu)
+x86::reg32 carWithinReach(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax, distance = cpu.edx] { return carInReach(app, car, distance) ? 1 : 0; });
+    asThunk(cpu, args, [&, car = args.eax, distance = args.edx] { return carInReach(app, car, distance) ? 1 : 0; });
+    return args.eax;
 }
 
 /* 1, whatever it is asked. */
@@ -2410,9 +2462,10 @@ reg32 answerOne(App* app)
 }
 
 /* 0x40f100: answerOne. */
-void alwaysOne(App* app, CPU& cpu)
+x86::reg32 alwaysOne(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&] { return answerOne(app); });
+    asThunk(cpu, args, [&] { return answerOne(app); });
+    return args.eax;
 }
 
 /* Whether car is boxed in: its slice +0x638 off the 14, or not within its node's edge slices and
@@ -2438,9 +2491,10 @@ bool boxedIn(App* app, reg32 car)
 }
 
 /* 0x40f110: boxedIn for car eax. */
-void carBoxedIn(App* app, CPU& cpu)
+x86::reg32 carBoxedIn(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { return boxedIn(app, car) ? 1 : 0; });
+    asThunk(cpu, args, [&, car = args.eax] { return boxedIn(app, car) ? 1 : 0; });
+    return args.eax;
 }
 
 /* The track's animation paths (.can, loaded into the seven handles at
@@ -2478,9 +2532,10 @@ bool freePaths(App* app, CPU& cpu)
 }
 
 /* 0x40f330: freePaths; eax as the last free leaves it. */
-void freeAnimationPaths(App* app, CPU& cpu)
+x86::reg32 freeAnimationPaths(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, eax = cpu.eax] { return freePathsEax(app, cpu, eax); });
+    asThunk(cpu, args, [&, eax = args.eax] { return freePathsEax(app, cpu, eax); });
+    return args.eax;
 }
 
 /* The first free animation slot (its path +0 none), or -1. */
@@ -2493,9 +2548,10 @@ reg32 freeAnimation(App* app)
 }
 
 /* 0x40f370: freeAnimation. */
-void findFreeAnimation(App* app, CPU& cpu)
+x86::reg32 findFreeAnimation(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&] { return freeAnimation(app); });
+    asThunk(cpu, args, [&] { return freeAnimation(app); });
+    return args.eax;
 }
 
 /* Path `path` (0..6 of the handles) started in a free slot at the clock, mode 2, flags 1, the third
@@ -2521,9 +2577,10 @@ reg32 playAnimation(App* app, reg32 path)
 }
 
 /* 0x40f3b0: playAnimation of path eax. */
-void startAnimation(App* app, CPU& cpu)
+x86::reg32 startAnimation(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, path = cpu.eax] { return playAnimation(app, path); });
+    asThunk(cpu, args, [&, path = args.eax] { return playAnimation(app, path); });
+    return args.eax;
 }
 
 /* Slot's mode, flags and third word set. */
@@ -2536,12 +2593,13 @@ void setAnimation(App* app, reg32 slot, reg32 mode, reg32 flags, reg32 third)
 
 /* 0x40f430: setAnimation of slot eax to edx, ebx, ecx; eax three times the slot, as the code leaves
  * it. */
-void setAnimationMode(App* app, CPU& cpu)
+x86::reg32 setAnimationMode(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, slot = cpu.eax, mode = cpu.edx, flags = cpu.ebx, third = cpu.ecx] {
+    asThunk(cpu, args, [&, slot = args.eax, mode = args.edx, flags = args.ebx, third = args.ecx] {
         setAnimation(app, slot, mode, flags, third);
         return slot * 3;
     });
+    return args.eax;
 }
 
 /* Slot stopped -- 1, or -1 when it was not playing. */
@@ -2557,9 +2615,10 @@ reg32 endAnimation(App* app, reg32 slot)
 }
 
 /* 0x40f460: endAnimation of slot eax. */
-void stopAnimation(App* app, CPU& cpu)
+x86::reg32 stopAnimation(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, slot = cpu.eax] { return endAnimation(app, slot); });
+    asThunk(cpu, args, [&, slot = args.eax] { return endAnimation(app, slot); });
+    return args.eax;
 }
 
 /* A path's frames per point (+6: 1..400, else 6). */
@@ -2590,7 +2649,7 @@ i32 orientationPart(App* app, reg32 point, reg32 part)
  * (four shorts, << 2, as 1/65536) and two places (16.16, as 1/65536), blended at the fraction of the
  * frame (0x4b70f0, `blendWord` handed on as its last word) and made a matrix at `matrix` (0x4b7590).
  * The orientations, the places and the blend's room in the code's frame, whose addresses the blend is
- * handed (and logs, in the check).  1; nullopt when the game stopped. */
+ * handed (and logs).  1; nullopt when the game stopped. */
 std::optional<reg32> poseAt(App* app, CPU& cpu, reg32 path, reg32 mode, i32 time, reg32 blendWord, reg32 matrix)
 {
     const GuestFrame frame(cpu, 0xc, 0x7c);
@@ -2639,14 +2698,15 @@ std::optional<reg32> poseAt(App* app, CPU& cpu, reg32 path, reg32 mode, i32 time
 
 /* 0x40f4b0 (stdcall, 1 word: where the pose's matrix goes): poseAt for path eax at time ebx in mode
  * edx, ecx handed on. */
-void animationPose(App* app, CPU& cpu)
+x86::reg32 animationPose(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(
-        cpu,
-        [&, path = cpu.eax, mode = cpu.edx, time = i32(cpu.ebx), blendWord = cpu.ecx, matrix = word(app, cpu, 1)] {
+    asThunk(
+        cpu, args,
+        [&, path = args.eax, mode = args.edx, time = i32(args.ebx), blendWord = args.ecx, matrix = word(app, cpu, 1)] {
             return poseAt(app, cpu, path, mode, time, blendWord, matrix);
         },
         4);
+    return args.eax;
 }
 
 /* Path's place at `time` (`mode` bit 1: played once -- 0 past the end): the two points' places blended
@@ -2679,13 +2739,14 @@ std::optional<reg32> placeAt(App* app, CPU& cpu, reg32 path, reg32 mode, i32 tim
 
 /* 0x40f6d0 (stdcall, 2 words: where the time into the path goes, where its length goes): placeAt for
  * path eax at time ebx in mode edx, ecx handed on. */
-void animationPlace(App* app, CPU& cpu)
+x86::reg32 animationPlace(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(
-        cpu,
-        [&, path = cpu.eax, mode = cpu.edx, time = i32(cpu.ebx), blendWord = cpu.ecx, timeOut = word(app, cpu, 1),
+    asThunk(
+        cpu, args,
+        [&, path = args.eax, mode = args.edx, time = i32(args.ebx), blendWord = args.ecx, timeOut = word(app, cpu, 1),
          lengthOut = word(app, cpu, 2)] { return placeAt(app, cpu, path, mode, time, blendWord, timeOut, lengthOut); },
         8);
+    return args.eax;
 }
 
 /* Slot's progress: its frame (the clock since it started, by its path's frames per point) within the
@@ -2703,11 +2764,12 @@ reg32 animationSpans(App* app, reg32 slot, reg32 frameOut, reg32 spansOut)
 }
 
 /* 0x40f800: animationSpans of slot eax to [edx] and [ebx]. */
-void animationProgress(App* app, CPU& cpu)
+x86::reg32 animationProgress(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, slot = cpu.eax, frameOut = cpu.edx, spansOut = cpu.ebx] {
+    asThunk(cpu, args, [&, slot = args.eax, frameOut = args.edx, spansOut = args.ebx] {
         return animationSpans(app, slot, frameOut, spansOut);
     });
+    return args.eax;
 }
 
 /* Path's last point: its place copied to `placeOut`, its orientation (in the code's frame, whose
@@ -2726,11 +2788,12 @@ std::optional<reg32> lastPose(App* app, CPU& cpu, reg32 path, reg32 placeOut, re
 
 /* 0x40f880 (stdcall, 1 word: where the matrix goes): lastPose of path eax, its place to [ecx]; eax as
  * 0x4b6ca0 leaves it. */
-void animationLastPose(App* app, CPU& cpu)
+x86::reg32 animationLastPose(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, path = cpu.eax, placeOut = cpu.ecx, matrix = word(app, cpu, 1)] {
+    asThunk(cpu, args, [&, path = args.eax, placeOut = args.ecx, matrix = word(app, cpu, 1)] {
         return lastPose(app, cpu, path, placeOut, matrix);
     }, 4);
+    return args.eax;
 }
 
 /* Path `index`'s (of the handles) end pose (lastPose, at the code's depth, its place to `placeOut`,
@@ -2758,16 +2821,17 @@ bool endPose(App* app, CPU& cpu, reg32 index, reg32 flags, reg32 placeOut, reg32
 
 /* 0x40f8d0 (stdcall, 1 word: the pose's matrix): endPose of path eax by flags ebx, its place to
  * [ecx]. */
-void pathEndPose(App* app, CPU& cpu)
+x86::reg32 pathEndPose(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(
-        cpu,
-        [&, index = cpu.eax, flags = cpu.ebx, placeOut = cpu.ecx, pose = word(app, cpu, 1)]() -> std::optional<reg32> {
+    asThunk(
+        cpu, args,
+        [&, index = args.eax, flags = args.ebx, placeOut = args.ecx, pose = word(app, cpu, 1)]() -> std::optional<reg32> {
             if (!endPose(app, cpu, index, flags, placeOut, pose))
                 return std::nullopt;
             return 1;
         },
         4);
+    return args.eax;
 }
 
 /* Slot stepped: -1 when it is not playing; its path's pose at the clock since it started (poseAt at
@@ -2812,11 +2876,12 @@ std::optional<reg32> stepAnimation(App* app, CPU& cpu, reg32 slot, reg32 blendWo
 }
 
 /* 0x40f940: stepAnimation of slot eax, edx handed on, the pose to [ebx]. */
-void animationStep(App* app, CPU& cpu)
+x86::reg32 animationStep(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, slot = cpu.eax, blendWord = cpu.edx, pose = cpu.ebx] {
+    asThunk(cpu, args, [&, slot = args.eax, blendWord = args.edx, pose = args.ebx] {
         return stepAnimation(app, cpu, slot, blendWord, pose);
     });
+    return args.eax;
 }
 
 /* Whether slot is playing (its path +0 set). */
@@ -2826,9 +2891,10 @@ bool animationOn(App* app, reg32 slot)
 }
 
 /* 0x40fac0: animationOn for slot eax. */
-void animationPlaying(App* app, CPU& cpu)
+x86::reg32 animationPlaying(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, slot = cpu.eax] { return animationOn(app, slot) ? 1 : 0; });
+    asThunk(cpu, args, [&, slot = args.eax] { return animationOn(app, slot) ? 1 : 0; });
+    return args.eax;
 }
 
 /* The caps the library is started with for the speaker setup: 0x808 for setup 0 and speakers 0, 0x804
@@ -2858,7 +2924,17 @@ std::optional<reg32> startLibrary(App* app, CPU& cpu, reg32 caps, reg32 setup, r
     reg32 asked = 0xffffffff;
     if ((caps & *wanted) == *wanted)
         asked = at(app, kSoundInitOK) != 0 ? 0x20000 | *wanted : *wanted;
-    return callGame(app, cpu, kSndInit, {asked, 0xffffffff});
+    const port::Result started = guest::direct<0x4e2630, port::libraryStarted>(app, cpu, cpu.esp - 4, asked, 0xffffffff);
+    if (cpu.terminate || !started)
+        return std::nullopt;
+    return reg32(*started);
+}
+
+/* 0x418740 (the effect bus set up) as C++; false when the game stopped. */
+bool busInitDone(App* app, CPU& cpu)
+{
+    const port::Result done = guest::direct<0x418740, port::busInitOf>(app, cpu, cpu.esp - 4);
+    return !cpu.terminate && done;
 }
 
 /* The 3D setup's trace line (0x42d510, cdecl: 100, 1, 0x53684c): its words pushed as the code
@@ -2916,14 +2992,16 @@ bool bringUpSound(App* app, CPU& cpu, reg32 callerEdx)
         put(app, kEffectsOn, 0);
         return true;
     }
-    return callGame(app, cpu, kSndRate, {rateKind != 0 ? 0u : 0xffffffceu}) && callGame(app, cpu, kBusInit, {});
+    guest::direct<0x4e2228, port::priorityOffsetSet>(app, cpu, rateKind != 0 ? 0u : 0xffffffceu);
+    return busInitDone(app, cpu);
 }
 
 /* 0x40fb10: bringUpSound.  What the code leaves in eax no caller reads; aiplan.inc's promise says
  * so. */
-void startSound(App* app, CPU& cpu)
+x86::reg32 startSound(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, callerEdx = cpu.edx] { return bringUpSound(app, cpu, callerEdx); });
+    asThunk(cpu, args, [&, callerEdx = args.edx] { return bringUpSound(app, cpu, callerEdx); });
+    return args.eax;
 }
 
 /* The sound restarted for `setup` from the options screen (2 taken as 0, 3 the 3D setup): when effects
@@ -2960,14 +3038,15 @@ bool restartLibrary(App* app, CPU& cpu, reg32 setup, reg32 callerEdx)
         put(app, kEffectsOn, 0);
         return true;
     }
-    return callGame(app, cpu, kBusInit, {}) && callGame(app, cpu, kSndCaps, {0xffffffff});
+    return busInitDone(app, cpu) && callGame(app, cpu, kSndCaps, {0xffffffff});
 }
 
 /* 0x40fcf0: restartLibrary for setup eax.  What the code leaves in eax no caller reads; aiplan.inc's
  * promise says so. */
-void restartSound(App* app, CPU& cpu)
+x86::reg32 restartSound(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, setup = cpu.eax, callerEdx = cpu.edx] { return restartLibrary(app, cpu, setup, callerEdx); });
+    asThunk(cpu, args, [&, setup = args.eax, callerEdx = args.edx] { return restartLibrary(app, cpu, setup, callerEdx); });
+    return args.eax;
 }
 
 }  // namespace aiplan

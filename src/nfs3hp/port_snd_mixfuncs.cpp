@@ -1,4 +1,9 @@
 #include "port_snd.h"
+#include "port_snd_calls.h"
+#include "port_snd_stream_calls.h"
+#include "native_frontend_tail.h"
+#include "native_mix.h"
+#include "native_watcom.h"
 
 #include <cstring>
 
@@ -15,7 +20,7 @@
  * library still call through the channels' pointers.
  *
  * Each is here twice, as in port_snd.h: as C++ with arguments and a result,
- * and as the entry the game's code knows (an adapter named as it was).  The
+ * and as the entry the game's code knows (a thunk named as it was).  The
  * records stay where the game has them -- a channel's resampler, a decoder's
  * state, the bit reader -- and are read and written in place, in the order
  * the code has it: the MMX decoders (mix::xaMono, mix::interpolateMono8 ...)
@@ -106,7 +111,9 @@ void copyForward(App* app, reg32 to, reg32 from, uint32_t bytes)
 /* memset by the game's fill (0x4e0640): the byte 0, how many. */
 bool clearBytes(App* app, CPU& cpu, reg32 esp, reg32 where, uint32_t bytes)
 {
-    return callGame(app, cpu, esp, kFill, {where, 0, bytes});
+    cpu.esp = esp;
+    guest::direct<kFill, watcom::clib::memset>(app, cpu, where, 0u, reg32(bytes));
+    return !cpu.terminate;
 }
 
 /* Halves written to `at`, moving on: a decoder's output. */
@@ -239,7 +246,9 @@ Result panOffsets(App* app, CPU& cpu, reg32 esp, uint32_t angle, int32_t& first,
 {
     const reg32 f = esp - 3 * 4 - 8;
     const uint32_t rest = angle & 0x3f;
-    if (!callGame(app, cpu, f, kSineCosine, {uint32_t(int32_t(angle) >> 6), f, f + 4, rest}))
+    cpu.esp = f;
+    guest::direct<0x4eac60, frontend::tail::angleParts>(app, cpu, uint32_t(int32_t(angle) >> 6), f, f + 4);
+    if (cpu.terminate)
         return std::nullopt;
     const int32_t sine = signedWord(app, f), cosine = signedWord(app, f + 4);
     const int32_t step = imul(int32_t(rest), 0x6487e) >> 9;
@@ -257,7 +266,9 @@ Result voiceBufferPosition(App* app, CPU& cpu, reg32 esp, uint32_t angle, uint32
 {
     const reg32 f = esp - 2 * 4 - 0x18;
     const uint32_t lift = 0x400 - uint32_t(int32_t(elevation & 0xffff) >> 6);
-    if (!callGame(app, cpu, f, kSineCosine, {lift, f + 0xc, f + 8, to}))
+    cpu.esp = f;
+    guest::direct<0x4eac60, frontend::tail::angleParts>(app, cpu, lift, f + 0xc, f + 8);
+    if (cpu.terminate)
         return std::nullopt;
     const int32_t cosElevation = signedWord(app, f + 8), sinElevation = signedWord(app, f + 0xc);
     int32_t first, second;
@@ -352,20 +363,19 @@ uint32_t framesNeededUp(App* app, reg32 s, uint32_t frames, const Flags& flags)
  * source, as it is; `target` is where the pointer to the block goes. */
 void useSourceAsBlock(App* app, reg32 source, reg32 targetSlot) { setWord(app, targetSlot, source); }
 
-/* 0x5270f0 .. 0x527290, the MMX interpolations of a block's frames but the
- * last: the position kept as 16.16 in a cell of the stack (`f`) and back.
- * The registers are the code's: the callee takes the count, the source and
- * the target in edi, esi and ebp. */
-bool interpolateBlock(App* app, CPU& cpu, reg32 f, reg32 s, reg32 function, uint32_t count, reg32 source,
-                      reg32 target)
+/* 0x5270f0 .. 0x527290 (`Address`, its typed function `Interpolated`), the
+ * MMX interpolations of a block's frames but the last: the position kept as
+ * 16.16 in a cell of the stack (`f`) and back.  The words pushed are what it
+ * takes (cdecl). */
+template <reg32 Address, auto Interpolated>
+bool interpolateBlock(App* app, CPU& cpu, reg32 f, reg32 s, uint32_t count, reg32 source, reg32 target)
 {
     const uint32_t step = word(app, s + 8);
     const reg32 whole = step >> 16, fraction = step << 16;
     setWord(app, f, word(app, s + 4) << 16);
-    cpu.ebp = target;
-    cpu.esi = source;
-    cpu.edi = count;
-    if (!callGame(app, cpu, f, function, {f, fraction, s, whole}, {count, source, target, s, f, whole, fraction}))
+    cpu.esp = f;
+    guest::direct<Address, Interpolated>(app, cpu, mix::Interpolate{count, source, target, s, f, whole, fraction});
+    if (cpu.terminate)
         return false;
     setWord(app, s + 4, word(app, f) >> 16);
     return true;
@@ -394,7 +404,7 @@ Result resampleDown8Mono(App* app, CPU& cpu, reg32 esp, reg32 s, uint32_t count,
         setByte(app, source, st.keptFrame);
     }
     const reg32 target = word(app, targetSlot);
-    if (--count != 0 && !interpolateBlock(app, cpu, f, s, kInterpolateMono8, count, source, target))
+    if (--count != 0 && !interpolateBlock<kInterpolateMono8, mix::interpolatedMono8>(app, cpu, f, s, count, source, target))
         return std::nullopt;
     const uint32_t i = st.frame, fraction = st.fraction;
     const uint32_t last = lastSample8(signedByte(app, source + i), signedByte(app, source + i + 1), fraction);
@@ -430,7 +440,7 @@ Result resampleUp8Mono(App* app, CPU& cpu, reg32 esp, reg32 s, uint32_t count, r
     }
     const reg32 target = word(app, targetSlot);
     st.frame = 0;
-    if (--count != 0 && !interpolateBlock(app, cpu, f, s, kInterpolateMono8, count, source, target))
+    if (--count != 0 && !interpolateBlock<kInterpolateMono8, mix::interpolatedMono8>(app, cpu, f, s, count, source, target))
         return std::nullopt;
     const uint32_t i = st.frame, fraction = st.fraction;
     const uint32_t last = lastSample8(signedByte(app, source + i), signedByte(app, source + i + 1), fraction);
@@ -483,7 +493,7 @@ Result resampleDown8Stereo(App* app, CPU& cpu, reg32 esp, reg32 s, uint32_t coun
         setByte(app, --source, left);
     }
     const reg32 target = word(app, targetSlot);
-    if (--count != 0 && !interpolateBlock(app, cpu, f, s, kInterpolateStereo8, count, source, target))
+    if (--count != 0 && !interpolateBlock<kInterpolateStereo8, mix::interpolatedStereo8>(app, cpu, f, s, count, source, target))
         return std::nullopt;
     lastFrame8Stereo(app, st, source, target + count * 2);
     const uint32_t position = st.fraction + st.step;
@@ -516,7 +526,7 @@ Result resampleUp8Stereo(App* app, CPU& cpu, reg32 esp, reg32 s, uint32_t count,
     }
     const reg32 target = word(app, targetSlot);
     st.frame = 0;
-    if (--count != 0 && !interpolateBlock(app, cpu, f, s, kInterpolateStereo8, count, source, target))
+    if (--count != 0 && !interpolateBlock<kInterpolateStereo8, mix::interpolatedStereo8>(app, cpu, f, s, count, source, target))
         return std::nullopt;
     lastFrame8Stereo(app, st, source, target + count * 2);
     const uint32_t position = st.fraction + st.step;
@@ -561,7 +571,7 @@ Result resampleDown16Mono(App* app, CPU& cpu, reg32 esp, reg32 s, uint32_t count
         setHalf(app, source, st.keptFrame);
     }
     const reg32 target = word(app, targetSlot);
-    if (--count != 0 && !interpolateBlock(app, cpu, f, s, kInterpolateMono16, count, source, target))
+    if (--count != 0 && !interpolateBlock<kInterpolateMono16, mix::interpolatedMono16>(app, cpu, f, s, count, source, target))
         return std::nullopt;
     lastFrame16Mono(app, st, source, target + count * 2);
     const uint32_t position = st.fraction + st.step;
@@ -592,7 +602,7 @@ Result resampleUp16Mono(App* app, CPU& cpu, reg32 esp, reg32 s, uint32_t count, 
     }
     const reg32 target = word(app, targetSlot);
     st.frame = 0;
-    if (--count != 0 && !interpolateBlock(app, cpu, f, s, kInterpolateMono16, count, source, target))
+    if (--count != 0 && !interpolateBlock<kInterpolateMono16, mix::interpolatedMono16>(app, cpu, f, s, count, source, target))
         return std::nullopt;
     lastFrame16Mono(app, st, source, target + count * 2);
     const uint32_t position = st.fraction + st.step;
@@ -650,7 +660,7 @@ Result resampleDown16Stereo(App* app, CPU& cpu, reg32 esp, reg32 s, uint32_t cou
     const reg32 f = esp - 4 * 4 - 4;
     source = putKeptFrames16Stereo(app, st, source);
     const reg32 target = word(app, targetSlot);
-    if (--count != 0 && !interpolateBlock(app, cpu, f, s, kInterpolateStereo16, count, source, target))
+    if (--count != 0 && !interpolateBlock<kInterpolateStereo16, mix::interpolatedStereo16>(app, cpu, f, s, count, source, target))
         return std::nullopt;
     lastFrame16Stereo(app, st, source, target + count * 4);
     const uint32_t position = st.fraction + st.step;
@@ -676,7 +686,7 @@ Result resampleUp16Stereo(App* app, CPU& cpu, reg32 esp, reg32 s, uint32_t count
     }
     const reg32 target = word(app, targetSlot);
     st.frame = 0;
-    if (--count != 0 && !interpolateBlock(app, cpu, f, s, kInterpolateStereo16, count, source, target))
+    if (--count != 0 && !interpolateBlock<kInterpolateStereo16, mix::interpolatedStereo16>(app, cpu, f, s, count, source, target))
         return std::nullopt;
     lastFrame16Stereo(app, st, source, target + count * 4);
     const uint32_t position = st.fraction + st.step;
@@ -782,7 +792,7 @@ Result playPcmStreamed(App* app, CPU& cpu, reg32 esp, reg32 s, int32_t wanted, r
         if (int32_t(st.frame) >= int32_t(st.chunkFrames))
         {
             reg32 more;
-            if (!callGame(app, cpu, f, kRefill(app), {s, s + 4}, {}, more))
+            if (!pointerGame(app, cpu, f, kRefill(app), {s, s + 4}, {}, more))
                 return std::nullopt;
             if (more != 0 || st.data == 0)
             {
@@ -816,7 +826,9 @@ Result playPcmFromFile(App* app, CPU& cpu, reg32 esp, reg32 s, int32_t wanted, r
     const reg32 f = esp - 4 * 4 - 0xc;
     if (st.taken != 0)
     {
-        if (!callGame(app, cpu, f, kPacketFramesPlayed, {st.stream, st.taken}))
+        cpu.esp = f;
+        if (!guest::direct<kPacketFramesPlayed, stream::packetFramesPlayedOf>(
+                app, cpu, f - 4, int32_t(st.stream), reg32(st.taken)))
             return std::nullopt;
         st.taken = 0;
     }
@@ -824,9 +836,12 @@ Result playPcmFromFile(App* app, CPU& cpu, reg32 esp, reg32 s, int32_t wanted, r
     {
         if (int32_t(st.frame) >= int32_t(st.chunkFrames))
         {
-            reg32 packet;
-            if (!callGame(app, cpu, f, kNextPacket, {st.stream, f}, {}, packet))
+            cpu.esp = f;
+            const Result next = guest::direct<kNextPacket, stream::packetTaken>(
+                    app, cpu, f - 4, int32_t(st.stream), reg32(f));
+            if (!next)
                 return std::nullopt;
+            const reg32 packet = reg32(*next);
             st.data = packet;
             if (packet == 0)
             {
@@ -855,8 +870,9 @@ Result playPcmFromFile(App* app, CPU& cpu, reg32 esp, reg32 s, int32_t wanted, r
  * the state's size. */
 Result setupPcmFile(App* app, CPU& cpu, reg32 esp, reg32 stream, int32_t frameBytes, reg32 decoderSlot, reg32 s)
 {
-    reg32 player;
-    if (!callGame(app, cpu, esp, kPacketPlayerOf, {stream}, {}, player))
+    cpu.esp = esp;
+    const reg32 player = reg32(guest::direct<kPacketPlayerOf, packetPlayerOfVoice>(app, cpu, stream));
+    if (cpu.terminate)
         return std::nullopt;
     auto& st = record<PcmFile>(app, s);
     st.data = 0;
@@ -924,8 +940,19 @@ int32_t copyKeptStereo(App* app, int32_t there, reg32 from, int32_t wanted, reg3
 // The frames a decoder keeps, as halves from `base`; `index` signed, as the code adds it.
 reg32 keptAt(reg32 base, int32_t index) { return base + reg32(index) * 2; }
 
-bool decodeXaMono(App* app, CPU& cpu, reg32 esp, reg32 s) { return callGame(app, cpu, esp, kXaMono, {}, {s}); }
-bool decodeXaStereo(App* app, CPU& cpu, reg32 esp, reg32 s) { return callGame(app, cpu, esp, kXaStereo, {}, {s}); }
+bool decodeXaMono(App* app, CPU& cpu, reg32 esp, reg32 s)
+{
+    cpu.esp = esp;
+    guest::direct<kXaMono, mix::xaMonoDecoded>(app, cpu, s);
+    return !cpu.terminate;
+}
+
+bool decodeXaStereo(App* app, CPU& cpu, reg32 esp, reg32 s)
+{
+    cpu.esp = esp;
+    guest::direct<kXaStereo, mix::xaStereoDecoded>(app, cpu, s);
+    return !cpu.terminate;
+}
 
 /* Mono XA played once: its state has the data at +0x10, the length at +0x14,
  * the frame at +0x18, the frames kept at +0x1c and the kept samples from
@@ -1164,7 +1191,7 @@ Result playXaMonoStreamed(App* app, CPU& cpu, reg32 esp, reg32 s, int32_t wanted
                     wanted -= int32_t(0x1c - overshoot);
                     setWord(app, s + 0xc, word(app, s + 0xc) - overshoot * 2);
                 }
-                if (!callGame(app, cpu, f, kRefill(app), {s + 0x10, s + 0x14}))
+                if (!pointerGame(app, cpu, f, kRefill(app), {s + 0x10, s + 0x14}))
                     return std::nullopt;
                 const reg32 data = word(app, s + 0x10);
                 if (data == 0)
@@ -1206,7 +1233,9 @@ Result playXaMonoPackets(App* app, CPU& cpu, reg32 esp, reg32 s, int32_t wanted,
     setWord(app, s + 0xc, target);
     if (word(app, s + 0x20) != 0)
     {
-        if (!callGame(app, cpu, f, kPacketFramesPlayed, {word(app, s + 0x1c), word(app, s + 0x20)}))
+        cpu.esp = f;
+        if (!guest::direct<kPacketFramesPlayed, stream::packetFramesPlayedOf>(
+                app, cpu, f - 4, int32_t(word(app, s + 0x1c)), reg32(word(app, s + 0x20))))
             return std::nullopt;
         setWord(app, s + 0x20, 0);
     }
@@ -1250,9 +1279,12 @@ Result playXaMonoPackets(App* app, CPU& cpu, reg32 esp, reg32 s, int32_t wanted,
             setWord(app, s + 0xc, out - overshoot * 2);
             setWord(app, s + 0x20, word(app, s + 0x20) + inside);
         }
-        reg32 packet;
-        if (!callGame(app, cpu, f, kNextPacket, {word(app, s + 0x1c), s + 0x14}, {}, packet))
+        cpu.esp = f;
+        const Result next = guest::direct<kNextPacket, stream::packetTaken>(
+                app, cpu, f - 4, int32_t(word(app, s + 0x1c)), reg32(s + 0x14));
+        if (!next)
             return std::nullopt;
+        const reg32 packet = reg32(*next);
         setWord(app, s + 0x10, packet);
         if (packet != 0)
         {
@@ -1530,7 +1562,7 @@ Result playXaStereoStreamed(App* app, CPU& cpu, reg32 esp, reg32 s, int32_t want
                 wanted -= int32_t(0x1c - overshoot);
                 setWord(app, s + 0x10, word(app, s + 0x10) - (overshoot << 2));
             }
-            if (!callGame(app, cpu, f, kRefill(app), {s + 0x14, s + 0x18}))
+            if (!pointerGame(app, cpu, f, kRefill(app), {s + 0x14, s + 0x18}))
                 return std::nullopt;
             const reg32 data = word(app, s + 0x14);
             if (data == 0)
@@ -1573,7 +1605,9 @@ Result playXaStereoPackets(App* app, CPU& cpu, reg32 esp, reg32 s, int32_t wante
     setWord(app, s + 0x10, target);
     if (word(app, s + 0x28) != 0)
     {
-        if (!callGame(app, cpu, f, kPacketFramesPlayed, {word(app, s + 0x24), word(app, s + 0x28)}))
+        cpu.esp = f;
+        if (!guest::direct<kPacketFramesPlayed, stream::packetFramesPlayedOf>(
+                app, cpu, f - 4, int32_t(word(app, s + 0x24)), reg32(word(app, s + 0x28))))
             return std::nullopt;
         setWord(app, s + 0x28, 0);
     }
@@ -1613,9 +1647,12 @@ Result playXaStereoPackets(App* app, CPU& cpu, reg32 esp, reg32 s, int32_t wante
             setWord(app, s + 0x10, out);
             setWord(app, s + 0x28, word(app, s + 0x28) + inside);
         }
-        reg32 packet;
-        if (!callGame(app, cpu, f, kNextPacket, {word(app, s + 0x24), s + 0x18}, {}, packet))
+        cpu.esp = f;
+        const Result next = guest::direct<kNextPacket, stream::packetTaken>(
+                app, cpu, f - 4, int32_t(word(app, s + 0x24)), reg32(s + 0x18));
+        if (!next)
             return std::nullopt;
+        const reg32 packet = reg32(*next);
         setWord(app, s + 0x14, packet);
         if (packet != 0)
         {
@@ -1831,7 +1868,7 @@ void synthesize(App* app, reg32 s, uint32_t first, int32_t blocks, bool round)
 Result startCoded(App* app, CPU& cpu, reg32 esp, reg32 data, reg32 s)
 {
     const reg32 f = esp - 2 * 4 - 8;
-    if (!callGame(app, cpu, f - 4, kMmxEnd(app)))
+    if (!pointerGame(app, cpu, f - 4, kMmxEnd(app)))
         return std::nullopt;
     setWord(app, s + 8, 8);
     setWord(app, s + 4, byteAt(app, data));
@@ -1865,7 +1902,7 @@ Result startCoded(App* app, CPU& cpu, reg32 esp, reg32 data, reg32 s)
 Result decodeCodedFrame(App* app, CPU& cpu, reg32 esp, reg32 s, uint32_t round)
 {
     const reg32 f = esp - 5 * 4 - 0x230;
-    if (!callGame(app, cpu, f, kMmxEnd(app)))
+    if (!pointerGame(app, cpu, f, kMmxEnd(app)))
         return std::nullopt;
     float deltas[12];
     const double quarter = doubleAt(app, 0x55211c);
@@ -2026,7 +2063,7 @@ Result playCodedStreamed(App* app, CPU& cpu, reg32 esp, reg32 s, int32_t wanted,
         if (signedWord(app, s + 0xd4c) >= signedWord(app, s + 0xd48))
         {
             reg32 more;
-            if (!callGame(app, cpu, f, kRefill(app), {s + 0xd44, s + 0xd48}, {}, more))
+            if (!pointerGame(app, cpu, f, kRefill(app), {s + 0xd44, s + 0xd48}, {}, more))
                 return std::nullopt;
             const reg32 chunk = word(app, s + 0xd44);
             if (more != 0 || chunk == 0)
@@ -2086,7 +2123,9 @@ Result playCodedPackets(App* app, CPU& cpu, reg32 esp, reg32 s, int32_t wanted, 
     const reg32 f = esp - 4 * 4 - 8;
     if (word(app, s + 0xd50) != 0)
     {
-        if (!callGame(app, cpu, f, kPacketFramesPlayed, {word(app, s + 0xd4c), word(app, s + 0xd50)}))
+        cpu.esp = f;
+        if (!guest::direct<kPacketFramesPlayed, stream::packetFramesPlayedOf>(
+                app, cpu, f - 4, int32_t(word(app, s + 0xd4c)), reg32(word(app, s + 0xd50))))
             return std::nullopt;
         setWord(app, s + 0xd50, 0);
     }
@@ -2094,9 +2133,12 @@ Result playCodedPackets(App* app, CPU& cpu, reg32 esp, reg32 s, int32_t wanted, 
     {
         if (int32_t(half(app, s + 0xd54)) >= signedWord(app, s + 0xd48))
         {
-            reg32 packet;
-            if (!callGame(app, cpu, f, kNextPacket, {word(app, s + 0xd4c), s + 0xd48}, {}, packet))
+            cpu.esp = f;
+            const Result next = guest::direct<kNextPacket, stream::packetTaken>(
+                    app, cpu, f - 4, int32_t(word(app, s + 0xd4c)), reg32(s + 0xd48));
+            if (!next)
                 return std::nullopt;
+            const reg32 packet = reg32(*next);
             setWord(app, s + 0xd44, packet);
             if (packet == 0)
             {
@@ -2141,8 +2183,9 @@ Result playCodedPackets(App* app, CPU& cpu, reg32 esp, reg32 s, int32_t wanted, 
 Result setupCodedPackets(App* app, CPU& cpu, reg32 esp, reg32 sound, reg32 s, reg32 decoderSlot,
                          reg32 resultSlot)
 {
-    reg32 player;
-    if (!callGame(app, cpu, esp, kPacketPlayerOf, {sound}, {}, player))
+    cpu.esp = esp;
+    const reg32 player = reg32(guest::direct<kPacketPlayerOf, packetPlayerOfVoice>(app, cpu, sound));
+    if (cpu.terminate)
         return std::nullopt;
     setWord(app, s + 0xd44, 0);
     setWord(app, s + 0xd48, 0);
@@ -2340,253 +2383,258 @@ void decodeXaMonoFloats(App* app, reg32 s)
 
 /* 0x51f580 (cdecl: state, the add's slot, the volume's slot): a mono
  * source's add and volume, MMX's own pair. */
-void volumeMonoPair(App* app, CPU& cpu)
+x86::reg32 volumeMonoPair(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     hookMonoVolume(app, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2));
-    e.back(cpu, e.eax);
+    return e.back(cpu, args, e.eax);
 }
 
 /* 0x51f5a4 (cdecl: state, left, right): a mono source's volume, left twice,
  * then right twice. */
-void volumeMonoLevels(App* app, CPU& cpu)
+x86::reg32 volumeMonoLevels(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     setMonoLevels(app, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2));
-    e.back(cpu, e.eax);
+    return e.back(cpu, args, e.eax);
 }
 
 /* 0x51f774: the same, the MMX set's other entry. */
-void volumeMonoLevelsMmx(App* app, CPU& cpu) { volumeMonoLevels(app, cpu); }
+x86::reg32 volumeMonoLevelsMmx(App* app, CPU& cpu, x86::Args& args) { return volumeMonoLevels(app, cpu, args); }
 
 /* 0x51f680 (cdecl: state, the add's slot, the volume's slot): a stereo
  * source's. */
-void volumeStereoPair(App* app, CPU& cpu)
+x86::reg32 volumeStereoPair(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     hookStereoVolume(app, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2));
-    e.back(cpu, e.eax);
+    return e.back(cpu, args, e.eax);
 }
 
 /* 0x51f6a4 (cdecl: state, left, right): a stereo source's volume, right's
  * level over left's word, twice. */
-void volumeStereoLevels(App* app, CPU& cpu)
+x86::reg32 volumeStereoLevels(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     setStereoLevels(app, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2));
-    e.back(cpu, e.eax);
+    return e.back(cpu, args, e.eax);
 }
 
 /* 0x51f874: the same, the MMX set's other entry. */
-void volumeStereoLevelsMmx(App* app, CPU& cpu) { volumeStereoLevels(app, cpu); }
+x86::reg32 volumeStereoLevelsMmx(App* app, CPU& cpu, x86::Args& args) { return volumeStereoLevels(app, cpu, args); }
 
 // ---------------------------------------------------------------- pan
 
 /* 0x51f520 (eax the angle, edx and ebx where the two sides go): a pan's two
  * sides from the angle, its sine and cosine moved by the rest of the table's
  * step.  eax the second side. */
-void panSides(App* app, CPU& cpu)
+x86::reg32 panSides(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     int32_t first, second;
     if (!panOffsets(app, cpu, e.esp, e.eax, first, second))
-        return;
+        return args.eax;
     setWord(app, e.edx, uint32_t(first));
     setWord(app, e.ebx, uint32_t(second));
-    e.back(cpu, uint32_t(second));
+    return e.back(cpu, args, uint32_t(second));
+}
+
+Result bufferPositioned(App* app, CPU& cpu, reg32 esp, uint32_t angle, uint32_t elevation, reg32 to)
+{
+    return voiceBufferPosition(app, cpu, esp, angle, elevation, to);
 }
 
 /* 0x4ffce0 (eacsnd's buffer position; eax the angle, edx the elevation, ebx
  * where the three floats go): a voice's place for DirectSound 3D. */
-void bufferPosition(App* app, CPU& cpu)
+x86::reg32 bufferPosition(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, voiceBufferPosition(app, cpu, e.esp, e.eax, e.edx, e.ebx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, voiceBufferPosition(app, cpu, e.esp, e.eax, e.edx, e.ebx));
 }
 
 // ---------------------------------------------------------- resamplers
 
 /* 0x51fc38 (cdecl: state, the step setter's slot, the frames needed's, the
  * resampler's): an 8-bit mono source's resampler, its step setter given. */
-void resample8MonoSetup(App* app, CPU& cpu)
+x86::reg32 resample8MonoSetup(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     setupResampler8Mono(app, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2), e.arg(app, 3));
-    e.back(cpu, 0);
+    return e.back(cpu, args, 0);
 }
 
 /* 0x52002c: the same for 8-bit stereo. */
-void resample8StereoSetup(App* app, CPU& cpu)
+x86::reg32 resample8StereoSetup(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     setupResampler8Stereo(app, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2), e.arg(app, 3));
-    e.back(cpu, 0);
+    return e.back(cpu, args, 0);
 }
 
 /* 0x51fb94 (cdecl: state, step): an 8-bit mono resampler's step set, and by
  * it its frames needed's and its resampler: down, the same or up. */
-void resample8MonoStep(App* app, CPU& cpu)
+x86::reg32 resample8MonoStep(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     setResamplerStep(app, e.arg(app, 0), e.arg(app, 1), kMono8Steps);
-    e.back(cpu, 0);
+    return e.back(cpu, args, 0);
 }
 
 /* 0x51ff88: the same for 8-bit stereo. */
-void resample8StereoStep(App* app, CPU& cpu)
+x86::reg32 resample8StereoStep(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     setResamplerStep(app, e.arg(app, 0), e.arg(app, 1), kStereo8Steps);
-    e.back(cpu, 0);
+    return e.back(cpu, args, 0);
 }
 
 /* The frames needed (cdecl: state, frames): down, the same, up -- the source
  * frames `frames` take at a step over 1.0, 1.0 and under.  The 16-bit mono
  * one has the 8-bit stereo one's state. */
-void resample8MonoNeededDown(App* app, CPU& cpu)  // 0x51f930
+x86::reg32 resample8MonoNeededDown(App* app, CPU& cpu, x86::Args& args) // 0x51f930
 {
-    const Entry e(cpu);
-    e.back(cpu, framesNeededDown(app, e.arg(app, 0), e.arg(app, 1), kMono8Flags));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, framesNeededDown(app, e.arg(app, 0), e.arg(app, 1), kMono8Flags));
 }
-void resample8MonoNeededUp(App* app, CPU& cpu)  // 0x51f980
+x86::reg32 resample8MonoNeededUp(App* app, CPU& cpu, x86::Args& args) // 0x51f980
 {
-    const Entry e(cpu);
-    e.back(cpu, framesNeededUp(app, e.arg(app, 0), e.arg(app, 1), kMono8Flags));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, framesNeededUp(app, e.arg(app, 0), e.arg(app, 1), kMono8Flags));
 }
-void resample8StereoNeededDown(App* app, CPU& cpu)  // 0x51fc80
+x86::reg32 resample8StereoNeededDown(App* app, CPU& cpu, x86::Args& args) // 0x51fc80
 {
-    const Entry e(cpu);
-    e.back(cpu, framesNeededDown(app, e.arg(app, 0), e.arg(app, 1), kStereo8Flags));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, framesNeededDown(app, e.arg(app, 0), e.arg(app, 1), kStereo8Flags));
 }
-void resample8StereoNeededUp(App* app, CPU& cpu)  // 0x51fcd0
+x86::reg32 resample8StereoNeededUp(App* app, CPU& cpu, x86::Args& args) // 0x51fcd0
 {
-    const Entry e(cpu);
-    e.back(cpu, framesNeededUp(app, e.arg(app, 0), e.arg(app, 1), kStereo8Flags));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, framesNeededUp(app, e.arg(app, 0), e.arg(app, 1), kStereo8Flags));
 }
-void resample16MonoNeededDown(App* app, CPU& cpu)  // 0x520070
+x86::reg32 resample16MonoNeededDown(App* app, CPU& cpu, x86::Args& args) // 0x520070
 {
-    resample8StereoNeededDown(app, cpu);
+    return resample8StereoNeededDown(app, cpu, args);
 }
-void resample16MonoNeededUp(App* app, CPU& cpu)  // 0x5200c0
+x86::reg32 resample16MonoNeededUp(App* app, CPU& cpu, x86::Args& args) // 0x5200c0
 {
-    resample8StereoNeededUp(app, cpu);
+    return resample8StereoNeededUp(app, cpu, args);
 }
-void resample16StereoNeededDown(App* app, CPU& cpu)  // 0x5203f0
+x86::reg32 resample16StereoNeededDown(App* app, CPU& cpu, x86::Args& args) // 0x5203f0
 {
-    const Entry e(cpu);
-    e.back(cpu, framesNeededDown(app, e.arg(app, 0), e.arg(app, 1), kStereo16Flags));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, framesNeededDown(app, e.arg(app, 0), e.arg(app, 1), kStereo16Flags));
 }
-void resample16StereoNeededUp(App* app, CPU& cpu)  // 0x520440
+x86::reg32 resample16StereoNeededUp(App* app, CPU& cpu, x86::Args& args) // 0x520440
 {
-    const Entry e(cpu);
-    e.back(cpu, framesNeededUp(app, e.arg(app, 0), e.arg(app, 1), kStereo16Flags));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, framesNeededUp(app, e.arg(app, 0), e.arg(app, 1), kStereo16Flags));
 }
 
 /* At the step 1.0 as many (cdecl: state, frames). */
-void resample8MonoNeededSame(App* app, CPU& cpu)  // 0x51f978
+x86::reg32 resample8MonoNeededSame(App* app, CPU& cpu, x86::Args& args) // 0x51f978
 {
-    const Entry e(cpu);
-    e.back(cpu, e.arg(app, 1));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, e.arg(app, 1));
 }
-void resample8StereoNeededSame(App* app, CPU& cpu) { resample8MonoNeededSame(app, cpu); }    // 0x51fcc8
-void resample16MonoNeededSame(App* app, CPU& cpu) { resample8MonoNeededSame(app, cpu); }     // 0x5200b8
-void resample16StereoNeededSame(App* app, CPU& cpu) { resample8MonoNeededSame(app, cpu); }   // 0x520438
+x86::reg32 resample8StereoNeededSame(App* app, CPU& cpu, x86::Args& args) { return resample8MonoNeededSame(app, cpu, args); }    // 0x51fcc8
+x86::reg32 resample16MonoNeededSame(App* app, CPU& cpu, x86::Args& args) { return resample8MonoNeededSame(app, cpu, args); }     // 0x5200b8
+x86::reg32 resample16StereoNeededSame(App* app, CPU& cpu, x86::Args& args) { return resample8MonoNeededSame(app, cpu, args); }   // 0x520438
 
 /* At 1.0 the source itself is the target (cdecl: state, count, source, the
  * target's slot). */
-void resample8MonoSame(App* app, CPU& cpu)  // 0x51fa80
+x86::reg32 resample8MonoSame(App* app, CPU& cpu, x86::Args& args) // 0x51fa80
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     useSourceAsBlock(app, e.arg(app, 2), e.arg(app, 3));
-    e.back(cpu, e.arg(app, 2));
+    return e.back(cpu, args, e.arg(app, 2));
 }
-void resample8StereoSame(App* app, CPU& cpu) { resample8MonoSame(app, cpu); }    // 0x51fe24
-void resample16MonoSame(App* app, CPU& cpu) { resample8MonoSame(app, cpu); }     // 0x5201d8
-void resample16StereoSame(App* app, CPU& cpu) { resample8MonoSame(app, cpu); }   // 0x5205b0
+x86::reg32 resample8StereoSame(App* app, CPU& cpu, x86::Args& args) { return resample8MonoSame(app, cpu, args); }    // 0x51fe24
+x86::reg32 resample16MonoSame(App* app, CPU& cpu, x86::Args& args) { return resample8MonoSame(app, cpu, args); }     // 0x5201d8
+x86::reg32 resample16StereoSame(App* app, CPU& cpu, x86::Args& args) { return resample8MonoSame(app, cpu, args); }   // 0x5205b0
 
 /* A block resampled, down (a step over 1.0) and up (cdecl: state, count,
  * source, the target's slot); the block that is left where the slot says. */
-void resample8MonoDown(App* app, CPU& cpu)  // 0x51f9ac
+x86::reg32 resample8MonoDown(App* app, CPU& cpu, x86::Args& args) // 0x51f9ac
 {
-    const Entry e(cpu);
-    e.finish(cpu, resampleDown8Mono(app, cpu, e.esp, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2), e.arg(app, 3)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, resampleDown8Mono(app, cpu, e.esp, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2), e.arg(app, 3)));
 }
-void resample8MonoUp(App* app, CPU& cpu)  // 0x51fa8c
+x86::reg32 resample8MonoUp(App* app, CPU& cpu, x86::Args& args) // 0x51fa8c
 {
-    const Entry e(cpu);
-    e.finish(cpu, resampleUp8Mono(app, cpu, e.esp, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2), e.arg(app, 3)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, resampleUp8Mono(app, cpu, e.esp, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2), e.arg(app, 3)));
 }
-void resample8StereoDown(App* app, CPU& cpu)  // 0x51fcfc
+x86::reg32 resample8StereoDown(App* app, CPU& cpu, x86::Args& args) // 0x51fcfc
 {
-    const Entry e(cpu);
-    e.finish(cpu, resampleDown8Stereo(app, cpu, e.esp, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2), e.arg(app, 3)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, resampleDown8Stereo(app, cpu, e.esp, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2), e.arg(app, 3)));
 }
-void resample8StereoUp(App* app, CPU& cpu)  // 0x51fe30
+x86::reg32 resample8StereoUp(App* app, CPU& cpu, x86::Args& args) // 0x51fe30
 {
-    const Entry e(cpu);
-    e.finish(cpu, resampleUp8Stereo(app, cpu, e.esp, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2), e.arg(app, 3)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, resampleUp8Stereo(app, cpu, e.esp, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2), e.arg(app, 3)));
 }
-void resample16MonoDown(App* app, CPU& cpu)  // 0x5200ec
+x86::reg32 resample16MonoDown(App* app, CPU& cpu, x86::Args& args) // 0x5200ec
 {
-    const Entry e(cpu);
-    e.finish(cpu, resampleDown16Mono(app, cpu, e.esp, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2), e.arg(app, 3)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, resampleDown16Mono(app, cpu, e.esp, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2), e.arg(app, 3)));
 }
-void resample16MonoUp(App* app, CPU& cpu)  // 0x5201e4
+x86::reg32 resample16MonoUp(App* app, CPU& cpu, x86::Args& args) // 0x5201e4
 {
-    const Entry e(cpu);
-    e.finish(cpu, resampleUp16Mono(app, cpu, e.esp, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2), e.arg(app, 3)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, resampleUp16Mono(app, cpu, e.esp, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2), e.arg(app, 3)));
 }
-void resample16StereoDown(App* app, CPU& cpu)  // 0x52046c
+x86::reg32 resample16StereoDown(App* app, CPU& cpu, x86::Args& args) // 0x52046c
 {
-    const Entry e(cpu);
-    e.finish(cpu, resampleDown16Stereo(app, cpu, e.esp, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2), e.arg(app, 3)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, resampleDown16Stereo(app, cpu, e.esp, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2), e.arg(app, 3)));
 }
-void resample16StereoUp(App* app, CPU& cpu)  // 0x5205bc
+x86::reg32 resample16StereoUp(App* app, CPU& cpu, x86::Args& args) // 0x5205bc
 {
-    const Entry e(cpu);
-    e.finish(cpu, resampleUp16Stereo(app, cpu, e.esp, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2), e.arg(app, 3)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, resampleUp16Stereo(app, cpu, e.esp, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2), e.arg(app, 3)));
 }
 
 // ---------------------------------------------------------------- PCM
 
 /* 0x52c8f0 (eax the state): a PCM sound's frames played so far. */
-void pcmPlayed(App* app, CPU& cpu)
+x86::reg32 pcmPlayed(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, word(app, e.eax + 4));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, word(app, e.eax + 4));
 }
 
 /* The decoders (eax the state, edx the frames wanted, ebx where they go; the
  * frames wanted given: 1 or the frames taken; -1 at the end or with no
  * data), the PCM ones: 0x52c8f4 played once, 0x52c9d0 looped, 0x52ca80
  * streamed from memory, 0x52cba0 streamed from a file. */
-void pcmOnceDecode(App* app, CPU& cpu)
+x86::reg32 pcmOnceDecode(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, playPcmOnce(app, cpu, e.esp, e.eax, e.edx, e.ebx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, playPcmOnce(app, cpu, e.esp, e.eax, e.edx, e.ebx));
 }
-void pcmLoopedDecode(App* app, CPU& cpu)
+x86::reg32 pcmLoopedDecode(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, playPcmLooped(app, e.eax, int32_t(e.edx), e.ebx));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, playPcmLooped(app, e.eax, int32_t(e.edx), e.ebx));
 }
-void pcmStreamedDecode(App* app, CPU& cpu)
+x86::reg32 pcmStreamedDecode(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, playPcmStreamed(app, cpu, e.esp, e.eax, int32_t(e.edx), e.ebx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, playPcmStreamed(app, cpu, e.esp, e.eax, int32_t(e.edx), e.ebx));
 }
-void pcmFileDecode(App* app, CPU& cpu)
+x86::reg32 pcmFileDecode(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, playPcmFromFile(app, cpu, e.esp, e.eax, int32_t(e.edx), e.ebx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, playPcmFromFile(app, cpu, e.esp, e.eax, int32_t(e.edx), e.ebx));
 }
 
 /* 0x52ccb8 (eax the stream, ebx the frame's bytes, ecx the decoder's slot,
  * edx the state): PCM streamed from a file set up.  0x14, the state's size. */
-void pcmFileSetup(App* app, CPU& cpu)
+x86::reg32 pcmFileSetup(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, setupPcmFile(app, cpu, e.esp, e.eax, int32_t(e.ebx), e.ecx, e.edx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, setupPcmFile(app, cpu, e.esp, e.eax, int32_t(e.ebx), e.ecx, e.edx));
 }
 
 namespace
@@ -2595,73 +2643,73 @@ namespace
 /* 0x527520 and its kin (stdcall, 4 words): PCM streamed from a file, `bytes`
  * a frame -- [esp+0xc] the decoder's slot, [esp+0x10] the second function's,
  * none. */
-void pcmFileEntry(App* app, CPU& cpu, int32_t bytes)
+x86::reg32 pcmFileEntry(App* app, CPU& cpu, x86::Args& args, int32_t bytes)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     setWord(app, e.arg(app, 3), 0);
     // Called from here as the code does: its esp one return address down.
-    e.finish(cpu, setupPcmFile(app, cpu, e.esp - 4, e.eax, bytes, e.arg(app, 2), e.edx), 0x10);
+    return e.finish(cpu, args, setupPcmFile(app, cpu, e.esp - 4, e.eax, bytes, e.arg(app, 2), e.edx), 0x10);
 }
 
 }  // namespace
 
-void pcmFileMono(App* app, CPU& cpu) { pcmFileEntry(app, cpu, 1); }
-void pcmFileStereo(App* app, CPU& cpu) { pcmFileEntry(app, cpu, 2); }
-void pcmFileStereo2(App* app, CPU& cpu) { pcmFileEntry(app, cpu, 2); }
-void pcmFileQuad(App* app, CPU& cpu) { pcmFileEntry(app, cpu, 4); }
+x86::reg32 pcmFileMono(App* app, CPU& cpu, x86::Args& args) { return pcmFileEntry(app, cpu, args, 1); }
+x86::reg32 pcmFileStereo(App* app, CPU& cpu, x86::Args& args) { return pcmFileEntry(app, cpu, args, 2); }
+x86::reg32 pcmFileStereo2(App* app, CPU& cpu, x86::Args& args) { return pcmFileEntry(app, cpu, args, 2); }
+x86::reg32 pcmFileQuad(App* app, CPU& cpu, x86::Args& args) { return pcmFileEntry(app, cpu, args, 4); }
 
 // ------------------------------------------------------------ XA, mono
 
 /* 0x528f70 (eax the state): an XA sound's frames played so far. */
-void xaPlayed(App* app, CPU& cpu)
+x86::reg32 xaPlayed(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, word(app, e.eax + 0x18));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, word(app, e.eax + 0x18));
 }
 
 /* 0x528f74 (eax the state, edx the frames wanted, ebx where): XA played once. */
-void xaOnceDecode(App* app, CPU& cpu)
+x86::reg32 xaOnceDecode(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, playXaMonoOnce(app, cpu, e.esp, e.eax, e.edx, e.ebx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, playXaMonoOnce(app, cpu, e.esp, e.eax, e.edx, e.ebx));
 }
 
 /* 0x529140 (eax how many there are, edx where they are, ebx how many are
  * wanted, ecx the slot of where they go): the frames an XA loop kept, as
  * many as are wanted copied out and the rest moved to the front.  How many
  * were copied. */
-void xaKeptCopy(App* app, CPU& cpu)
+x86::reg32 xaKeptCopy(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, uint32_t(copyKeptMono(app, int32_t(e.eax), e.edx, int32_t(e.ebx), e.ecx)));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, uint32_t(copyKeptMono(app, int32_t(e.eax), e.edx, int32_t(e.ebx), e.ecx)));
 }
 
 /* 0x5291a8: XA looped. */
-void xaLoopDecode(App* app, CPU& cpu)
+x86::reg32 xaLoopDecode(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, playXaMonoLooped(app, cpu, e.esp, e.eax, int32_t(e.edx), e.ebx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, playXaMonoLooped(app, cpu, e.esp, e.eax, int32_t(e.edx), e.ebx));
 }
 
 /* 0x529384: XA with an intro before its loop. */
-void xaIntroDecode(App* app, CPU& cpu)
+x86::reg32 xaIntroDecode(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, playXaMonoIntro(app, cpu, e.esp, e.eax, int32_t(e.edx), e.ebx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, playXaMonoIntro(app, cpu, e.esp, e.eax, int32_t(e.edx), e.ebx));
 }
 
 /* 0x529590: XA streamed from memory. */
-void xaStreamDecode(App* app, CPU& cpu)
+x86::reg32 xaStreamDecode(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, playXaMonoStreamed(app, cpu, e.esp, e.eax, int32_t(e.edx), e.ebx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, playXaMonoStreamed(app, cpu, e.esp, e.eax, int32_t(e.edx), e.ebx));
 }
 
 /* 0x529778 (stdcall, 4 words; edx the state, ecx the chunk's length): XA
  * streamed set up, its first chunk to come.  0x54, the state's size. */
-void xaStreamSetup(App* app, CPU& cpu)
+x86::reg32 xaStreamSetup(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     const reg32 s = e.edx;
     setWord(app, s + 0x10, 1);
     setWord(app, s + 0x18, 0);
@@ -2671,25 +2719,25 @@ void xaStreamSetup(App* app, CPU& cpu)
     setWord(app, s + 0x14, e.ecx);
     setWord(app, e.arg(app, 2), 0x529590);
     setWord(app, e.arg(app, 3), 0);
-    e.back(cpu, 0x54, 0x10);
+    return e.back(cpu, args, 0x54, 0x10);
 }
 
 /* 0x5297c0: XA from a packet player. */
-void xaPacketDecode(App* app, CPU& cpu)
+x86::reg32 xaPacketDecode(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, playXaMonoPackets(app, cpu, e.esp, e.eax, int32_t(e.edx), e.ebx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, playXaMonoPackets(app, cpu, e.esp, e.eax, int32_t(e.edx), e.ebx));
 }
 
 /* 0x5299f4 (stdcall, 4 words; eax the sound, ecx the packet's length, edx the
  * state): XA from a packet player set up, its player by 0x52d160.  0x5c, the
  * state's size. */
-void xaPacketSetup(App* app, CPU& cpu)
+x86::reg32 xaPacketSetup(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    reg32 player;
-    if (!callGame(app, cpu, e.esp, kPacketPlayerOf, {e.eax}, {}, player))
-        return;
+    const Entry e(cpu, args);
+    const reg32 player = reg32(guest::direct<kPacketPlayerOf, packetPlayerOfVoice>(app, cpu, e.eax));
+    if (cpu.terminate)
+        return args.eax;
     const reg32 s = e.edx;
     setWord(app, s + 0x10, 0);
     setWord(app, s + 0x18, 0);
@@ -2701,30 +2749,30 @@ void xaPacketSetup(App* app, CPU& cpu)
     setWord(app, s + 0x14, e.ecx);
     setWord(app, e.arg(app, 2), 0x5297c0);
     setWord(app, e.arg(app, 3), 0);
-    e.back(cpu, 0x5c, 0x10);
+    return e.back(cpu, args, 0x5c, 0x10);
 }
 
 // ---------------------------------------------------------- XA, stereo
 
 /* 0x529a50 (eax the state): a stereo XA sound's frames played so far. */
-void xaStereoPlayed(App* app, CPU& cpu)
+x86::reg32 xaStereoPlayed(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, word(app, e.eax + 0x1c));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, word(app, e.eax + 0x1c));
 }
 
 /* 0x529a54: stereo XA played once. */
-void xaStereoOnceDecode(App* app, CPU& cpu)
+x86::reg32 xaStereoOnceDecode(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, playXaStereoOnce(app, cpu, e.esp, e.eax, int32_t(e.edx), e.ebx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, playXaStereoOnce(app, cpu, e.esp, e.eax, int32_t(e.edx), e.ebx));
 }
 
 /* 0x529c2c (stdcall, 4 words; edx the state, ebx the data, ecx the length):
  * stereo XA played once set up.  0x90, the state's size. */
-void xaStereoOnceSetup(App* app, CPU& cpu)
+x86::reg32 xaStereoOnceSetup(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     const reg32 s = e.edx;
     setWord(app, s + 0x1c, 0);
     setHalf(app, s + 0x20, 0);
@@ -2736,36 +2784,36 @@ void xaStereoOnceSetup(App* app, CPU& cpu)
     setWord(app, s + 0x18, e.ecx);
     setWord(app, e.arg(app, 2), 0x529a54);
     setWord(app, e.arg(app, 3), 0x529a50);
-    e.back(cpu, 0x90, 0x10);
+    return e.back(cpu, args, 0x90, 0x10);
 }
 
 /* 0x529c80: the kept copy for stereo -- frames of two samples. */
-void xaStereoKeptCopy(App* app, CPU& cpu)
+x86::reg32 xaStereoKeptCopy(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, uint32_t(copyKeptStereo(app, int32_t(e.eax), e.edx, int32_t(e.ebx), e.ecx)));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, uint32_t(copyKeptStereo(app, int32_t(e.eax), e.edx, int32_t(e.ebx), e.ecx)));
 }
 
 /* 0x529cfc: stereo XA looped. */
-void xaStereoLoopDecode(App* app, CPU& cpu)
+x86::reg32 xaStereoLoopDecode(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, playXaStereoLooped(app, cpu, e.esp, e.eax, int32_t(e.edx), e.ebx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, playXaStereoLooped(app, cpu, e.esp, e.eax, int32_t(e.edx), e.ebx));
 }
 
 /* 0x529f24: stereo XA with an intro. */
-void xaStereoIntroDecode(App* app, CPU& cpu)
+x86::reg32 xaStereoIntroDecode(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, playXaStereoIntro(app, cpu, e.esp, e.eax, int32_t(e.edx), e.ebx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, playXaStereoIntro(app, cpu, e.esp, e.eax, int32_t(e.edx), e.ebx));
 }
 
 /* 0x52a144 (stdcall, 4 words; edx the state, ebx the data, ecx its bytes; the
  * loop's start, the length, the decoder's slot, the second function's):
  * stereo XA with an intro set up.  0x114, the state's size. */
-void xaStereoIntroSetup(App* app, CPU& cpu)
+x86::reg32 xaStereoIntroSetup(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     const reg32 s = e.edx;
     setWord(app, s + 0x1c, 0);
     setHalf(app, s + 0x28, 0);
@@ -2780,207 +2828,234 @@ void xaStereoIntroSetup(App* app, CPU& cpu)
     setWord(app, s + 0x110, e.arg(app, 2));
     setWord(app, e.arg(app, 2), 0x529f24);
     setWord(app, e.arg(app, 3), 0);
-    e.back(cpu, 0x114, 0x10);
+    return e.back(cpu, args, 0x114, 0x10);
 }
 
 /* 0x52a1a0: stereo XA streamed from memory. */
-void xaStereoStreamDecode(App* app, CPU& cpu)
+x86::reg32 xaStereoStreamDecode(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, playXaStereoStreamed(app, cpu, e.esp, e.eax, int32_t(e.edx), e.ebx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, playXaStereoStreamed(app, cpu, e.esp, e.eax, int32_t(e.edx), e.ebx));
 }
 
 /* 0x52a3a0: stereo XA from a packet player. */
-void xaStereoPacketDecode(App* app, CPU& cpu)
+x86::reg32 xaStereoPacketDecode(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, playXaStereoPackets(app, cpu, e.esp, e.eax, int32_t(e.edx), e.ebx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, playXaStereoPackets(app, cpu, e.esp, e.eax, int32_t(e.edx), e.ebx));
 }
 
 // ------------------------------------------------------- frame-coded
 
 /* 0x52a610 (eax the state): a frame-coded sound's frames played so far. */
-void framesPlayedCoded(App* app, CPU& cpu)
+x86::reg32 framesPlayedCoded(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, word(app, e.eax + 0xd4c));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, word(app, e.eax + 0xd4c));
 }
 
 /* 0x52a618 (eax the decoded samples as dwords, edx where, ebx how many):
  * each to 16 bits, clipped by its low 17 bits.  eax the last as written. */
-void codedToWords(App* app, CPU& cpu)
+x86::reg32 codedToWords(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, clipToWords(app, e.eax, e.edx, int32_t(e.ebx)));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, clipToWords(app, e.eax, e.edx, int32_t(e.ebx)));
 }
 
 /* 0x52a668 (eax the state, edx frames wanted, ebx where): a frame-coded
  * sound. */
-void codedDecode(App* app, CPU& cpu)
+x86::reg32 codedDecode(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, playCoded(app, cpu, e.esp, e.eax, int32_t(e.edx), e.ebx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, playCoded(app, cpu, e.esp, e.eax, int32_t(e.edx), e.ebx));
 }
 
 /* 0x52a790 (stdcall, 4 words; ebx the data, ecx the length, edx the state):
  * a frame-coded sound set up, its decoder by 0x52de94.  0xd50, the state's
  * size. */
-void codedSetup(App* app, CPU& cpu)
+x86::reg32 codedSetup(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, setupCoded(app, cpu, e.esp, e.ebx, e.ecx, e.edx, e.arg(app, 2), e.arg(app, 3)), 0x10);
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, setupCoded(app, cpu, e.esp, e.ebx, e.ecx, e.edx, e.arg(app, 2), e.arg(app, 3)), 0x10);
 }
 
 /* 0x52a7e0: a frame-coded sound streamed. */
-void codedStreamDecode(App* app, CPU& cpu)
+x86::reg32 codedStreamDecode(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, playCodedStreamed(app, cpu, e.esp, e.eax, int32_t(e.edx), e.ebx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, playCodedStreamed(app, cpu, e.esp, e.eax, int32_t(e.edx), e.ebx));
 }
 
 /* 0x52a970 (stdcall, 4 words; edx the state): a frame-coded sound streamed
  * set up, its first chunk to come.  0xd54, the state's size. */
-void codedStreamSetup(App* app, CPU& cpu)
+x86::reg32 codedStreamSetup(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     setupCodedStreamed(app, e.edx, e.arg(app, 2), e.arg(app, 3));
-    e.back(cpu, 0xd54, 0x10);
+    return e.back(cpu, args, 0xd54, 0x10);
 }
 
 /* 0x52a9c0: a frame-coded sound from a packet player. */
-void codedPacketDecode(App* app, CPU& cpu)
+x86::reg32 codedPacketDecode(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, playCodedPackets(app, cpu, e.esp, e.eax, int32_t(e.edx), e.ebx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, playCodedPackets(app, cpu, e.esp, e.eax, int32_t(e.edx), e.ebx));
 }
 
 /* 0x52ab70 (stdcall, 4 words; eax the sound, edx the state): a frame-coded
  * sound from a packet player set up, its player by 0x52d160.  0xd58, the
  * state's size. */
-void codedPacketSetup(App* app, CPU& cpu)
+x86::reg32 codedPacketSetup(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, setupCodedPackets(app, cpu, e.esp, e.eax, e.edx, e.arg(app, 2), e.arg(app, 3)), 0x10);
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, setupCodedPackets(app, cpu, e.esp, e.eax, e.edx, e.arg(app, 2), e.arg(app, 3)), 0x10);
 }
 
 /* 0x52d370 (eax the bit reader, edx how many): the next bits. */
-void codedBits(App* app, CPU& cpu)
+x86::reg32 codedBits(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, readCodedBits(app, e.eax, e.edx));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, readCodedBits(app, e.eax, e.edx));
 }
 
 /* 0x52d3cc (eax the bit reader, edx how many): bits passed over. */
-void codedSkip(App* app, CPU& cpu)
+x86::reg32 codedSkip(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     skipCodedBits(app, e.eax, e.edx);
-    e.back(cpu, e.eax);
+    return e.back(cpu, args, e.eax);
 }
 
 /* 0x52d428 (eax the bit reader, edx the kind, ebx where, ecx the step): a
  * subframe's pulses, every ecx-th of 0x6c floats. */
-void codedPulses(App* app, CPU& cpu)
+x86::reg32 codedPulses(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     const reg32 out = e.ebx;
     readPulses(app, e.eax, e.edx, int32_t(e.ecx), [&](int32_t i, uint32_t bits) { setWord(app, out + 4 * reg32(i), bits); });
-    e.back(cpu, e.eax);
+    return e.back(cpu, args, e.eax);
 }
 
 /* 0x52d5cc (eax the samples): the odd samples between the even ones, 0x36 of
  * them.  eax past them. */
-void codedInterpolate(App* app, CPU& cpu)
+x86::reg32 codedInterpolate(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     // The samples from 5 before the first to 5 after the last it reads.
     float buffer[5 + 107 + 5];
     std::memcpy(buffer, &app->getMemory<uint8_t>(e.eax - 5 * 4), sizeof buffer);
     interpolateExcitation(app, buffer + 5);
     for (reg32 i = 0; i < 0x1b0 / 8; ++i)
         store<float>(app, e.eax + 8 * i, buffer[5 + 2 * i]);
-    e.back(cpu, e.eax + 0x1b0);
+    return e.back(cpu, args, e.eax + 0x1b0);
 }
 
 /* 0x52d618 (eax the 12 reflection coefficients, edx where): the synthesis
  * filter's 12 coefficients from them. */
-void codedFilter(App* app, CPU& cpu)
+x86::reg32 codedFilter(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     float out[12];
     lattice(app, e.eax, out);
     for (reg32 i = 0; i < 12; ++i)
         store<float>(app, e.edx + 4 * i, out[i]);
-    e.back(cpu, bitsOf(out[11]));
+    return e.back(cpu, args, bitsOf(out[11]));
 }
 
 /* 0x52d6d8 (eax the state, edx the first sample, ebx how many blocks of 12,
  * ecx whether to round): the synthesis filter.  eax past the last block's
  * start. */
-void codedSynthesis(App* app, CPU& cpu)
+x86::reg32 codedSynthesis(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     synthesize(app, e.eax, e.edx, int32_t(e.ebx), e.ecx != 0);
-    e.back(cpu, e.edx * 4 + e.eax + 0x684 + (int32_t(e.ebx) > 0 ? e.ebx * 0x30 : 0));
+    return e.back(cpu, args, e.edx * 4 + e.eax + 0x684 + (int32_t(e.ebx) > 0 ? e.ebx * 0x30 : 0));
 }
 
 /* 0x52de94 (eax the data, edx the state): a frame-coded sound's decoder set
  * up. */
-void codedStart(App* app, CPU& cpu)
+x86::reg32 codedStart(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, startCoded(app, cpu, e.esp, e.eax, e.edx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, startCoded(app, cpu, e.esp, e.eax, e.edx));
 }
 
 /* 0x52df80 (eax the state, edx whether to round): one frame of 432 samples. */
-void codedFrame(App* app, CPU& cpu)
+x86::reg32 codedFrame(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, decodeCodedFrame(app, cpu, e.esp, e.eax, e.edx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, decodeCodedFrame(app, cpu, e.esp, e.eax, e.edx));
 }
 
 // ------------------------------------------------------- conversions
 
+/* The conversions' cores (port_snd_mixer.h): the game's code calls them with the registers kept, eax as it was
+ * (nothing reads what they leave in it, only calls by address). */
+void samples16Converted(App* app, int32_t count, reg32 from, reg32 to)
+{
+    shortsToFloats(app, count, from, to);
+}
+
+void samples8Converted(App* app, int32_t count, reg32 from, reg32 to)
+{
+    bytesToFloats(app, count, from, to);
+}
+
+reg32 floatsPacked(App* app, uint32_t frames, reg32 from, reg32 to)
+{
+    return floatsToWords(app, frames, from, to);
+}
+
+void xaStereoConverted(App* app, reg32 state)
+{
+    decodeXaStereoFloats(app, state);
+}
+
+void xaMonoConverted(App* app, reg32 state)
+{
+    decodeXaMonoFloats(app, state);
+}
+
 /* 0x5008a0 (cdecl: count, 16-bit samples, where): each to a float.  Every
  * register kept (the code pushes them all). */
-void convert16(App* app, CPU& cpu)
+x86::reg32 convert16(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     shortsToFloats(app, int32_t(e.arg(app, 0)), e.arg(app, 1), e.arg(app, 2));
-    e.back(cpu, e.eax);
+    return e.back(cpu, args, e.eax);
 }
 
 /* 0x500910 (cdecl: frames, stereo floats, where): each frame to a 16-bit
  * sample.  eax where the loop stopped. */
-void convertToWords(App* app, CPU& cpu)
+x86::reg32 convertToWords(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, floatsToWords(app, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2)));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, floatsToWords(app, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2)));
 }
 
 /* 0x500990 (cdecl: the state): stereo XA by the x87.  Every register kept. */
-void convertXaStereo(App* app, CPU& cpu)
+x86::reg32 convertXaStereo(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     decodeXaStereoFloats(app, e.arg(app, 0));
-    e.back(cpu, e.eax);
+    return e.back(cpu, args, e.eax);
 }
 
 /* 0x500b10 (cdecl: count, 8-bit samples, where): each to a float by a table.
  * Every register kept. */
-void convert8(App* app, CPU& cpu)
+x86::reg32 convert8(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     bytesToFloats(app, int32_t(e.arg(app, 0)), e.arg(app, 1), e.arg(app, 2));
-    e.back(cpu, e.eax);
+    return e.back(cpu, args, e.eax);
 }
 
 /* 0x500b90 (cdecl: the state): mono XA by the x87.  Every register kept. */
-void convertXaMono(App* app, CPU& cpu)
+x86::reg32 convertXaMono(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     decodeXaMonoFloats(app, e.arg(app, 0));
-    e.back(cpu, e.eax);
+    return e.back(cpu, args, e.eax);
 }
 
 }  // namespace port

@@ -1,4 +1,5 @@
 #include "native_frontend_cars.h"
+#include "native_load_carmodels.h"
 #include "native_watcom.h"
 #include "game_settings.h"
 #include "native_frontend.h"
@@ -17,6 +18,38 @@
 #include "port_text.h"
 #include <cstring>
 #include <iterator>
+#include "native_guest.h"
+
+namespace nfs3hp
+{
+namespace
+{
+
+/* A call through a pointer or to a function of the game's that has no typed core: Watcom's register
+ * arguments (eax, edx, ebx, ecx in turn) and the stack words as `arguments` have them, through
+ * guest::pointerCall; its eax, and Terminated when the game stopped in it. */
+x86::reg32 callAt(fe::Guest& guest, x86::reg32 target, const fe::Arguments& arguments = fe::Arguments())
+{
+    x86::CPU& cpu = guest.cpu();
+    x86::Args registers;
+    x86::reg32* const into[4] = { &registers.eax, &registers.edx, &registers.ebx, &registers.ecx };
+    for (std::size_t i = 0; i < arguments.registerCount; ++i)
+        *into[i] = arguments.registers[i];
+    const x86::reg32 esp = cpu.esp;
+    for (std::size_t i = arguments.stackCount; i-- > 0;)
+    {
+        cpu.esp -= 4;
+        guest.setDword(cpu.esp, arguments.stack[i]);
+    }
+    const std::optional<x86::reg32> result = guest::pointerCall(guest.app(), cpu, target, registers);
+    if (!result)
+        throw fe::Terminated();
+    cpu.esp = esp;
+    return *result;
+}
+
+}  // namespace
+}  // namespace nfs3hp
 
 /* The screens a race's cars are chosen on, decompiled:
  *
@@ -37,14 +70,14 @@
  * frame by frame to c:\NN\NNNN.tga (sub_426870, sub_426b00).
  *
  * Plan step 5: each function a typed core in frontend::cars (native_frontend_cars.h), in a frame
- * of its own where the game's function has one (fe::Frame), and an adapter under the game's name
+ * of its own where the game's function has one (fe::Frame), and a thunk under the game's name
  * for the calls by address.  A core of this file calls another as C++ (guest::direct); the rest of
  * the game still by address. */
 namespace nfs3hp
 {
 
 /* Port: the phone's keyboard, up while the game takes typing (nfs3hp_main.cpp,
- * tools/apply_text_entry.py). */
+ * the port's text entry change). */
 void textEntry(bool taking);
 
 namespace
@@ -101,7 +134,7 @@ bool inRace(const Guest& guest)
 
 x86::reg32 passKey(Guest& guest, x86::reg32 handler, x86::reg32 item, x86::reg32 menu, std::uint16_t key)
 {
-    return guest.call(handler, fe::args({ item, menu, x86::reg32(std::int32_t(std::int16_t(key))) }));
+    return callAt(guest, handler, fe::args({ item, menu, x86::reg32(std::int32_t(std::int16_t(key))) }));
 }
 
 /* ---------------------------------------------------------------------------
@@ -117,7 +150,7 @@ constexpr std::uint32_t kMenuTune = 0x16;
 }  // namespace
 
 /* sub_4104b0: as a car screen opens, the menus' music again if another plays. */
-x86::reg32 frontend::cars::menuMusicBack(App* app, CPU& cpu)
+x86::reg32 frontend::cars::menuMusicBack(App* app, CPU& cpu, reg32 eax)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 16);
@@ -126,12 +159,12 @@ x86::reg32 frontend::cars::menuMusicBack(App* app, CPU& cpu)
         guest.setDword(kOtherMusic, 0);
         if (gameSettings(guest).menuMusicAsked != kNoMenuMusic)
         {
-            fe::direct<0x4109d0, port::musicStopped>(app, cpu, cpu.esp - 4, cpu.eax);
+            fe::direct<0x4109d0, port::musicStopped>(app, cpu, cpu.esp - 4, eax);
             return x86::reg32(*fe::direct<0x4104f0, port::musicStarted>(
                 app, cpu, cpu.esp - 4, std::int32_t(kMenuTune), std::int32_t(gameSettings(guest).menuMusicVolume), 0));
         }
     }
-    return guest.eax();
+    return eax;
 }
 
 namespace
@@ -175,9 +208,6 @@ x86::reg32 saveFrame(App* app, CPU& cpu, const GuestString& format, x86::reg32 f
     fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), name, format.address, guest::Words{folder, number});
     const x86::reg32 next = guest.dword(kRecordShot) + 1;
     guest.setDword(kRecordShot, next);
-    // As the original leaves them for the calls after.
-    guest.leaveEdx(number);
-    guest.leaveEbx(next);
     fe::direct<0x4ead20, frontend::wata::windowApply>(app, cpu);
     fe::direct<0x4eb160, frontend::eaa::bitmapSaveTga>(app, cpu, name);
     return fe::direct<0x4ead90, frontend::eaa::bitmapDrawToScreen>(app, cpu);
@@ -228,12 +258,12 @@ bool recording(const Guest& guest)
 /* sub_426870, on every pass of car1 and car2: player one's car turning,
  * three turns -- 100 on, 200 on with the view's first flag, 300 on with its
  * second -- a frame every other pass. */
-x86::reg32 frontend::cars::recordCar(App* app, CPU& cpu)
+x86::reg32 frontend::cars::recordCar(App* app, CPU& cpu, reg32 eax)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 24 + 0x134);
     if (!recording(guest))
-        return guest.eax();
+        return eax;
     const x86::reg32 step = guest.dword(kRecordStep);
     switch (step)
     {
@@ -308,12 +338,12 @@ x86::reg32 frontend::cars::recordCar(App* app, CPU& cpu)
 
 /* sub_426b00, on every pass of location: the track turning, one turn, a frame
  * every other pass, to c:\TNN. */
-x86::reg32 frontend::cars::recordTrack(App* app, CPU& cpu)
+x86::reg32 frontend::cars::recordTrack(App* app, CPU& cpu, reg32 eax)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 16 + 0x134);
     if (!recording(guest))
-        return guest.eax();
+        return eax;
     const x86::reg32 step = guest.dword(kRecordStep);
     if (step == 0)
     {
@@ -410,14 +440,14 @@ x86::reg32 frontend::cars::car1Enter(App* app, CPU& cpu, reg32 menu)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 16);
-    guest::direct<0x4104b0, menuMusicBack>(app, cpu);
+    guest::direct<0x4104b0, menuMusicBack>(app, cpu, 0);  // its result is not read
     fitEditButton(guest, menu, kCar1);
     if (Item title = fe::findItem(guest, menu, kPlayerCarTitle))
         title.setText(fe::text(guest, gameSettings(guest).playMode == 1 ? kPlayer1CarTitle : kYourCarTitle));
     if (Item colour = fe::findItem(guest, menu, kColourButton))
         colour.setOnClick(kCar1.colourClicked);
     // Port: Download Car hidden, as hidethis is -- there is nothing left to
-    // download (tools/apply_hide_download.py); the original gives it its
+    // download (the port's hidden download change); the original gives it its
     // click, kShowcaseDownload.
     if (Item download = fe::findItem(guest, menu, kDownload))
         download.setHidden(true);
@@ -431,7 +461,7 @@ x86::reg32 frontend::cars::car2Enter(App* app, CPU& cpu, reg32 menu)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 16);
-    guest::direct<0x4104b0, menuMusicBack>(app, cpu);
+    guest::direct<0x4104b0, menuMusicBack>(app, cpu, 0);  // its result is not read
     fitEditButton(guest, menu, kCar2);
     if (Item colour = fe::findItem(guest, menu, kColourButton))
         colour.setOnClick(kCar2.colourClicked);
@@ -456,7 +486,7 @@ x86::reg32 onCarFrame(App* app, CPU& cpu, x86::reg32 menu, const CarScreen& scre
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 16);
-    guest::direct<0x426870, frontend::cars::recordCar>(app, cpu);
+    guest::direct<0x426870, frontend::cars::recordCar>(app, cpu, 0);  // its result is not read
     fitShowcase(guest, cpu, menu, screen);
     if (Item colours = fe::findItem(guest, menu, screen.colours))
         greyAndHide(guest, colours, oneColour(guest, cpu, screen.player));
@@ -644,7 +674,7 @@ x86::reg32 frontend::cars::opponentFrame(App* app, CPU& cpu, reg32 menu)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 20);
-    guest::direct<0x4104b0, menuMusicBack>(app, cpu);
+    guest::direct<0x4104b0, menuMusicBack>(app, cpu, 0);  // its result is not read
     auto trafficOff = [&]() {
         return gameSettings(guest).raceType != 0 || gameSettings(guest).trafficLevel == 2;
     };
@@ -683,7 +713,6 @@ constexpr x86::reg32 kTuningMost = 0x55d040;
 constexpr x86::reg32 kTuningLeast = 0x55d05c;
 constexpr x86::reg32 kTuningShown = 0x5e10fc;      // the sliders as the screen opened
 constexpr std::uint32_t kTuningBytes = 0x1c;
-constexpr x86::reg32 kPlayerHasAdvanced = 0x4dca50;// eax the player
 
 /* The advanced tuning, cedadv's: 50 records of 0x30 bytes, the one edited and
  * each player's own. */
@@ -809,8 +838,20 @@ namespace
 /* What jbe reads after fcom a, b: a not above b, or unordered. */
 bool notAbove(Guest& guest, const x86::Float& a, const x86::Float& b)
 {
-    guest.fpu().compare(a, b);
-    return guest.fpu().status.c0 || guest.fpu().status.c3;
+    return !(a > b);
+}
+
+/* fcom a, b and fnstsw: the status word's condition bits (c0 below or unordered, c2 unordered, c3
+ * equal or unordered); the rest of the word is as the x87 starts with it. */
+std::uint16_t compareStatusWord(const x86::Float& a, const x86::Float& b)
+{
+    if (a == b)
+        return 0x4000;
+    if (a > b)
+        return 0;
+    if (a < b)
+        return 0x0100;
+    return 0x4500;
 }
 
 /* sub_4273e0 and the six after it: a setting's slider moved, the setting
@@ -908,20 +949,17 @@ x86::reg32 frontend::cars::rememberSliders(App* app, CPU& cpu, reg32 menu)
         return 0;
     for (std::uint32_t i = 0; i < kSettings; ++i)
         guest.setDword(kTuningShown + 4 * i, 0);
+    reg32 last = 0;   // the item looked for last: eax stays it through the slider's value, which is the answer
     for (std::uint32_t i = 0; i < kSettings; ++i)
     {
         Item slider = fe::findItem(guest, menu, kSettingCodelinks[i]);
+        last = slider.address();
         if (!slider)
             continue;
-        // By address (its ByAddress, which takes the value off the x87's stack): the eax it leaves is
-        // this function's answer, and its core hands back none.
-        const double value =
-            guest::ByAddress<frontend::glue::sliderValue>::call<kSliderValue>(app, cpu, slider.address(), 0);
-        if (cpu.terminate)
-            throw fe::Terminated();
+        const double value = fe::direct<kSliderValue, frontend::glue::sliderValue>(app, cpu, slider.address(), 0);
         guest.setFloat(kTuningShown + 4 * i, float(value));
     }
-    return guest.eax();
+    return last;
 }
 
 /* sub_427ac0: whether a slider moved since kTuningShown, in al.  The first
@@ -943,9 +981,9 @@ x86::reg32 frontend::cars::slidersMoved(App* app, CPU& cpu, reg32 menu)
         if (!slider)
             continue;
         const x86::Float value = fe::direct<0x46c9b0, frontend::glue::sliderValue>(app, cpu, slider.address(), 0);
-        guest.fpu().compare(value, x86::Float(guest.floatAt(kTuningShown + 4 * i)));
-        eax = (eax & 0xffff0000) | guest.fpu().status.word;   // fnstsw ax
-        moved = guest.fpu().status.c3 ? 0 : 1;
+        const std::uint16_t status = compareStatusWord(value, x86::Float(guest.floatAt(kTuningShown + 4 * i)));
+        eax = (eax & 0xffff0000) | status;   // fnstsw ax
+        moved = (status & 0x4000) != 0 ? 0 : 1;
     }
     return (eax & 0xffffff00) | moved;
 }
@@ -972,13 +1010,13 @@ x86::reg32 frontend::cars::loadAdvanced(App* app, CPU& cpu)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 12);
-    textEntry(false);   // Port: as tools/apply_text_entry.py has the original
+    textEntry(false);   // Port: as the port's text entry change has the original
     const x86::reg32 player = guest.dword(kTunedPlayer);
     x86::reg32 has = 0;
     if (player == SETTINGS_ADDRESS(players[0].car))
-        has = guest.call(kPlayerHasAdvanced, fe::args({ 0 }));
+        has = *fe::direct<0x4dca50, load::specsSavedOf>(app, cpu, 0);
     else if (player == SETTINGS_ADDRESS(players[1].car))
-        has = guest.call(kPlayerHasAdvanced, fe::args({ 1 }));
+        has = *fe::direct<0x4dca50, load::specsSavedOf>(app, cpu, 1);
     if (has == 0)
         return 0xe;
     if (const x86::reg32 own = advancedOf(guest))
@@ -1017,7 +1055,7 @@ x86::reg32 onLeaveTuningKey(App* app, CPU& cpu, x86::reg32 item, x86::reg32 menu
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 12);
     if (!done)
-        textEntry(false);   // Port: as tools/apply_text_entry.py has the original
+        textEntry(false);   // Port: as the port's text entry change has the original
     if (key == kKeyEnter)
     {
         if ((guest::direct<0x427ac0, cars::slidersMoved>(app, cpu, menu) & 0xff) != 0)
@@ -1058,7 +1096,6 @@ x86::reg32 frontend::cars::carListKey(App* app, CPU& cpu, reg32 item, reg32 menu
     const fe::Frame frame(guest, cpu, 16);
     // The original hands it 0x1d in edx too, which it does not take but leaves: edx as this goes back
     // without a key passed on.
-    guest.leaveEdx(0x1d);
     if (fe::direct<0x44a660, frontend::loop::shownNow>(app, cpu, item) == 0)
         return 0;
     const x86::reg32 was = tunedCar(guest);
@@ -1070,7 +1107,6 @@ x86::reg32 frontend::cars::carListKey(App* app, CPU& cpu, reg32 item, reg32 menu
         guest::direct<0x4272f0, loadTuning>(app, cpu, tunedCar(guest));
         guest::direct<0x427c20, bindSliders>(app, cpu, menu);
     }
-    guest.leaveEbx(result);
     return result;
 }
 
@@ -1103,7 +1139,7 @@ x86::reg32 frontend::cars::bindDoneCancel(App* app, CPU& cpu, reg32 menu)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 12);
-    textEntry(true);   // Port: as tools/apply_text_entry.py has the original
+    textEntry(true);   // Port: as the port's text entry change has the original
     if (menu == 0)
         return 0;
     Item done = fe::findItem(guest, menu, kDone);
@@ -1130,7 +1166,6 @@ x86::reg32 frontend::cars::fitTuningButtons(App* app, CPU& cpu, reg32 menu, reg3
     Item exit = fe::findItem(guest, menu, kExitProgram);
     Item options = fe::findItem(guest, menu, kOptionsNow);
     Item list = fe::findItem(guest, menu, kCarList);
-    x86::reg32 edx = guest.edx();
     if (race && exit && options)
     {
         for (Item item : { race, exit, options })
@@ -1143,7 +1178,6 @@ x86::reg32 frontend::cars::fitTuningButtons(App* app, CPU& cpu, reg32 menu, reg3
             for (Item item : { race, exit, options })
                 item.setHidden(true);
         }
-        edx = race.address();
     }
     if (list)
     {
@@ -1155,13 +1189,10 @@ x86::reg32 frontend::cars::fitTuningButtons(App* app, CPU& cpu, reg32 menu, reg3
             const std::uint8_t value = std::uint8_t(tuningFor == 3 ? guest.byte(flags) | fe::item::kHidden
                                                                    : guest.byte(flags) & ~fe::item::kHidden);
             guest.setByte(flags, value);
-            if (tuningFor == 1)
-                edx = (edx & 0xffff00ff) | (x86::reg32(value) << 8);   // mov dh, ...
         }
         if (inRace(guest))
             list.setHidden(true);
     }
-    guest.leaveEdx(edx);
     return list.address();
 }
 
@@ -1255,7 +1286,6 @@ x86::reg32 frontend::cars::advancedDiffers(App* app, CPU& cpu, reg32 a, reg32 b)
     Guest guest(app, cpu);
     if (a == 0 || b == 0)
     {
-        guest.leaveEdx(a);
         return a & 0xffff0000;
     }
     for (std::uint32_t i = 0; i < kAdvancedRecords; ++i)
@@ -1267,12 +1297,10 @@ x86::reg32 frontend::cars::advancedDiffers(App* app, CPU& cpu, reg32 a, reg32 b)
             const std::uint8_t y = guest.byte(b + offset + j);
             if (x != y)
             {
-                guest.leaveEdx(i);
                 return x < y ? 0xffffff01 : 0x00000001;
             }
         }
     }
-    guest.leaveEdx(kAdvancedRecords);
     return 0;
 }
 
@@ -1284,7 +1312,6 @@ x86::reg32 frontend::cars::copyAdvanced(App* app, CPU& cpu, reg32 to, reg32 from
         return to;
     for (std::uint32_t i = 0; i < kAdvancedRecords; ++i)
         copyDwords(guest, to + kAdvancedRecordSize * i, from + kAdvancedRecordSize * i, kAdvancedRecordSize);
-    guest.leaveEdx(kAdvancedRecords);
     return kAdvancedRecordSize;
 }
 
@@ -1314,19 +1341,15 @@ const GuestString kTuningEnterStrings[] = { kDefaults, kAdvanced };
 /* A core of these screens under the game's name: its menu in eax; an item, its
  * menu and the key in eax, edx and ebx. */
 template <auto Core>
-void wholeForMenu(win32::WinApplication* app, x86::CPU& cpu, fe::Site& site)
+x86::reg32 wholeForMenu(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args, fe::Site& site, x86::reg32 menu)
 {
-    const x86::reg32 menu = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return Core(app, cpu, menu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return Core(app, cpu, menu); });
 }
 
 template <auto Core>
-void wholeForKey(win32::WinApplication* app, x86::CPU& cpu, fe::Site& site)
+x86::reg32 wholeForKey(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args, fe::Site& site, x86::reg32 item, x86::reg32 menu, x86::reg32 key)
 {
-    const x86::reg32 item = cpu.eax;
-    const x86::reg32 menu = cpu.edx;
-    const x86::reg32 key = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return Core(app, cpu, item, menu, key); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return Core(app, cpu, item, menu, key); });
 }
 
 constexpr std::uint8_t kNone = 0;
@@ -1339,309 +1362,311 @@ constexpr std::uint8_t kAllButEbx = fe::kRestoreEcx | fe::kRestoreEdx | fe::kRes
 
 }
 
-/* Each stand-in: the generated function, what its ret pops, the strings it
+/* Each thunk: the game's function, what its ret pops, the strings it
  * hands to the game and the registers it pushes; its frame is its core's. */
 
-void frontend::carMenuMusicBack(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::carMenuMusicBack(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4104b0", 0, 0, nullptr, 0, kEbxEcxEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return cars::menuMusicBack(app, cpu); });
+    const x86::reg32 eax = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return cars::menuMusicBack(app, cpu, eax); });
 }
 
-void frontend::carSaveFrame(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::carSaveFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4267a0", 0, 0, kCarFrameStrings, std::size(kCarFrameStrings), fe::kRestoreEbx };
-    const x86::reg32 folder = cpu.eax, first = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return cars::saveCarFrame(app, cpu, folder, first); });
+    const x86::reg32 folder = args.eax, first = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return cars::saveCarFrame(app, cpu, folder, first); });
 }
 
-void frontend::trackSaveFrame(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::trackSaveFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4267f0", 0, 0, kTrackFrameStrings, std::size(kTrackFrameStrings),
                           fe::kRestoreEbx };
-    const x86::reg32 folder = cpu.eax, first = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return cars::saveTrackFrame(app, cpu, folder, first); });
+    const x86::reg32 folder = args.eax, first = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return cars::saveTrackFrame(app, cpu, folder, first); });
 }
 
-void frontend::carRecord(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::carRecord(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_426870", 0, 0, kRecorderStrings, std::size(kRecorderStrings) };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return cars::recordCar(app, cpu); });
+    const x86::reg32 eax = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return cars::recordCar(app, cpu, eax); });
 }
 
-void frontend::trackRecord(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::trackRecord(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static const GuestString strings[] = { kTrackFolderName };
     static fe::Site site{ "sub_426b00", 0, 0, strings, std::size(strings),
                           fe::kRestoreEbx | fe::kRestoreEdx | fe::kRestoreEsi };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return cars::recordTrack(app, cpu); });
+    const x86::reg32 eax = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return cars::recordTrack(app, cpu, eax); });
 }
 
-void frontend::car1OnEnter(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::car1OnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_426d60", 0, 0, kCar1EnterStrings, std::size(kCar1EnterStrings), kEcxEdxEsi };
-    wholeForMenu<cars::car1Enter>(app, cpu, site);
+    return wholeForMenu<cars::car1Enter>(app, cpu, args, site, args.eax);
 }
 
-void frontend::car2OnEnter(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::car2OnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_426ef0", 0, 0, kCar2EnterStrings, std::size(kCar2EnterStrings), kEcxEdxEsi };
-    wholeForMenu<cars::car2Enter>(app, cpu, site);
+    return wholeForMenu<cars::car2Enter>(app, cpu, args, site, args.eax);
 }
 
-void frontend::car1OnFrame(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::car1OnFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_426e20", 0, 0, kCar1FrameStrings, std::size(kCar1FrameStrings), kEbxEcxEdx };
-    wholeForMenu<cars::car1Frame>(app, cpu, site);
+    return wholeForMenu<cars::car1Frame>(app, cpu, args, site, args.eax);
 }
 
-void frontend::car2OnFrame(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::car2OnFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_426f80", 0, 0, kCar2FrameStrings, std::size(kCar2FrameStrings), kEbxEcxEdx };
-    wholeForMenu<cars::car2Frame>(app, cpu, site);
+    return wholeForMenu<cars::car2Frame>(app, cpu, args, site, args.eax);
 }
 
-void frontend::car1OnExit(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::car1OnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     // sub_426ee0: nothing to undo.
     static fe::Site site{ "sub_426ee0", 0, 4, nullptr, 0, kNone };
-    fe::runWhole(app, cpu, site, [](Guest&) { return x86::reg32(0); });
+    return fe::runThunk(app, cpu, args, site, [](Guest&) { return x86::reg32(0); });
 }
 
-void frontend::car2OnExit(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::car2OnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     // sub_427040: likewise.
     static fe::Site site{ "sub_427040", 0, 4, nullptr, 0, kNone };
-    fe::runWhole(app, cpu, site, [](Guest&) { return x86::reg32(0); });
+    return fe::runThunk(app, cpu, args, site, [](Guest&) { return x86::reg32(0); });
 }
 
-void frontend::car1EditClicked(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::car1EditClicked(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_426c20", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return cars::car1EditClicked(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return cars::car1EditClicked(app, cpu); });
 }
 
-void frontend::car2EditClicked(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::car2EditClicked(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_426c40", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return cars::car2EditClicked(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return cars::car2EditClicked(app, cpu); });
 }
 
-void frontend::car1ColourClicked(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::car1ColourClicked(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_426c60", 0, 0, kCar1ColourStrings, std::size(kCar1ColourStrings), kEbxEcxEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return cars::car1ColourClicked(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return cars::car1ColourClicked(app, cpu); });
 }
 
-void frontend::car2ColourClicked(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::car2ColourClicked(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_426ce0", 0, 0, kCar2ColourStrings, std::size(kCar2ColourStrings), kEbxEcxEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return cars::car2ColourClicked(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return cars::car2ColourClicked(app, cpu); });
 }
 
-void frontend::opponentFitCar(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::opponentFitCar(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_427050", 0, 0, kOpponentCarStrings, std::size(kOpponentCarStrings), kEbxEcxEdx };
-    wholeForMenu<cars::opponentFitCar>(app, cpu, site);
+    return wholeForMenu<cars::opponentFitCar>(app, cpu, args, site, args.eax);
 }
 
-void frontend::opponentFitArt(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::opponentFitArt(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4270c0", 0, 0, kOpponentArtStrings, std::size(kOpponentArtStrings), kAllButEsi };
-    wholeForMenu<cars::opponentFitArt>(app, cpu, site);
+    return wholeForMenu<cars::opponentFitArt>(app, cpu, args, site, args.eax);
 }
 
-void frontend::opponentOnEnter(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::opponentOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4272a0", 0, 0, nullptr, 0, kEcxEdxEsi };
-    wholeForMenu<cars::opponentEnter>(app, cpu, site);
+    return wholeForMenu<cars::opponentEnter>(app, cpu, args, site, args.eax);
 }
 
-void frontend::opponentOnExit(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::opponentOnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     // sub_4272e0: nothing to undo.
     static fe::Site site{ "sub_4272e0", 0, 4, nullptr, 0, kNone };
-    fe::runWhole(app, cpu, site, [](Guest&) { return x86::reg32(0); });
+    return fe::runThunk(app, cpu, args, site, [](Guest&) { return x86::reg32(0); });
 }
 
-void frontend::opponentOnFrame(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::opponentOnFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_427190", 0, 0, kOpponentFrameStrings, std::size(kOpponentFrameStrings), kAllButEsi };
-    wholeForMenu<cars::opponentFrame>(app, cpu, site);
+    return wholeForMenu<cars::opponentFrame>(app, cpu, args, site, args.eax);
 }
 
-void frontend::tuningLoad(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::tuningLoad(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4272f0", 0, 0, nullptr, 0, kAllButEbx };
-    wholeForMenu<cars::loadTuning>(app, cpu, site);
+    return wholeForMenu<cars::loadTuning>(app, cpu, args, site, args.eax);
 }
 
-void frontend::tuningSave(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::tuningSave(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_427370", 0, 0, nullptr, 0, kAllButEbx };
-    wholeForMenu<cars::saveTuning>(app, cpu, site);
+    return wholeForMenu<cars::saveTuning>(app, cpu, args, site, args.eax);
 }
 
 namespace
 {
 template <auto Core>
-void settingMoved(win32::WinApplication* app, x86::CPU& cpu, fe::Site& site)
+x86::reg32 settingMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args, fe::Site& site, x86::reg32 item)
 {
-    const x86::reg32 item = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return Core(app, cpu, item); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return Core(app, cpu, item); });
 }
 }
 
-void frontend::tuningEngineMoved(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::tuningEngineMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4273e0", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    settingMoved<cars::engineMoved>(app, cpu, site);
+    return settingMoved<cars::engineMoved>(app, cpu, args, site, args.eax);
 }
 
-void frontend::tuningBrakesMoved(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::tuningBrakesMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_427470", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    settingMoved<cars::brakesMoved>(app, cpu, site);
+    return settingMoved<cars::brakesMoved>(app, cpu, args, site, args.eax);
 }
 
-void frontend::tuningSteeringMoved(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::tuningSteeringMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_427500", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    settingMoved<cars::steeringMoved>(app, cpu, site);
+    return settingMoved<cars::steeringMoved>(app, cpu, args, site, args.eax);
 }
 
-void frontend::tuningGearsMoved(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::tuningGearsMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_427590", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    settingMoved<cars::gearsMoved>(app, cpu, site);
+    return settingMoved<cars::gearsMoved>(app, cpu, args, site, args.eax);
 }
 
-void frontend::tuningSuspensionMoved(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::tuningSuspensionMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_427620", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    settingMoved<cars::suspensionMoved>(app, cpu, site);
+    return settingMoved<cars::suspensionMoved>(app, cpu, args, site, args.eax);
 }
 
-void frontend::tuningAeroMoved(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::tuningAeroMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4276b0", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    settingMoved<cars::aeroMoved>(app, cpu, site);
+    return settingMoved<cars::aeroMoved>(app, cpu, args, site, args.eax);
 }
 
-void frontend::tuningTiresMoved(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::tuningTiresMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_427740", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    settingMoved<cars::tiresMoved>(app, cpu, site);
+    return settingMoved<cars::tiresMoved>(app, cpu, args, site, args.eax);
 }
 
-void frontend::tuningSetSliders(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::tuningSetSliders(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4277d0", 0, 0, kSettingStrings, std::size(kSettingStrings), kEcxEdx };
-    wholeForMenu<cars::setSliders>(app, cpu, site);
+    return wholeForMenu<cars::setSliders>(app, cpu, args, site, args.eax);
 }
 
-void frontend::tuningRememberSliders(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::tuningRememberSliders(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4279b0", 0, 0, kSettingStrings, std::size(kSettingStrings), kEcxEdx };
-    wholeForMenu<cars::rememberSliders>(app, cpu, site);
+    return wholeForMenu<cars::rememberSliders>(app, cpu, args, site, args.eax);
 }
 
-void frontend::tuningSlidersMoved(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::tuningSlidersMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_427ac0", 0, 0, kSettingStrings, std::size(kSettingStrings), kEbxEcxEdx };
-    wholeForMenu<cars::slidersMoved>(app, cpu, site);
+    return wholeForMenu<cars::slidersMoved>(app, cpu, args, site, args.eax);
 }
 
-void frontend::tuningBindSliders(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::tuningBindSliders(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_427c20", 0, 0, kSettingStrings, std::size(kSettingStrings), kEbxEcxEdx };
-    wholeForMenu<cars::bindSliders>(app, cpu, site);
+    return wholeForMenu<cars::bindSliders>(app, cpu, args, site, args.eax);
 }
 
-void frontend::tuningLoadAdvanced(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::tuningLoadAdvanced(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_427d00", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return cars::loadAdvanced(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return cars::loadAdvanced(app, cpu); });
 }
 
-void frontend::tuningDefaultsAnswered(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::tuningDefaultsAnswered(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_427d80", 0, 0, nullptr, 0, fe::kRestoreEcx };
-    const std::uint32_t answer = cpu.eax;
-    const x86::reg32 close = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return cars::defaultsAnswered(app, cpu, answer, close); });
+    const std::uint32_t answer = args.eax;
+    const x86::reg32 close = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return cars::defaultsAnswered(app, cpu, answer, close); });
 }
 
-void frontend::tuningDoneKey(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::tuningDoneKey(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_427e10", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEsi };
-    wholeForKey<cars::doneKey>(app, cpu, site);
+    return wholeForKey<cars::doneKey>(app, cpu, args, site, args.eax, args.edx, args.ebx);
 }
 
-void frontend::tuningCancelKey(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::tuningCancelKey(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_427ea0", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEsi };
-    wholeForKey<cars::cancelKey>(app, cpu, site);
+    return wholeForKey<cars::cancelKey>(app, cpu, args, site, args.eax, args.edx, args.ebx);
 }
 
-void frontend::tuningCarListKey(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::tuningCarListKey(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_427f40", 0, 0, nullptr, 0,
                           fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    wholeForKey<cars::carListKey>(app, cpu, site);
+    return wholeForKey<cars::carListKey>(app, cpu, args, site, args.eax, args.edx, args.ebx);
 }
 
-void frontend::tuningDefaultsKey(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::tuningDefaultsKey(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_427fb0", 0, 0, nullptr, 0, fe::kRestoreEcx };
-    wholeForKey<cars::defaultsKey>(app, cpu, site);
+    return wholeForKey<cars::defaultsKey>(app, cpu, args, site, args.eax, args.edx, args.ebx);
 }
 
-void frontend::tuningBindDoneCancel(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::tuningBindDoneCancel(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_428020", 0, 0, kDoneCancelStrings, std::size(kDoneCancelStrings),
                           fe::kRestoreEbx | fe::kRestoreEcx };
-    wholeForMenu<cars::bindDoneCancel>(app, cpu, site);
+    return wholeForMenu<cars::bindDoneCancel>(app, cpu, args, site, args.eax);
 }
 
-void frontend::tuningFitButtons(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::tuningFitButtons(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_428060", 0, 0, kTuningButtonStrings, std::size(kTuningButtonStrings), kAllButEdx };
-    const x86::reg32 menu = cpu.eax;
-    const x86::reg32 tuningFor = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return cars::fitTuningButtons(app, cpu, menu, tuningFor); });
+    const x86::reg32 menu = args.eax;
+    const x86::reg32 tuningFor = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return cars::fitTuningButtons(app, cpu, menu, tuningFor); });
 }
 
-void frontend::tuningPrepare(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::tuningPrepare(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4281e0", 0, 0, nullptr, 0 };
-    wholeForMenu<cars::prepareTuning>(app, cpu, site);
+    return wholeForMenu<cars::prepareTuning>(app, cpu, args, site, args.eax);
 }
 
-void frontend::tuningOnEnter(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::tuningOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_428360", 0, 0, kTuningEnterStrings, std::size(kTuningEnterStrings), kEbxEcxEdx };
-    wholeForMenu<cars::tuningEnter>(app, cpu, site);
+    return wholeForMenu<cars::tuningEnter>(app, cpu, args, site, args.eax);
 }
 
-void frontend::tuningOnExit(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::tuningOnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4283b0", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return cars::tuningExit(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return cars::tuningExit(app, cpu); });
 }
 
-void frontend::tuningAdvancedDiffers(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::tuningAdvancedDiffers(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4dcaf0", 0, 0, nullptr, 0, kAllButEdx };
-    const x86::reg32 a = cpu.eax, b = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return cars::advancedDiffers(app, cpu, a, b); });
+    const x86::reg32 a = args.eax, b = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return cars::advancedDiffers(app, cpu, a, b); });
 }
 
-void frontend::tuningCopyAdvanced(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::tuningCopyAdvanced(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4dcb60", 0, 0, nullptr, 0, kAllButEdx };
-    const x86::reg32 to = cpu.eax, from = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return cars::copyAdvanced(app, cpu, to, from); });
+    const x86::reg32 to = args.eax, from = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return cars::copyAdvanced(app, cpu, to, from); });
 }
 
 }

@@ -15,9 +15,7 @@
 #include <type_traits>
 #include <utility>
 
-/* The race's cameras, native whole.  disassemble_nfs3hp.py binds each address
- * to the function of that name here (CARSTATE_NATIVES), and the generated code
- * calls it by name.  tools/game_checks holds each against its generated code.
+/* The race's cameras, native whole.  The game's code calls each function here by name.
  *
  * Each player (0, or 1 in a split screen: the code takes an index as
  * `index & 1` only where the race's mode [0x6fd3b0] is 1, else 0) has a camera of
@@ -37,9 +35,9 @@
  * player's mark that its camera changed; 0x5dd950 each player's view, 0x60
  * bytes.
  *
- * Each is a typed function under a name of its own (its core), with an adapter
- * under the game's name for the callers still on registers and the dispatch
- * (adapts): every register but eax as the caller had it, eax what the core
+ * Each is a typed function under a name of its own (its core), with a thunk
+ * under the game's name for the callers still on registers and for the calls by address
+ * (asThunk): every register but eax as the caller had it, eax what the core
  * gives back -- what the code leaves there -- and, where the code leaves a
  * register that is no argument of its otherwise, that one so.  The cores call
  * each other as C++, and other typed files' functions as C++ too (guest::direct,
@@ -88,10 +86,7 @@ constexpr reg32 kPlayerCars = 0x5efa48;
 // here leaves or reads: a track place's node (0x41f6e0), the last dot product of pushOutOfCars
 // (0x4e01f0), the last vectors added of blend (0x4dffb0) and matrices multiplied of turnHead
 // (0x4e0280).
-constexpr reg32 kDot = 0x4e01f0;
 constexpr reg32 kTrackNode = 0x41f6e0;
-constexpr reg32 kRotate = 0x4dffb0;
-constexpr reg32 kMultiply = 0x4e0280;
 
 void push(App* app, CPU& cpu, reg32 value)
 {
@@ -168,8 +163,7 @@ float floatOf(reg32 bits)
 
 Float floatIn(reg32 bits) { return Float(floatOf(bits)); }
 
-/* The guest's stack as the code's frame has it, for the locals a callee is handed a pointer into
- * (the check compares the pointers): `base` the code's ebp, the entry's esp less the registers
+/* The guest's stack as the code's frame has it, for the locals a callee is handed a pointer into: `base` the code's ebp, the entry's esp less the registers
  * it saves; esp below its locals while it calls out, and as it was on leaving. */
 class Frame
 {
@@ -201,7 +195,7 @@ private:
     const reg32 esp_;
 };
 
-/* An adapter's run of its core: every register but eax as the caller had it after it (the code
+/* A thunk's run of its core: every register but eax as the caller had it after it (the code
  * pushes and pops what it uses; its other registers are its arguments, which no caller reads), eax
  * what the core gives -- a core that gives nothing, or answers only whether the game went on (a
  * bool), leaves eax as it is -- and the return address and `popped` bytes of the caller's words
@@ -217,12 +211,12 @@ struct IsOptional<std::optional<T>> : std::true_type
 };
 
 template <typename Core>
-bool adapts(CPU& cpu, Core&& core, reg32 popped = 0)
+bool asThunk(CPU& cpu, x86::Args& args, Core&& core, reg32 popped = 0)
 {
     using Result = std::decay_t<decltype(core())>;
+    const reg32 esp = cpu.esp;
     std::optional<reg32> left;
     {
-        const guest::KeptRegisters kept(cpu);
         if constexpr (std::is_void_v<Result>)
             core();
         else if constexpr (std::is_same_v<Result, bool>)
@@ -240,8 +234,9 @@ bool adapts(CPU& cpu, Core&& core, reg32 popped = 0)
         else
             left = reg32(core());
     }
+    cpu.esp = esp;
     if (left)
-        cpu.eax = *left;
+        args.eax = *left;
     cpu.esp += 4 + popped;
     return true;
 }
@@ -249,43 +244,17 @@ bool adapts(CPU& cpu, Core&& core, reg32 popped = 0)
 /* The caller's word `n` (from 1) on the guest's stack, above the return address. */
 reg32 word(App* app, const CPU& cpu, reg32 n) { return at(app, cpu.esp + 4 * n); }
 
-/* A call by address with `registers` (eax, edx, ebx, ecx in turn) and `words` pushed (the first
- * lowest), every register but eax kept: the eax it leaves; nullopt when the game stopped. */
-std::optional<reg32> callGame(App* app, CPU& cpu, reg32 target, std::initializer_list<reg32> registers,
-                              std::initializer_list<reg32> words = {})
-{
-    const guest::KeptRegisters kept(cpu);
-    reg32* const into[] = {&cpu.eax, &cpu.edx, &cpu.ebx, &cpu.ecx};
-    unsigned i = 0;
-    for (const reg32 value : registers)
-        *into[i++] = value;
-    if (!guest::call(app, cpu, target, words))
-        return std::nullopt;
-    return cpu.eax;
-}
-
 /* A native_frontend_* file's typed core called as C++ (guest::direct): nothing (false) when the
- * game stopped in it (its calls into the game throw fe::Terminated).  tools/game_checks does not
- * build those files: there it goes by address, through its ByAddress, as the game's code calls it,
- * every register but eax kept.  A reg32 result is the eax the function leaves, given back; eax is
+ * game stopped in it (its calls into the game throw fe::Terminated), every register but eax kept.  A reg32 result is the eax the function leaves, given back; eax is
  * spoilt there after it, so that code still reading what the callee left in eax differs there. */
 template <reg32 Address, auto Core, typename... Args>
 auto feCore(App* app, CPU& cpu, Args... args)
 {
     const auto run = [&] {
-#ifdef NFS_GAME_CHECKS
-        const guest::KeptRegisters kept(cpu);
-        return guest::ByAddress<Core>::template call<Address>(app, cpu, args...);
-#else
         return guest::direct<Address, Core>(app, cpu, args...);
-#endif
     };
     using Result = decltype(run());
-    const auto spoil = [&] {
-#ifdef NFS_GAME_CHECKS
-        cpu.eax = 0x5b0115edu;
-#endif
-    };
+    const auto spoil = [&] {};
     if constexpr (std::is_void_v<Result>)
     {
         try
@@ -339,61 +308,62 @@ void buildCycle(App* app);
 
 }  // namespace
 
-void idleHook(App* app, CPU& cpu);
-void viewFromCamera(App* app, CPU& cpu);
-void viewFromScreenCamera(App* app, CPU& cpu);
-void chooseView(App* app, CPU& cpu);
-void idleHookToo(App* app, CPU& cpu);
-void pickChaseNode(App* app, CPU& cpu);
-void turnAround(App* app, CPU& cpu);
-void attachCameras(App* app, CPU& cpu);
-void headTurn(App* app, CPU& cpu);
-void cameraNode(App* app, CPU& cpu);
-void cameraTrackPlace(App* app, CPU& cpu);
-void keepOutOfCars(App* app, CPU& cpu);
-void keepAboveRoad(App* app, CPU& cpu);
-void keepOnTrack(App* app, CPU& cpu);
-void keepFromRightWall(App* app, CPU& cpu);
-void keepFromLeftWall(App* app, CPU& cpu);
-void keepAboveGround(App* app, CPU& cpu);
-void lookAtTarget(App* app, CPU& cpu);
-void blendCamera(App* app, CPU& cpu);
-void placeCamera(App* app, CPU& cpu);
-void switchCamera(App* app, CPU& cpu);
-void cameraZoom(App* app, CPU& cpu);
-void viewMatrix(App* app, CPU& cpu);
-void updateCamera(App* app, CPU& cpu);
-void cameraView(App* app, CPU& cpu);
-void cockpitShown(App* app, CPU& cpu);
-void cameraCar(App* app, CPU& cpu);
-void cameraTarget(App* app, CPU& cpu);
-void initCameras(App* app, CPU& cpu);
-void setCameraMode(App* app, CPU& cpu);
-void setOverrideMode(App* app, CPU& cpu);
-void nextCycleMode(App* app, CPU& cpu);
-void buildCameraCycle(App* app, CPU& cpu);
-void modeInCycle(App* app, CPU& cpu);
-void rememberMode(App* app, CPU& cpu);
-void cameraMode(App* app, CPU& cpu);
-void setModeAnew(App* app, CPU& cpu);
-void settleCamera(App* app, CPU& cpu);
-void nearestSpot(App* app, CPU& cpu);
-void scaledIfSet(App* app, CPU& cpu);
-void bitsBroken(App* app, CPU& cpu);
-void dampVector(App* app, CPU& cpu);
-void chaseOffset(App* app, CPU& cpu);
-void chaseOffsetLevel(App* app, CPU& cpu);
+x86::reg32 idleHook(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 viewFromCamera(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 viewFromScreenCamera(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 chooseView(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 idleHookToo(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 pickChaseNode(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 turnAround(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 attachCameras(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 headTurn(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 cameraNode(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 cameraTrackPlace(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 keepOutOfCars(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 keepAboveRoad(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 keepOnTrack(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 keepFromRightWall(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 keepFromLeftWall(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 keepAboveGround(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 lookAtTarget(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 blendCamera(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 placeCamera(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 switchCamera(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 cameraZoom(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 viewMatrix(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 updateCamera(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 cameraView(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 cockpitShown(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 cameraCar(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 cameraTarget(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 initCameras(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 setCameraMode(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 setOverrideMode(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 nextCycleMode(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 buildCameraCycle(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 modeInCycle(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rememberMode(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 cameraMode(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 setModeAnew(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 settleCamera(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 nearestSpot(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 scaledIfSet(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 bitsBroken(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 dampVector(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 chaseOffset(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 chaseOffsetLevel(App* app, x86::CPU& cpu, x86::Args& args);
 
 /* 0x421360 and 0x421480: empty hooks. */
-void idleHook(App* app, CPU& cpu)
+x86::reg32 idleHook(App* app, x86::CPU& cpu, x86::Args& args)
 {
     (void)app;
-    adapts(cpu, [] {});
+    asThunk(cpu, args, [] {});
+    return args.eax;
 }
 
-void idleHookToo(App* app, CPU& cpu)
+x86::reg32 idleHookToo(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    idleHook(app, cpu);
+    return idleHook(app, cpu, args);
 }
 
 namespace
@@ -417,9 +387,10 @@ std::optional<reg32> viewOfCamera(App* app, CPU& cpu, reg32 view)
 }  // namespace
 
 /* 0x421380: viewOfCamera for view eax. */
-void viewFromCamera(App* app, CPU& cpu)
+x86::reg32 viewFromCamera(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, view = cpu.eax] { return viewOfCamera(app, cpu, view); });
+    asThunk(cpu, args, [&, view = args.eax] { return viewOfCamera(app, cpu, view); });
+    return args.eax;
 }
 
 namespace
@@ -457,9 +428,10 @@ std::optional<reg32> screenView(App* app, CPU& cpu, reg32 view)
 }  // namespace
 
 /* 0x4213b0: screenView of view eax. */
-void viewFromScreenCamera(App* app, CPU& cpu)
+x86::reg32 viewFromScreenCamera(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, view = cpu.eax] { return screenView(app, cpu, view); });
+    asThunk(cpu, args, [&, view = args.eax] { return screenView(app, cpu, view); });
+    return args.eax;
 }
 
 namespace
@@ -483,9 +455,10 @@ std::optional<reg32> chooseHow(App* app, CPU& cpu, reg32 view, reg32 how)
 }  // namespace
 
 /* 0x421450: chooseHow for view eax, edx how. */
-void chooseView(App* app, CPU& cpu)
+x86::reg32 chooseView(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, view = cpu.eax, how = cpu.edx] { return chooseHow(app, cpu, view, how); });
+    asThunk(cpu, args, [&, view = args.eax, how = args.edx] { return chooseHow(app, cpu, view, how); });
+    return args.eax;
 }
 
 namespace
@@ -537,9 +510,10 @@ reg32 chaseNode(App* app, reg32 player)
 }  // namespace
 
 /* 0x421490: chaseNode for player eax. */
-void pickChaseNode(App* app, CPU& cpu)
+x86::reg32 pickChaseNode(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, player = cpu.eax] { return chaseNode(app, player); });
+    asThunk(cpu, args, [&, player = args.eax] { return chaseNode(app, player); });
+    return args.eax;
 }
 
 namespace
@@ -560,9 +534,10 @@ void turnedAround(App* app, reg32 from, reg32 to)
 }  // namespace
 
 /* 0x421570: turnedAround from eax into edx. */
-void turnAround(App* app, CPU& cpu)
+x86::reg32 turnAround(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, from = cpu.eax, to = cpu.edx] { turnedAround(app, from, to); });
+    asThunk(cpu, args, [&, from = args.eax, to = args.edx] { turnedAround(app, from, to); });
+    return args.eax;
 }
 
 namespace
@@ -621,9 +596,10 @@ std::optional<reg32> attach(App* app, CPU& cpu, reg32 player, reg32 car)
 }  // namespace
 
 /* 0x4215c0: attach player eax's cameras to car edx. */
-void attachCameras(App* app, CPU& cpu)
+x86::reg32 attachCameras(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, player = cpu.eax, car = cpu.edx] { return attach(app, cpu, player, car); });
+    asThunk(cpu, args, [&, player = args.eax, car = args.edx] { return attach(app, cpu, player, car); });
+    return args.eax;
 }
 
 namespace
@@ -673,16 +649,20 @@ std::optional<reg32> turnHead(App* app, CPU& cpu, reg32 camera)
     guest::direct<0x4e0280, vertices::multiplyMatrix>(app, cpu, e - 0x74, e - 0x50, e - 0x2c);
     if (cpu.terminate)
         return std::nullopt;
-    // By address: its eax is what turnHead leaves.
-    return guest::watcomEax(app, cpu, kMultiply, {e - 0x2c, camera + kCamOrientation, camera + kCamOrientation});
+    const reg32 left = guest::direct<0x4e0280, vertices::multiplyMatrixEax>(app, cpu, e - 0x2c, camera + kCamOrientation,
+                                                                          camera + kCamOrientation);
+    if (cpu.terminate)
+        return std::nullopt;
+    return left;
 }
 
 }  // namespace
 
 /* 0x421730: turnHead for camera eax. */
-void headTurn(App* app, CPU& cpu)
+x86::reg32 headTurn(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, camera = cpu.eax] { return turnHead(app, cpu, camera); });
+    asThunk(cpu, args, [&, camera = args.eax] { return turnHead(app, cpu, camera); });
+    return args.eax;
 }
 
 /* 0x4217e0's: the track's node player's camera keeps to: of the active camera -- for a blend
@@ -697,9 +677,10 @@ reg32 nodeOfCamera(App* app, reg32 player)
 }
 
 /* 0x4217e0: nodeOfCamera for player eax. */
-void cameraNode(App* app, CPU& cpu)
+x86::reg32 cameraNode(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, player = cpu.eax] { return nodeOfCamera(app, player); });
+    asThunk(cpu, args, [&, player = args.eax] { return nodeOfCamera(app, player); });
+    return args.eax;
 }
 
 namespace
@@ -721,16 +702,20 @@ std::optional<reg32> findTrackPlace(App* app, CPU& cpu, reg32 camera, reg32 plac
     guest::direct<0x41e420, trackdata::followToNearest>(app, cpu, fixed, trackPlace);
     if (cpu.terminate)
         return std::nullopt;
-    // By address: its eax is what findTrackPlace leaves.
-    return guest::watcomEax(app, cpu, kTrackNode, {fixed, trackPlace, 1});
+    // Its eax is what findTrackPlace leaves.
+    const std::optional<reg32> node = guest::direct<0x41f6e0, trackdata::bringPlace>(app, cpu, fixed, trackPlace, 1);
+    if (cpu.terminate)
+        return std::nullopt;
+    return node;
 }
 
 }  // namespace
 
 /* 0x421880: findTrackPlace for camera eax and place edx. */
-void cameraTrackPlace(App* app, CPU& cpu)
+x86::reg32 cameraTrackPlace(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, camera = cpu.eax, place = cpu.edx] { return findTrackPlace(app, cpu, camera, place); });
+    asThunk(cpu, args, [&, camera = args.eax, place = args.edx] { return findTrackPlace(app, cpu, camera, place); });
+    return args.eax;
 }
 
 namespace
@@ -763,13 +748,13 @@ struct Product
     reg32 eax;
 };
 
-/* The same by address, for a caller that keeps the eax it leaves. */
+/* The same, for a caller that keeps the eax it leaves (the vector a it was handed). */
 std::optional<Product> dotByAddress(App* app, CPU& cpu, reg32 a, reg32 b)
 {
-    const std::optional<reg32> left = guest::watcomEax(app, cpu, kDot, {a, b});
-    if (!left)
+    const double product = guest::direct<0x4e01f0, vertices::dotProduct>(app, cpu, a, b);
+    if (cpu.terminate)
         return std::nullopt;
-    return Product{cpu.fpu.take(), *left};
+    return Product{Float(product), a};
 }
 
 /* An x87 fabs in the code's two steps: only a value under 0 is negated, the rest kept to the bit. */
@@ -879,18 +864,16 @@ std::optional<reg32> pushOutOfCars(App* app, CPU& cpu, reg32 place)
 }  // namespace
 
 /* 0x421900: pushOutOfCars for the place eax. */
-void keepOutOfCars(App* app, CPU& cpu)
+x86::reg32 keepOutOfCars(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, place = cpu.eax] { return pushOutOfCars(app, cpu, place); });
+    asThunk(cpu, args, [&, place = args.eax] { return pushOutOfCars(app, cpu, place); });
+    return args.eax;
 }
 
 namespace
 {
-
-// inTunnel (0x420bf0) by address: the code hands it a copy of the place, on the stack.  A plane's
-// height (0x4968a0) by address too: the code takes it off the x87's stack as wide as it is there,
+// A plane's height (0x4968a0) by address: the code takes it off the x87's stack as wide as it is there,
 // where vertices' core gives back a float.
-constexpr reg32 kInTunnel = 0x420bf0, kPlaneHeight = 0x4968a0;
 // A camera's: following a car (+0x88) on a surface it knows (+0x8c), the car's side of the road
 // (+0xe0), the car's four points (+0xc8..+0xd4, a vector each).
 constexpr reg32 kCamFollows = 0x88, kCamKnown = 0x8c, kCamSide = 0xe0, kCamPoints = 0xc8;
@@ -903,11 +886,12 @@ constexpr reg32 kNoSurface = 0, kWaterSurface = 0xe;
  * the point's words and the place's on the stack, the point's first lowest. */
 std::optional<Float> planeHeight(App* app, CPU& cpu, reg32 plane, reg32 place, reg32 point)
 {
-    if (!callGame(app, cpu, kPlaneHeight, {plane},
-                  {at(app, point), at(app, point + 4), at(app, point + 8), at(app, place), at(app, place + 4),
-                   at(app, place + 8)}))
+    const auto word = [&](reg32 address) { return app->getMemory<float>(address); };
+    const float height = guest::direct<0x4968a0, vertices::groundHeightAt>(
+        app, cpu, plane, word(point), word(point + 4), word(point + 8), word(place), word(place + 4), word(place + 8));
+    if (cpu.terminate)
         return std::nullopt;
-    return cpu.fpu.take();
+    return Float(height);
 }
 
 /* The camera's car's plane, from its four points copied into the frame at `points`, into `plane`
@@ -933,10 +917,8 @@ std::optional<reg32> keepRoadHeight(App* app, CPU& cpu, reg32 camera, reg32 plac
     const reg32 kind = guest::direct<0x4207e0, trackdata::placeSurface>(app, cpu, trackPlace, 1) & 0x3f;
     if (cpu.terminate)
         return std::nullopt;
-    // inTunnel (stdcall) of the place's words and the node, the place's first lowest; eax the
-    // place's y, the register the code pushes it through (what the check's stand-in may leave).
-    const std::optional<reg32> tunnel = callGame(app, cpu, kInTunnel, {at(app, place + 4)},
-                                                 {at(app, place), at(app, place + 4), at(app, place + 8), node});
+    // inTunnel of the place's words and the node (the place's y was the register it was pushed through: not read).
+    const std::optional<reg32> tunnel = guest::direct<0x420bf0, trackdata::placeInTunnel>(app, cpu, place, node);
     if (!tunnel)
         return std::nullopt;
     const float own = *tunnel != 0 ? floatOf(at(app, at(app, kSurfaceHeights) + node * 4)) : 25.0f;
@@ -963,9 +945,10 @@ std::optional<reg32> keepRoadHeight(App* app, CPU& cpu, reg32 camera, reg32 plac
 }  // namespace
 
 /* 0x421b90: keepRoadHeight for camera eax and place edx. */
-void keepAboveRoad(App* app, CPU& cpu)
+x86::reg32 keepAboveRoad(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, camera = cpu.eax, place = cpu.edx] { return keepRoadHeight(app, cpu, camera, place); });
+    asThunk(cpu, args, [&, camera = args.eax, place = args.edx] { return keepRoadHeight(app, cpu, camera, place); });
+    return args.eax;
 }
 
 namespace
@@ -1057,14 +1040,15 @@ std::optional<reg32> keepPlaceOnTrack(App* app, CPU& cpu, reg32 camera, reg32 pl
 }  // namespace
 
 /* 0x421cc0: keepPlaceOnTrack for camera eax, place edx, from the point on the stack (ret 0xc). */
-void keepOnTrack(App* app, CPU& cpu)
+x86::reg32 keepOnTrack(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(
-        cpu,
-        [&, camera = cpu.eax, place = cpu.edx, from = Vector{word(app, cpu, 1), word(app, cpu, 2), word(app, cpu, 3)}] {
+    asThunk(
+        cpu, args,
+        [&, camera = args.eax, place = args.edx, from = Vector{word(app, cpu, 1), word(app, cpu, 2), word(app, cpu, 3)}] {
             return keepPlaceOnTrack(app, cpu, camera, place, from);
         },
         0xc);
+    return args.eax;
 }
 
 namespace
@@ -1123,19 +1107,21 @@ std::optional<reg32> keepFromWall(App* app, CPU& cpu, reg32 camera, reg32 place,
 
 /* 0x421e80: camera eax's place edx kept from the track's wall on one side (keepFromWall, by
  * 0x536e4c and 0x536e54). */
-void keepFromRightWall(App* app, CPU& cpu)
+x86::reg32 keepFromRightWall(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, camera = cpu.eax, place = cpu.edx] {
+    asThunk(cpu, args, [&, camera = args.eax, place = args.edx] {
         return keepFromWall(app, cpu, camera, place, 0x536e4c, 0x536e54, true);
     });
+    return args.eax;
 }
 
 /* 0x421f90: and on the other (0x536e5c, 0x536e64). */
-void keepFromLeftWall(App* app, CPU& cpu)
+x86::reg32 keepFromLeftWall(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, camera = cpu.eax, place = cpu.edx] {
+    asThunk(cpu, args, [&, camera = args.eax, place = args.edx] {
         return keepFromWall(app, cpu, camera, place, 0x536e5c, 0x536e64, false);
     });
+    return args.eax;
 }
 
 namespace
@@ -1202,9 +1188,10 @@ std::optional<reg32> keepGroundHeight(App* app, CPU& cpu, reg32 camera, reg32 pl
 }  // namespace
 
 /* 0x4220a0: keepGroundHeight for camera eax and place edx. */
-void keepAboveGround(App* app, CPU& cpu)
+x86::reg32 keepAboveGround(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, camera = cpu.eax, place = cpu.edx] { return keepGroundHeight(app, cpu, camera, place); });
+    asThunk(cpu, args, [&, camera = args.eax, place = args.edx] { return keepGroundHeight(app, cpu, camera, place); });
+    return args.eax;
 }
 
 namespace
@@ -1266,9 +1253,10 @@ std::optional<reg32> lookAt(App* app, CPU& cpu, reg32 camera, reg32 place)
 }  // namespace
 
 /* 0x422290: lookAt for camera eax from its place edx. */
-void lookAtTarget(App* app, CPU& cpu)
+x86::reg32 lookAtTarget(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, camera = cpu.eax, place = cpu.edx] { return lookAt(app, cpu, camera, place); });
+    asThunk(cpu, args, [&, camera = args.eax, place = args.edx] { return lookAt(app, cpu, camera, place); });
+    return args.eax;
 }
 
 namespace
@@ -1293,7 +1281,7 @@ std::optional<reg32> blend(App* app, CPU& cpu, reg32 orientation, reg32 place, r
         return orientation;
     const Float time = fp::mul(fp::add(f32(app, record + kBlendTime), f32(app, 0x536e84)), f32(app, 0x536e88));
     const Float power = fp::mul(Float(1.4426950408889634), time);
-    const Float raised = fp::scale(fp::add(1.0, fp::f2xm1(cpu.fpu.rem(power, 1.0))), power);
+    const Float raised = fp::scale(fp::add(1.0, fp::f2xm1(fp::rem(power, 1.0))), power);
     const float weight = float(fp::div(1.0, fp::add(raised, 1.0)));
     const float rest = float(fp::sub(1.0, Float(weight)));
     const reg32 quat = e + 0x3a, carQuat = e + 0x2a, mixed = e + 0x1a;
@@ -1325,19 +1313,22 @@ std::optional<reg32> blend(App* app, CPU& cpu, reg32 orientation, reg32 place, r
     guest::direct<0x4e0050, vertices::scaleVectorsBy>(app, cpu, 1, place, weight, scaledPlace);
     if (cpu.terminate)
         return std::nullopt;
-    // By address: the eax it leaves is blend's.
-    return guest::watcomEax(app, cpu, kRotate, {1, scaledOffset, scaledPlace, place});
+    const reg32 left = guest::direct<0x4dffb0, vertices::offsetVectorsEax<true>>(app, cpu, 1, scaledOffset, scaledPlace, place);
+    if (cpu.terminate)
+        return std::nullopt;
+    return left;
 }
 
 }  // namespace
 
 /* 0x4223c0: blend for the orientation eax and the place edx of player ebx, turned round where ecx
  * is 1. */
-void blendCamera(App* app, CPU& cpu)
+x86::reg32 blendCamera(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, orientation = cpu.eax, place = cpu.edx, player = cpu.ebx, turned = cpu.ecx] {
+    asThunk(cpu, args, [&, orientation = args.eax, place = args.edx, player = args.ebx, turned = args.ecx] {
         return blend(app, cpu, orientation, place, player, turned);
     });
+    return args.eax;
 }
 
 namespace
@@ -1419,11 +1410,12 @@ std::optional<reg32> place(App* app, CPU& cpu, reg32 camera, reg32 matrix, reg32
 
 /* 0x422520: place for camera eax, the orientation to edx, the place to ebx, turned round where ecx
  * is 1. */
-void placeCamera(App* app, CPU& cpu)
+x86::reg32 placeCamera(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, camera = cpu.eax, matrix = cpu.edx, into = cpu.ebx, turned = cpu.ecx] {
+    asThunk(cpu, args, [&, camera = args.eax, matrix = args.edx, into = args.ebx, turned = args.ecx] {
         return place(app, cpu, camera, matrix, into, turned);
     });
+    return args.eax;
 }
 
 namespace
@@ -1491,9 +1483,10 @@ std::optional<reg32> switchTo(App* app, CPU& cpu, reg32 mode, reg32 player)
 }  // namespace
 
 /* 0x422610: switchTo mode eax for player edx. */
-void switchCamera(App* app, CPU& cpu)
+x86::reg32 switchCamera(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, mode = cpu.eax, player = cpu.edx] { return switchTo(app, cpu, mode, player); });
+    asThunk(cpu, args, [&, mode = args.eax, player = args.edx] { return switchTo(app, cpu, mode, player); });
+    return args.eax;
 }
 
 /* 0x4227e0's: for a view of mode 0 its player's active camera's zoom, where that is not 0. */
@@ -1509,13 +1502,15 @@ std::optional<reg32> ownZoom(App* app, reg32 view)
 
 /* 0x4227e0: view eax's zoom onto the x87's stack, ownZoom or 1.0; eax the zoom's bits where it
  * is the camera's, as the code leaves it. */
-void cameraZoom(App* app, CPU& cpu)
+x86::reg32 cameraZoom(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, view = cpu.eax] {
+    asThunk(cpu, args, [&, view = args.eax] {
         const std::optional<reg32> own = ownZoom(app, view);
-        cpu.fpu.push(Float(own ? floatOf(*own) : 1.0f));
+        args.floatSet = true;
+        args.floatResult = double(Float(own ? floatOf(*own) : 1.0f));
         return own ? *own : view;
     });
+    return args.eax;
 }
 
 
@@ -1553,9 +1548,10 @@ std::optional<reg32> makeViewMatrix(App* app, CPU& cpu, reg32 view)
 }  // namespace
 
 /* 0x422850: makeViewMatrix for view eax. */
-void viewMatrix(App* app, CPU& cpu)
+x86::reg32 viewMatrix(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, view = cpu.eax] { return makeViewMatrix(app, cpu, view); });
+    asThunk(cpu, args, [&, view = args.eax] { return makeViewMatrix(app, cpu, view); });
+    return args.eax;
 }
 
 namespace
@@ -1605,9 +1601,10 @@ std::optional<reg32> updateView(App* app, CPU& cpu, reg32 player, reg32 view, re
 }  // namespace
 
 /* 0x4228e0: updateView for player eax, view edx, flag ebx. */
-void updateCamera(App* app, CPU& cpu)
+x86::reg32 updateCamera(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, player = cpu.eax, view = cpu.edx, flag = cpu.ebx] { return updateView(app, cpu, player, view, flag); });
+    asThunk(cpu, args, [&, player = args.eax, view = args.edx, flag = args.ebx] { return updateView(app, cpu, player, view, flag); });
+    return args.eax;
 }
 
 namespace
@@ -1643,14 +1640,15 @@ ViewSource copyView(App* app, reg32 player, reg32 to)
 
 /* 0x4229c0: copyView for player eax to edx; eax the camera and ebx its mode, as the code leaves
  * them (ebx no argument of its). */
-void cameraView(App* app, CPU& cpu)
+x86::reg32 cameraView(App* app, x86::CPU& cpu, x86::Args& args)
 {
     ViewSource source{};
-    adapts(cpu, [&, player = cpu.eax, to = cpu.edx] {
+    asThunk(cpu, args, [&, player = args.eax, to = args.edx] {
         source = copyView(app, player, to);
         return source.camera;
     });
-    cpu.ebx = source.mode;
+    args.ebx = source.mode;
+    return args.eax;
 }
 
 namespace
@@ -1687,9 +1685,10 @@ bool insideView(App* app, reg32 player)
 }
 
 /* 0x422aa0: insideView for player eax, 1 or 0. */
-void cockpitShown(App* app, CPU& cpu)
+x86::reg32 cockpitShown(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, player = cpu.eax] { return insideView(app, player) ? 1u : 0u; });
+    asThunk(cpu, args, [&, player = args.eax] { return insideView(app, player) ? 1u : 0u; });
+    return args.eax;
 }
 
 /* 0x422ba0's: the car player's camera rides with. */
@@ -1699,9 +1698,10 @@ reg32 carOfCamera(App* app, reg32 player)
 }
 
 /* 0x422ba0: carOfCamera for player eax. */
-void cameraCar(App* app, CPU& cpu)
+x86::reg32 cameraCar(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, player = cpu.eax] { return carOfCamera(app, player); });
+    asThunk(cpu, args, [&, player = args.eax] { return carOfCamera(app, player); });
+    return args.eax;
 }
 
 /* 0x422bd0's: the car player's camera looks at. */
@@ -1711,9 +1711,10 @@ reg32 targetOfCamera(App* app, reg32 player)
 }
 
 /* 0x422bd0: targetOfCamera for player eax. */
-void cameraTarget(App* app, CPU& cpu)
+x86::reg32 cameraTarget(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, player = cpu.eax] { return targetOfCamera(app, player); });
+    asThunk(cpu, args, [&, player = args.eax] { return targetOfCamera(app, player); });
+    return args.eax;
 }
 
 namespace
@@ -1909,9 +1910,10 @@ std::optional<reg32> setUpCameras(App* app, CPU& cpu)
 }  // namespace
 
 /* 0x422cf0: setUpCameras. */
-void initCameras(App* app, CPU& cpu)
+x86::reg32 initCameras(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&] { return setUpCameras(app, cpu); });
+    asThunk(cpu, args, [&] { return setUpCameras(app, cpu); });
+    return args.eax;
 }
 
 namespace
@@ -1949,9 +1951,10 @@ std::optional<reg32> putCameraMode(App* app, CPU& cpu, reg32 player, reg32 mode)
 }  // namespace
 
 /* 0x4238b0: putCameraMode for player eax and mode edx. */
-void setCameraMode(App* app, CPU& cpu)
+x86::reg32 setCameraMode(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, player = cpu.eax, mode = cpu.edx] { return putCameraMode(app, cpu, player, mode); });
+    asThunk(cpu, args, [&, player = args.eax, mode = args.edx] { return putCameraMode(app, cpu, player, mode); });
+    return args.eax;
 }
 
 namespace
@@ -1981,9 +1984,10 @@ std::optional<reg32> putOverrideMode(App* app, CPU& cpu, reg32 player, reg32 mod
 }  // namespace
 
 /* 0x423960: putOverrideMode for player eax and mode edx. */
-void setOverrideMode(App* app, CPU& cpu)
+x86::reg32 setOverrideMode(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, player = cpu.eax, mode = cpu.edx] { return putOverrideMode(app, cpu, player, mode); });
+    asThunk(cpu, args, [&, player = args.eax, mode = args.edx] { return putOverrideMode(app, cpu, player, mode); });
+    return args.eax;
 }
 
 namespace
@@ -2009,9 +2013,10 @@ reg32 nextChoice(App* app, bool fromStart)
 }  // namespace
 
 /* 0x423a20: nextChoice, from the start where eax is not 0. */
-void nextCycleMode(App* app, CPU& cpu)
+x86::reg32 nextCycleMode(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, fromStart = cpu.eax != 0] { return nextChoice(app, fromStart); });
+    asThunk(cpu, args, [&, fromStart = args.eax != 0] { return nextChoice(app, fromStart); });
+    return args.eax;
 }
 
 namespace
@@ -2032,12 +2037,13 @@ void buildCycle(App* app)
 }  // namespace
 
 /* 0x423a60: buildCycle; eax 0 as the code leaves it. */
-void buildCameraCycle(App* app, CPU& cpu)
+x86::reg32 buildCameraCycle(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&] {
+    asThunk(cpu, args, [&] {
         buildCycle(app);
         return 0u;
     });
+    return args.eax;
 }
 
 namespace
@@ -2056,9 +2062,10 @@ bool inCycle(App* app, reg32 mode)
 }  // namespace
 
 /* 0x423ab0: inCycle for mode eax, 1 or 0. */
-void modeInCycle(App* app, CPU& cpu)
+x86::reg32 modeInCycle(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, mode = cpu.eax] { return inCycle(app, mode) ? 1u : 0u; });
+    asThunk(cpu, args, [&, mode = args.eax] { return inCycle(app, mode) ? 1u : 0u; });
+    return args.eax;
 }
 
 namespace
@@ -2076,9 +2083,10 @@ bool remember(App* app, reg32 player, reg32 mode)
 }  // namespace
 
 /* 0x423ae0: remember mode edx for player eax; eax 1 or 0. */
-void rememberMode(App* app, CPU& cpu)
+x86::reg32 rememberMode(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, player = cpu.eax, mode = cpu.edx] { return remember(app, player, mode) ? 1u : 0u; });
+    asThunk(cpu, args, [&, player = args.eax, mode = args.edx] { return remember(app, player, mode) ? 1u : 0u; });
+    return args.eax;
 }
 
 /* 0x423b00's: player's camera's mode (activeMode). */
@@ -2088,9 +2096,10 @@ reg32 modeOfCamera(App* app, reg32 player)
 }
 
 /* 0x423b00: modeOfCamera for player eax. */
-void cameraMode(App* app, CPU& cpu)
+x86::reg32 cameraMode(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, player = cpu.eax] { return modeOfCamera(app, player); });
+    asThunk(cpu, args, [&, player = args.eax] { return modeOfCamera(app, player); });
+    return args.eax;
 }
 
 namespace
@@ -2110,11 +2119,12 @@ std::optional<reg32> takeModeAnew(App* app, CPU& cpu, reg32 player, reg32 mode)
 
 /* 0x423b50: takeModeAnew for player eax and mode edx; edx the mode's camera as putCameraMode's
  * code leaves it (its code keeps ebx and ecx only; edx is no argument of its by its reading). */
-void setModeAnew(App* app, CPU& cpu)
+x86::reg32 setModeAnew(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const reg32 player = cpu.eax, mode = cpu.edx;
-    if (adapts(cpu, [&] { return takeModeAnew(app, cpu, player, mode); }))
-        cpu.edx = cameraOfMode(app, playerIndex(app, player), mode);
+    const reg32 player = args.eax, mode = args.edx;
+    if (asThunk(cpu, args, [&] { return takeModeAnew(app, cpu, player, mode); }))
+        args.edx = cameraOfMode(app, playerIndex(app, player), mode);
+    return args.eax;
 }
 
 namespace
@@ -2197,9 +2207,10 @@ std::optional<reg32> settle(App* app, CPU& cpu, reg32 player)
 }  // namespace
 
 /* 0x423b80: settle player eax's camera. */
-void settleCamera(App* app, CPU& cpu)
+x86::reg32 settleCamera(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, player = cpu.eax] { return settle(app, cpu, player); });
+    asThunk(cpu, args, [&, player = args.eax] { return settle(app, cpu, player); });
+    return args.eax;
 }
 
 namespace
@@ -2267,9 +2278,10 @@ std::optional<reg32> nearest(App* app, CPU& cpu, reg32 player)
 }  // namespace
 
 /* 0x423d90: the spot nearest player eax's car. */
-void nearestSpot(App* app, CPU& cpu)
+x86::reg32 nearestSpot(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, player = cpu.eax] { return nearest(app, cpu, player); });
+    asThunk(cpu, args, [&, player = args.eax] { return nearest(app, cpu, player); });
+    return args.eax;
 }
 
 /* 0x423fb0's: the value scaled by 0x536e94 where the record's +4 is set, through a float. */
@@ -2282,15 +2294,17 @@ float scaledWhereSet(App* app, reg32 record, reg32 value)
 
 /* 0x423fb0: scaledWhereSet for the record eax and the float on the stack (ret 4), onto the x87's
  * stack; eax the float's bits where the record's is not set, as the code leaves it. */
-void scaledIfSet(App* app, CPU& cpu)
+x86::reg32 scaledIfSet(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(
-        cpu,
-        [&, record = cpu.eax, value = word(app, cpu, 1)] {
-            cpu.fpu.push(Float(scaledWhereSet(app, record, value)));
+    asThunk(
+        cpu, args,
+        [&, record = args.eax, value = word(app, cpu, 1)] {
+            args.floatSet = true;
+            args.floatResult = double(Float(scaledWhereSet(app, record, value)));
             return at(app, record + 4) == 0 ? value : record;
         },
         4);
+    return args.eax;
 }
 
 namespace
@@ -2311,9 +2325,10 @@ bool bitsNotOneRun(reg32 value)
 }  // namespace
 
 /* 0x423fe0: bitsNotOneRun of eax, 1 or 0. */
-void bitsBroken(App* app, CPU& cpu)
+x86::reg32 bitsBroken(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, value = cpu.eax] { return bitsNotOneRun(value) ? 1u : 0u; });
+    asThunk(cpu, args, [&, value = args.eax] { return bitsNotOneRun(value) ? 1u : 0u; });
+    return args.eax;
 }
 
 namespace
@@ -2349,11 +2364,12 @@ reg32 damp(App* app, reg32 car, reg32 weight, reg32 vector)
 }  // namespace
 
 /* 0x424030: damp, car eax, the weight and the vector on the stack (ret 8). */
-void dampVector(App* app, CPU& cpu)
+x86::reg32 dampVector(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(
-        cpu, [&, car = cpu.eax, weight = word(app, cpu, 1), vector = word(app, cpu, 2)] { return damp(app, car, weight, vector); },
+    asThunk(
+        cpu, args, [&, car = args.eax, weight = word(app, cpu, 1), vector = word(app, cpu, 2)] { return damp(app, car, weight, vector); },
         8);
+    return args.eax;
 }
 
 namespace
@@ -2428,9 +2444,10 @@ std::optional<reg32> chase(App* app, CPU& cpu, reg32 camera)
 }  // namespace
 
 /* 0x4240c0: chase for camera eax. */
-void chaseOffset(App* app, CPU& cpu)
+x86::reg32 chaseOffset(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, camera = cpu.eax] { return chase(app, cpu, camera); });
+    asThunk(cpu, args, [&, camera = args.eax] { return chase(app, cpu, camera); });
+    return args.eax;
 }
 
 namespace
@@ -2457,9 +2474,93 @@ std::optional<reg32> chaseLevel(App* app, CPU& cpu, reg32 camera)
 }  // namespace
 
 /* 0x424260: chaseLevel for camera eax. */
-void chaseOffsetLevel(App* app, CPU& cpu)
+x86::reg32 chaseOffsetLevel(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, camera = cpu.eax] { return chaseLevel(app, cpu, camera); });
+    asThunk(cpu, args, [&, camera = args.eax] { return chaseLevel(app, cpu, camera); });
+    return args.eax;
+}
+
+/* The typed cores the game's other code calls (native_carstate.h): each the function above it
+ * under the game's address, its arguments and its eax as C++ values. */
+std::optional<reg32> cameraViewChosen(App* app, CPU& cpu, reg32 view, reg32 how)
+{
+    return chooseHow(app, cpu, view, how);
+}
+
+reg32 chaseNodePicked(App* app, reg32 player)
+{
+    return chaseNode(app, player);
+}
+
+std::optional<reg32> camerasAttached(App* app, CPU& cpu, reg32 player, reg32 car)
+{
+    return attach(app, cpu, player, car);
+}
+
+std::optional<reg32> cameraLookedAt(App* app, CPU& cpu, reg32 camera, reg32 place)
+{
+    return lookAt(app, cpu, camera, place);
+}
+
+std::optional<reg32> cameraSwitched(App* app, CPU& cpu, reg32 mode, reg32 player)
+{
+    return switchTo(app, cpu, mode, player);
+}
+
+ViewCopy viewCopied(App* app, reg32 player, reg32 to)
+{
+    const ViewSource source = copyView(app, player, to);
+    return ViewCopy{source.camera, source.mode};
+}
+
+std::optional<reg32> camerasSetUp(App* app, CPU& cpu)
+{
+    return setUpCameras(app, cpu);
+}
+
+std::optional<reg32> cameraModePut(App* app, CPU& cpu, reg32 player, reg32 mode)
+{
+    return putCameraMode(app, cpu, player, mode);
+}
+
+std::optional<reg32> overrideModePut(App* app, CPU& cpu, reg32 player, reg32 mode)
+{
+    return putOverrideMode(app, cpu, player, mode);
+}
+
+void cycleBuilt(App* app)
+{
+    buildCycle(app);
+}
+
+bool modeInTheCycle(App* app, reg32 mode)
+{
+    return inCycle(app, mode);
+}
+
+bool modeRemembered(App* app, reg32 player, reg32 mode)
+{
+    return remember(app, player, mode);
+}
+
+std::optional<reg32> cameraSettled(App* app, CPU& cpu, reg32 player)
+{
+    return settle(app, cpu, player);
+}
+
+std::optional<reg32> spotNearestTo(App* app, CPU& cpu, reg32 player)
+{
+    return nearest(app, cpu, player);
+}
+
+bool roadBitsGone(reg32 flags)
+{
+    return bitsNotOneRun(flags);
+}
+
+reg32 vectorDamped(App* app, reg32 car, reg32 weight, reg32 vector)
+{
+    return damp(app, car, weight, vector);
 }
 
 }  // namespace carstate

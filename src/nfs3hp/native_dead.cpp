@@ -31,7 +31,7 @@ namespace
 }  // namespace
 
 #define DEAD(address) \
-    void stub_##address(win32::WinApplication*, x86::CPU&) { deadCode(address); }
+    x86::reg32 stub_##address(win32::WinApplication*, x86::CPU&, x86::Args&) { deadCode(address); return 0; }
 #include "native_dead.inc"
 #undef DEAD
 

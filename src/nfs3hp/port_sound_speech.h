@@ -5,10 +5,10 @@
 #include "port.h"
 
 /* port_sound_speech.cpp's typed cores that the menus call as C++ (guest::direct), and how the game's code calls
- * each by address (ByAddress below, for the checks' stand-ins).  A Result is nullopt when the game stopped in a
- * call.  A core's `esp` is the frame base its adapter hands it: the game's esp on entry, at the return address.
+ * each by address.  A Result is nullopt when the game stopped in a
+ * call.  A core's `esp` is the frame base its thunk hands it: the game's esp on entry, at the return address.
  * A caller through guest::direct passes cpu.esp - 4 - 4 * N, N the stack words the game's call pushes: the esp
- * the adapter hands it, so the core's frame lies where the game's does; by address the call makes it. */
+ * the thunk hands it, so the core's frame lies where the game's does; by address the call makes it. */
 namespace nfs3hp
 {
 namespace port
@@ -38,96 +38,6 @@ Result raceVoiceBanksFreed(App* app, CPU& cpu, reg32 esp);
 
 namespace guest
 {
-
-// `eax` in eax; eax back.
-template <>
-struct ByAddress<port::descriptionStopped>
-{
-    template <x86::reg32 Address>
-    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, x86::reg32 eax)
-    {
-        return watcomEax(app, cpu, Address, {eax});
-    }
-};
-
-// The track in eax, the kind in edx, the language in ebx; eax back.
-template <>
-struct ByAddress<port::descriptionStarted>
-{
-    template <x86::reg32 Address>
-    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, x86::reg32 track,
-                             x86::reg32 kind, x86::reg32 language)
-    {
-        return watcomEax(app, cpu, Address, {track, kind, language});
-    }
-};
-
-// Nothing handed over; eax back.
-template <>
-struct ByAddress<port::descriptionServed>
-{
-    template <x86::reg32 Address>
-    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32)
-    {
-        return watcomEax(app, cpu, Address, {});
-    }
-};
-
-// The bank in eax; eax back.
-template <>
-struct ByAddress<port::raceVoiceBankLoaded>
-{
-    template <x86::reg32 Address>
-    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, x86::reg32 index)
-    {
-        return watcomEax(app, cpu, Address, {index});
-    }
-};
-
-// The index in eax, the group in edx; the handle in eax.
-template <>
-struct ByAddress<port::carLineSpoken>
-{
-    template <x86::reg32 Address>
-    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, x86::reg32 index,
-                             x86::reg32 group)
-    {
-        return watcomEax(app, cpu, Address, {index, group});
-    }
-};
-
-// Nothing handed over; eax back.
-template <>
-struct ByAddress<port::spokenStopOf>
-{
-    template <x86::reg32 Address>
-    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32)
-    {
-        return watcomEax(app, cpu, Address, {});
-    }
-};
-
-// Nothing handed over; the status in eax.
-template <>
-struct ByAddress<port::spokenStatusOf>
-{
-    template <x86::reg32 Address>
-    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32)
-    {
-        return watcomEax(app, cpu, Address, {});
-    }
-};
-
-// Nothing handed over; eax back.
-template <>
-struct ByAddress<port::raceVoiceBanksFreed>
-{
-    template <x86::reg32 Address>
-    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32)
-    {
-        return watcomEax(app, cpu, Address, {});
-    }
-};
 
 }  // namespace guest
 }  // namespace nfs3hp

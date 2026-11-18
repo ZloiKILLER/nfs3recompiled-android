@@ -1,3 +1,4 @@
+#include "port_view.h"
 #include "native_frontend_showcase.h"
 #include "native_watcom.h"
 #include "game_settings.h"
@@ -37,7 +38,7 @@
  * without fading out and goes on (kAfterScreen, if set, says where to).
  *
  * Plan step 5: each function a typed core in frontend::showcase (native_frontend_showcase.h), in
- * a frame of its own where the game's function has one (fe::Frame), and an adapter under the
+ * a frame of its own where the game's function has one (fe::Frame), and a thunk under the
  * game's name for the calls by address.  A core of this file calls another as C++ (guest::direct);
  * the rest of the game still by address. */
 namespace nfs3hp
@@ -98,7 +99,6 @@ constexpr x86::reg32 kReopen = 9;                  // to the menu loop: closes w
 constexpr x86::reg32 kCarFileStemField = 0x315;    // of a car's record
 constexpr x86::reg32 kFirstHistoryText = 0x17;     // the car's texts, a line an era
 
-constexpr x86::reg32 kCarInOwnFolder = 0x4395c0;
 constexpr x86::reg32 kCarText = 0x439ab0;          // eax the car, edx the line
 constexpr x86::reg32 kSprintf = 0x4df690;
 constexpr x86::reg32 kStrcmp = 0x4ee310;
@@ -196,7 +196,7 @@ void setItemTexture(Guest& guest, const Item& item, x86::reg32 texture)
 x86::reg32 shapeTexture(Guest& guest, CPU& cpu, x86::reg32 shape, x86::reg32 replaced)
 {
     return x86::reg32(*fe::direct<0x4d6390, port::shapes::artTexturesOf>(guest.app(), cpu, cpu.esp - 4, shape,
-                                                                         std::int32_t(replaced), cpu.ecx));
+                                                                         std::int32_t(replaced), 0u));  // ecx handed on: it reads none
 }
 
 /* A shape of a loaded file as an item's picture. */
@@ -243,7 +243,7 @@ namespace
 bool formatCarPath(Guest& guest, CPU& cpu, x86::reg32 path, x86::reg32 car, x86::reg32 folder,
                    const GuestString& own, const GuestString& common)
 {
-    if (guest.call(kCarInOwnFolder, args({ car })) != 0)
+    if (*fe::direct<0x4395c0, load::flag4Of>(guest.app(), cpu, car) != 0)
     {
         const x86::reg32 stem = guest::direct<0x439290, frontend::showcase::carFileStem>(guest.app(), cpu, car);
         fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), path, own.address, guest::Words{kCarRootOwn, folder, stem});
@@ -304,8 +304,7 @@ x86::reg32 loadBackdrop(Guest& guest, CPU& cpu, x86::reg32 menu, x86::reg32 fold
 {
     const x86::reg32 path = guest.frame();
     formatCarPath(guest, cpu, path, guest.dword(kCar), folder, kShowcaseOwn, kShowcaseCommon);
-    guest.leaveEdx(0x10);  // what loadQfs hands on in edx to the file's loader: its flags
-    const x86::reg32 art = fe::direct<0x4956f0, frontend::draw::loadQfs>(guest.app(), cpu, path);
+    const x86::reg32 art = fe::direct<0x4956f0, frontend::draw::loadQfsFlags>(guest.app(), cpu, path, 0x10u);
     if (Item mask = fe::findItem(guest, menu, kShowcaseMask))
     {
         fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), path, kMaskNumbered.address, guest::Words{guest.dword(kBackdrop) + 1});
@@ -375,7 +374,7 @@ x86::reg32 frontend::showcase::showcaseEnter(App* app, CPU& cpu, reg32 menu)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 24 + 0x50);
-    fe::direct<0x410460, port::musicMenuSixOf>(app, cpu, cpu.esp - 4, cpu.eax);
+    fe::direct<0x410460, port::musicMenuSixOf>(app, cpu, cpu.esp - 4, menu);  // eax: the menu, as it came
     if (guest::direct<0x453500, resolveCar>(app, cpu) != 0xffffffff)
         guest.setDword(kCar, guest::direct<0x453500, resolveCar>(app, cpu));
 
@@ -448,7 +447,7 @@ void formatSlideNumber(Guest& guest, x86::reg32 number, x86::reg32 slide)
 /* A photograph's file's path. */
 void formatSlidePath(Guest& guest, CPU& cpu, x86::reg32 path, x86::reg32 folder, x86::reg32 number)
 {
-    if (guest.call(kCarInOwnFolder, args({ guest.dword(kShownCar) })) != 0)
+    if (*fe::direct<0x4395c0, load::flag4Of>(guest.app(), cpu, guest.dword(kShownCar)) != 0)
     {
         const x86::reg32 stem =
             guest::direct<0x439290, frontend::showcase::carFileStem>(guest.app(), cpu, guest.dword(kShownCar));
@@ -514,8 +513,7 @@ x86::reg32 frontend::showcase::slidesEnter(App* app, CPU& cpu, reg32 menu)
             formatSlideNumber(guest, number, 1);
             formatSlidePath(guest, cpu, path, folder, number);
         }
-        guest.leaveEdx(0x10);  // what loadQfs hands on in edx to the file's loader: its flags
-        const x86::reg32 art = fe::direct<0x4956f0, frontend::draw::loadQfs>(app, cpu, path);
+        const x86::reg32 art = fe::direct<0x4956f0, frontend::draw::loadQfsFlags>(app, cpu, path, 0x10u);
         const x86::reg32 back = fe::direct<0x4ef1e0, frontend::eab::shapeFileFind>(app, cpu, art, kBack.address);
         // By address: the ecx it leaves reaches shapeTexture's, handed on.
         const x86::reg32 bitmap = guest.call(kNewBitmap, args({ 640, 480, 0x10, 0x10 }));
@@ -529,14 +527,9 @@ x86::reg32 frontend::showcase::slidesEnter(App* app, CPU& cpu, reg32 menu)
             freeBlock(guest, cpu, art);
             fe::direct<kSprintf, watcom::clib::sprintf>(app, cpu, path, kBandsFile.address,
                                                         guest::Words{kCarRootCommon});
-            guest.leaveEdx(0x10);
-            const x86::reg32 bands = fe::direct<0x4956f0, frontend::draw::loadQfs>(app, cpu, path);
+            const x86::reg32 bands = fe::direct<0x4956f0, frontend::draw::loadQfsFlags>(app, cpu, path, 0x10u);
             const x86::reg32 band = fe::direct<0x4ef1e0, frontend::eab::shapeFileFind>(app, cpu, bands, kBand.address);
-            // The blitter's shape, x and y in eax, edx and ebx, which the dispatcher hands on as they are.
-            cpu.eax = band;
-            guest.leaveEdx(0);
-            guest.leaveEbx(0x182);
-            fe::direct<0x4f09c0, frontend::wata::blitDispatch>(app, cpu);
+            fe::direct<0x4f09c0, frontend::wata::blitDispatchAt>(app, cpu, band, 0u, 0x182u);
             freeBlock(guest, cpu, bands);
             if (Item make = fe::findItem(guest, menu, kMake))
                 setItemTexture(guest, make, 0);
@@ -615,13 +608,10 @@ x86::reg32 frontend::showcase::historyPage(App* app, CPU& cpu, reg32 backOut, re
 
     const bool own = formatCarPath(guest, cpu, path, guest.dword(kShownCar), folder, kHistoryOwn, kHistoryCommon);
     // The folder went through edx on its way to sprintf, and this function does not restore edx.
-    if (!own)
-        guest.leaveEdx(folder);
     if (!fileThere(guest, cpu, path))
         return 0;
 
-    guest.leaveEdx(0);  // what loadQfs hands on in edx to the file's loader: its flags
-    const x86::reg32 art = fe::direct<0x4956f0, frontend::draw::loadQfs>(app, cpu, path);
+    const x86::reg32 art = fe::direct<0x4956f0, frontend::draw::loadQfsFlags>(app, cpu, path, 0u);
     const auto isLstm = [&] { return fe::direct<kStrcmp, watcom::clib::strcmp>(guest.app(), guest.cpu(), folder, kLstm.address) == 0; };
     const auto locate = [&](x86::reg32 name) { return guest.call(kLocateShape, args({ art, name })); };
     x86::reg32 maskName;
@@ -648,7 +638,6 @@ x86::reg32 frontend::showcase::historyPage(App* app, CPU& cpu, reg32 backOut, re
         guest.setDword(backOut, locate(kBack.address));
         guest.setDword(maskOut, locate(kMask.address));
     }
-    guest.leaveEdx(maskOut);
     if (guest.dword(backOut) == 0 || guest.dword(maskOut) == 0)
     {
         freeBlock(guest, cpu, art);
@@ -676,7 +665,6 @@ x86::reg32 frontend::showcase::historyPageFrom(App* app, CPU& cpu, reg32 backOut
             guest.setDword(kEra, 1);
         if (first == guest.dword(kEra))
         {
-            guest.leaveEdx(next);
             return 0;
         }
     }
@@ -758,7 +746,7 @@ x86::reg32 frontend::showcase::comparePicture(App* app, CPU& cpu, reg32 car, reg
     fe::direct<kSprintf, watcom::clib::sprintf>(app, cpu, path, kTwoStrings.address,
                                                 guest::Words{kArtFolder, kCompareFile.address});
     const x86::reg32 art =
-        x86::reg32(*fe::direct<0x44ac90, port::buttons::shapesLoaded>(app, cpu, cpu.esp - 4, path, cpu.ebx));
+        x86::reg32(*fe::direct<0x44ac90, port::buttons::shapesLoaded>(app, cpu, cpu.esp - 4, path, 0u));  // ebx handed on: it reads none
     const x86::reg32 stem = guest::direct<0x439290, carFileStem>(app, cpu, car);
     for (x86::reg32 at = stem; guest.byte(at) != 0; ++at)
     {
@@ -783,7 +771,6 @@ x86::reg32 frontend::showcase::comparePicture(App* app, CPU& cpu, reg32 car, reg
     }
     const x86::reg32 texture = shapeTexture(guest, cpu, guest.dword(bitmap + kBitmapShape), replaced);
     fe::direct<0x4eff00, frontend::eab::windowBitmapFree>(app, cpu, bitmap);
-    guest.leaveEdx(texture);
     return texture;
 }
 
@@ -857,7 +844,7 @@ x86::reg32 frontend::showcase::compare2Enter(App* app, CPU& cpu)
     guest.setDword(kCompare574, 0);
     fe::direct<kSprintf, watcom::clib::sprintf>(app, cpu, path, kCompareArt.address, guest::Words{kArtFolder});
     const x86::reg32 art =
-        x86::reg32(*fe::direct<0x44ac90, port::buttons::shapesLoaded>(app, cpu, cpu.esp - 4, path, cpu.ebx));
+        x86::reg32(*fe::direct<0x44ac90, port::buttons::shapesLoaded>(app, cpu, cpu.esp - 4, path, 0u));  // ebx handed on: it reads none
     const GuestString& bar = (guest.byte(kDisplayFlags) & kNoTranslucency) ? kBarOpaque : kBarBlended;
     const x86::reg32 shape = fe::direct<0x4ef1e0, frontend::eab::shapeFileFind>(app, cpu, art, bar.address);
     guest.setDword(kCompareBar, shapeTexture(guest, cpu, shape, 0));
@@ -890,9 +877,11 @@ x86::reg32 frontend::showcase::zoomMoved(App* app, CPU& cpu, reg32 slider)
     const float value = float(fe::direct<0x46c9b0, frontend::glue::sliderValue>(app, cpu, slider, 0));
     x86::reg32 bits;
     std::memcpy(&bits, &value, sizeof bits);
-    // By address: the eax it leaves is this function's answer, and its core hands back none.
-    guest.call(kSetInteriorZoom, args({}, { bits }));
-    return guest.eax();
+    // 0x4646e0 (port_view's storedIncremented) leaves eax as it came, which since sliderValue is called as C++
+    // is no value of the game's: 0.
+    port::view::storedIncremented(app, value);
+    (void)bits;
+    return 0;
 }
 
 /* sub_454d10, interior as it opens: the slider's handler, the slider at 0. */
@@ -974,204 +963,204 @@ constexpr std::uint8_t kRestoreCd = fe::kRestoreEcx | fe::kRestoreEdx;
 constexpr std::uint8_t kRestoreBcSiDi = fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi;
 
 /* A screen's handler with nothing to do: slides', compare2's and interior's. */
-void nothing(win32::WinApplication* app, x86::CPU& cpu, fe::Site& site)
+x86::reg32 nothing(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args, fe::Site& site)
 {
-    fe::runWhole(app, cpu, site, [](Guest&) { return x86::reg32(0); });
+    return fe::runThunk(app, cpu, args, site, [](Guest&) { return x86::reg32(0); });
 }
 
 }
 
-void frontend::showcaseCarFileStem(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::showcaseCarFileStem(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_439290", 0, 0, nullptr, 0, 0 };
-    const x86::reg32 car = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return showcase::carFileStem(app, cpu, car); });
+    const x86::reg32 car = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return showcase::carFileStem(app, cpu, car); });
 }
 
-void frontend::showcaseHasInterior(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::showcaseHasInterior(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_453160", 0, 0, kHasInteriorStrings, std::size(kHasInteriorStrings),
                           kRestoreBcd | fe::kRestoreEsi };
-    const x86::reg32 car = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return showcase::hasInterior(app, cpu, car); });
+    const x86::reg32 car = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return showcase::hasInterior(app, cpu, car); });
 }
 
-void frontend::showcaseHasSlides(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::showcaseHasSlides(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_453200", 0, 0, kHasSlidesStrings, std::size(kHasSlidesStrings), kRestoreBcd };
-    const x86::reg32 car = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return showcase::hasSlides(app, cpu, car); });
+    const x86::reg32 car = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return showcase::hasSlides(app, cpu, car); });
 }
 
-void frontend::showcaseHasHistory(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::showcaseHasHistory(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_453290", 0, 0, kHasHistoryStrings, std::size(kHasHistoryStrings), kRestoreBcd };
-    const x86::reg32 car = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return showcase::hasHistory(app, cpu, car); });
+    const x86::reg32 car = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return showcase::hasHistory(app, cpu, car); });
 }
 
-void frontend::showcaseLoadArt(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::showcaseLoadArt(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_453320", 0, 0, kLoadArtStrings, std::size(kLoadArtStrings) };
-    const x86::reg32 menu = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return showcase::loadArt(app, cpu, menu); });
+    const x86::reg32 menu = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return showcase::loadArt(app, cpu, menu); });
 }
 
-void frontend::showcaseResolveCar(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::showcaseResolveCar(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_453500", 0, 0, kResolveStrings, std::size(kResolveStrings), kRestoreCd };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return showcase::resolveCar(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return showcase::resolveCar(app, cpu); });
 }
 
-void frontend::showcaseOnEnter(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::showcaseOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4535e0", 0, 0, kShowcaseStrings, std::size(kShowcaseStrings) };
-    const x86::reg32 menu = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return showcase::showcaseEnter(app, cpu, menu); });
+    const x86::reg32 menu = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return showcase::showcaseEnter(app, cpu, menu); });
 }
 
-void frontend::showcaseOnFrame(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::showcaseOnFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4537d0", 0, 0, nullptr, 0 };
-    const x86::reg32 menu = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return showcase::showcaseFrame(app, cpu, menu); });
+    const x86::reg32 menu = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return showcase::showcaseFrame(app, cpu, menu); });
 }
 
-void frontend::showcaseOnExit(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::showcaseOnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_453830", 0, 0, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return showcase::showcaseExit(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return showcase::showcaseExit(app, cpu); });
 }
 
-void frontend::showcaseNextSlide(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::showcaseNextSlide(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_453840", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return showcase::nextSlide(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return showcase::nextSlide(app, cpu); });
 }
 
-void frontend::showcasePreviousSlide(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::showcasePreviousSlide(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_453860", 0, 0, kPreviousStrings, std::size(kPreviousStrings),
                           kRestoreBcd | fe::kRestoreEdi };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return showcase::previousSlide(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return showcase::previousSlide(app, cpu); });
 }
 
-void frontend::showcaseSlidesOnEnter(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::showcaseSlidesOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_453c00", 0, 0, kSlidesStrings, std::size(kSlidesStrings) };
-    const x86::reg32 menu = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return showcase::slidesEnter(app, cpu, menu); });
+    const x86::reg32 menu = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return showcase::slidesEnter(app, cpu, menu); });
 }
 
-void frontend::showcaseSlidesOnFrame(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::showcaseSlidesOnFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_453ef0", 0, 0, kBlinkStrings, std::size(kBlinkStrings), kRestoreBcd };
-    const x86::reg32 menu = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return showcase::slidesFrame(app, cpu, menu); });
+    const x86::reg32 menu = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return showcase::slidesFrame(app, cpu, menu); });
 }
 
-void frontend::showcaseSlidesOnExit(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::showcaseSlidesOnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_453f50", 0, 4, nullptr, 0, 0 };
-    nothing(app, cpu, site);
+    return nothing(app, cpu, args, site);
 }
 
-void frontend::showcaseHistoryPage(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::showcaseHistoryPage(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_454000", 0, 0, kPageStrings, std::size(kPageStrings), kRestoreBcSiDi };
-    const x86::reg32 back = cpu.eax, mask = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return showcase::historyPage(app, cpu, back, mask); });
+    const x86::reg32 back = args.eax, mask = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return showcase::historyPage(app, cpu, back, mask); });
 }
 
-void frontend::showcaseHistoryPageFrom(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::showcaseHistoryPageFrom(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_454210", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi };
-    const x86::reg32 back = cpu.eax, mask = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return showcase::historyPageFrom(app, cpu, back, mask); });
+    const x86::reg32 back = args.eax, mask = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return showcase::historyPageFrom(app, cpu, back, mask); });
 }
 
-void frontend::showcaseHistoryOnEnter(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::showcaseHistoryOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_454260", 0, 0, kHistoryStrings, std::size(kHistoryStrings), kRestoreBcd | fe::kRestoreEsi };
-    const x86::reg32 menu = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return showcase::historyEnter(app, cpu, menu); });
+    const x86::reg32 menu = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return showcase::historyEnter(app, cpu, menu); });
 }
 
-void frontend::showcaseHistoryOnFrame(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::showcaseHistoryOnFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_454310", 0, 0, kHistoryStrings, std::size(kHistoryStrings) };
-    const x86::reg32 menu = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return showcase::historyFrame(app, cpu, menu); });
+    const x86::reg32 menu = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return showcase::historyFrame(app, cpu, menu); });
 }
 
-void frontend::showcaseHistoryOnExit(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::showcaseHistoryOnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4543e0", 0, 0, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return showcase::historyExit(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return showcase::historyExit(app, cpu); });
 }
 
-void frontend::showcaseComparePicture(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::showcaseComparePicture(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4543f0", 0, 0, kPictureStrings, std::size(kPictureStrings), kRestoreBcSiDi };
-    const x86::reg32 car = cpu.eax, replaced = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return showcase::comparePicture(app, cpu, car, replaced); });
+    const x86::reg32 car = args.eax, replaced = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return showcase::comparePicture(app, cpu, car, replaced); });
 }
 
-void frontend::showcaseCompareOnEnter(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::showcaseCompareOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_454500", 0, 0, nullptr, 0, kRestoreCd };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return showcase::compareEnter(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return showcase::compareEnter(app, cpu); });
 }
 
-void frontend::showcaseCompareOnFrame(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::showcaseCompareOnFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_454690", 0, 0, kCompareFrameStrings, std::size(kCompareFrameStrings),
                           kRestoreBcd | fe::kRestoreEsi };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return showcase::compareFrame(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return showcase::compareFrame(app, cpu); });
 }
 
-void frontend::showcaseCompare2OnEnter(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::showcaseCompare2OnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_454580", 0, 0, kCompare2Strings, std::size(kCompare2Strings), kRestoreBcd };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return showcase::compare2Enter(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return showcase::compare2Enter(app, cpu); });
 }
 
-void frontend::showcaseCompare2OnFrame(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::showcaseCompare2OnFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_454660", 0, 0, kCompare2FrameStrings, std::size(kCompare2FrameStrings), kRestoreCd };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return showcase::compare2Frame(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return showcase::compare2Frame(app, cpu); });
 }
 
-void frontend::showcaseCompare2OnExit(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::showcaseCompare2OnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_454710", 0, 4, nullptr, 0, 0 };
-    nothing(app, cpu, site);
+    return nothing(app, cpu, args, site);
 }
 
-void frontend::showcaseZoomMoved(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::showcaseZoomMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_454cf0", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    const x86::reg32 slider = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return showcase::zoomMoved(app, cpu, slider); });
+    const x86::reg32 slider = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return showcase::zoomMoved(app, cpu, slider); });
 }
 
-void frontend::showcaseInteriorOnEnter(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::showcaseInteriorOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_454d10", 0, 0, kInteriorStrings, std::size(kInteriorStrings), kRestoreCd };
-    const x86::reg32 menu = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return showcase::interiorEnter(app, cpu, menu); });
+    const x86::reg32 menu = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return showcase::interiorEnter(app, cpu, menu); });
 }
 
-void frontend::showcaseInteriorOnFrame(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::showcaseInteriorOnFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_454d40", 0, 4, nullptr, 0, 0 };
-    nothing(app, cpu, site);
+    return nothing(app, cpu, args, site);
 }
 
-void frontend::showcaseInteriorOnExit(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::showcaseInteriorOnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_454d50", 0, 4, nullptr, 0, 0 };
-    nothing(app, cpu, site);
+    return nothing(app, cpu, args, site);
 }
 
 }

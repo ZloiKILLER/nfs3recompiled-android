@@ -4,7 +4,7 @@
 #include "native_guest.h"
 
 /* native_collide.cpp's typed functions that other files call as C++ (guest::direct), and how the
- * game's code calls each by address (ByAddress, for the check's stand-ins).  Those that take `cpu`
+ * game's code calls each by address.  Those that take `cpu`
  * call the game's other functions by address on it, and are false or nullopt when the game
  * stopped in one. */
 namespace nfs3hp
@@ -84,339 +84,28 @@ inline x86::reg32 addTextResult(win32::WinApplication* app, x86::reg32 channel, 
     return addText(app, channel, text);
 }
 
+// The game's 0x431af0: the render states for pictures.
+bool picturesStated(win32::WinApplication* app, x86::CPU& cpu);
+// The game's 0x437080: channel's lines copied; the copy.
+std::optional<x86::reg32> messageLinesCopied(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 channel);
+// The game's 0x434990: the race's text for the frame; eax as it leaves it.
+std::optional<x86::reg32> raceTextOfFrame(win32::WinApplication* app, x86::CPU& cpu);
+// The game's 0x434a70: the frames drawn counted (eax is left as it was).
+void frameCounted(win32::WinApplication* app);
+// The game's 0x434b00: the drawing made ready at the race's start; false when the game stopped.
+bool raceStartPrepared(win32::WinApplication* app, x86::CPU& cpu);
+// The game's 0x430cd0: no car tested yet this frame.
+void carListCleared(win32::WinApplication* app);
+// The game's 0x4349a0: whether the view is drawn mirrored, kept; that.
+x86::reg32 setViewMirrored(win32::WinApplication* app, x86::reg32 view);
+// The game's 0x4349d0: setViewMirrored for the view, then the polygon list at `list` drawn.
+bool listDrawnMirrored(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 view, x86::reg32 list);
+// The game's 0x4371d0: the hash's seed from `seed`; the odd three times it.
+x86::reg32 seedTheHash(win32::WinApplication* app, x86::reg32 seed);
 }  // namespace collide
 
 namespace guest
 {
-
-// The car in eax; eax as it leaves it.
-template <>
-struct ByAddress<collide::frameCollisions>
-{
-    template <x86::reg32 Address>
-    static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 car)
-    {
-        return watcomEax(app, cpu, Address, {car});
-    }
-};
-
-// The point in eax, edx and ebx; the value in eax.
-template <>
-struct ByAddress<collide::nearestValue>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 x, x86::reg32 y, x86::reg32 z)
-    {
-        watcom(app, cpu, Address, {x, y, z});
-        return cpu.eax;
-    }
-};
-
-// The name in eax; the handle in eax.
-template <>
-struct ByAddress<collide::openColl>
-{
-    template <x86::reg32 Address>
-    static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 name)
-    {
-        return watcomEax(app, cpu, Address, {name});
-    }
-};
-
-// The handle in eax; what the close gives back in eax.
-template <>
-struct ByAddress<collide::closeColl>
-{
-    template <x86::reg32 Address>
-    static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 handle)
-    {
-        return watcomEax(app, cpu, Address, {handle});
-    }
-};
-
-// The size in eax.
-template <>
-struct ByAddress<collide::collSize>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        watcom(app, cpu, Address, {});
-        return cpu.eax;
-    }
-};
-
-// The handle in eax, where to in edx (1 back in eax).
-template <>
-struct ByAddress<collide::readColl>
-{
-    template <x86::reg32 Address>
-    static bool call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 handle, x86::reg32 to)
-    {
-        return watcom(app, cpu, Address, {handle, to});
-    }
-};
-
-// The count in eax.
-template <>
-struct ByAddress<collide::collCount>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        watcom(app, cpu, Address, {});
-        return cpu.eax;
-    }
-};
-
-// The data in eax, the chunk in edx; the chunk's place in eax.
-template <>
-struct ByAddress<collide::collChunkAt>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 data, x86::reg32 chunk)
-    {
-        watcom(app, cpu, Address, {data, chunk});
-        return cpu.eax;
-    }
-};
-
-// The car in eax; eax as it leaves it.
-template <>
-struct ByAddress<collide::controls>
-{
-    template <x86::reg32 Address>
-    static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 car)
-    {
-        return watcomEax(app, cpu, Address, {car});
-    }
-};
-
-template <>
-struct ByAddress<collide::forgetStates>
-{
-    template <x86::reg32 Address>
-    static void call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        watcom(app, cpu, Address, {});
-    }
-};
-
-template <>
-struct ByAddress<collide::textStates>
-{
-    template <x86::reg32 Address>
-    static bool call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        return watcom(app, cpu, Address, {});
-    }
-};
-
-template <>
-struct ByAddress<collide::hudStates>
-{
-    template <x86::reg32 Address>
-    static bool call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        return watcom(app, cpu, Address, {});
-    }
-};
-
-template <>
-struct ByAddress<collide::screenStates>
-{
-    template <x86::reg32 Address>
-    static bool call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        return watcom(app, cpu, Address, {});
-    }
-};
-
-// The count in eax, the layer in edx.
-template <>
-struct ByAddress<collide::layerNothing>
-{
-    template <x86::reg32 Address>
-    static void call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 count, x86::reg32 layer)
-    {
-        watcom(app, cpu, Address, {count, layer});
-    }
-};
-
-// The layer in eax.
-template <>
-struct ByAddress<collide::secondLayerNothing>
-{
-    template <x86::reg32 Address>
-    static void call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 layer)
-    {
-        watcom(app, cpu, Address, {layer});
-    }
-};
-
-// The layer in eax.
-template <>
-struct ByAddress<collide::firstLayerNothing>
-{
-    template <x86::reg32 Address>
-    static void call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 layer)
-    {
-        watcom(app, cpu, Address, {layer});
-    }
-};
-
-// The quotient in eax.
-template <>
-struct ByAddress<collide::fillBlendTables>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        watcom(app, cpu, Address, {});
-        return cpu.eax;
-    }
-};
-
-// The span in eax.
-template <>
-struct ByAddress<collide::blendInto>
-{
-    template <x86::reg32 Address>
-    static void call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 span)
-    {
-        watcom(app, cpu, Address, {span});
-    }
-};
-
-// The corners in eax, edx, ebx and ecx; the depth in eax.
-template <>
-struct ByAddress<collide::subdivisions>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 a, x86::reg32 b, x86::reg32 c,
-                           x86::reg32 d)
-    {
-        watcom(app, cpu, Address, {a, b, c, d});
-        return cpu.eax;
-    }
-};
-
-// The drawers: the record in eax, the next in eax.
-template <>
-struct ByAddress<collide::texturedTriangles>
-{
-    template <x86::reg32 Address>
-    static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 record)
-    {
-        return watcomEax(app, cpu, Address, {record});
-    }
-};
-
-template <>
-struct ByAddress<collide::flatTriangle>
-{
-    template <x86::reg32 Address>
-    static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 record)
-    {
-        return watcomEax(app, cpu, Address, {record});
-    }
-};
-
-template <>
-struct ByAddress<collide::trianglesByZ>
-{
-    template <x86::reg32 Address>
-    static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 record)
-    {
-        return watcomEax(app, cpu, Address, {record});
-    }
-};
-
-template <>
-struct ByAddress<collide::quadsByZ>
-{
-    template <x86::reg32 Address>
-    static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 record)
-    {
-        return watcomEax(app, cpu, Address, {record});
-    }
-};
-
-template <>
-struct ByAddress<collide::ownColourTriangles>
-{
-    template <x86::reg32 Address>
-    static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 record)
-    {
-        return watcomEax(app, cpu, Address, {record});
-    }
-};
-
-template <>
-struct ByAddress<collide::stateFromRecord>
-{
-    template <x86::reg32 Address>
-    static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 record)
-    {
-        return watcomEax(app, cpu, Address, {record});
-    }
-};
-
-template <>
-struct ByAddress<collide::fogColour>
-{
-    template <x86::reg32 Address>
-    static bool call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        return watcom(app, cpu, Address, {});
-    }
-};
-
-// The settings in eax; the copy's block in eax.
-template <>
-struct ByAddress<collide::openChannels>
-{
-    template <x86::reg32 Address>
-    static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 settings)
-    {
-        return watcomEax(app, cpu, Address, {settings});
-    }
-};
-
-// eax as the caller has it, and as the function leaves it.
-template <>
-struct ByAddress<collide::closeChannels>
-{
-    template <x86::reg32 Address>
-    static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 eax)
-    {
-        return watcomEax(app, cpu, Address, {eax});
-    }
-};
-
-// The messages' block in eax.
-template <>
-struct ByAddress<collide::clearAllChannels>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        watcom(app, cpu, Address, {});
-        return cpu.eax;
-    }
-};
-
-// The channel in eax, the text in edx; 1 or 0 in eax.
-template <>
-struct ByAddress<collide::addTextResult>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 channel, x86::reg32 text)
-    {
-        watcom(app, cpu, Address, {channel, text});
-        return cpu.eax;
-    }
-};
 
 }  // namespace guest
 }  // namespace nfs3hp

@@ -1,6 +1,6 @@
 // The game's code that nothing can reach, one DEAD(address) a function:
-// native_dead.cpp makes each a stub that stops the game with its address, and
-// disassemble_nfs3hp.py generates no code for it.
+// native_dead.cpp makes each a stub that stops the game with its
+// address.
 //
 // tools/audit_dead.py proves each, and writes this list (--write): no call,
 // jump, immediate or displacement of it in any instruction that can run, the

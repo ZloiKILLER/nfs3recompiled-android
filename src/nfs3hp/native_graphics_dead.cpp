@@ -31,7 +31,7 @@ namespace
 }  // namespace
 
 #define DEAD(address) \
-    void dead_##address(win32::WinApplication*, x86::CPU&) { deadCode(address); }
+    x86::reg32 dead_##address(win32::WinApplication*, x86::CPU&, x86::Args&) { deadCode(address); }
 #include "native_graphics_dead.inc"
 #undef DEAD
 

@@ -1,10 +1,24 @@
 #include "game_settings.h"
+#include "native_raceload.h"
 #include "port_draw2d.h"
 #include "port_text.h"
 #include "port_shapes.h"
 #include "thrash_calls.h"
+#include "native_graphics.h"
+#include "native_watcom.h"
+#include "native_collide.h"
+#include "native_ea_formats.h"
+#include "native_ea_memory.h"
+#include "native_ea_support.h"
+#include "native_frontend_eaa.h"
+#include "native_frontend_eab.h"
+#include "native_frontend_wata.h"
+#include "native_render.h"
+#include "native_vertices.h"
 
 #include <cstring>
+#include <optional>
+#include <type_traits>
 
 /* Each sum and product rounds as the x87 code rounds it: none fused. */
 #if defined(__clang__)
@@ -21,9 +35,7 @@
  * pointer, the screens started afresh (0x4dab90, 0x4daf80); the quads of 640
  * by 480 scaled to the screen (0x4db000, 0x4db380).
  *
- * tools/game_checks holds each adapter against the game's code made afresh:
- * memory, the calls out with their arguments, eax, esi, edi, ebp and esp, the
- * x87's stack, control and status words.  What these leave in ebx, ecx and
+ * What these leave in ebx, ecx and
  * edx otherwise than the caller had them is read by no caller of the game's:
  * the callers' reads after each call, followed up through callers that
  * return what they were left, reach only one, the menus' panel lines
@@ -144,9 +156,78 @@ constexpr reg32 kPointerTextures = 0x563b34, kPointerSpots = 0x563d4c;
  * on the screen, the clipped quad (its corners in eax, edx, ebx, ecx) and
  * line (eax, edx), a line of the log and a key, toupper. */
 constexpr reg32 kSetRenderState = 0x431900;
-constexpr guest::Native kToScreenX = text::toScreenX, kToScreenY = text::toScreenY;  // 0x451400, 0x451440
+constexpr reg32 kToScreenX = 0x451400, kToScreenY = 0x451440;  // 0x451400, 0x451440
 constexpr reg32 kClipQuad = 0x4c12e0, kClipLine = 0x4c0b20;
-constexpr reg32 kTrace = 0x42d500, kInkey = 0x4f0120, kToupper = 0x4eede0;
+constexpr reg32 kInkey = 0x4f0120, kToupper = 0x4eede0;
+
+/* The typed cores called as C++ where the game's code calls their addresses, from `esp` (the call's frame
+ * base esp - 4 - 4 * Words): their answer in `*result` when given; false when the game stopped in one. */
+template <class T>
+struct is_optional : std::false_type
+{
+};
+template <class T>
+struct is_optional<std::optional<T>> : std::true_type
+{
+};
+
+template <class F>
+bool runCore(CPU& cpu, reg32 esp, reg32* result, F f)
+{
+    cpu.esp = esp;
+    if constexpr (std::is_void_v<decltype(f())>)
+    {
+        f();
+        return !cpu.terminate;
+    }
+    else
+    {
+        const auto v = f();
+        if (cpu.terminate)
+            return false;
+        if constexpr (is_optional<std::decay_t<decltype(v)>>::value)
+        {
+            if (!v)
+                return false;
+            if (result != nullptr)
+                *result = reg32(*v);
+        }
+        else if (result != nullptr)
+            *result = reg32(v);
+        return true;
+    }
+}
+
+template <reg32 Address, auto Core, unsigned Words, typename... A>
+bool coreAt(App* app, CPU& cpu, reg32 esp, reg32* result, A... args)
+{
+    return runCore(cpu, esp, result,
+                   [&] { return guest::direct<Address, Core>(app, cpu, reg32(esp - 4 - 4 * Words), args...); });
+}
+
+template <reg32 Address, auto Core, typename... A>
+bool plainAt(App* app, CPU& cpu, reg32 esp, reg32* result, A... args)
+{
+    return runCore(cpu, esp, result, [&] { return guest::direct<Address, Core>(app, cpu, args...); });
+}
+
+/* A core that leaves eax as it came: `*result` is `eax` after it. */
+template <reg32 Address, auto Core, typename... A>
+bool keepAt(App* app, CPU& cpu, reg32 esp, reg32* result, reg32 eax, A... args)
+{
+    if (result != nullptr)
+        *result = eax;
+    return runCore(cpu, esp, nullptr, [&] { return guest::direct<Address, Core>(app, cpu, args...); });
+}
+
+/* A box core whose four colours the game's code pushes. */
+template <reg32 Address, auto Core>
+bool boxedAt(App* app, CPU& cpu, reg32 esp, reg32* result, reg32 x, reg32 y, reg32 width, reg32 height, reg32 c0,
+             reg32 c1, reg32 c2, reg32 c3)
+{
+    const uint32_t colours[4] = {c0, c1, c2, c3};
+    return coreAt<Address, Core, 4>(app, cpu, esp, result, x, y, width, height, static_cast<const uint32_t*>(colours));
+}
 /* The render states these set: a texture, alpha's, a quad drawn by softtria. */
 constexpr reg32 kStateTexture = 1, kStateAlpha = 6, kStateShape = 0x2bf, kStateBlend = 2;
 /* EA's bitmaps and fonts: a bitmap made, drawn into and let go; a font of a
@@ -245,12 +326,12 @@ void markCorners(App* app, reg32 at)
 /* The quad at `at` clipped and drawn. */
 bool drawQuad(App* app, CPU& cpu, reg32 esp, reg32 at, reg32& r)
 {
-    return callGame(app, cpu, esp, kClipQuad, {at, at + 0x20, at + 0x40, at + 0x60}, {}, r);
+    return coreAt<kClipQuad, vertices::quadClippedAt, 0>(app, cpu, esp, &r, at, at + 0x20, at + 0x40, at + 0x60);
 }
 
-bool renderState(App* app, CPU& cpu, reg32 esp, reg32 state, reg32 value, reg32& r, reg32 ebx = 0, reg32 ecx = 0)
+bool renderState(App* app, CPU& cpu, reg32 esp, reg32 state, reg32 value, reg32& r)
 {
-    return callGame(app, cpu, esp, kSetRenderState, {state, value, ebx, ecx}, {}, r);
+    return plainAt<kSetRenderState, graphics::stateAnswer>(app, cpu, esp, &r, state, value);
 }
 
 /* The screen quad's depth and w as the 2D screens have them: the first
@@ -287,10 +368,10 @@ int32_t clipCodes(App* app, int32_t count, reg32 vertices, reg32 quads)
 
 /* 0x4d5840: the clip codes of the four corners of each of eax quads -- four
  * vertex numbers each, 0x10 bytes, from ebx -- among the vertices at edx. */
-void quadOutcodes(App* app, CPU& cpu)
+x86::reg32 quadOutcodes(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, reg32(clipCodes(app, int32_t(e.eax), e.edx, e.ebx)));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, reg32(clipCodes(app, int32_t(e.eax), e.edx, e.ebx)));
 }
 
 /* ---- 0x4d81b0 ---- */
@@ -299,7 +380,6 @@ Result shadedRectangle(App* app, CPU& cpu, reg32 esp, int32_t left, int32_t top,
                        const uint32_t colours[4])
 {
     const reg32 at = esp - 0x1c;  // esi, edi, ebp and 0x10 bytes
-    HeldEbp held(cpu, esp - 0xc);
     reg32 r;
     if (kOverRace(app) != 0)
     {
@@ -308,16 +388,16 @@ Result shadedRectangle(App* app, CPU& cpu, reg32 esp, int32_t left, int32_t top,
             kQuad(app, corner).z = fromBits(kNearDepth);
             kQuad(app, corner).w = fromBits(kNearW);
         }
-        if (!callGame(app, cpu, at, kToScreenX, {reg32(left), reg32(top), reg32(right), reg32(bottom)}, {}, r))
+        if (!plainAt<0x451400, text::screenX>(app, cpu, at, &r, reg32(left)))
             return {};
         left = int32_t(r);
-        if (!callGame(app, cpu, at, kToScreenX, {reg32(right), reg32(top), reg32(right), reg32(bottom)}, {}, r))
+        if (!plainAt<0x451400, text::screenX>(app, cpu, at, &r, reg32(right)))
             return {};
         right = int32_t(r);
-        if (!callGame(app, cpu, at, kToScreenY, {reg32(top), reg32(top), reg32(right), reg32(bottom)}, {}, r))
+        if (!plainAt<0x451440, text::screenY>(app, cpu, at, &r, reg32(top)))
             return {};
         top = int32_t(r);
-        if (!callGame(app, cpu, at, kToScreenY, {reg32(bottom), reg32(top), reg32(right), reg32(bottom)}, {}, r))
+        if (!plainAt<0x451440, text::screenY>(app, cpu, at, &r, reg32(bottom)))
             return {};
         bottom = int32_t(r);
     }
@@ -337,7 +417,7 @@ Result shadedRectangle(App* app, CPU& cpu, reg32 esp, int32_t left, int32_t top,
     kQuad(app, 1).colour = colours[1];
     kQuad(app, 2).colour = colours[2];
     kQuad(app, 3).colour = colours[3];
-    if (!renderState(app, cpu, at, kStateTexture, 0, r, reg32(right), reg32(bottom)))
+    if (!renderState(app, cpu, at, kStateTexture, 0, r))
         return {};
     markCorners(app, kQuadAt);
     if ((kDriverFlags(app) & kSofttria) != 0)
@@ -355,11 +435,11 @@ Result shadedRectangle(App* app, CPU& cpu, reg32 esp, int32_t left, int32_t top,
 
 /* 0x4d81b0 (stdcall 0x10): the rectangle from eax, edx to ebx, ecx, the
  * stack's four colours at its corners. */
-void drawShadedRectangle(App* app, CPU& cpu)
+x86::reg32 drawShadedRectangle(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     const uint32_t colours[4] = {e.arg(app, 0), e.arg(app, 1), e.arg(app, 2), e.arg(app, 3)};
-    e.finish(cpu,
+    return e.finish(cpu, args,
              shadedRectangle(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx), int32_t(e.ebx), int32_t(e.ecx), colours),
              0x10);
 }
@@ -375,10 +455,10 @@ Result gradient(App* app, CPU& cpu, reg32 esp, int32_t left, int32_t top, int32_
 
 /* 0x4d8550 (stdcall 8): the rectangle from eax, edx to ebx, ecx shaded from
  * [esp+4] at its left to [esp+8] at its right. */
-void gradientRectangle(App* app, CPU& cpu)
+x86::reg32 gradientRectangle(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu,
+    const Entry e(cpu, args);
+    return e.finish(cpu, args,
              gradient(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx), int32_t(e.ebx), int32_t(e.ecx), e.arg(app, 0),
                       e.arg(app, 1)),
              8);
@@ -390,10 +470,9 @@ Result shadedBox(App* app, CPU& cpu, reg32 esp, int32_t x, int32_t y, int32_t wi
                  const uint32_t colours[4])
 {
     const reg32 at = esp - 0xc;
-    HeldEbp held(cpu, at);
     reg32 r;
     if ((kDriverFlags(app) & kSofttria) != 0
-        && !renderState(app, cpu, at, kStateAlpha, 1, r, reg32(width), reg32(height)))
+        && !renderState(app, cpu, at, kStateAlpha, 1, r))
         return {};
     const Result drawn = shadedRectangle(app, cpu, at - 0x10 - 4, x, y, x + width, y + height, colours);
     if (!drawn)
@@ -405,11 +484,11 @@ Result shadedBox(App* app, CPU& cpu, reg32 esp, int32_t x, int32_t y, int32_t wi
 
 /* 0x4d8860 (stdcall 0x10): the rectangle at eax, edx, ebx wide and ecx high,
  * the stack's four colours at its corners -- alpha on for it with softtria. */
-void drawShadedBox(App* app, CPU& cpu)
+x86::reg32 drawShadedBox(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     const uint32_t colours[4] = {e.arg(app, 0), e.arg(app, 1), e.arg(app, 2), e.arg(app, 3)};
-    e.finish(cpu, shadedBox(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx), int32_t(e.ebx), int32_t(e.ecx), colours),
+    return e.finish(cpu, args, shadedBox(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx), int32_t(e.ebx), int32_t(e.ecx), colours),
              0x10);
 }
 
@@ -422,10 +501,10 @@ Result filled(App* app, CPU& cpu, reg32 esp, int32_t x, int32_t y, int32_t width
 
 /* 0x4d8910 (stdcall 4): the rectangle at eax, edx, ebx wide and ecx high, in
  * the colour [esp+4]. */
-void filledRectangle(App* app, CPU& cpu)
+x86::reg32 filledRectangle(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, filled(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx), int32_t(e.ebx), int32_t(e.ecx), e.arg(app, 0)),
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, filled(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx), int32_t(e.ebx), int32_t(e.ecx), e.arg(app, 0)),
              4);
 }
 
@@ -435,10 +514,9 @@ Result outline(App* app, CPU& cpu, reg32 esp, int32_t x, int32_t y, int32_t widt
 {
     const reg32 at = esp - 0x24;  // esi, edi, ebp and 0x18 bytes
     const reg32 callee = at - 8 - 4;
-    HeldEbp held(cpu, esp - 0xc);
     reg32 r;
     if ((kDriverFlags(app) & kSofttria) != 0
-        && !renderState(app, cpu, at, kStateAlpha, 1, r, reg32(width), reg32(height)))
+        && !renderState(app, cpu, at, kStateAlpha, 1, r))
         return {};
     const int32_t right = x + width, bottom = y + height;
     Result drawn;
@@ -455,10 +533,10 @@ Result outline(App* app, CPU& cpu, reg32 esp, int32_t x, int32_t y, int32_t widt
 /* 0x4d8930 (stdcall 4): a frame a pixel wide around the rectangle at eax,
  * edx, ebx wide and ecx high, in the colour [esp+4] -- alpha on for it with
  * softtria. */
-void frame(App* app, CPU& cpu)
+x86::reg32 frame(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, outline(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx), int32_t(e.ebx), int32_t(e.ecx), e.arg(app, 0)),
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, outline(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx), int32_t(e.ebx), int32_t(e.ecx), e.arg(app, 0)),
              4);
 }
 
@@ -468,7 +546,6 @@ Result panel(App* app, CPU& cpu, reg32 esp, int32_t x, int32_t y, int32_t width,
 {
     constexpr uint32_t kDark = 0xff282828, kLight = 0xff727eb3, kBlack = 0xff000000;
     const reg32 callee = esp - 0x20 - 8 - 4;  // esi, edi, ebp and 0x14 bytes
-    HeldEbp held(cpu, esp - 0xc);
     const int32_t right = x + width, bottom = y + height;
     Result drawn;
     if (!(drawn = gradient(app, cpu, callee, x, y, right, bottom, kDark, kDark))
@@ -481,10 +558,10 @@ Result panel(App* app, CPU& cpu, reg32 esp, int32_t x, int32_t y, int32_t width,
 }
 
 /* 0x4d89f0: the menus' raised panel at eax, edx, ebx wide and ecx high. */
-void drawPanel(App* app, CPU& cpu)
+x86::reg32 drawPanel(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, panel(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx), int32_t(e.ebx), int32_t(e.ecx)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, panel(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx), int32_t(e.ebx), int32_t(e.ecx)));
 }
 
 /* ---- 0x4d8ac0 ---- */
@@ -494,7 +571,6 @@ Result fieldBox(App* app, CPU& cpu, reg32 esp, int32_t x, int32_t y, int32_t wid
 {
     constexpr uint32_t kLight = 0xff727eb3, kBlack = 0xff000000;
     const reg32 at = esp - 0x18;  // esi, edi, ebp and 0xc bytes
-    HeldEbp held(cpu, esp - 0xc);
     const int32_t right = x + width, bottom = y + height;
     Result drawn;
     if (!(drawn = shadedRectangle(app, cpu, at - 0x10 - 4, x, y, right, bottom, colours))
@@ -518,11 +594,11 @@ Result drawFieldBoxOf(App* app, CPU& cpu, reg32 esp, int32_t x, int32_t y, int32
 /* 0x4d8ac0 (stdcall 0x10): a field to type in at eax, edx, ebx wide and ecx
  * high, the stack's four colours at its corners -- nothing on a race's pause
  * screens. */
-void drawFieldBox(App* app, CPU& cpu)
+x86::reg32 drawFieldBox(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     const uint32_t colours[4] = {e.arg(app, 0), e.arg(app, 1), e.arg(app, 2), e.arg(app, 3)};
-    e.finish(cpu,
+    return e.finish(cpu, args,
              drawFieldBoxOf(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx), int32_t(e.ebx), int32_t(e.ecx), colours),
              0x10);
 }
@@ -533,9 +609,8 @@ Result line(App* app, CPU& cpu, reg32 esp, int32_t x0, int32_t y0, int32_t x1, i
             uint32_t to)
 {
     const reg32 at = esp - 0x1c;  // esi, edi, ebp and 0x10 bytes
-    HeldEbp held(cpu, esp - 0xc);
     reg32 r;
-    if ((kDriverFlags(app) & kSofttria) != 0 && !renderState(app, cpu, at, kStateAlpha, 1, r, reg32(x1), reg32(y1)))
+    if ((kDriverFlags(app) & kSofttria) != 0 && !renderState(app, cpu, at, kStateAlpha, 1, r))
         return {};
     Vertex& q0 = kQuad(app, 0);
     Vertex& q1 = kQuad(app, 1);
@@ -562,12 +637,12 @@ Result line(App* app, CPU& cpu, reg32 esp, int32_t x0, int32_t y0, int32_t x1, i
     q2.colour = to;
     q1.colour = to;
     q0.w = viaX87(q1.w);
-    if (!renderState(app, cpu, at, kStateTexture, 0, r, reg32(x1), bitsOf(q1.z)))
+    if (!renderState(app, cpu, at, kStateTexture, 0, r))
         return {};
     // Its two ends.
     for (int32_t corner = 0; corner < 2; ++corner)
         kQuad(app, corner).code = clipCode(app, kQuad.address(corner));
-    if (!callGame(app, cpu, at, kClipLine, {kQuadAt, kQuadAt + 0x20}, {}, r))
+    if (!plainAt<kClipLine, render::lineDrawn>(app, cpu, at, &r, kQuadAt, kQuadAt + 0x20))
         return {};
     if ((kDriverFlags(app) & kSofttria) != 0 && !renderState(app, cpu, at, kStateAlpha, 0, r))
         return {};
@@ -586,10 +661,10 @@ Result drawLineOf(App* app, CPU& cpu, reg32 esp, int32_t x0, int32_t y0, int32_t
 /* 0x4d8ed0 (stdcall 8): a line from eax, edx to ebx, ecx shaded from the
  * colour [esp+4] to [esp+8] -- nothing on a race's pause screens; alpha on
  * for it with softtria. */
-void drawLine(App* app, CPU& cpu)
+x86::reg32 drawLine(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu,
+    const Entry e(cpu, args);
+    return e.finish(cpu, args,
              drawLineOf(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx), int32_t(e.ebx), int32_t(e.ecx), e.arg(app, 0),
                         e.arg(app, 1)),
              8);
@@ -601,15 +676,13 @@ Result tileRectangle(App* app, CPU& cpu, reg32 esp, int32_t shape, int32_t left,
                      int32_t bottom, uint32_t from, uint32_t to)
 {
     const reg32 at = esp - 0x18;  // esi, edi, ebp and 0xc bytes
-    HeldEbp held(cpu, esp - 0xc);
     reg32 r;
     const int32_t tile = kShapes(app, shape).firstTile;
     if (tile == -1)
     {
         // A shape not loaded: said in the log, and a key waited for.
-        if (!callGame(app, cpu, at, kTrace, {0xffffffffu, reg32(left), reg32(top), reg32(right)},
-                      {kNoShape, reg32(shape)}, r)
-            || !callGame(app, cpu, at, kInkey, {r, reg32(left), reg32(top), reg32(right)}, {}, r))
+        if (!keepAt<0x42d500, raceload::noHook>(app, cpu, at, &r, 0xffffffffu)
+            || !plainAt<kInkey, ea::waitKey>(app, cpu, at, &r))
             return {};
         return int32_t(r);
     }
@@ -638,7 +711,7 @@ Result tileRectangle(App* app, CPU& cpu, reg32 esp, int32_t shape, int32_t left,
     q0.w = viaX87(q1.w);
     q3.y = ofInt(bottom);
     q2.y = viaX87(q3.y);
-    if (!renderState(app, cpu, at, kStateTexture, kTileTextures(app, tile), r, reg32(top), reg32(right)))
+    if (!renderState(app, cpu, at, kStateTexture, kTileTextures(app, tile), r))
         return {};
     markCorners(app, kQuadAt);
     if (!drawQuad(app, cpu, at, kQuadAt, r))
@@ -649,14 +722,20 @@ Result tileRectangle(App* app, CPU& cpu, reg32 esp, int32_t shape, int32_t left,
 /* 0x4d8b80 (stdcall 0xc): shape eax's first tile's texture over the
  * rectangle from edx, ebx to ecx, [esp+4], shaded from the colour [esp+8] at
  * its left to [esp+0xc] at its right -- nothing on a race's pause screens. */
-void drawTileRectangle(App* app, CPU& cpu)
+Result drawTileRectangleOf(App* app, CPU& cpu, reg32 esp, int32_t shape, int32_t left, int32_t right, int32_t top,
+                           int32_t bottom, uint32_t from, uint32_t to)
 {
-    const Entry e(cpu);
     if (kOverRace(app) != 0)
-        return e.back(cpu, e.eax, 0xc);
-    e.finish(cpu,
-             tileRectangle(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx), int32_t(e.ecx), int32_t(e.ebx),
-                           int32_t(e.arg(app, 0)), e.arg(app, 1), e.arg(app, 2)),
+        return shape;
+    return tileRectangle(app, cpu, esp, shape, left, right, top, bottom, from, to);
+}
+
+x86::reg32 drawTileRectangle(App* app, CPU& cpu, x86::Args& args)
+{
+    const Entry e(cpu, args);
+    return e.finish(cpu, args,
+             drawTileRectangleOf(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx), int32_t(e.ecx), int32_t(e.ebx),
+                                 int32_t(e.arg(app, 0)), e.arg(app, 1), e.arg(app, 2)),
              0xc);
 }
 
@@ -665,7 +744,6 @@ void drawTileRectangle(App* app, CPU& cpu)
 Result accented(App* app, CPU& cpu, reg32 esp, reg32 c)
 {
     const reg32 at = esp - 0x10;  // ebx, ecx, edx, ebp
-    HeldEbp held(cpu, at);
     const reg32 language = reg32(gameSettings(app).language);
     reg32 accents = kAccents(app);
     uint8_t al = uint8_t(c);
@@ -673,7 +751,7 @@ Result accented(App* app, CPU& cpu, reg32 esp, reg32 c)
     {
         // In French an e acute is an E.
         reg32 r;
-        if (!callGame(app, cpu, at, kToupper, {0x65, accents, language, 0xe0}, {}, r))
+        if (!plainAt<0x4eede0, watcom::clib::toupper>(app, cpu, at, &r, 0x65))
             return {};
         al = uint8_t(r);
     }
@@ -684,7 +762,7 @@ Result accented(App* app, CPU& cpu, reg32 esp, reg32 c)
     else
     {
         reg32 r;
-        if (!callGame(app, cpu, at, kToupper, {c & 0xff, accents, language, 0xe0}, {}, r))
+        if (!plainAt<0x4eede0, watcom::clib::toupper>(app, cpu, at, &r, c & 0xff))
             return {};
         al = uint8_t(r);
     }
@@ -702,25 +780,25 @@ Result accented(App* app, CPU& cpu, reg32 esp, reg32 c)
  * (the text at [0x564180]): 0xe0 and its place there, or 0xe0 where it is
  * not.  Upper case first -- the characters from 0xe0 by taking 0x20 off, the
  * others by toupper; in French an e acute is an E. */
-void accentedCharacter(App* app, CPU& cpu)
+x86::reg32 accentedCharacter(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, accented(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, accented(app, cpu, e.esp, e.eax));
 }
 
 /* ---- 0x4d9240 ---- */
 
-Result glyph(App* app, CPU& cpu, reg32 esp, reg32 text, int32_t index, reg32 ebx, reg32 ecx)
+Result glyph(App* app, CPU& cpu, reg32 esp, reg32 text, int32_t index)
 {
     const reg32 at = esp - 0x24;    // ebx, ecx, esi, edi, ebp and 0x10 bytes
     const reg32 frame = esp - 0x14;  // ebp
-    HeldEbp held(cpu, frame);
     reg32 r;
-    if (!callGame(app, cpu, at, kCharacterWidth, {text, 1, ebx, ecx}, {}, r))
+    if (!plainAt<kCharacterWidth, frontend::eab::textMeasureUpTo>(app, cpu, at, &r, text, 1u))
         return {};
     kGlyphWidth.set(app, index, uint8_t(r + 1));
     // Its height, and a width it is not asked for, by pointers into the frame.
-    if (!callGame(app, cpu, at, kCharacterExtent, {text, 1, frame - 0x10, frame - 0xc}, {frame - 8, frame - 4}, r))
+    if (!plainAt<kCharacterExtent, frontend::wata::textMeasureBox>(app, cpu, at, &r, text, x86::sreg32(1), frame - 0x10,
+                                                                   frame - 0xc, frame - 8, frame - 4))
         return {};
     kGlyphHeight.set(app, index, app->getMemory<uint8_t>(frame - 4));
     const int32_t height = kGlyphHeight(app, index);
@@ -739,8 +817,8 @@ Result glyph(App* app, CPU& cpu, reg32 esp, reg32 text, int32_t index, reg32 ebx
     }
     kGlyphU.set(app, index, uint8_t(kFontX(app)));
     kGlyphV.set(app, index, uint8_t(kFontY(app)));
-    if (!callGame(app, cpu, at, kDrawCharacter, {text, reg32(kFontX(app)), reg32(kFontY(app)), reg32(kFontX(app))}, {},
-                  r))
+    if (!plainAt<kDrawCharacter, frontend::eab::textDrawAt>(app, cpu, at, &r, text, reg32(kFontX(app)),
+                                                            reg32(kFontY(app))))
         return {};
     return int32_t(kGlyphWidth(app, index));
 }
@@ -749,10 +827,10 @@ Result glyph(App* app, CPU& cpu, reg32 esp, reg32 text, int32_t index, reg32 ebx
  * font's bitmap at its next place -- the next row's when the row is full --
  * and its square noted as character edx's: how wide it is, a pixel more than
  * EA's font has it. */
-void fontCharacter(App* app, CPU& cpu)
+x86::reg32 fontCharacter(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, glyph(app, cpu, e.esp, e.eax, int32_t(e.edx), e.ebx, e.ecx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, glyph(app, cpu, e.esp, e.eax, int32_t(e.edx)));
 }
 
 /* ---- 0x4d93a0 ---- */
@@ -762,14 +840,13 @@ Result makeScreenFont(App* app, CPU& cpu, reg32 esp)
     const reg32 at = esp - 0x118;  // ebx, ecx, edx, esi, edi, ebp and 0x100 bytes
     const reg32 name = at;         // the .ffn file's name, then a character to draw
     const reg32 callee = at - 4;
-    HeldEbp held(cpu, esp - 0x18 - 0x17e);
     reg32 r;
     // A bitmap of 256 by 256, 32 bits, drawn into.
-    if (!callGame(app, cpu, at, kNewBitmap, {0x100, 0x100, 0x20, 0}, {}, r))
+    if (!plainAt<kNewBitmap, frontend::eab::windowBitmapCreateDefault>(app, cpu, at, &r, 0x100u, 0x100u, 0x20u, 0u))
         return {};
     kFontBitmap.set(app, r);
-    if (!callGame(app, cpu, at, kDrawInto, {r, 0x100, 0x20, 0}, {}, r)
-        || !callGame(app, cpu, at, kTransparent, {kScreenDepthBits(app) == 8 ? 0xffu : 0u, 0x100, 0x20, 0}, {}, r))
+    if (!plainAt<kDrawInto, frontend::eaa::bitmapDrawInto>(app, cpu, at, &r, r)
+        || !plainAt<kTransparent, frontend::eab::drawClearClip>(app, cpu, at, &r, kScreenDepthBits(app) == 8 ? 0xffu : 0u))
         return {};
     kFontTextureIndex.set(app, 0);
     kFontY.set(app, 0);
@@ -778,15 +855,15 @@ Result makeScreenFont(App* app, CPU& cpu, reg32 esp)
         kAccents.set(app, kLanguageAccents(app, std::int32_t(gameSettings(app).language)));
     // The accented characters, from the accented font.
     reg32 accents = kAccents(app);
-    if (!callGame(app, cpu, at, kSprintf, {name, 0, accents, 0}, {name, kAccentedFontName, kFontPath}, r)
-        || !callGame(app, cpu, at, kLoadFile, {name, 0x10, accents, 0}, {}, r))
+    if (!plainAt<kSprintf, watcom::clib::sprintf>(app, cpu, at, &r, name, kAccentedFontName, guest::Words({kFontPath}))
+        || !plainAt<kLoadFile, ea::loadWhole>(app, cpu, at, &r, name, 0x10u))
         return {};
     reg32 file = r;
     reg32 first, second;
-    if (!callGame(app, cpu, at, kUseFont, {file, 0x10, accents, 0}, {}, r)
-        || !callGame(app, cpu, at, kColour, {0, 0x10, accents, 0}, {}, first)
-        || !callGame(app, cpu, at, kColour, {0xffffff, first, accents, 0}, {}, second)
-        || !callGame(app, cpu, at, kFontColours, {second, first, accents, 0}, {}, r))
+    if (!plainAt<kUseFont, frontend::eab::fontUse>(app, cpu, at, &r, file)
+        || !plainAt<kColour, frontend::eab::colourPack>(app, cpu, at, &first, 0u)
+        || !plainAt<kColour, frontend::eab::colourPack>(app, cpu, at, &second, 0xffffffu)
+        || !plainAt<kFontColours, frontend::eab::fontSetColours>(app, cpu, at, &r, second, first))
         return {};
     app->getMemory<uint8_t>(name + 1) = 0;
     reg32 index = 0xe0;
@@ -798,47 +875,45 @@ Result makeScreenFont(App* app, CPU& cpu, reg32 esp)
         app->getMemory<uint8_t>(name) = c == 'R' ? 'r' : c;
         if (c == '-')
             app->getMemory<uint8_t>(name) = '_';
-        const Result width = glyph(app, cpu, callee, name, int32_t(index), accents, index);
+        const Result width = glyph(app, cpu, callee, name, int32_t(index));
         if (!width)
             return {};
         kFontX.set(app, kFontX(app) + *width);
     }
-    if (!callGame(app, cpu, at, kFreeFile, {file}, {}, r))
+    if (!plainAt<kFreeFile, ea::purgeBlock>(app, cpu, at, &r, file))
         return {};
     // The rest, from the screens' font.
     kFontX.set(app, 0);
     kFontY.set(app, 0x80);
-    if (!callGame(app, cpu, at, kSprintf, {name, 0x80, accents, index}, {name, kScreenFontName, kFontPath}, r)
-        || !callGame(app, cpu, at, kLoadFile, {name, 0x10, accents, index}, {}, r))
+    if (!plainAt<kSprintf, watcom::clib::sprintf>(app, cpu, at, &r, name, kScreenFontName, guest::Words({kFontPath}))
+        || !plainAt<kLoadFile, ea::loadWhole>(app, cpu, at, &r, name, 0x10u))
         return {};
     file = r;
-    if (!callGame(app, cpu, at, kUseFont, {file, 0x10, accents, index}, {}, r)
-        || !callGame(app, cpu, at, kColour, {0, 0x10, accents, 0x20}, {}, first)
-        || !callGame(app, cpu, at, kColour, {0xffffff, first, accents & 0xffffff00, 0x20}, {}, second)
-        || !callGame(app, cpu, at, kFontColours, {second, first, accents & 0xffffff00, 0x20}, {}, r))
+    if (!plainAt<kUseFont, frontend::eab::fontUse>(app, cpu, at, &r, file)
+        || !plainAt<kColour, frontend::eab::colourPack>(app, cpu, at, &first, 0u)
+        || !plainAt<kColour, frontend::eab::colourPack>(app, cpu, at, &second, 0xffffffu)
+        || !plainAt<kFontColours, frontend::eab::fontSetColours>(app, cpu, at, &r, second, first))
         return {};
     app->getMemory<uint8_t>(name + 1) = 0;
-    reg32 ebx = accents & 0xffffff00, edx = 0;
+    reg32 ebx = 0;
     Result width;
     for (reg32 c = 0x20; c < 0x100; ++c)
     {
         app->getMemory<uint8_t>(name) = uint8_t(c);
-        if (!(width = glyph(app, cpu, callee, name, int32_t(c - 0x20), ebx, c)))
+        if (!(width = glyph(app, cpu, callee, name, int32_t(c - 0x20))))
             return {};
-        // edx as the character's drawing was handed it (EA's code keeps it).
-        edx = reg32(kFontX(app));
-        ebx = edx + reg32(*width);
+        ebx = reg32(kFontX(app)) + reg32(*width);
         kFontX.set(app, int32_t(ebx));
     }
     // The bitmap the font's texture.
-    if (!callGame(app, cpu, at, kDrawIntoScreen, {reg32(*width), edx, ebx, 0x100}, {}, r))
+    if (!plainAt<kDrawIntoScreen, frontend::eaa::bitmapDrawToScreen>(app, cpu, at, &r))
         return {};
     const reg32 slot = kFontTextures.address(kFontTextureIndex(app));
     const reg32 shape = app->getMemory<reg32>(kFontBitmap(app) + 0x20);
-    if (!callGame(app, cpu, at, kShapeTexture, {slot, shape, 0x100, (kDriverFlags(app) & kSofttria) != 0 ? 3u : 0u}, {},
-                  r)
-        || !callGame(app, cpu, at, kFreeBitmap, {kFontBitmap(app)}, {}, r)
-        || !callGame(app, cpu, at, kFreeFile, {file}, {}, r))
+    if (!coreAt<kShapeTexture, shapes::textureOf, 0>(app, cpu, at, &r, slot, shape, 0x100,
+                                                     (kDriverFlags(app) & kSofttria) != 0 ? 3u : 0u)
+        || !plainAt<kFreeBitmap, frontend::eab::windowBitmapFree>(app, cpu, at, &r, kFontBitmap(app))
+        || !plainAt<kFreeFile, ea::purgeBlock>(app, cpu, at, &r, file))
         return {};
     return int32_t(r);
 }
@@ -847,20 +922,20 @@ Result makeScreenFont(App* app, CPU& cpu, reg32 esp)
  * from sci20.ffn, from 0xe0 on, the others from arial10b.ffn from its second
  * half, each drawn into a bitmap of 256 by 256 and its square noted; the
  * bitmap the font's texture. */
-void buildScreenFont(App* app, CPU& cpu)
+x86::reg32 buildScreenFont(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, makeScreenFont(app, cpu, e.esp));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, makeScreenFont(app, cpu, e.esp));
 }
 
 /* ---- 0x4daf80 ---- */
 
-Result resetScreens(App* app, CPU& cpu, reg32 esp, const Args& a)
+Result resetScreens(App* app, CPU& cpu, reg32 esp, const Args&)
 {
     const reg32 at = esp - 0x10;  // ebx, ecx, edx, ebp
-    HeldEbp held(cpu, at);
     reg32 r;
-    if (!callGame(app, cpu, at, kScreenStates, a, {}, r) || !callGame(app, cpu, at, kResetTextures, {r, a.edx, a.ebx, a.ecx}, {}, r)
+    if (!plainAt<kScreenStates, collide::screenStates>(app, cpu, at, &r)
+        || !coreAt<kResetTextures, shapes::texturesLetGo, 0>(app, cpu, at, &r)
         || !makeScreenFont(app, cpu, at - 4))
         return {};
     for (int32_t i = 0; i < kShapeSlots; ++i)
@@ -869,7 +944,7 @@ Result resetScreens(App* app, CPU& cpu, reg32 esp, const Args& a)
     kTileCount.set(app, 0);
     for (int32_t i = 0; i < kShapeSlots; ++i)
         kShapes(app, i).name[0] = 0;
-    if (!renderState(app, cpu, at, kStateBlend, 0, r, 0xffffffffu, 1))
+    if (!renderState(app, cpu, at, kStateBlend, 0, r))
         return {};
     return int32_t(r);
 }
@@ -877,10 +952,10 @@ Result resetScreens(App* app, CPU& cpu, reg32 esp, const Args& a)
 /* 0x4daf80: the 2D screens started afresh: the screens' states, the
  * textures let go, the font made again, the menu shapes known none but the
  * first, render state 2 off. */
-void startScreens(App* app, CPU& cpu)
+x86::reg32 startScreens(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, resetScreens(app, cpu, e.esp, {e.eax, e.edx, e.ebx, e.ecx}));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, resetScreens(app, cpu, e.esp, {e.eax, e.edx, e.ebx, e.ecx}));
 }
 
 /* ---- 0x4d95c0 ---- */
@@ -889,10 +964,8 @@ Result screenCharacter(App* app, CPU& cpu, reg32 esp, int32_t u, int32_t v, int3
                        int32_t height, uint32_t colour, reg32 measure)
 {
     const reg32 at = esp - 0x40;  // esi, edi, ebp and 0x34 bytes
-    HeldEbp held(cpu, esp - 0xc);
     if (kOverRace(app) != 0)
         return width;
-    x86::FPU& fpu = cpu.fpu;
     const float kU = fromBits(kTexel), kV = fromBits(kTexel);
     uint32_t topColour = colour, bottomColour = colour;
     int32_t advance, drawn;
@@ -1019,10 +1092,10 @@ Result screenCharacter(App* app, CPU& cpu, reg32 esp, int32_t u, int32_t v, int3
  * How far on the next character goes in eax: its width, less in the fonts
  * that overlap their characters.  Nothing on a race's pause screens, where it
  * is as wide as it is. */
-void drawScreenCharacter(App* app, CPU& cpu)
+x86::reg32 drawScreenCharacter(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu,
+    const Entry e(cpu, args);
+    return e.finish(cpu, args,
              screenCharacter(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx), int32_t(e.ebx), int32_t(e.ecx),
                              int32_t(e.arg(app, 0)), int32_t(e.arg(app, 1)), e.arg(app, 2), e.arg(app, 4)),
              0x14);
@@ -1034,8 +1107,6 @@ Result turnedCharacter(App* app, CPU& cpu, reg32 esp, int32_t u, int32_t v, int3
                        int32_t height, uint32_t colour, reg32 measure, int32_t turn, uint32_t scale)
 {
     const reg32 at = esp - 0x30;  // esi, edi, ebp and 0x24 bytes
-    HeldEbp held(cpu, esp - 0xc);
-    x86::FPU& fpu = cpu.fpu;
     const float kU = fromBits(kTexel), kV = fromBits(kTexel);
     uint32_t topColour = colour, bottomColour = colour;
     int32_t scaledWidth, scaledHeight;
@@ -1150,10 +1221,10 @@ Result turnedCharacter(App* app, CPU& cpu, reg32 esp, int32_t u, int32_t v, int3
  * [esp+0x14]; its top edge turned by the angle [esp+0x18] (0x400 a turn)
  * against its bottom, all of it scaled by the float [esp+0x1c].  How wide it
  * comes out. */
-void drawTurnedCharacter(App* app, CPU& cpu)
+x86::reg32 drawTurnedCharacter(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu,
+    const Entry e(cpu, args);
+    return e.finish(cpu, args,
              turnedCharacter(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx), int32_t(e.ebx), int32_t(e.ecx),
                              int32_t(e.arg(app, 0)), int32_t(e.arg(app, 1)), e.arg(app, 2), e.arg(app, 4),
                              int32_t(e.arg(app, 5)), e.arg(app, 6)),
@@ -1179,12 +1250,11 @@ Result glyphOf(App* app, CPU& cpu, reg32 esp, uint8_t c)
 Result screenText(App* app, CPU& cpu, reg32 esp, reg32 text, int32_t x, int32_t y, reg32 measure)
 {
     const reg32 at = esp - 0x1c;  // esi, edi, ebp and 0x10 bytes
-    HeldEbp held(cpu, esp - 0xc);
     if (kOverRace(app) != 0)
         return 0;
     const uint32_t colour = kTextColour(app) | kTextColourMore(app);
     reg32 r;
-    if (!renderState(app, cpu, at, kStateTexture, kFontTexture(app), r, reg32(y), measure))
+    if (!renderState(app, cpu, at, kStateTexture, kFontTexture(app), r))
         return {};
     const int32_t start = x;
     for (;; ++text)
@@ -1209,21 +1279,20 @@ Result screenText(App* app, CPU& cpu, reg32 esp, reg32 text, int32_t x, int32_t 
  * character's square of the font, the next where that one's width leaves it
  * -- the text's width in eax, or 0 on a race's pause screens; ecx only
  * measures it.  The colour is [0x563aa4] | [0x559434]. */
-void drawScreenText(App* app, CPU& cpu)
+x86::reg32 drawScreenText(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, screenText(app, cpu, e.esp, e.eax, int32_t(e.edx), int32_t(e.ebx), e.ecx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, screenText(app, cpu, e.esp, e.eax, int32_t(e.edx), int32_t(e.ebx), e.ecx));
 }
 
 Result turnedText(App* app, CPU& cpu, reg32 esp, reg32 text, int32_t x, int32_t y, uint32_t scale, int32_t turn,
                   uint32_t colour)
 {
     const reg32 at = esp - 0x1c;  // ecx, esi, edi, ebp and 0xc bytes
-    HeldEbp held(cpu, esp - 0x10);
     if (kOverRace(app) != 0)
         return 0;
     reg32 r;
-    if (!renderState(app, cpu, at, kStateTexture, kFontTexture(app), r, reg32(y)))
+    if (!renderState(app, cpu, at, kStateTexture, kFontTexture(app), r))
         return {};
     const int32_t start = x;
     for (;; ++text)
@@ -1248,10 +1317,10 @@ Result turnedText(App* app, CPU& cpu, reg32 esp, reg32 text, int32_t x, int32_t 
  * ebx, scaled by the float [esp+4], each character's top turned by the angle
  * [esp+8], in the colour [esp+0xc]: its width, or 0 on a race's pause
  * screens. */
-void drawTurnedText(App* app, CPU& cpu)
+x86::reg32 drawTurnedText(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu,
+    const Entry e(cpu, args);
+    return e.finish(cpu, args,
              turnedText(app, cpu, e.esp, e.eax, int32_t(e.edx), int32_t(e.ebx), e.arg(app, 0), int32_t(e.arg(app, 1)),
                         e.arg(app, 2)),
              0xc);
@@ -1262,14 +1331,12 @@ void drawTurnedText(App* app, CPU& cpu)
 Result titleText(App* app, CPU& cpu, reg32 esp, reg32 text, int32_t x, int32_t y, reg32 start)
 {
     const reg32 at = esp - 0x38;  // esi, edi, ebp and 0x2c bytes
-    HeldEbp held(cpu, esp - 0xc);
-    x86::FPU& fpu = cpu.fpu;
     if ((kDriverFlags(app) & kSofttria) != 0)
         return 0;
     if (kOverRace(app) != 0)
         return 1;
     reg32 r;
-    if (!renderState(app, cpu, at, kStateTexture, kFontTexture(app), r, reg32(y), start))
+    if (!renderState(app, cpu, at, kStateTexture, kFontTexture(app), r))
         return {};
     const int32_t length = int32_t(std::strlen(&app->getMemory<char>(text)));
     if (start != 0)
@@ -1330,10 +1397,10 @@ Result titleText(App* app, CPU& cpu, reg32 esp, reg32 text, int32_t x, int32_t y
  * with their shadows once in place -- the sweep three steps a character from
  * the start (ecx not 0), two more each time: 1 while it lasts, 0 once it is
  * over and with softtria. */
-void drawTitleText(App* app, CPU& cpu)
+x86::reg32 drawTitleText(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, titleText(app, cpu, e.esp, e.eax, int32_t(e.edx), int32_t(e.ebx), e.ecx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, titleText(app, cpu, e.esp, e.eax, int32_t(e.edx), int32_t(e.ebx), e.ecx));
 }
 
 /* ---- 0x4dab90 ---- */
@@ -1341,8 +1408,6 @@ void drawTitleText(App* app, CPU& cpu)
 Result pointer(App* app, CPU& cpu, reg32 esp)
 {
     const reg32 at = esp - 0x20;  // ebx, ecx, edx, esi, edi, ebp and 8 bytes
-    HeldEbp held(cpu, esp - 0x18);
-    x86::FPU& fpu = cpu.fpu;
     const int32_t clock = kClock(app);
     if (kOverRace(app) != 0 || kPointerKind(app) == -2 || kPointersLoaded(app) == 0)
         return clock;
@@ -1379,7 +1444,7 @@ Result pointer(App* app, CPU& cpu, reg32 esp)
     q2.y = float(lower);
     q3.y = float(lower);
     reg32 r;
-    if (!renderState(app, cpu, at, kStateTexture, texture, r, reg32(x), reg32(y)))
+    if (!renderState(app, cpu, at, kStateTexture, texture, r))
         return {};
     markCorners(app, kQuadAt);
     if (!drawQuad(app, cpu, at, kQuadAt, r))
@@ -1404,10 +1469,15 @@ Result pointer(App* app, CPU& cpu, reg32 esp)
  * pointer's place less its picture's hot spot, 32 pixels square, its picture
  * the next of ten every three ticks; not over a race, nor before the
  * pointers are loaded. */
-void drawPointer(App* app, CPU& cpu)
+x86::reg32 drawPointer(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, pointer(app, cpu, e.esp));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, pointer(app, cpu, e.esp));
+}
+
+Result pointerDrawn(App* app, CPU& cpu, reg32 esp)
+{
+    return pointer(app, cpu, esp);
 }
 
 /* ---- 0x4db000 ---- */
@@ -1416,12 +1486,10 @@ Result texturedQuad(App* app, CPU& cpu, reg32 esp, const ArtQuad& quad)
 {
     const reg32 at = esp - 0xbc;  // esi, edi, ebp and 0xb0 bytes
     const reg32 corners = at;     // the quad's, in the frame
-    HeldEbp held(cpu, esp - 0xc - 0x4a);
     // Its corners start as the code's template has them.
     std::memcpy(&app->getMemory<uint8_t>(corners), &app->getMemory<uint8_t>(0x4d5740), 0x80);
     if (kOverRace(app) == 0)
         return quad.y[1];
-    x86::FPU& fpu = cpu.fpu;
     const Float sw = Float(kScreenWidth(app));
     const Float sh = Float(float(Float(kScreenHeight(app))));
     const Float perWidth = Float(kArtPerWidth(app)), perHeight = Float(kArtPerHeight(app));
@@ -1444,7 +1512,7 @@ Result texturedQuad(App* app, CPU& cpu, reg32 esp, const ArtQuad& quad)
         c.colour = quad.colour;
     }
     reg32 r;
-    if (!renderState(app, cpu, at, kStateTexture, quad.texture, r, reg32(quad.x[1]), reg32(quad.y[0])))
+    if (!renderState(app, cpu, at, kStateTexture, quad.texture, r))
         return {};
     markCorners(app, corners);
     if (!drawQuad(app, cpu, at, corners, r))
@@ -1458,9 +1526,9 @@ Result texturedQuad(App* app, CPU& cpu, reg32 esp, const ArtQuad& quad)
  * [esp+0x30] -- of the texture [esp+0x34], in the colour [esp+0x38];
  * clipped and drawn, over a race only.  Its vertices start as 0x4d5740 has
  * them. */
-void drawTexturedQuad(App* app, CPU& cpu)
+x86::reg32 drawTexturedQuad(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     ArtQuad quad;
     quad.x[0] = int32_t(e.eax);
     quad.y[0] = int32_t(e.edx);
@@ -1478,7 +1546,7 @@ void drawTexturedQuad(App* app, CPU& cpu)
     }
     quad.texture = e.arg(app, 12);
     quad.colour = e.arg(app, 13);
-    e.finish(cpu, texturedQuad(app, cpu, e.esp, quad), 0x38);
+    return e.finish(cpu, args, texturedQuad(app, cpu, e.esp, quad), 0x38);
 }
 
 /* ---- 0x4db380 ---- */
@@ -1487,7 +1555,6 @@ Result shadedQuad(App* app, CPU& cpu, reg32 esp, const ShadedQuad& quad)
 {
     const reg32 at = esp - 0xc0;  // esi, edi, ebp and 0xb4 bytes
     const reg32 corners = at;
-    HeldEbp held(cpu, esp - 0xc - 0x62);
     std::memcpy(&app->getMemory<uint8_t>(corners), &app->getMemory<uint8_t>(0x4d57c0), 0x80);
     for (int32_t i = 0; i < 4; ++i)
     {
@@ -1504,9 +1571,8 @@ Result shadedQuad(App* app, CPU& cpu, reg32 esp, const ShadedQuad& quad)
         }
     }
     reg32 r;
-    if ((kDriverFlags(app) & kSofttria) != 0 && !renderState(app, cpu, at, kStateAlpha, 1, r, reg32(quad.y[1])))
+    if ((kDriverFlags(app) & kSofttria) != 0 && !renderState(app, cpu, at, kStateAlpha, 1, r))
         return {};
-    x86::FPU& fpu = cpu.fpu;
     const Float sh = Float(float(Float(kScreenHeight(app))));
     const Float sw = Float(kScreenWidth(app));
     const Float perWidth = Float(kShadePerWidth(app)), perHeight = Float(kShadePerHeight(app));
@@ -1526,7 +1592,7 @@ Result shadedQuad(App* app, CPU& cpu, reg32 esp, const ShadedQuad& quad)
         c.y = float(ys[i]);
         c.colour = quad.colour[i];
     }
-    if (!renderState(app, cpu, at, kStateTexture, 0, r, reg32(quad.y[1])))
+    if (!renderState(app, cpu, at, kStateTexture, 0, r))
         return {};
     markCorners(app, corners);
     if (!drawQuad(app, cpu, at, corners, r))
@@ -1542,9 +1608,9 @@ Result shadedQuad(App* app, CPU& cpu, reg32 esp, const ShadedQuad& quad)
  * untextured, clipped and drawn; alpha on for it with softtria.  Its
  * vertices start as 0x4d57c0 has them, at a race's pause screens' depth over
  * one, else at the 2D screens'. */
-void drawShadedQuad(App* app, CPU& cpu)
+x86::reg32 drawShadedQuad(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     ShadedQuad quad;
     quad.x[0] = int32_t(e.eax);
     quad.y[0] = int32_t(e.edx);
@@ -1557,7 +1623,7 @@ void drawShadedQuad(App* app, CPU& cpu)
     }
     for (int i = 0; i < 4; ++i)
         quad.colour[i] = e.arg(app, 4 + i);
-    e.finish(cpu, shadedQuad(app, cpu, e.esp, quad), 0x20);
+    return e.finish(cpu, args, shadedQuad(app, cpu, e.esp, quad), 0x20);
 }
 
 }  // namespace draw2d

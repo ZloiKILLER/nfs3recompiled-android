@@ -1,11 +1,14 @@
 #include "native_frontend_menud.h"
+#include "native_frontend_dialogs.h"
 #include "native_watcom.h"
 #include "native_frontend.h"
 #include "native_frontend_menua.h"
 #include "native_frontend_menue.h"
 #include "native_frontend_menuf.h"
 #include "native_ea_memory.h"
+#include "native_ea_net.h"
 #include "native_ea_support.h"
+
 #include "native_frontend_draw.h"
 #include "native_frontend_eaa.h"
 #include "native_frontend_eab.h"
@@ -25,6 +28,38 @@
 #include <cstring>
 #include <iterator>
 #include <optional>
+#include "native_guest.h"
+
+namespace nfs3hp
+{
+namespace
+{
+
+/* A call through a pointer or to a function of the game's that has no typed core: Watcom's register
+ * arguments (eax, edx, ebx, ecx in turn) and the stack words as `arguments` have them, through
+ * guest::pointerCall; its eax, and Terminated when the game stopped in it. */
+x86::reg32 callAt(fe::Guest& guest, x86::reg32 target, const fe::Arguments& arguments = fe::Arguments())
+{
+    x86::CPU& cpu = guest.cpu();
+    x86::Args registers;
+    x86::reg32* const into[4] = { &registers.eax, &registers.edx, &registers.ebx, &registers.ecx };
+    for (std::size_t i = 0; i < arguments.registerCount; ++i)
+        *into[i] = arguments.registers[i];
+    const x86::reg32 esp = cpu.esp;
+    for (std::size_t i = arguments.stackCount; i-- > 0;)
+    {
+        cpu.esp -= 4;
+        guest.setDword(cpu.esp, arguments.stack[i]);
+    }
+    const std::optional<x86::reg32> result = guest::pointerCall(guest.app(), cpu, target, registers);
+    if (!result)
+        throw fe::Terminated();
+    cpu.esp = esp;
+    return *result;
+}
+
+}  // namespace
+}  // namespace nfs3hp
 
 /* What the menus lean on, past their screens' handlers, decompiled:
  *
@@ -41,7 +76,7 @@
  *
  * Plan step 5: each function a typed core in frontend::menud (native_frontend_menud.h), in a
  * frame of its own where the game's function has one (fe::Frame: what it calls runs at the stack
- * addresses it did), and an adapter under the game's name for the calls by address.  A core of
+ * addresses it did), and a thunk under the game's name for the calls by address.  A core of
  * the menu files, the port's or a typed library's is called as C++ (guest::direct, fe::direct);
  * the rest of the game by address, and so is a call whose registers the code goes on with. */
 namespace nfs3hp
@@ -100,12 +135,12 @@ x86::reg32 frontend::menud::loadPointerArt(App* app, CPU& cpu)
 }
 
 /* sub_49c2a0, as the menus end: the file let go, if it is still loaded. */
-x86::reg32 frontend::menud::freePointerArt(App* app, CPU& cpu)
+x86::reg32 frontend::menud::freePointerArt(App* app, CPU& cpu, reg32 eax)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 12);
     const reg32 art = guest.dword(kPointerArt);
-    reg32 result = guest.eax();
+    reg32 result = eax;
     if (art != 0)
     {
         result = *fe::direct<0x4e1890, ea::purgeBlock>(app, cpu, art);
@@ -123,11 +158,9 @@ x86::reg32 frontend::menud::pointerListLine(App* app, CPU& cpu, std::int32_t top
     const std::int32_t pointerY = std::int32_t(guest.dword(kPointerY));
     if (top > pointerY)
     {
-        guest.leaveEdx(reg32(pointerY));
         return reg32(-1);
     }
     const std::int32_t below = std::int32_t(reg32(pointerY) - reg32(top) - 1u);
-    guest.leaveEdx(reg32(below % lineHeight));
     return reg32(below / lineHeight);
 }
 
@@ -137,15 +170,12 @@ x86::reg32 frontend::menud::pointerOverRect(App* app, CPU& cpu, reg32 x, reg32 y
 {
     Guest guest(app, cpu);
     const std::int32_t pointerY = std::int32_t(guest.dword(kPointerY));
-    guest.leaveEdx(y);
     if (std::int32_t(y) >= pointerY)
         return 0;
     const reg32 bottom = y + height;
-    guest.leaveEdx(bottom);
     if (std::int32_t(bottom) <= pointerY)
         return 0;
     const std::int32_t pointerX = std::int32_t(guest.dword(kPointerX));
-    guest.leaveEdx(reg32(pointerX));
     if (std::int32_t(x) >= pointerX)
         return 0;
     return std::int32_t(x + width) > pointerX ? 1 : 0;
@@ -310,8 +340,7 @@ x86::reg32 frontend::menud::startLogoTexture(App* app, CPU& cpu)
     const reg32 path = guest.frame();
     fe::direct<kSprintf, watcom::clib::sprintf>(app, cpu, path, kLogoStrings[0].address,
                                                 guest::Words{kArtFolder, kLogoStrings[1].address});
-    guest.leaveEdx(0);  // what loadQfs hands on in edx to the file's loader: its flags
-    const reg32 file = fe::direct<0x4956f0, draw::loadQfs>(app, cpu, path);
+    const reg32 file = fe::direct<0x4956f0, draw::loadQfsFlags>(app, cpu, path, 0u);
     const reg32 shape = fe::direct<0x4ef1e0, frontend::eab::shapeFileFind>(app, cpu, file, kLogoStrings[2].address);
     const reg32 mode = (guest.byte(kDisplayFlags) & kNoTranslucency) != 0 ? kLogoTextureModeNoTranslucency : 0;
     fe::direct<0x4d6070, port::shapes::textureOf>(app, cpu, cpu.esp - 4, kLogoTexture, shape,
@@ -345,10 +374,10 @@ x86::reg32 frontend::menud::loadLogoPictures(App* app, CPU& cpu)
     for (std::int32_t i = 0; i < pictures; ++i)
     {
         const reg32 slot = 4 * reg32(i);
-        const reg32 shape = guest.call(kFindShapeInFile,
+        const reg32 shape = callAt(guest, kFindShapeInFile,
                                        args({ guest.dword(kMenuShapeFile), guest.dword(kLogoPictureNames + slot) }));
         // ecx as the call before left it, handed on.
-        record = reg32(*fe::direct<0x4d6390, port::shapes::artTexturesOf>(app, cpu, cpu.esp - 4, shape, 0, cpu.ecx));
+        record = reg32(*fe::direct<0x4d6390, port::shapes::artTexturesOf>(app, cpu, cpu.esp - 4, shape, 0, 0));
         guest.setDword(kLogoPictures + slot, record);
     }
     return record;
@@ -375,7 +404,6 @@ constexpr std::int32_t kFlashAt = 0xf;
 constexpr reg32 kGlintComingY = 0x55ea78;           // int16 for each time, as it comes in
 constexpr reg32 kBigGlintKey = 0x2d;
 constexpr float kBigGlint = 75.0f, kSmallGlint = 8.0f;
-constexpr reg32 kSetRenderState = 0x431900;         // eax the state, edx its value
 constexpr reg32 kAdditiveBlend = 0x68;
 constexpr reg32 kDrawTurnedShape = 0x4d6730;        // shape, x, y, nudged left by ecx; the angle, the scale
 constexpr reg32 kDrawArtShape = 0x4d7160;           // shape, x, y, the colour
@@ -422,23 +450,24 @@ struct Logo
             std::int32_t(atY), std::int32_t(nudge), angle, floatBits(scale));
     }
 
-    /* The function's last calls, by address: what they leave in ebx and edx, the function leaves. */
-    void drawPictures()
+        /* The function's last calls; each gives back the eax of its last one, which the function ends with. */
+    reg32 drawPictures()
     {
-        guest.call(kDrawArtShape, args({ picture, x, y, pictureColour }));
+        reg32 left = reg32(*fe::direct<kDrawArtShape, port::shapes::drawArt>(
+            guest.app(), cpu, cpu.esp - 4, std::int32_t(picture), std::int32_t(x), std::int32_t(y), pictureColour));
         if (nextPicture != 0)
-            guest.call(kDrawArtShape, args({ nextPicture, x, y, nextPictureColour }));
+            left = reg32(*fe::direct<kDrawArtShape, port::shapes::drawArt>(
+                guest.app(), cpu, cpu.esp - 4, std::int32_t(nextPicture), std::int32_t(x), std::int32_t(y),
+                nextPictureColour));
+        return left;
     }
-    void flash(std::int32_t angle, float scale)
+    reg32 flash(std::int32_t angle, float scale)
     {
-        const auto glintByAddress = [&](std::int32_t turn) {
-            guest.call(kDrawTurnedShape, args({ guest.dword(kGlintShape), kFlashX, kFlashY, kFlashNudge },
-                                              { reg32(turn), floatBits(scale) }));
-        };
+                const auto glintByAddress = [&](std::int32_t turn) { glint(kFlashX, kFlashY, kFlashNudge, turn, scale); };
         blend(true);
         glintByAddress(angle);
         glintByAddress(angle + kOtherFlashAngle);
-        guest.call(kSetRenderState, args({ kAdditiveBlend, 0 }));
+        return fe::direct<0x431900, graphics::stateAnswer>(guest.app(), cpu, kAdditiveBlend, 0u).value_or(0);
     }
 };
 
@@ -484,6 +513,7 @@ x86::reg32 frontend::menud::drawLogo(App* app, CPU& cpu, reg32 item, reg32 x, re
     const std::int32_t angle = 10 * time;
     guest.setDword(kGlintLeft, 0);
 
+    reg32 result = 0;   // the eax of the last call by address
     if (time < kInEnd)
     {
         const double scaled = fp::mul(x86::Float(time), gameDouble(guest, kComingScale));
@@ -492,7 +522,7 @@ x86::reg32 frontend::menud::drawLogo(App* app, CPU& cpu, reg32 item, reg32 x, re
         logo.blend(true);
         logo.glint(guest.dword(kGlintLeft), reg32(int16At(guest, kGlintComingY + 2 * reg32(time))), 0, angle, scale);
         logo.blend(false);
-        logo.drawPictures();
+        result = logo.drawPictures();
     }
     else if (time - kInEnd < kChangeLength)
     {
@@ -503,13 +533,13 @@ x86::reg32 frontend::menud::drawLogo(App* app, CPU& cpu, reg32 item, reg32 x, re
         logo.blend(true);
         logo.glint(kGlintGrowX, kGlintY, 0, angle, scale);
         logo.blend(false);
-        logo.drawPictures();
+        result = logo.drawPictures();
         if (step > kFlashAt)
         {
             const std::int32_t past = step - kFlashAt;
             const double flashed = fp::mul(fp::mul(x86::Float(past), gameDouble(guest, kFlashScale)),
                                            gameDouble(guest, kFifteenth));
-            logo.flash(past * 25 / kFlashAt + kGrowFlashAngle, float(fp::add(flashed, gameDouble(guest, kFlashLeast))));
+            result = logo.flash(past * 25 / kFlashAt + kGrowFlashAngle, float(fp::add(flashed, gameDouble(guest, kFlashLeast))));
         }
     }
     else if (time - kGrowEnd < kChangeLength)
@@ -521,19 +551,19 @@ x86::reg32 frontend::menud::drawLogo(App* app, CPU& cpu, reg32 item, reg32 x, re
         logo.blend(true);
         logo.glint(kGlintShrinkX, kGlintY, 0, angle, scale);
         logo.blend(false);
-        logo.drawPictures();
+        result = logo.drawPictures();
         if (step < kFlashAt)
         {
             const double flashed = fp::mul(fp::mul(x86::Float(step), gameDouble(guest, kFlashScale)),
                                            gameDouble(guest, kFifteenth));
-            logo.flash(step * 25 / kFlashAt + kShrinkFlashAngle, float(fp::sub(1.0, flashed)));
+            result = logo.flash(step * 25 / kFlashAt + kShrinkFlashAngle, float(fp::sub(1.0, flashed)));
         }
     }
     else
     {
-        logo.drawPictures();
+        result = logo.drawPictures();
     }
-    return guest.eax();
+    return result;
 }
 
 namespace
@@ -583,7 +613,7 @@ constexpr GuestString kLobbyStrings[] = {
 };
 
 /* The lobby's lock entered or left: Windows' function the port's own, called as C++
- * (native_windows.h); in the check through its import's slot.  Terminated when the game stopped
+ * (native_windows.h).  Terminated when the game stopped
  * in it, as Guest::call. */
 template <reg32 Slot, auto Function>
 void lobbyLock(Guest& guest, x86::CPU& cpu)
@@ -602,7 +632,7 @@ void lobbyText(Guest& guest, x86::CPU& cpu, reg32 text, reg32 x, std::int32_t y,
 reg32 languageText(Guest& guest, x86::CPU& cpu, reg32 number)
 {
     return reg32(*fe::direct<0x4d1850, port::text::lineText>(guest.app(), cpu, cpu.esp - 4, std::int32_t(number),
-                                                             cpu.edx));
+                                                             0));
 }
 
 /* A row whose player's details have come. */
@@ -659,8 +689,8 @@ x86::reg32 frontend::menud::drawLobbyPlayers(App* app, CPU& cpu, reg32 x, reg32 
     const fe::Frame frame(guest, cpu, 20 + 0x128);
     /* sub_4a6690 keeps edx, 0 here, and that is what the game goes on to ask
      * about, so the message at the end never shows. */
-    guest.call(kPlayerMachine, args({ reg32(int16At(guest, kMyPlayer)), 0 }));
-    const std::uint16_t complaint = std::uint16_t(guest.edx());
+        fe::direct<kPlayerMachine, ea::machineOfPlayerNumber>(app, cpu, reg32(int16At(guest, kMyPlayer)));
+    const std::uint16_t complaint = 0;  // edx as sub_4a6690 keeps it: the 0 it is handed
     const std::int32_t slots = guest.dword(kNetworkKind) == 0 ? 2 : 8;
 
     const std::int32_t headY = std::int32_t(y + 2);
@@ -709,14 +739,12 @@ x86::reg32 frontend::menud::drawLobbyPlayers(App* app, CPU& cpu, reg32 x, reg32 
     {
         std::int32_t player = 0;
         for (; player < std::int16_t(guest.word(kPlayerCount)); ++player)
-            guest.call(kPlayerMachine, args({ reg32(player), reg32(player) }));
+                        fe::direct<kPlayerMachine, ea::machineOfPlayerNumber>(app, cpu, reg32(player));
         last = player;
     }
-    guest.leaveEdx(reg32(last));
     if (complaint != 0)
     {
-        fe::messageBox(guest, kComplaintText);
-        return guest.eax();
+        return fe::direct<0x444be0, frontend::dialogs::messageById>(app, cpu, kComplaintText);
     }
     return reg32(last);
 }
@@ -730,84 +758,85 @@ x86::reg32 frontend::menud::endPause(App* app, CPU& cpu)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 4);
-    fe::direct<0x44be20, menub::menuLeave>(app, cpu);  // the menu no longer up, its dialog closed
+    fe::direct<0x44be20, menub::menuLeave>(app, cpu, 0);  // the menu no longer up, its dialog closed
     return guest::direct<0x4bc530, menuf::resetRaceMouse>(app, cpu);
 }
 
-void frontend::menuPointerLoadArt(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::menuPointerLoadArt(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_49c140", 0, 0, kPointerStrings, std::size(kPointerStrings),
                           fe::kRestoreEcx | fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return menud::loadPointerArt(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menud::loadPointerArt(app, cpu); });
 }
 
-void frontend::menuPointerFreeArt(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::menuPointerFreeArt(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_49c2a0", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return menud::freePointerArt(app, cpu); });
+    const x86::reg32 eax = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menud::freePointerArt(app, cpu, eax); });
 }
 
-void frontend::menuPointerListLine(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::menuPointerListLine(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_49c1c0", 0, 0, nullptr, 0, fe::kRestoreEcx };
-    const std::int32_t top = std::int32_t(cpu.eax), lineHeight = std::int32_t(cpu.edx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return menud::pointerListLine(app, cpu, top, lineHeight); });
+    const std::int32_t top = std::int32_t(args.eax), lineHeight = std::int32_t(args.edx);
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menud::pointerListLine(app, cpu, top, lineHeight); });
 }
 
-void frontend::menuPointerOverRect(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::menuPointerOverRect(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_49c240", 0, 0, nullptr, 0, fe::kRestoreEsi };
-    const reg32 x = cpu.eax, y = cpu.edx, width = cpu.ebx, height = cpu.ecx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return menud::pointerOverRect(app, cpu, x, y, width, height); });
+    const reg32 x = args.eax, y = args.edx, width = args.ebx, height = args.ecx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menud::pointerOverRect(app, cpu, x, y, width, height); });
 }
 
-void frontend::effectsBandDraw(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::effectsBandDraw(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4a47c0", 0, 0, nullptr, 0, fe::kRestoreAll };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return menud::drawBand(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menud::drawBand(app, cpu); });
 }
 
-void frontend::effectsScreenDraw(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::effectsScreenDraw(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4a49c0", 0, 0, kEffectScreens, std::size(kEffectScreens),
                           fe::kRestoreEcx | fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return menud::drawScreenEffect(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menud::drawScreenEffect(app, cpu); });
 }
 
-void frontend::effectsLogoTextureStart(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::effectsLogoTextureStart(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4a4390", 0, 0, kLogoStrings, std::size(kLogoStrings),
                           fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx | fe::kRestoreEsi };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return menud::startLogoTexture(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menud::startLogoTexture(app, cpu); });
 }
 
-void frontend::effectsLoadScreenArt(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::effectsLoadScreenArt(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4a4ba0", 0, 0, kArtStrings, std::size(kArtStrings),
                           fe::kRestoreEcx | fe::kRestoreEdx | fe::kRestoreEsi | fe::kRestoreEdi };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return menud::loadLogoPictures(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menud::loadLogoPictures(app, cpu); });
 }
 
-void frontend::effectsLogoDraw(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::effectsLogoDraw(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4a4c20", 0, 0, &kArtStrings[1], 1,
                           fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 item = cpu.eax, x = cpu.edx, y = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return menud::drawLogo(app, cpu, item, x, y); });
+    const reg32 item = args.eax, x = args.edx, y = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menud::drawLogo(app, cpu, item, x, y); });
 }
 
-void frontend::lobbyDrawPlayers(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::lobbyDrawPlayers(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_49ae30", 0, 0, kLobbyStrings, std::size(kLobbyStrings),
                           fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 x = cpu.eax, y = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return menud::drawLobbyPlayers(app, cpu, x, y); });
+    const reg32 x = args.eax, y = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menud::drawLobbyPlayers(app, cpu, x, y); });
 }
 
-void frontend::pauseEndRestorePointer(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseEndRestorePointer(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4bc670", 0, 0, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return menud::endPause(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menud::endPause(app, cpu); });
 }
 
 }

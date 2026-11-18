@@ -39,17 +39,16 @@
  * section nor a key = value -- a key with nothing after its '=' included --
  * calls the game's key wait (0x4f0120), and the line is skipped.
  *
- * Each function is a typed core and an adapter under the game's name.  The
+ * Each function is a typed core and a thunk under the game's name.  The
  * cores call each other as C++, each given the esp its game's code is entered
  * at, so that what the game's calls out of it find on the stack -- the C
  * library's strtok keeps a pointer into the stack between calls -- is where
  * it was; what is not rewritten (the C library, the game's key wait) is
  * called by address, the language's text and the menus' lists as C++ through
- * their adapters.  The game's code leaves ebx, ecx and edx otherwise than it
+ * their thunks.  The game's code leaves ebx, ecx and edx otherwise than it
  * got them in several of these (the scratch of a Watcom function); no caller
- * reads them after (by liveness on nfs3.exe), so each adapter gives back
- * every register but eax as the caller had it.  tools/game_checks holds each
- * adapter against the game's code for it (menus.inc). */
+ * reads them after (by liveness on nfs3.exe), so each thunk gives back
+ * every register but eax as the caller had it. */
 #if defined(__clang__)
 #pragma clang fp contract(off)
 #else
@@ -164,8 +163,8 @@ constexpr reg32 kNextMenu = 0x538fa0, kMenuExtension = 0x538fac, kBackslash = 0x
 /* ---- What they call ---- */
 
 // The port's own, as the game's code calls it.
-constexpr guest::Native kLanguageText = text::languageText;      // 0x4d1850
-constexpr guest::Native kMenuEdited = buttons::menuEdited;       // 0x442d00
+constexpr reg32 kLanguageText = 0x4d1850;  // port_text's languageText, by its address
+constexpr reg32 kMenuEdited = 0x442d00;  // port_buttons's menuEdited, by its address
 // What is not rewritten: by address.
 constexpr reg32 kStrcmp = 0x4ee310, kStricmp = 0x4e9ec0, kStrstr = 0x4e0820, kStrtok = 0x4eff60;
 constexpr reg32 kAtoi = 0x4f0430, kAtol = 0x4f0490, kSscanf = 0x4f0548, kSprintf = 0x4df690;
@@ -264,10 +263,6 @@ struct Caller
     CPU& cpu;
     reg32 r = 0;
     bool operator()(reg32 esp, reg32 target, Args a = {}, std::initializer_list<reg32> stack = {})
-    {
-        return callGame(app, cpu, esp, target, a, stack, r);
-    }
-    bool operator()(reg32 esp, guest::Native target, Args a = {}, std::initializer_list<reg32> stack = {})
     {
         return callGame(app, cpu, esp, target, a, stack, r);
     }
@@ -466,7 +461,7 @@ Result numberParsed(App* app, CPU& cpu, reg32 esp, reg32 text, reg32 convert, co
     return int32_t(call.r);
 }
 
-/* 0x4491b0's: a float, into `parsed` (the adapter leaves it on the x87's
+/* 0x4491b0's: a float, into `parsed` (the thunk leaves it on the x87's
  * stack), when sscanf reads one and every character is a digit, '.', or '-';
  * 0.0 otherwise.  eax: sscanf's result if it read none, the float's bits, or
  * where the first other character is. */
@@ -879,7 +874,7 @@ Result menusLoaded(App* app, CPU& cpu, reg32 esp, reg32 name, reg32 reset, const
     return 1;
 }
 
-/* ---- The adapters ---- */
+/* ---- The thunks ---- */
 
 namespace
 {
@@ -892,134 +887,149 @@ Args regsOf(const Entry& e)
 }  // namespace
 
 /* 0x4429c0: whether the codelink at eax names the name at edx. */
-void codelinkMatches(App* app, CPU& cpu)
+x86::reg32 codelinkMatches(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, codelinkMatched(app, cpu, e.esp, e.eax, e.edx, e.ebx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, codelinkMatched(app, cpu, e.esp, e.eax, e.edx, e.ebx));
 }
 
 /* 0x442b10: the screen at eax given its handlers by its name. */
-void assignHandlers(App* app, CPU& cpu)
+x86::reg32 assignHandlers(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, handlersAssigned(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, handlersAssigned(app, cpu, e.esp, e.eax));
 }
 
 /* 0x448f00: the key at eax's row in the keyword table for a widget of type edx. */
-void keywordIndex(App* app, CPU& cpu)
+x86::reg32 keywordIndex(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, keywordFound(app, cpu, e.esp, e.eax, e.edx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, keywordFound(app, cpu, e.esp, e.eax, e.edx));
 }
 
 /* 0x448f50: the string at eax kept in the string pool. */
-void storeString(App* app, CPU& cpu)
+x86::reg32 storeString(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, reg32(*stringStored(app, e.eax)));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, reg32(*stringStored(app, e.eax)));
 }
 
 /* 0x448fd0: the type of the widget named eax. */
-void widgetType(App* app, CPU& cpu)
+x86::reg32 widgetType(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, widgetTyped(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, widgetTyped(app, cpu, e.esp, e.eax));
 }
 
 /* 0x449020: the name of the widget of type eax. */
-void widgetName(App* app, CPU& cpu)
+x86::reg32 widgetName(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, reg32(*widgetNamed(app, e.eax)));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, reg32(*widgetNamed(app, e.eax)));
 }
 
 /* 0x449060: item eax made a widget of type edx. */
-void initItem(App* app, CPU& cpu)
+x86::reg32 initItem(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, reg32(*itemInitialised(app, e.eax, e.edx)));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, reg32(*itemInitialised(app, e.eax, e.edx)));
 }
 
 /* 0x4490e0: the widget the section key at eax makes. */
-void sectionType(App* app, CPU& cpu)
+x86::reg32 sectionType(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, sectionTyped(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, sectionTyped(app, cpu, e.esp, e.eax));
 }
 
 /* 0x449130: the number at eax, int-wide. */
-void parseInt(App* app, CPU& cpu)
+x86::reg32 parseInt(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, numberParsed(app, cpu, e.esp, e.eax, kAtoi, regsOf(e)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, numberParsed(app, cpu, e.esp, e.eax, kAtoi, regsOf(e)));
 }
 
 /* 0x449170: the number at eax, long-wide. */
-void parseLong(App* app, CPU& cpu)
+x86::reg32 parseLong(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, numberParsed(app, cpu, e.esp, e.eax, kAtol, regsOf(e)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, numberParsed(app, cpu, e.esp, e.eax, kAtol, regsOf(e)));
 }
 
 /* 0x4491b0: the float at eax, onto the x87's stack. */
-void parseFloat(App* app, CPU& cpu)
+x86::reg32 parseFloat(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     float parsed = 0.0f;
     const Result r = floatParsed(app, cpu, e.esp, e.eax, regsOf(e), parsed);
     if (r)
-        cpu.fpu.push(Float(parsed));
-    e.finish(cpu, r);
+    {
+        args.floatSet = true;
+        args.floatResult = double(Float(parsed));
+    }
+    return e.finish(cpu, args, r);
 }
 
 /* 0x449240: item eax's field for keyword edx set from the value at ebx. */
-void setField(App* app, CPU& cpu)
+x86::reg32 setField(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, fieldSet(app, cpu, e.esp, e.eax, e.edx, e.ebx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, fieldSet(app, cpu, e.esp, e.eax, e.edx, e.ebx));
 }
 
 /* 0x4493b0: the next key and value of the file eax into edx and ebx, the lines
  * counted at ecx. */
-void readEntry(App* app, CPU& cpu)
+x86::reg32 readEntry(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, entryRead(app, cpu, e.esp, e.eax, e.edx, e.ebx, e.ecx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, entryRead(app, cpu, e.esp, e.eax, e.edx, e.ebx, e.ecx));
 }
 
 /* 0x449510: the screen named eax loaded, edx to start over. */
-void loadMenus(App* app, CPU& cpu)
+x86::reg32 loadMenus(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, menusLoaded(app, cpu, e.esp, e.eax, e.edx, regsOf(e)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, menusLoaded(app, cpu, e.esp, e.eax, e.edx, regsOf(e)));
 }
 
 /* 0x4498a0: whether screen eax's file may be written to. */
-void checkMenuFile(App* app, CPU& cpu)
+x86::reg32 checkMenuFile(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, menuFileChecked(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, menuFileChecked(app, cpu, e.esp, e.eax));
 }
 
 /* 0x449960: every edited screen's file checked. */
-void checkMenuFiles(App* app, CPU& cpu)
+x86::reg32 checkMenuFiles(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, menuFilesChecked(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, menuFilesChecked(app, cpu, e.esp, e.eax));
 }
 
 /* 0x449990: the screen at eax's onLoad handler called, once. */
-void callOnLoad(App* app, CPU& cpu)
+x86::reg32 callOnLoad(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, onLoadCalled(app, cpu, e.esp, e.eax, regsOf(e)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, onLoadCalled(app, cpu, e.esp, e.eax, regsOf(e)));
+}
+
+reg32 backslashEnded(App* app, reg32 path)
+{
+    backslashAppended(app, path);
+    return 0;
 }
 
 /* 0x4529a0: the path at eax ended with a '\'. */
-void appendBackslash(App* app, CPU& cpu)
+x86::reg32 appendBackslash(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, reg32(*backslashAppended(app, e.eax)));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, pathBackslashed(app, e.eax));
+}
+
+/* 0x4529a0's core: the path at `path` ended with a '\'; 0. */
+reg32 pathBackslashed(App* app, reg32 path)
+{
+    return reg32(*backslashAppended(app, path));
 }
 
 }  // namespace menus

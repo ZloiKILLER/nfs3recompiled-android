@@ -11,13 +11,13 @@ namespace win32
 class Library
 {
 public:
-    typedef std::pair<x86::reg32, MethodPtr> Symbol;
+    typedef std::pair<x86::reg32, Method> Symbol;
     Library(const char* name);
     ~Library();
 
-    inline Library& registerSymbol(const char* name, MethodPtr symbol)
+    inline Library& registerSymbol(const char* name, ThunkPtr symbol)
     {
-        m_methods.insert(std::make_pair(std::string(name), std::make_pair(getSymbolIndex(), symbol)));
+        m_methods.insert(std::make_pair(std::string(name), Symbol(getSymbolIndex(), Method(name, symbol))));
         return *this;
     }
 

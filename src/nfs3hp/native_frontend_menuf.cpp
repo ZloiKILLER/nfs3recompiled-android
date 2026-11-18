@@ -1,4 +1,5 @@
 #include "native_frontend_menuf.h"
+#include "native_load_saves.h"
 #include "native_watcom.h"
 #include "native_game.h"
 #include "game_settings.h"
@@ -24,13 +25,77 @@
 #include "port_buttons.h"
 #include "port_loop.h"
 #include "port_shapes.h"
+#include "native_render.h"
 #include <nfs3hp.h>
 #include <cstdint>
 #include <cstring>
 #include <iterator>
 #include <optional>
+#include "native_guest.h"
 
-/* The last of the menus' generated functions, decompiled:
+namespace nfs3hp
+{
+namespace
+{
+
+/* A call through a pointer or to a function of the game's that has no typed core: Watcom's register
+ * arguments (eax, edx, ebx, ecx in turn) and the stack words as `arguments` have them, through
+ * guest::pointerCall; its eax, and Terminated when the game stopped in it. */
+x86::reg32 callAt(fe::Guest& guest, x86::reg32 target, const fe::Arguments& arguments = fe::Arguments())
+{
+    x86::CPU& cpu = guest.cpu();
+    x86::Args registers;
+    x86::reg32* const into[4] = { &registers.eax, &registers.edx, &registers.ebx, &registers.ecx };
+    for (std::size_t i = 0; i < arguments.registerCount; ++i)
+        *into[i] = arguments.registers[i];
+    const x86::reg32 esp = cpu.esp;
+    for (std::size_t i = arguments.stackCount; i-- > 0;)
+    {
+        cpu.esp -= 4;
+        guest.setDword(cpu.esp, arguments.stack[i]);
+    }
+    const std::optional<x86::reg32> result = guest::pointerCall(guest.app(), cpu, target, registers);
+    if (!result)
+        throw fe::Terminated();
+    cpu.esp = esp;
+    return *result;
+}
+
+}  // namespace
+}  // namespace nfs3hp
+
+namespace nfs3hp
+{
+namespace
+{
+
+/* The game's float operations on plain values: fild, the single-precision sum, difference and
+ * product (fp::), what jb and ja read after fcom, and the truncation of sub_4dfd56 and fistp. */
+struct FloatMath
+{
+    explicit FloatMath(fe::Guest& guest) : m_guest(guest) {}
+
+    static x86::Float integer(std::int32_t value) { return x86::Float(x86::sreg32(value)); }
+    x86::Float load(x86::reg32 address) const { return x86::Float(m_guest.floatAt(address)); }
+    x86::Float add(const x86::Float& a, const x86::Float& b) { return fp::add(a, b); }
+    x86::Float sub(const x86::Float& a, const x86::Float& b) { return fp::sub(a, b); }
+    x86::Float mul(const x86::Float& a, const x86::Float& b) { return fp::mul(a, b); }
+    bool above(const x86::Float& a, const x86::Float& b) { return a > b; }
+    bool below(const x86::Float& a, const x86::Float& b) { return !(a >= b); }  // or unordered
+    std::int32_t truncated(const x86::Float& value)
+    {
+        const double chopped = fe::direct<0x4dfd56, watcom::clib::chop>(m_guest.app(), m_guest.cpu(), double(value));
+        return fp::toInteger<x86::sreg32>(chopped);
+    }
+
+private:
+    fe::Guest& m_guest;
+};
+
+}  // namespace
+}  // namespace nfs3hp
+
+/* The last of the menus' functions, decompiled:
  *
  *   the HUD editor's element   an element of a race's HUD, dragged about and
  *              resized over the frozen race (the pause screens themselves are
@@ -49,17 +114,17 @@
  *
  * Plan step 5: each function a typed core in frontend::menuf (native_frontend_menuf.h), in a
  * frame of its own where the game's function has one (fe::Frame: what it calls runs at the stack
- * addresses it did), and an adapter under the game's name for the calls by address.  A core of
+ * addresses it did), and a thunk under the game's name for the calls by address.  A core of
  * the menu files, the port's or a typed library's is called as C++ (guest::direct, fe::direct);
  * the rest of the game by address, and so is a call whose registers the code goes on with. */
 namespace nfs3hp
 {
 
 // The port's own, in nfs3hp_main.cpp.  What sub_45bcb0 measures of what an
-// element really draws, and the frame about that (tools/apply_hud_editor.py).
+// element really draws, and the frame about that (the port's HUD editor change).
 void hudEditorDraw(win32::WinApplication* app, x86::reg32 object, bool begin);
 void hudEditorFrame(win32::WinApplication* app, x86::reg32 object, bool drawn);
-// The phone's settings over a new player's (tools/apply_first_settings.py):
+// The phone's settings over a new player's (the port's first settings change):
 // whether it laid them.
 bool firstSettings(win32::WinApplication* app);
 
@@ -68,7 +133,6 @@ namespace
 
 using fe::Guest;
 using fe::GuestString;
-using fe::X87;
 using x86::Float;
 using x86::reg32;
 
@@ -131,7 +195,6 @@ constexpr reg32 kRecordHighUnits = 0x539c7c;
 // The game's functions.
 constexpr reg32 kGetAsyncKeyState = 0x534738;  // the import's slot: stdcall, the top bit of the 16 the key held
 constexpr std::uint32_t kVkShift = 0x10, kVkControl = 0x11;
-constexpr reg32 kDrawFrame = 0x459440;      // eax an element, edx a colour
 
 constexpr std::uint32_t kFrameGood = 0x7fffffff, kFrameBad = 0xffff0000;
 
@@ -162,7 +225,7 @@ std::int32_t sword(const Guest& guest, reg32 address)
 // fild
 Float integer(std::int32_t value)
 {
-    return X87::integer(value);
+    return FloatMath::integer(value);
 }
 
 /* What a jump after fcom goes by: jb, below or unordered, and ja, above and
@@ -239,7 +302,6 @@ x86::reg32 frontend::menuf::drawElement(App* app, CPU& cpu, reg32 element, reg32
     fe::direct<0x45ab30, frontend::hudr::drawElement>(app, cpu, element);
     hudEditorDraw(app, element, false);
     const std::int32_t own = sdword(guest, element + kElementNumber) % kElements;
-    guest.leaveEdx(reg32(own));
     bool framed = fe::direct<0x47bc20, frontend::rendb::kindIsText>(app, cpu, reg32(own)) != 0;
     for (const std::int32_t also : kAlsoFramed)
         framed = framed || own == also;
@@ -247,7 +309,7 @@ x86::reg32 frontend::menuf::drawElement(App* app, CPU& cpu, reg32 element, reg32
     {
         const reg32 colour = guest.dword(element + kPlaceGood) != 0 ? kFrameGood : kFrameBad;
         hudEditorFrame(app, element, true);
-        guest.call(kDrawFrame, fe::args({ element, colour }));
+        fe::direct<0x459440, graphics::editorFrame>(app, cpu, element, colour);
         hudEditorFrame(app, element, false);
     }
     return 0;
@@ -278,8 +340,8 @@ constexpr Axis kDown{ kTop, kBottom, kPlacedTop, kPlacedHeight, kModeHeight, kHi
                       kLeastHigh, kPointerY, false };
 
 /* A stroke of the keys on an element they hold: by m_step pixels, less where
- * the room or its size says so.  What each leaves in edx is as the generated
- * function leaves it: no caller reads it, the check does. */
+ * the room or its size says so.  What each leaves in edx is as the game's
+ * function leaves it: no caller reads it. */
 class ElementStroke
 {
 public:
@@ -293,13 +355,13 @@ public:
         if (!mayGoBack(axis))
             return;
         if (axis.across)
-            m_guest.leaveEdx(reg32(m_step));
+            {}
         shortenToRoom(axis);
         moveStart(axis, -m_step);
         placeStart(axis);
         moveEnd(axis, -m_step);
         if (!axis.across)
-            m_guest.leaveEdx(m_guest.dword(m_element + axis.end));
+            {}
         judgeAndPointAtMenu();
     }
 
@@ -309,10 +371,9 @@ public:
         if (!above(integer(limit), fp::add(sizeInPixels(axis), integer(start(axis)))))
             return;
         const std::int32_t room = std::int32_t(reg32(limit) - reg32(start(axis)));
-        m_guest.leaveEdx(reg32(room));
         const Float space = fp::sub(integer(room), sizeInPixels(axis));
         if (above(integer(m_step), space))
-            m_step = X87(m_guest).truncated(space);
+            m_step = FloatMath(m_guest).truncated(space);
         moveStart(axis, m_step);
         placeStart(axis);
         moveEnd(axis, m_step);
@@ -327,7 +388,7 @@ public:
         shortenToRoom(axis);
         moveStart(axis, -m_step);
         const Float stroke = placeStartByInverse(axis);
-        setPlacedSize(axis, X87(m_guest).truncated(fp::add(stroke, placedSize(axis))));
+        setPlacedSize(axis, FloatMath(m_guest).truncated(fp::add(stroke, placedSize(axis))));
         judgePlace();
         pointerTo(axis, sword(m_guest, m_element + axis.placedStart));
     }
@@ -340,7 +401,7 @@ public:
         shortenToSize(axis);
         moveStart(axis, m_step);
         const Float stroke = placeStartByInverse(axis);
-        setPlacedSize(axis, X87(m_guest).truncated(fp::sub(placedSize(axis), stroke)));
+        setPlacedSize(axis, FloatMath(m_guest).truncated(fp::sub(placedSize(axis), stroke)));
         judgePlace();
         pointerTo(axis, sword(m_guest, m_element + axis.placedStart));
     }
@@ -351,7 +412,7 @@ public:
         if (!mayShrink(axis))
             return;
         shortenToSize(axis);
-        setPlacedSize(axis, X87(m_guest).truncated(fp::sub(placedSize(axis), inUnits(axis, m_step))));
+        setPlacedSize(axis, FloatMath(m_guest).truncated(fp::sub(placedSize(axis), inUnits(axis, m_step))));
         moveEnd(axis, -m_step);
         judgePlace();
         pointerToEnd(axis);
@@ -367,7 +428,7 @@ public:
         const std::int32_t room = std::int32_t(reg32(limit) - reg32(end));
         if (room <= m_step)
             m_step = room - 1;
-        setPlacedSize(axis, X87(m_guest).truncated(fp::add(inUnits(axis, m_step), placedSize(axis))));
+        setPlacedSize(axis, FloatMath(m_guest).truncated(fp::add(inUnits(axis, m_step), placedSize(axis))));
         moveEnd(axis, m_step);
         judgePlace();
         pointerToEnd(axis);
@@ -410,7 +471,7 @@ private:
 
     void placeStart(const Axis& axis)
     {
-        const std::int32_t place = X87(m_guest).truncated(inUnits(axis, start(axis)));
+        const std::int32_t place = FloatMath(m_guest).truncated(inUnits(axis, start(axis)));
         m_guest.setWord(m_element + axis.placedStart, std::uint16_t(place));
     }
 
@@ -421,7 +482,7 @@ private:
         const Float units = doubleAt(m_guest, axis.units);
         const Float product = fp::mul(integer(start(axis)), units);
         const Float inverse = fp::div(1.0, integer(modeSize(axis)));
-        const std::int32_t place = X87(m_guest).truncated(fp::mul(product, inverse));
+        const std::int32_t place = FloatMath(m_guest).truncated(fp::mul(product, inverse));
         m_guest.setWord(m_element + axis.placedStart, std::uint16_t(place));
         return fp::mul(fp::mul(units, integer(m_step)), inverse);
     }
@@ -432,7 +493,6 @@ private:
     {
         if (axis.across)
             return start(axis) > 0;
-        m_guest.leaveEdx(m_guest.dword(kRoomTop));
         return start(axis) > sdword(m_guest, kRoomTop);
     }
 
@@ -452,7 +512,7 @@ private:
     {
         const Float most = fp::add(sizeInPixels(axis), doubleAt(m_guest, kShrinkMargin));
         if (above(integer(m_step), most))
-            m_step = X87(m_guest).truncated(most);
+            m_step = FloatMath(m_guest).truncated(most);
     }
 
     /* sub_459db0's answer kept, and while it says yes the place remembered. */
@@ -484,7 +544,7 @@ private:
 
     void pointerToEnd(const Axis& axis)
     {
-        pointerTo(axis, X87(m_guest).truncated(inUnits(axis, sdword(m_guest, m_element + axis.end))));
+        pointerTo(axis, FloatMath(m_guest).truncated(inUnits(axis, sdword(m_guest, m_element + axis.end))));
     }
 
     Guest& m_guest;
@@ -493,8 +553,7 @@ private:
     std::int32_t m_step;
 };
 
-/* A function of Windows', its words handed: the port's own, called as C++ (native_windows.h); in
- * the check through its import's slot.  Terminated when the game stopped in it, as Guest::call. */
+/* A function of Windows', its words handed: the port's own, called as C++ (native_windows.h).  Terminated when the game stopped in it, as Guest::call. */
 template <reg32 Slot, auto Function, typename... Words>
 reg32 windows(Guest& guest, x86::CPU& cpu, Words... words)
 {
@@ -581,8 +640,6 @@ x86::reg32 frontend::menuf::elementKey(App* app, CPU& cpu, reg32 element, reg32,
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 16 + 0x20);
     const std::int32_t own = sdword(guest, element + kElementNumber) % kElements;
-    guest.leaveEbx(element);
-    guest.leaveEdx(reg32(own));
     if (guest.word(element + kHeld) == 0)
     {
         takeHold(guest, cpu, element, own, key);
@@ -592,7 +649,6 @@ x86::reg32 frontend::menuf::elementKey(App* app, CPU& cpu, reg32 element, reg32,
     }
 
     const std::int32_t width = sdword(guest, kModeWidth);
-    guest.leaveEdx(reg32(width % kStrokesAcross));
     if (key == kKeyEnter)
     {
         guest.setByte(element + kFlags, std::uint8_t(guest.byte(element + kFlags) & ~kWithKeys));
@@ -632,7 +688,6 @@ x86::reg32 frontend::menuf::elementKey(App* app, CPU& cpu, reg32 element, reg32,
             stroke.shrinkAtEnd(kAcross);
         else if (key == kKeyRight)
         {
-            guest.leaveEdx(reg32(width));
             stroke.growAtEnd(kAcross);
         }
         else
@@ -665,7 +720,7 @@ x86::reg32 frontend::menuf::elementToRecord(App* app, CPU& cpu, reg32 element)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 12 + 0xc);
-    X87 x87(guest);
+    FloatMath x87(guest);
     const Float wide = doubleAt(guest, kRecordWideUnits), high = doubleAt(guest, kRecordHighUnits);
     const Float perWide = fp::div(1.0, integer(sdword(guest, kModeWidth)));
     const Float perHigh = fp::div(1.0, integer(sdword(guest, kModeHeight)));
@@ -712,8 +767,8 @@ constexpr GuestString kTitleMovie{ 0x53b048, "titleav.mad" };
 constexpr GuestString kSetup{ 0x53afb8, "setup" };
 constexpr GuestString kStartStrings[] = { kTitleMovie, kSetup };
 
-constexpr reg32 kDetailSettings = 0x472d10;
 constexpr reg32 kSaveConfig = 0x472820;
+constexpr reg32 kDetailSettings = 0x472d10;
 constexpr reg32 kFlushKeys = 0x4f0240;
 constexpr reg32 kFillZero = 0x4e070c;
 constexpr reg32 kNetworkFailed = 10;           // to the state machine
@@ -753,17 +808,17 @@ x86::reg32 frontend::menuf::frontEndStart(App* app, CPU& cpu)
         if (guest.dword(kConfigMadeAfresh) != 0)
         {
             guest.setDword(kConfigMadeAfresh, 0);
-            guest.call(kDetailSettings);
+            fe::direct<0x472d10, render::detailSettingsSet>(app, cpu);
             // Port: the phone's settings over the new player's.  The game takes
             // up the new bindings and saves them, as it does leaving the front end.
             if (firstSettings(app))
             {
                 fe::direct<0x43c040, glue::noteDigitalControls>(app, cpu);
-                guest.call(kSaveConfig);
+                fe::direct<0x472820, load::configSaved>(app, cpu);
             }
         }
     }
-    guest.call(kFlushKeys);
+    callAt(guest, kFlushKeys);
     gameSettings(guest).replayMode = 0;
     gameSettings(guest).lastTickRaced = 0;
     fe::direct<kFillZero, ea::clearBytes>(guest.app(), guest.cpu(), SETTINGS_ADDRESS(knockout), kCarsBytes);
@@ -852,23 +907,20 @@ constexpr reg32 kShapeTexture = 0x4d6390;      // eax a shape, edx the old textu
  * car screens -- and, unless told not to, the item its shape's texture: on
  * trkinfo the track's own picture, otherwise its shape, from its own art or the
  * screen's.  The band starts tall, once.  What is left in eax is as the
- * generated function leaves it: the last call's answer. */
+ * game's function leaves it: the last call's answer. */
 x86::reg32 frontend::menuf::startScreenEffects(App* app, CPU& cpu, reg32 item, reg32 keepArt)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 20 + 0x54);
-    guest.leaveEbx(item);  // what sub_44ac90 hands on
     const reg32 name = fe::direct<0x44ae00, loop::currentMenuName>(app, cpu);
     reg32 left = name;
     const reg32 shown = name != 0 ? name : kNoName.address;
     guest.setDword(kBandColour, kDefaultBandColour);
-    guest.leaveEdx(kDefaultBandColour);
     const auto is = [&](const GuestString& screen) {
         left = fe::direct<kStrcmp, watcom::clib::strcmp>(guest.app(), guest.cpu(), shown, screen.address);
         return left == 0;
     };
     const auto bandByCar = [&](reg32 player) {
-        cpu.eax = player;  // the game's code hands it the player, which it compares and does not use
         left = fe::direct<0x4a46f0, frontend::wata::carBadgeColour>(app, cpu);
         guest.setDword(kBandColour, left);
     };
@@ -893,25 +945,24 @@ x86::reg32 frontend::menuf::startScreenEffects(App* app, CPU& cpu, reg32 item, r
             fe::direct<kSprintf, watcom::clib::sprintf>(app, cpu, path, kTrackArtFormat.address,
                                                         guest::Words{kTrackArtFolder, trackArt});
             // The item in ebx handed on (the game's code has the shape's name in edx too, which it does not read).
-            const reg32 art = reg32(*fe::direct<0x44ac90, port::buttons::shapesLoaded>(app, cpu, cpu.esp - 4, path, cpu.ebx));
+            const reg32 art = reg32(*fe::direct<0x44ac90, port::buttons::shapesLoaded>(app, cpu, cpu.esp - 4, path, 0));
             shape = left = fe::direct<0x4ef1e0, frontend::eab::shapeFileFind>(app, cpu, art, kBackShape.address);
         }
         else if (file != 0)
         {
             fe::direct<kSprintf, watcom::clib::sprintf>(app, cpu, path, kArtFormat.address,
                                                         guest::Words{kMenuArtFolder, file});
-            left = reg32(*fe::direct<0x44ac90, port::buttons::shapesLoaded>(app, cpu, cpu.esp - 4, path, cpu.ebx));
+            left = reg32(*fe::direct<0x44ac90, port::buttons::shapesLoaded>(app, cpu, cpu.esp - 4, path, 0));
             if (shapeName != 0)
                 shape = left = fe::direct<0x4ef1e0, frontend::eab::shapeFileFind>(app, cpu, left, shapeName);
         }
         else if (shapeName != 0)
-            shape = left = guest.call(kLocateShape, fe::args({ guest.dword(kMenuShapeFile), shapeName }));
+            shape = left = callAt(guest, kLocateShape, fe::args({ guest.dword(kMenuShapeFile), shapeName }));
         else
             left = 0;
         if (shape != 0)
         {
-            // By address: what it leaves in edx, the function leaves.
-            left = guest.call(kShapeTexture, fe::args({ shape, 0 }));
+                        left = reg32(*fe::direct<kShapeTexture, port::shapes::artTexturesOf>(app, cpu, cpu.esp - 4, shape, 0, 0));
             guest.setWord(item + kItemTexture, std::uint16_t(left));
         }
     }
@@ -919,7 +970,6 @@ x86::reg32 frontend::menuf::startScreenEffects(App* app, CPU& cpu, reg32 item, r
     {
         guest.setDword(kBandBottom, kBandTallest);
         guest.setDword(kBandClosing, 1);
-        guest.leaveEdx(kBandTallest);
         left = 1;
     }
     return left;
@@ -939,9 +989,9 @@ constexpr reg32 kRaceMouseButtons = 0x7a3d00, kRaceMouseX = 0x7a3cf8, kRaceMouse
 
 /* sub_478000: one of the things a race's end calls (native_graphics.cpp's
  * kRaceEnds), empty. */
-x86::reg32 frontend::menuf::raceEndEmpty(App*, CPU& cpu)
+x86::reg32 frontend::menuf::raceEndEmpty(App*, CPU&)
 {
-    return cpu.eax;
+    return 0;   // it leaves eax as it came, which its thunk does; no caller reads it
 }
 
 /* sub_4bc530: the race's mouse read afresh as a pause ends, what it did in the
@@ -962,65 +1012,68 @@ x86::reg32 frontend::menuf::pauseMenuAgain(App* app, CPU& cpu)
     return guest::direct<0x44ba30, menua::racePauseMenuAgain>(app, cpu);
 }
 
-void frontend::hudElementPickCursor(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::hudElementPickCursor(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_45b940", 0, 0, nullptr, 0 };
-    const reg32 element = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return menuf::pickResizeCursor(app, cpu, element); });
+    const reg32 element = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menuf::pickResizeCursor(app, cpu, element); });
 }
 
-void frontend::hudElementDraw(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::hudElementDraw(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_45bcb0", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi };
-    const reg32 element = cpu.eax, dragging = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return menuf::drawElement(app, cpu, element, dragging); });
+    const reg32 element = args.eax, dragging = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menuf::drawElement(app, cpu, element, dragging); });
 }
 
-void frontend::hudElementKey(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::hudElementKey(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_45bd20", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 element = cpu.eax, menu = cpu.edx;
-    const std::uint16_t key = std::uint16_t(cpu.ebx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return menuf::elementKey(app, cpu, element, menu, key); });
+    const reg32 element = args.eax, menu = args.edx;
+    const std::uint16_t key = std::uint16_t(args.ebx);
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menuf::elementKey(app, cpu, element, menu, key); });
 }
 
-void frontend::hudElementToRecord(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::hudElementToRecord(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_45c9d0", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEdx };
-    const reg32 element = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return menuf::elementToRecord(app, cpu, element); });
+    const reg32 element = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menuf::elementToRecord(app, cpu, element); });
 }
 
-void frontend::frontEndFirstStart(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::frontEndFirstStart(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4730d0", 0, 0, kStartStrings, std::size(kStartStrings) };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return menuf::frontEndStart(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menuf::frontEndStart(app, cpu); });
 }
 
-void frontend::raceEndEmpty(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::raceEndEmpty(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_478000", 0, 0, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return menuf::raceEndEmpty(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
+        menuf::raceEndEmpty(app, cpu);
+        return args.eax;
+    });
 }
 
-void frontend::effectsScreenStart(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::effectsScreenStart(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4a4a10", 0, 0, kEffectsStrings, std::size(kEffectsStrings),
                           fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 item = cpu.eax, keepArt = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return menuf::startScreenEffects(app, cpu, item, keepArt); });
+    const reg32 item = args.eax, keepArt = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menuf::startScreenEffects(app, cpu, item, keepArt); });
 }
 
-void frontend::pauseResetRaceMouse(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseResetRaceMouse(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4bc530", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return menuf::resetRaceMouse(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menuf::resetRaceMouse(app, cpu); });
 }
 
-void frontend::pauseMenuAgain(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseMenuAgain(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4bc660", 0, 0, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return menuf::pauseMenuAgain(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menuf::pauseMenuAgain(app, cpu); });
 }
 
 }

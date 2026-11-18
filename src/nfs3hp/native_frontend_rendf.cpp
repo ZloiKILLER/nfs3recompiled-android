@@ -1,7 +1,27 @@
 #include "native_frontend_rendf.h"
 #include "native_ea_memory.h"
+#include "native_ea_files.h"
 #include "native_frontend.h"
 #include <nfs3hp.h>
+
+/* The thunks defined below under their qualified names. */
+namespace nfs3hp
+{
+namespace frontend
+{
+x86::reg32 rendPixels565To1555(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendPixels1555To565(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendPixelsPal8To32(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendPixelsPal8To16(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendPixelsRgb24ToArgb(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendPixelsSwapRedBlue(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendPixelsPal4To16(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendSetDisplayMode(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendFontAlloc(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendFontFree(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendFontSetOrigin(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+}
+}
 
 /* What the voodoo2a path reaches of the code above 0x504000, decompiled:
  *
@@ -20,7 +40,7 @@
  * callers may go on with the rest.
  *
  * Plan step 5: each function a typed core in frontend::rendf (native_frontend_rendf.h), in a
- * frame of its own where the game's function has one (fe::Frame), and an adapter under the
+ * frame of its own where the game's function has one (fe::Frame), and a thunk under the
  * game's name for the calls by address.  The typed cores of other files are called as C++
  * (fe::direct); the rest of the game still by address. */
 namespace nfs3hp
@@ -33,6 +53,33 @@ using fe::args;
 using fe::Guest;
 using x86::reg32;
 using x86::sreg32;
+
+/* Guest::call as a call through guest::pointerCall: `arguments`' registers in eax, edx, ebx and ecx, `esi` in esi,
+ * its stack words pushed in order, esp back after; Terminated when the game stopped in it.  `floatResult`, when given,
+ * takes the float the callee gives back. */
+inline reg32 callAt(Guest& guest, reg32 function, const fe::Arguments& arguments = fe::Arguments(), reg32 esi = 0,
+                    double* floatResult = nullptr)
+{
+    x86::CPU& cpu = guest.cpu();
+    x86::Args registers;
+    reg32* const into[4] = { &registers.eax, &registers.edx, &registers.ebx, &registers.ecx };
+    for (std::size_t i = 0; i < arguments.registerCount; ++i)
+        *into[i] = arguments.registers[i];
+    registers.esi = esi;
+    const reg32 esp = cpu.esp;
+    for (std::size_t i = arguments.stackCount; i-- > 0;)
+    {
+        cpu.esp -= 4;
+        guest.setDword(cpu.esp, arguments.stack[i]);
+    }
+    const std::optional<reg32> result = guest::pointerCall(guest.app(), cpu, function, registers);
+    if (!result)
+        throw fe::Terminated();
+    cpu.esp = esp;
+    if (floatResult)
+        *floatResult = registers.floatResult;  // what the callee leaves on the x87's top, as a float result
+    return *result;
+}
 
 constexpr std::uint8_t kKeepsEcxEsi = fe::kRestoreEcx | fe::kRestoreEsi;
 constexpr std::uint8_t kKeepsEcxEsiEdi = fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi;
@@ -95,8 +142,6 @@ reg32 row16(Guest& guest, reg32 source, reg32 destination, reg32 count, reg32 up
         destination += 2;
         count -= 1;
     }
-    guest.leaveEbx(count);
-    guest.leaveEdx(destination);
     return source;
 }
 
@@ -137,8 +182,6 @@ x86::reg32 frontend::rendf::rowSwapRedBlue(App* app, CPU& cpu, reg32 source, reg
         source += 2;
         destination += 2;
     }
-    guest.leaveEbx(count);
-    guest.leaveEdx(destination);
     return source;
 }
 
@@ -158,8 +201,6 @@ x86::reg32 frontend::rendf::rowPal8To32(App* app, CPU& cpu, reg32 source, reg32 
         destination += 4;
         guest.setDword(destination - 4, guest.dword(palette + index * 4));
     } while (more);
-    guest.leaveEbx(count);
-    guest.leaveEdx(destination);
     return source;
 }
 
@@ -217,8 +258,6 @@ x86::reg32 frontend::rendf::rowPal8To16(App* app, CPU& cpu, reg32 source, reg32 
         destination += 2;
         count -= 1;
     }
-    guest.leaveEbx(first);
-    guest.leaveEdx(third);
     return eax;
 }
 
@@ -267,8 +306,6 @@ x86::reg32 frontend::rendf::rowPal4To16(App* app, CPU& cpu, reg32 source, reg32 
         pair = (pair & 0xffff0000) | guest.word(current * 2 + kPalette16);
         guest.setWord(destination, std::uint16_t(pair));
     }
-    guest.leaveEbx(next);
-    guest.leaveEdx(pair);
     return current;
 }
 
@@ -317,8 +354,6 @@ x86::reg32 frontend::rendf::rowRgb24ToArgb(App* app, CPU& cpu, reg32 entries, re
         at += 3;
         destination += 4;
     }
-    guest.leaveEbx(count);
-    guest.leaveEdx(destination);
     return eax;
 }
 
@@ -355,11 +390,11 @@ x86::reg32 frontend::rendf::setDisplayMode(App* app, CPU& cpu, reg32 width, reg3
     const reg32 setMode = guest.dword(kSetModeFunction);
     if (setMode != 0)
     {
-        guest.setEsi(height);
-        cpu.edi = 0;
-        return guest.call(setMode, args({ width, height, depth, width }));
+        return callAt(guest, setMode, args({ width, height, depth, width }));
     }
 
+    // What eax holds as the mode's functions are called: the width it came with, then the log's answer.
+    reg32 carried = width;
     if (width == 0)
         width = 640;
     else if (width == reg32(-1))
@@ -370,23 +405,16 @@ x86::reg32 frontend::rendf::setDisplayMode(App* app, CPU& cpu, reg32 width, reg3
         height = 768;
     if (depth == 0 || depth == reg32(-1) || depth == 15)
         depth = 16;
-    guest.leaveEcx(width);
-    guest.setEsi(height);
-    guest.leaveEbx(depth);
-    guest.leaveEdx(0);
-    cpu.ebp = kInitChannel;
-    cpu.edi = 0;
 
     for (;;)
     {
-        const reg32 prepared = guest.call(kPrepareDirectDraw);
-        guest.leaveEdx(prepared);
+        const reg32 prepared = callAt(guest, kPrepareDirectDraw, args({ carried }));
         guest.setDword(kRequestedWidth, width);
         guest.setDword(kRequestedHeight, height);
         guest.setDword(kRequestedDepth, depth);
         guest.setByte(kRequestedDepthByte, std::uint8_t(depth));
-        guest.call(kLog, args({}, { kInitChannel, kLogLevel, kLogRequested, width, height, depth }));
-        const reg32 opened = guest.call(kOpenDirectDraw, args({ prepared }));
+        fe::direct<0x501050, ea::reportedAt>(app, cpu, kInitChannel, kLogLevel, kLogRequested, guest::Words({ width, height, depth }));
+        const reg32 opened = callAt(guest, kOpenDirectDraw, args({ prepared }));
         if (opened == 0)
         {
             guest.setDword(kDriverRunning, 0);
@@ -396,27 +424,23 @@ x86::reg32 frontend::rendf::setDisplayMode(App* app, CPU& cpu, reg32 width, reg3
         const reg32 requestedDepth = guest.dword(kRequestedDepth);
         const reg32 requestedHeight = guest.dword(kRequestedHeight);
         const reg32 requestedWidth = guest.dword(kRequestedWidth);
-        cpu.edi = requestedDepth;
-        guest.leaveEdx(requestedWidth);
-        guest.call(kLog, args({ requestedHeight }, { kInitChannel, kLogLevel, kLogSelecting, requestedWidth, requestedHeight, requestedDepth }));
-        const reg32 selected = guest.call(kSelectMode, args({ kDirectDrawScreen }));
-        guest.leaveEdx(selected);
-        cpu.edi = selected;
-        guest.call(kLog, args({}, { kInitChannel, kLogLevel, kLogSelected, selected }));
+        fe::direct<0x501050, ea::reportedAt>(app, cpu, kInitChannel, kLogLevel, kLogSelecting,
+                                             guest::Words({ requestedWidth, requestedHeight, requestedDepth }));
+        const reg32 selected = callAt(guest, kSelectMode, args({ kDirectDrawScreen }));
+        fe::direct<0x501050, ea::reportedAt>(app, cpu, kInitChannel, kLogLevel, kLogSelected, guest::Words({ selected }));
         if (selected != 0)
-            return guest.call(kApplyMode);
+            return callAt(guest, kApplyMode);
 
-        guest.call(kLog, args({}, { kInitChannel, kLogLevel, kLogNoMode }));
+        const reg32 logged = *fe::direct<0x501050, ea::reportedAt>(app, cpu, kInitChannel, kLogLevel, kLogNoMode, guest::Words({}));
         const std::uint8_t flags = guest.byte(kScreenFlags);
-        const reg32 eax = (guest.eax() & 0xffff00ff) | (reg32(flags) << 8);
+        const reg32 eax = (logged & 0xffff00ff) | (reg32(flags) << 8);
         if ((flags & 0x80) != 0)
         {
             guest.setDword(kDriverRunning, 0);
             return eax;
         }
-        cpu.eax = eax;
+        carried = eax;
         const std::uint8_t marked = std::uint8_t(flags | 0x80);
-        guest.leaveEdx(marked);
         guest.setByte(kScreenFlags, marked);
     }
 }
@@ -466,81 +490,81 @@ x86::reg32 frontend::rendf::fontSetOrigin(App* app, CPU& cpu, reg32 font, reg32 
     return font;
 }
 
-void frontend::rendPixels565To1555(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendPixels565To1555(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_5040b8", 0, 0, nullptr, 0, kKeepsEcxEsi };
-    const reg32 source = cpu.eax, destination = cpu.edx, count = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendf::row565To1555(app, cpu, source, destination, count); });
+    const reg32 source = args.eax, destination = args.edx, count = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendf::row565To1555(app, cpu, source, destination, count); });
 }
 
-void frontend::rendPixels1555To565(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendPixels1555To565(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_504133", 0, 0, nullptr, 0, kKeepsEcxEsi };
-    const reg32 source = cpu.eax, destination = cpu.edx, count = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendf::row1555To565(app, cpu, source, destination, count); });
+    const reg32 source = args.eax, destination = args.edx, count = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendf::row1555To565(app, cpu, source, destination, count); });
 }
 
-void frontend::rendPixelsPal8To32(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendPixelsPal8To32(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_5041ae", 0, 0, nullptr, 0, kKeepsEcxEsiEdi };
-    const reg32 source = cpu.eax, destination = cpu.edx, count = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendf::rowPal8To32(app, cpu, source, destination, count); });
+    const reg32 source = args.eax, destination = args.edx, count = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendf::rowPal8To32(app, cpu, source, destination, count); });
 }
 
-void frontend::rendPixelsPal8To16(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendPixelsPal8To16(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_5041d0", 0, 0, nullptr, 0, kKeepsEcxEsiEdi };
-    const reg32 source = cpu.eax, destination = cpu.edx, count = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendf::rowPal8To16(app, cpu, source, destination, count); });
+    const reg32 source = args.eax, destination = args.edx, count = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendf::rowPal8To16(app, cpu, source, destination, count); });
 }
 
-void frontend::rendPixelsRgb24ToArgb(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendPixelsRgb24ToArgb(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_50425d", 0, 0, nullptr, 0, kKeepsEcxEsi };
-    const reg32 entries = cpu.eax, destination = cpu.edx, count = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendf::rowRgb24ToArgb(app, cpu, entries, destination, count); });
+    const reg32 entries = args.eax, destination = args.edx, count = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendf::rowRgb24ToArgb(app, cpu, entries, destination, count); });
 }
 
-void frontend::rendPixelsSwapRedBlue(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendPixelsSwapRedBlue(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_5042c4", 0, 0, nullptr, 0, kKeepsEcxEsiEdi };
-    const reg32 source = cpu.eax, destination = cpu.edx, count = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendf::rowSwapRedBlue(app, cpu, source, destination, count); });
+    const reg32 source = args.eax, destination = args.edx, count = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendf::rowSwapRedBlue(app, cpu, source, destination, count); });
 }
 
-void frontend::rendPixelsPal4To16(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendPixelsPal4To16(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_504335", 0, 0, nullptr, 0, kKeepsEcxEsiEdi };
-    const reg32 source = cpu.eax, destination = cpu.edx, count = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendf::rowPal4To16(app, cpu, source, destination, count); });
+    const reg32 source = args.eax, destination = args.edx, count = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendf::rowPal4To16(app, cpu, source, destination, count); });
 }
 
-void frontend::rendSetDisplayMode(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendSetDisplayMode(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_5089d0", 0, 0, nullptr, 0, kKeepsEcxEsiEdi };
-    const reg32 width = cpu.eax, height = cpu.edx, depth = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendf::setDisplayMode(app, cpu, width, height, depth); });
+    const reg32 width = args.eax, height = args.edx, depth = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendf::setDisplayMode(app, cpu, width, height, depth); });
 }
 
-void frontend::rendFontAlloc(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendFontAlloc(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_518f80", 0, 0, nullptr, 0, kKeepsEbxEcxEdx };
-    const reg32 bytes = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendf::fontAlloc(app, cpu, bytes); });
+    const reg32 bytes = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendf::fontAlloc(app, cpu, bytes); });
 }
 
-void frontend::rendFontFree(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendFontFree(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_518fc0", 0, 0, nullptr, 0, 0 };
-    const reg32 block = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendf::fontFree(app, cpu, block); });
+    const reg32 block = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendf::fontFree(app, cpu, block); });
 }
 
-void frontend::rendFontSetOrigin(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendFontSetOrigin(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_525b80", 0, 0, nullptr, 0, 0 };
-    const reg32 font = cpu.eax, second = cpu.edx, first = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendf::fontSetOrigin(app, cpu, font, second, first); });
+    const reg32 font = args.eax, second = args.edx, first = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendf::fontSetOrigin(app, cpu, font, second, first); });
 }
 
 }

@@ -25,10 +25,7 @@
  * grip sideways, the handbrake's drag, the yaw's damping.  The engine and the
  * gears (0x4aaed1), the driver's inputs (0x4a9bc4), the wheels' loads
  * (0x4aab41) and forces (0x4aca4f), and the car at rest (0x4aa8e7) are other
- * files' and are called by address.  disassemble_nfs3hp.py binds each
- * address to the function of that name here (PHYSICS_NATIVES), and the
- * generated code calls it by name.  tools/game_checks holds each against its
- * generated code.
+ * files' and are called by address.  The game's code calls each by the name it has here.
  *
  * The module (0x4a78d6 to 0x4af3a1) was compiled without optimisation: every
  * function opens with push ebx..ebp, mov ebp, esp and its frame, keeps the
@@ -52,10 +49,9 @@
  * +0x5d8 four wheels' grips, +0x5ec and +0x5f0 the pedals' travel, +0x5f4.
  *
  * Each is a typed function -- the car as a parameter, C++ locals, what it
- * gives back returned -- with an adapter under the game's name for the
+ * gives back returned -- with a thunk under the game's name for the
  * callers still on registers and the dispatch, which leaves eax, the x87's
- * stack and its status word as the game's code does (the check compares
- * them).  The x87's arithmetic is fp::'s, in the code's order, each store to
+ * stack and its status word as the game's code does.  The x87's arithmetic is fp::'s, in the code's order, each store to
  * a float rounded where the code stores one.  Part of physicsStep's frame
  * (the car's axes, the four wheels' records) is handed by address to other
  * files' functions (0x4e0110, 0x4aca4f), so it stays on the guest's stack
@@ -100,50 +96,22 @@ constexpr reg32 kSurfaceGrip = 0x55ed30;
 // eax they leave is not what the caller leaves -- where it is, and for the
 // vector's length (dampYaw leaves its eax), they stay by address: vertices'
 // cores give back nothing of eax.
-constexpr reg32 kLength = 0x4e06a0, kScaleVectors = 0x4e0050;
 
 reg16 half(App* app, reg32 a) { return app->getMemory<reg16>(a); }
 x86::Float f32(App* app, reg32 a) { return x86::Float(app->getMemory<float>(a)); }
 x86::Float f64(App* app, reg32 a) { return x86::Float(app->getMemory<double>(a)); }
 
-void push(App* app, CPU& cpu, reg32 value)
-{
-    cpu.esp -= 4;
-    put(app, cpu.esp, value);
-}
-
-/* A call by address as the code makes it: the return address's slot, and esp as the callee
- * leaves it.  False when the game stopped in it. */
-bool byAddress(App* app, CPU& cpu, reg32 target)
-{
-    cpu.esp -= 4;
-    app->dynamic_call(target, cpu);
-    return !cpu.terminate;
-}
-
 /* A native_frontend_* file's typed core called as C++ (guest::direct): nothing (false) when the
- * game stopped in it (its calls into the game throw fe::Terminated).  tools/game_checks does not
- * build those files: there it goes by address, through its ByAddress, as the game's code calls it,
- * every register but eax kept.  A reg32 result is the eax the function leaves: eax set to it (in the
- * game too); after any other, eax spoilt there, so that code still reading what the callee left in
- * eax differs there. */
+ * game stopped in it (its calls into the game throw fe::Terminated), every register but eax kept.
+ * A reg32 result is the eax the function leaves, set to it; after any other, eax is left alone. */
 template <reg32 Address, auto Core, typename... Args>
 auto feCore(App* app, CPU& cpu, Args... args)
 {
     const auto run = [&] {
-#ifdef NFS_GAME_CHECKS
-        const guest::KeptRegisters kept(cpu);
-        return guest::ByAddress<Core>::template call<Address>(app, cpu, args...);
-#else
         return guest::direct<Address, Core>(app, cpu, args...);
-#endif
     };
     using Result = decltype(run());
-    const auto spoil = [&] {
-#ifdef NFS_GAME_CHECKS
-        cpu.eax = 0x5b0115edu;
-#endif
-    };
+    const auto spoil = [&] {};
     if constexpr (std::is_void_v<Result>)
     {
         try
@@ -163,7 +131,7 @@ auto feCore(App* app, CPU& cpu, Args... args)
         {
             const Result result = run();
             if constexpr (std::is_same_v<Result, x86::reg32>)
-                cpu.eax = result;  // a menu core's result: the eax it leaves, as the call by address does
+                (void)result;  // a menu core's result: the eax it leaves is no longer set (no caller reads it)
             else
                 spoil();
             return cpu.terminate ? std::optional<Result>() : std::optional<Result>(result);
@@ -301,48 +269,25 @@ void scaleBy(App* app, reg32 field, reg32 factor)
     putFloat(app, field, float(fp::mul(f32(app, field), f32(app, factor))));
 }
 
+/* The x87's status word as the last fcom here leaves it (c3, c2, c0: fp::compare's): kept for the
+ * thunks' fnstsw ax. */
+x86::reg16 g_status = 0;
+
 /* fldz; fcomp value: the x87's status word as the module's compares with 0 leave it. */
-void compareWithZero(CPU& cpu, float value)
+void compareWithZero(float value)
 {
-    cpu.fpu.compare(x86::Float(0.0), x86::Float(value));
+    g_status = fp::compare(x86::Float(0.0), x86::Float(value));
 }
 
-/* What a function's frame keeps of its caller's across a call by address: every register but eax. */
-class KeptRegisters
-{
-public:
-    explicit KeptRegisters(CPU& cpu)
-        : cpu_(cpu), ebx_(cpu.ebx), ecx_(cpu.ecx), edx_(cpu.edx), esi_(cpu.esi), edi_(cpu.edi), ebp_(cpu.ebp), esp_(cpu.esp)
-    {
-    }
-    ~KeptRegisters()
-    {
-        cpu_.ebx = ebx_;
-        cpu_.ecx = ecx_;
-        cpu_.edx = edx_;
-        cpu_.esi = esi_;
-        cpu_.edi = edi_;
-        cpu_.ebp = ebp_;
-        cpu_.esp = esp_;
-    }
-
-private:
-    CPU& cpu_;
-    reg32 ebx_, ecx_, edx_, esi_, edi_, ebp_, esp_;
-};
-
 /* 0x4e0050 for one vector, its own: the floats at `vector` times the float of `factorBits`.  The
- * callee's eax back; nullopt when the game stopped.  By address: for the callers that leave its eax. */
+ * callee's eax (the vector past its end) back; nullopt when the game stopped.  For the callers that
+ * leave its eax. */
 std::optional<reg32> scaleVectorBy(App* app, CPU& cpu, reg32 vector, reg32 factorBits)
 {
-    const KeptRegisters kept(cpu);
-    push(app, cpu, vector);
-    push(app, cpu, factorBits);
-    cpu.edx = vector;
-    cpu.eax = 1;
-    if (!byAddress(app, cpu, kScaleVectors))
+    guest::direct<0x4e0050, vertices::scaleVectorsBy>(app, cpu, 1, vector, floatOf(factorBits), vector);
+    if (cpu.terminate)
         return std::nullopt;
-    return cpu.eax;
+    return vector + 12;
 }
 
 /* 0x4967e0 (sima's), stdcall: the game's quick length of two floats; nullopt when the game
@@ -370,21 +315,21 @@ bool transposeTo(App* app, CPU& cpu, reg32 matrix, reg32 to)
 
 }  // namespace
 
-void clearWheelForces(App* app, CPU& cpu);
-void steerAngle(App* app, CPU& cpu);
-void sideSlip(App* app, CPU& cpu);
-void groundSpeed(App* app, CPU& cpu);
-void physicsStep(App* app, CPU& cpu);
-void carPhysics(App* app, CPU& cpu);
-void settleLoadShift(App* app, CPU& cpu);
-void driveForce(App* app, CPU& cpu);
-void holdStill(App* app, CPU& cpu);
-void sideGrip(App* app, CPU& cpu);
-void handbrakeDrag(App* app, CPU& cpu);
-void yawDamping(App* app, CPU& cpu);
-void idleDamping(App* app, CPU& cpu);
-void coastDamping(App* app, CPU& cpu);
-void spinTorque(App* app, CPU& cpu);
+x86::reg32 clearWheelForces(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 steerAngle(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 sideSlip(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 groundSpeed(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 physicsStep(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 carPhysics(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 settleLoadShift(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 driveForce(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 holdStill(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 sideGrip(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 handbrakeDrag(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 yawDamping(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 idleDamping(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 coastDamping(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 spinTorque(App* app, x86::CPU& cpu, x86::Args& args);
 
 /* A wheel's record of the step's (0x30 bytes, in physicsStep's frame) cleared, all twelve of its
  * dwords: +0 to +0xc, +0x1c to +0x24, +0x10 to +0x18, +0x28 and +0x2c, in that order. */
@@ -395,10 +340,11 @@ void clearWheelRecord(App* app, reg32 record)
 }
 
 /* 0x4ad250: clearWheelRecord for the record at eax, which it leaves in eax. */
-void clearWheelForces(App* app, CPU& cpu)
+x86::reg32 clearWheelForces(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    clearWheelRecord(app, cpu.eax);
+    clearWheelRecord(app, args.eax);
     cpu.esp += 4;
+    return args.eax;
 }
 
 constexpr reg32 kHandbrakeCutScale = 0x53de34, kHandbrakeCutBase = 0x53de38;
@@ -484,17 +430,19 @@ float steeringAngle(App* app, reg32 car)
 /* 0x4ad2e1: steeringAngle for car eax onto the x87's stack.  While racing the angle's bits left
  * in eax and the status word as its compare with the double at 0x53de74 leaves it; else the car
  * in eax. */
-void steerAngle(App* app, CPU& cpu)
+x86::reg32 steerAngle(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const reg32 car = cpu.eax;
+    const reg32 car = args.eax;
     const float angle = steeringAngle(app, car);
     if (half(app, car + kCarStage) == 0)
     {
-        cpu.fpu.compare(x86::Float(angle), f64(app, kAngleLeast));
-        cpu.eax = floatBits(angle);
+        g_status = fp::compare(x86::Float(angle), f64(app, kAngleLeast));
+        args.eax = floatBits(angle);
     }
-    cpu.fpu.push(x86::Float(angle));
+    args.floatSet = true;
+    args.floatResult = double(x86::Float(angle));
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* The car's slip -- its speed across over its speed forward -- where it goes faster than 5
@@ -510,12 +458,13 @@ void updateSlip(App* app, reg32 car)
 
 /* 0x4ad672: updateSlip for car eax, which it leaves in eax; the x87's status word as the size's
  * compare of the speed forward with 0 leaves it. */
-void sideSlip(App* app, CPU& cpu)
+x86::reg32 sideSlip(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const reg32 car = cpu.eax;
-    compareWithZero(cpu, getFloat(app, car + kCarSpeedForward));
+    const reg32 car = args.eax;
+    compareWithZero(getFloat(app, car + kCarSpeedForward));
     updateSlip(app, car);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* The car's speed on the ground -- the game's quick length (0x4967e0) of the sizes of its speeds
@@ -536,17 +485,18 @@ bool updateGroundSpeed(App* app, CPU& cpu, reg32 car)
 
 /* 0x4ad6eb: updateGroundSpeed for car eax.  The last compare's (the speed forward with 0) status
  * word in the x87 and in ax, overwritten by the car in eax where it goes backwards. */
-void groundSpeed(App* app, CPU& cpu)
+x86::reg32 groundSpeed(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const reg32 car = cpu.eax;
+    const reg32 car = args.eax;
     if (!updateGroundSpeed(app, cpu, car))
-        return;
-    cpu.eax = car;
-    compareWithZero(cpu, getFloat(app, car + kCarSpeedForward));
-    cpu.ax = cpu.fpu.status.word;
+        return args.eax;
+    args.eax = car;
+    compareWithZero(getFloat(app, car + kCarSpeedForward));
+    args.eax = (args.eax & 0xffff0000u) | reg32(g_status);
     if (0.0 > f32(app, car + kCarSpeedForward))
-        cpu.eax = car;
+        args.eax = car;
     cpu.esp += 4;
+    return args.eax;
 }
 
 constexpr reg32 kRestMeasureBits = 0x3f666666;  // 0.9
@@ -563,9 +513,11 @@ std::optional<reg32> stepPhysics(App* app, CPU& cpu, reg32 car);
 /* stepPhysics for car at the game's code's depth: its eax back; nullopt when the game stopped. */
 std::optional<reg32> fullStep(App* app, CPU& cpu, reg32 car)
 {
-    const KeptRegisters kept(cpu);
+    const reg32 esp = cpu.esp;
     cpu.esp -= kCarPhysicsFrame + 4;
-    return stepPhysics(app, cpu, car);
+    const std::optional<reg32> left = stepPhysics(app, cpu, car);
+    cpu.esp = esp;
+    return left;
 }
 
 /* The step the race calls for each car: the AI's step for a car the AI drives (0x4088f0); else a
@@ -606,13 +558,14 @@ std::optional<reg32> stepCar(App* app, CPU& cpu, reg32 car)
 }
 
 /* 0x4ae4c1: stepCar for car eax. */
-void carPhysics(App* app, CPU& cpu)
+x86::reg32 carPhysics(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const std::optional<reg32> left = stepCar(app, cpu, cpu.eax);
+    const std::optional<reg32> left = stepCar(app, cpu, args.eax);
     if (!left)
-        return;
-    cpu.eax = *left;
+        return args.eax;
+    args.eax = *left;
     cpu.esp += 4;
+    return args.eax;
 }
 
 constexpr reg32 kShiftBackSettle = 0x53dea4, kShiftBackSettleDamped = 0x53dea8;
@@ -644,15 +597,16 @@ void settleLoad(App* app, reg32 car)
 
 /* 0x4ae5c2: settleLoad for car eax; the x87's status word as the shift's compare with 0 leaves it, and in
  * ax over the car where the shift is 0 (the code's second compare, which it leaves on). */
-void settleLoadShift(App* app, CPU& cpu)
+x86::reg32 settleLoadShift(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const reg32 car = cpu.eax;
+    const reg32 car = args.eax;
     const float shift = getFloat(app, car + kCarLoadShift);
-    compareWithZero(cpu, shift);
+    compareWithZero(shift);
     if (x86::Float(shift) == 0.0)
-        cpu.ax = cpu.fpu.status.word;
+        args.eax = (args.eax & 0xffff0000u) | reg32(g_status);
     settleLoad(app, car);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* The drive's force [+0x4e8] over the handling's mass [+0x248];
@@ -688,10 +642,11 @@ void applyDriveForce(App* app, reg32 car)
 }
 
 /* 0x4ae68e: applyDriveForce for car eax, which it leaves in eax. */
-void driveForce(App* app, CPU& cpu)
+x86::reg32 driveForce(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    applyDriveForce(app, cpu.eax);
+    applyDriveForce(app, args.eax);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4ae79b: the car held still: both pedals down ([+0x5f0] at least 0.5,
@@ -712,19 +667,20 @@ std::optional<reg32> holdCarStill(App* app, CPU& cpu, reg32 car)
     if (i32(integerSize(steering)) <= kSteeringHeld)
         return steering;
     const float forward = getFloat(app, car + kCarSpeedForward);
-    compareWithZero(cpu, forward);
+    compareWithZero(forward);
     if (bitsOver(sizeOf(forward), kFiveBits))
         return sizeLeaves(car, forward);
     return scaleVectorBy(app, cpu, car + kCarVelocity, 0);
 }
 
-void holdStill(App* app, CPU& cpu)
+x86::reg32 holdStill(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const std::optional<reg32> left = holdCarStill(app, cpu, cpu.eax);
+    const std::optional<reg32> left = holdCarStill(app, cpu, args.eax);
     if (!left)
-        return;
-    cpu.eax = *left;
+        return args.eax;
+    args.eax = *left;
     cpu.esp += 4;
+    return args.eax;
 }
 
 constexpr reg32 kGripBase = 0x53dec0, kGripScale = 0x53dec4, kGripOffset = 0x53dec8;
@@ -750,12 +706,13 @@ void gripSideways(App* app, reg32 car)
 
 /* 0x4ae85b: gripSideways for car eax, which it leaves in eax; the x87's status word as the size's
  * compare of the speed across with 0 leaves it. */
-void sideGrip(App* app, CPU& cpu)
+x86::reg32 sideGrip(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const reg32 car = cpu.eax;
-    compareWithZero(cpu, getFloat(app, car + kCarSpeedAcross));
+    const reg32 car = args.eax;
+    compareWithZero(getFloat(app, car + kCarSpeedAcross));
     gripSideways(app, car);
     cpu.esp += 4;
+    return args.eax;
 }
 
 constexpr reg32 kHandbrakeDragDamped = 0x53decc, kHandbrakeDrag = 0x53ded0, kHandbrakeDragNeutral = 0x53ded4;
@@ -776,18 +733,19 @@ void dragHandbrake(App* app, reg32 car)
 
 /* 0x4ae98b: dragHandbrake for car eax.  The car left in eax, but for the size's at exactly 1; the
  * x87's status word as the size's compare with 0 leaves it, with the handbrake on. */
-void handbrakeDrag(App* app, CPU& cpu)
+x86::reg32 handbrakeDrag(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const reg32 car = cpu.eax;
+    const reg32 car = args.eax;
     if (byte(app, car + kCarHandbrake) != 0)
     {
         const float forward = getFloat(app, car + kCarSpeedForward);
-        compareWithZero(cpu, forward);
+        compareWithZero(forward);
         if (floatBits(sizeOf(forward)) == kOneBits)
-            cpu.eax = sizeLeaves(car, forward);
+            args.eax = sizeLeaves(car, forward);
     }
     dragHandbrake(app, car);
     cpu.esp += 4;
+    return args.eax;
 }
 
 constexpr i32 kSteeringStill = 4;  // the steering's size under it: the yaw damped in reverse
@@ -811,25 +769,24 @@ struct Length
 
 std::optional<Length> vectorLength(App* app, CPU& cpu, reg32 vector)
 {
-    const KeptRegisters kept(cpu);
-    cpu.eax = vector;
-    if (!byAddress(app, cpu, kLength))
+    const double length = guest::direct<0x4e06a0, vertices::vectorLength>(app, cpu, vector);
+    if (cpu.terminate)
         return std::nullopt;
-    return Length{cpu.fpu.take(), cpu.eax};
+    return Length{x86::Float(length), vector};  // eax as it went in
 }
 
-/* The x87's answers of fcom a, b with the status word it leaves (the check compares it): below
+/* The x87's answers of fcom a, b with the status word it leaves: below
  * (the carry, so for a NaN too), above (neither carry nor zero). */
-bool compareBelow(CPU& cpu, const x86::Float& a, const x86::Float& b)
+bool compareBelow(const x86::Float& a, const x86::Float& b)
 {
-    cpu.fpu.compare(a, b);
-    return cpu.fpu.status.c0;
+    g_status = fp::compare(a, b);
+    return (g_status & 0x0100) != 0;
 }
 
-bool compareAbove(CPU& cpu, const x86::Float& a, const x86::Float& b)
+bool compareAbove(const x86::Float& a, const x86::Float& b)
 {
-    cpu.fpu.compare(a, b);
-    return !cpu.fpu.status.c0 && !cpu.fpu.status.c3;
+    g_status = fp::compare(a, b);
+    return (g_status & 0x4100) == 0;
 }
 
 /* The yaw damped by the speed's share of the spin's own speed, or by the slip: the spin's size by
@@ -845,18 +802,18 @@ void dampYawByShare(App* app, CPU& cpu, reg32 car, reg32 scale, reg32 scaleToo, 
                                               f32(app, handling + kHandlingSpinSpeed)),
                                       f64(app, scaleToo)));
     bool share = false;
-    if (compareBelow(cpu, x86::Float(sizeOf(getFloat(app, car + kCarSpeedForward))), x86::Float(limit)))
-        share = compareBelow(cpu, x86::Float(sizeOf(getFloat(app, car + kCarSpeedAcross))), x86::Float(limit));
+    if (compareBelow(x86::Float(sizeOf(getFloat(app, car + kCarSpeedForward))), x86::Float(limit)))
+        share = compareBelow(x86::Float(sizeOf(getFloat(app, car + kCarSpeedAcross))), x86::Float(limit));
     if (share)
     {
         const float ratio = sizeOf(float(fp::div(f32(app, car + kCarSpeedForward), x86::Float(limit))));
-        const float factor = compareAbove(cpu, f32(app, most), x86::Float(ratio)) ? ratio : 0.98f;
+        const float factor = compareAbove(f32(app, most), x86::Float(ratio)) ? ratio : 0.98f;
         putFloat(app, yaw, float(fp::mul(f32(app, yaw), x86::Float(factor))));
     }
     else
     {
         const float slip = getFloat(app, car + kCarSlip);
-        compareWithZero(cpu, slip);
+        compareWithZero(slip);
         scaleBy(app, yaw, bitsUnder(sizeOf(slip), kSlipBits) ? slipDamping : skidDamping);
     }
 }
@@ -880,7 +837,7 @@ std::optional<reg32> dampYaw(App* app, CPU& cpu, reg32 car)
     else if (i32(integerSize(at(app, car + kCarSteering))) < kSteeringStill && byte(app, car + kCarGear) == kGearReverse)
         scaleBy(app, yaw, kYawStillDamping);
 
-    if (compareBelow(cpu, x86::Float(sizeOf(getFloat(app, car + kCarSpeedAcross))),
+    if (compareBelow(x86::Float(sizeOf(getFloat(app, car + kCarSpeedAcross))),
                      x86::Float(sizeOf(getFloat(app, car + kCarSpeedForward)))))
     {
         dampYawByShare(app, cpu, car, kSlowSpinScale, kSlowSpinScaleToo, kSlowShareMost, kSlowSlipDamping, kSlowSkidDamping);
@@ -888,27 +845,28 @@ std::optional<reg32> dampYaw(App* app, CPU& cpu, reg32 car)
     }
     // Faster across than forward.
     const float forward = getFloat(app, car + kCarSpeedForward);
-    if (!compareAbove(cpu, x86::Float(sizeOf(getFloat(app, car + kCarSpeedAcross))), x86::Float(sizeOf(forward))))
-        return (sizeLeaves(car, forward) & 0xffff0000) | cpu.fpu.status.word;
+    if (!compareAbove(x86::Float(sizeOf(getFloat(app, car + kCarSpeedAcross))), x86::Float(sizeOf(forward))))
+        return (sizeLeaves(car, forward) & 0xffff0000) | g_status;
     const std::optional<Length> length = vectorLength(app, cpu, car + kCarSpeedAcross);
     if (!length)
         return std::nullopt;
-    if (!compareBelow(cpu, length->length, f64(app, kSkidSpeed)))
-        return (length->eax & 0xffff0000) | cpu.fpu.status.word;
+    if (!compareBelow(length->length, f64(app, kSkidSpeed)))
+        return (length->eax & 0xffff0000) | g_status;
     dampYawByShare(app, cpu, car, kSkidSpinScale, kSkidSpinScaleToo, kSkidShareMost, kSkidSlipDamping, kSkidSkidDamping);
     const float speed = getFloat(app, car + kCarSpeedForward);
-    compareWithZero(cpu, speed);
+    compareWithZero(speed);
     return scaleVectorBy(app, cpu, car + kCarVelocity, bitsUnder(sizeOf(speed), kFiveBits) ? kSkidSlowDamping : kSkidFastDamping);
 }
 
 /* 0x4aea88: dampYaw for car eax. */
-void yawDamping(App* app, CPU& cpu)
+x86::reg32 yawDamping(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const std::optional<reg32> left = dampYaw(app, cpu, cpu.eax);
+    const std::optional<reg32> left = dampYaw(app, cpu, args.eax);
     if (!left)
-        return;
-    cpu.eax = *left;
+        return args.eax;
+    args.eax = *left;
     cpu.esp += 4;
+    return args.eax;
 }
 
 constexpr reg32 kPedalIdle = 0x20;           // both pedals' bytes under it: idling
@@ -925,7 +883,7 @@ std::optional<reg32> dampIdle(App* app, CPU& cpu, reg32 car)
         return car;
     const float forward = getFloat(app, car + kCarSpeedForward);
     const float size = sizeOf(forward);
-    compareWithZero(cpu, forward);
+    compareWithZero(forward);
     // The size over 0 (or a NaN: the x87's carry, as the code's jae has it) and under 4.
     const bool slow = !(0.0 >= x86::Float(size)) && bitsUnder(size, kFourBits);
     if (!(slow && byte(app, car + kCarGear) == kGearReverse))
@@ -941,13 +899,14 @@ std::optional<reg32> dampIdle(App* app, CPU& cpu, reg32 car)
 }
 
 /* 0x4aeffc: dampIdle for car eax. */
-void idleDamping(App* app, CPU& cpu)
+x86::reg32 idleDamping(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const std::optional<reg32> left = dampIdle(app, cpu, cpu.eax);
+    const std::optional<reg32> left = dampIdle(app, cpu, args.eax);
     if (!left)
-        return;
-    cpu.eax = *left;
+        return args.eax;
+    args.eax = *left;
     cpu.esp += 4;
+    return args.eax;
 }
 
 constexpr reg32 kCoastDamping = 0x3f7d70a4, kCoastDampingFast = 0x3f7f7cee;  // 0.99, 0.998
@@ -962,12 +921,12 @@ std::optional<reg32> dampCoast(App* app, CPU& cpu, reg32 car)
     if (byte(app, car + kCarGear) != kGearNeutral)
         return car;
     const float slope = getFloat(app, kGravityZ);
-    compareWithZero(cpu, slope);
+    compareWithZero(slope);
     if (!bitsUnder(sizeOf(slope), kHalfBits))
         // The size's own way, but with no car to reload: the compare's word in ax over the car.
-        return 0.0 > x86::Float(slope) ? (car & 0xffff0000) | cpu.fpu.status.word : floatBits(slope);
+        return 0.0 > x86::Float(slope) ? (car & 0xffff0000) | g_status : floatBits(slope);
     const float forward = getFloat(app, car + kCarSpeedForward);
-    compareWithZero(cpu, forward);
+    compareWithZero(forward);
     const bool fast = !bitsUnder(sizeOf(forward), kTwentyBits)
                       && i32(integerSize(at(app, car + kCarSteering))) <= i32(kSteeringStraight);
     const reg32 factor = fast ? kCoastDampingFast : kCoastDamping;
@@ -977,13 +936,14 @@ std::optional<reg32> dampCoast(App* app, CPU& cpu, reg32 car)
 }
 
 /* 0x4af140: dampCoast for car eax. */
-void coastDamping(App* app, CPU& cpu)
+x86::reg32 coastDamping(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const std::optional<reg32> left = dampCoast(app, cpu, cpu.eax);
+    const std::optional<reg32> left = dampCoast(app, cpu, args.eax);
     if (!left)
-        return;
-    cpu.eax = *left;
+        return args.eax;
+    args.eax = *left;
     cpu.esp += 4;
+    return args.eax;
 }
 
 constexpr reg32 kSpinTorqueScale = 0x53df20, kShareScale = 0x53df24, kShareBase = 0x53df28;
@@ -1023,13 +983,15 @@ float spinTorqueOf(App* app, reg32 car)
 
 /* 0x4af254: spinTorqueOf for car eax onto the x87's stack, the car left in eax; the status word
  * as the share's compare with the double leaves it, while racing. */
-void spinTorque(App* app, CPU& cpu)
+x86::reg32 spinTorque(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const reg32 car = cpu.eax;
+    const reg32 car = args.eax;
     if (half(app, car + kCarStage) == 0)
-        cpu.fpu.compare(speedShare(app, car), f64(app, kShareLeast));
-    cpu.fpu.push(x86::Float(spinTorqueOf(app, car)));
+        g_status = fp::compare(speedShare(app, car), f64(app, kShareLeast));
+    args.floatSet = true;
+    args.floatResult = double(x86::Float(spinTorqueOf(app, car)));
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* physicsStep's frame on the guest's stack, where the game's code has it: six registers saved
@@ -1087,7 +1049,7 @@ constexpr reg32 kSignBit = 0x80000000;
  * handbrake's drag on its speed in its axes, back to the world's; the yaw's
  * torque from the wheels' forces, the spin and its damping, back too; and
  * the coasting's damping.  The cores of this file it calls leave the x87's
- * status word as their adapters do (the code calls those): the compares of
+ * status word as their thunks do (the code calls those): the compares of
  * sideSlip, groundSpeed, spinTorque, steerAngle, settleLoadShift, sideGrip
  * and handbrakeDrag made here.  Returns what the game's code leaves in eax --
  * the car where it stops early, the last compare's status word (fnstsw ax
@@ -1113,17 +1075,17 @@ std::optional<reg32> stepPhysics(App* app, CPU& cpu, reg32 car)
             put(app, car + kCarOwnSpeed + 4 * k, 0);
     if (half(app, car + kCarStage) == 0)
         turnInto(app, car + kCarSpin, axes, car + kCarOwnSpin);
-    compareWithZero(cpu, getFloat(app, car + kCarSpeedForward));  // sideSlip's
+    compareWithZero(getFloat(app, car + kCarSpeedForward));  // sideSlip's
     updateSlip(app, car);
     if (!updateGroundSpeed(app, cpu, car))
         return std::nullopt;
-    compareWithZero(cpu, getFloat(app, car + kCarSpeedForward));  // groundSpeed's
+    compareWithZero(getFloat(app, car + kCarSpeedForward));  // groundSpeed's
     // The air's drag on each axis.
     Vector drag;
     for (reg32 k = 0; k < 3; ++k)
         drag[k] = float(fp::mul(-fp::mul(f32(app, car + kCarOwnSpeed + 4 * k), f32(app, kDragScale)), f32(app, kDragFactor)));
     if (half(app, car + kCarStage) == 0)  // spinTorque's
-        cpu.fpu.compare(speedShare(app, car), f64(app, kShareLeast));
+        g_status = fp::compare(speedShare(app, car), f64(app, kShareLeast));
     const float torque = spinTorqueOf(app, car);
     putVector(app, kGravity, turned(app, Vector{0.0f, floatOf(kGravityDownBits), 0.0f}, axes));
     // The wheels' speeds: the drag, the spin's torque across with it on the front, against it on
@@ -1145,7 +1107,7 @@ std::optional<reg32> stepPhysics(App* app, CPU& cpu, reg32 car)
         return std::nullopt;
     const float angle = steeringAngle(app, car);
     if (half(app, car + kCarStage) == 0)  // steerAngle's
-        cpu.fpu.compare(x86::Float(angle), f64(app, kAngleLeast));
+        g_status = fp::compare(x86::Float(angle), f64(app, kAngleLeast));
     if (!dampIdle(app, cpu, car))
         return std::nullopt;
     for (reg32 wheel = 0; wheel < kWheels; ++wheel)
@@ -1163,7 +1125,7 @@ std::optional<reg32> stepPhysics(App* app, CPU& cpu, reg32 car)
     putDrives(frontDrive, backDrive);
     // Standing too lightly: under the double, or a NaN (the x87's carry).
     if (half(app, car + kCarStage) != 0 || at(app, car + kCarPutBackFrames) != 0 || at(app, car + kCarPutBackSlice) != 0
-        || compareBelow(cpu, f32(app, car + kCarStanding), f64(app, kStandingLeast)))
+        || compareBelow(f32(app, car + kCarStanding), f64(app, kStandingLeast)))
     {
         put(app, car + kCarBackLoad, 0);
         putFloat(app, car + kCarFrontLoad, float(f32(app, car + kCarBackLoad)));
@@ -1177,10 +1139,10 @@ std::optional<reg32> stepPhysics(App* app, CPU& cpu, reg32 car)
     put(app, car + kCarThrottleOff, 0);
     float brake = float(fp::mul(f32(app, car + kCarBrakeTravel), f32(app, handling + kHandlingBrakes)));
     const x86::Float stopping = fp::mul(f32(app, car + kCarSpeedForward), f32(app, kBrakeHold));
-    const float limit = float(compareAbove(cpu, x86::Float(0.0), stopping) ? -stopping : stopping);
-    if (compareAbove(cpu, x86::Float(brake), x86::Float(limit)))
+    const float limit = float(compareAbove(x86::Float(0.0), stopping) ? -stopping : stopping);
+    if (compareAbove(x86::Float(brake), x86::Float(limit)))
         brake = limit;
-    if (compareBelow(cpu, x86::Float(0.0), f32(app, car + kCarSpeedForward)))
+    if (compareBelow(x86::Float(0.0), f32(app, car + kCarSpeedForward)))
         brake = floatOf(floatBits(brake) ^ kSignBit);
     // The front's share of them; with the handbrake, the handling's moved by kHandbrakeFrontBrakes.
     const float frontBrake =
@@ -1202,14 +1164,14 @@ std::optional<reg32> stepPhysics(App* app, CPU& cpu, reg32 car)
     // None of the four on the ground (over 0, or a NaN: the x87's carry): done.
     bool grounded = false;
     for (reg32 wheel = 0; wheel < kWheels && !grounded; ++wheel)
-        grounded = compareBelow(cpu, x86::Float(0.0), x86::Float(grip[wheel]));
+        grounded = compareBelow(x86::Float(0.0), x86::Float(grip[wheel]));
     if (!grounded)
-        return reg32(cpu.fpu.status.word);
+        return reg32(g_status);
     const float front0 = float(fp::mul(x86::Float(grip[0]), f32(app, handling + kHandlingFrontGrip)));
     const float front1 = float(fp::mul(x86::Float(grip[1]), f32(app, handling + kHandlingFrontGrip)));
     const float back3 = float(fp::mul(fp::sub(1.0, f32(app, handling + kHandlingFrontGrip)), x86::Float(grip[3])));
     const float back2 = float(fp::mul(fp::sub(1.0, f32(app, handling + kHandlingFrontGrip)), x86::Float(grip[2])));
-    compareWithZero(cpu, getFloat(app, car + kCarLoadShift));  // settleLoadShift's
+    compareWithZero(getFloat(app, car + kCarLoadShift));  // settleLoadShift's
     settleLoad(app, car);
     // The wheels' grips with the load's shift, front less it, back with it, by their shares.
     const auto putGrip = [&](reg32 wheel, x86::Float shifted) {
@@ -1268,10 +1230,10 @@ std::optional<reg32> stepPhysics(App* app, CPU& cpu, reg32 car)
     if (!holdCarStill(app, cpu, car))
         return std::nullopt;
     turnInto(app, car + kCarVelocity, axes, car + kCarOwnSpeed);
-    compareWithZero(cpu, getFloat(app, car + kCarSpeedAcross));  // sideGrip's
+    compareWithZero(getFloat(app, car + kCarSpeedAcross));  // sideGrip's
     gripSideways(app, car);
     if (byte(app, car + kCarHandbrake) != 0)  // handbrakeDrag's
-        compareWithZero(cpu, getFloat(app, car + kCarSpeedForward));
+        compareWithZero(getFloat(app, car + kCarSpeedForward));
     dragHandbrake(app, car);
     turnInto(app, car + kCarOwnSpeed, car + kCarAxes, car + kCarVelocity);
     // The yaw's torque: the front wheels' forces across less the back's.
@@ -1289,41 +1251,16 @@ std::optional<reg32> stepPhysics(App* app, CPU& cpu, reg32 car)
 }
 
 /* 0x4ad7a3: stepPhysics for car eax. */
-void physicsStep(App* app, CPU& cpu)
+x86::reg32 physicsStep(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const std::optional<reg32> left = stepPhysics(app, cpu, cpu.eax);
+    const std::optional<reg32> left = stepPhysics(app, cpu, args.eax);
     if (!left)
-        return;
-    cpu.eax = *left;
+        return args.eax;
+    args.eax = *left;
     cpu.esp += 4;
+    return args.eax;
 }
 
 }  // namespace physics
-
-#ifdef NFS_GAME_CHECKS
-/* tools/game_checks does not build native_frontend.cpp, whose Guest::call the menu files' ByAddress
- * (fe::callByAddress) call by address through -- which feCore does there, in this file and in the
- * other simulation files (native_carstate.cpp, native_handling.cpp, ...).  The same function as
- * native_frontend.cpp's, for that build alone: keep the two the same. */
-x86::reg32 fe::Guest::call(x86::reg32 function, const Arguments& arguments)
-{
-    x86::reg32* const registers[4] = {&m_cpu.eax, &m_cpu.edx, &m_cpu.ebx, &m_cpu.ecx};
-    for (std::size_t i = 0; i < arguments.registerCount; ++i)
-        *registers[i] = arguments.registers[i];
-    const x86::reg32 esp = m_cpu.esp;
-    for (std::size_t i = arguments.stackCount; i-- > 0;)
-    {
-        m_cpu.esp -= 4;
-        setDword(m_cpu.esp, arguments.stack[i]);
-    }
-    // The return address's slot, left unwritten as the generated code leaves it.
-    m_cpu.esp -= 4;
-    m_app->dynamic_call(function, m_cpu);
-    if (m_cpu.terminate)
-        throw Terminated();
-    m_cpu.esp = esp;
-    return m_cpu.eax;
-}
-#endif
 
 }  // namespace nfs3hp

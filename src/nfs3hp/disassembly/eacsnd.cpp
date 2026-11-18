@@ -4,22 +4,22 @@
 
 namespace nfs3hp
 {
-void iSNDdirectcaps(win32::WinApplication* app, x86::CPU& cpu);
-void iSNDdirectcreate3dbuf(win32::WinApplication* app, x86::CPU& cpu);
-void iSNDdirectplay3d(win32::WinApplication* app, x86::CPU& cpu);
-void iSNDdirectpos3d(win32::WinApplication* app, x86::CPU& cpu);
-void iSNDdirectrate(win32::WinApplication* app, x86::CPU& cpu);
-void iSNDdirectrecordpacket(win32::WinApplication* app, x86::CPU& cpu);
-void iSNDdirectrecordstart(win32::WinApplication* app, x86::CPU& cpu);
-void iSNDdirectrecordstop(win32::WinApplication* app, x86::CPU& cpu);
-void iSNDdirectremovebuf(win32::WinApplication* app, x86::CPU& cpu);
-void iSNDdirectserve(win32::WinApplication* app, x86::CPU& cpu);
-void iSNDdirectsetfunctions(win32::WinApplication* app, x86::CPU& cpu);
-void iSNDdirectstart(win32::WinApplication* app, x86::CPU& cpu);
-void iSNDdirectstop(win32::WinApplication* app, x86::CPU& cpu);
-void iSNDdirectstopbuf(win32::WinApplication* app, x86::CPU& cpu);
-void iSNDdirectvol(win32::WinApplication* app, x86::CPU& cpu);
-void iSNDdllversion(win32::WinApplication* app, x86::CPU& cpu);
+x86::reg32 iSNDdirectcaps(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 iSNDdirectcreate3dbuf(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 iSNDdirectplay3d(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 iSNDdirectpos3d(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 iSNDdirectrate(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 iSNDdirectrecordpacket(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 iSNDdirectrecordstart(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 iSNDdirectrecordstop(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 iSNDdirectremovebuf(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 iSNDdirectserve(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 iSNDdirectsetfunctions(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 iSNDdirectstart(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 iSNDdirectstop(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 iSNDdirectstopbuf(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 iSNDdirectvol(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 iSNDdllversion(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
 }
 
 namespace eacsnd

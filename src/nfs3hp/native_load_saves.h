@@ -4,7 +4,7 @@
 #include "native_guest.h"
 
 /* native_load_saves.cpp's typed functions that other files call as C++ (guest::direct), and how
- * the game's code calls each by address (ByAddress, for the check's stand-ins).  Each may call the
+ * the game's code calls each by address.  Each may call the
  * game's other functions by address on `cpu`, and is false or nullopt when the game stopped in
  * one. */
 namespace nfs3hp
@@ -51,98 +51,38 @@ x86::reg32 sineOf(win32::WinApplication* app, x86::reg32 angle);
 // The game's 0x4f23f0: the cosine of the angle, as sineOf.
 x86::reg32 cosineOf(win32::WinApplication* app, x86::reg32 angle);
 
+// The game's 0x44f510: the records' table loaded if it is not; false when the game stopped.
+bool recordsTableLoaded(win32::WinApplication* app, x86::CPU& cpu);
+// The game's 0x44f5f0: the records' table saved and freed; what the code leaves in eax.
+std::optional<x86::reg32> recordsTableSaved(win32::WinApplication* app, x86::CPU& cpu);
+// The same where the caller has `eax` in the register the code's result is left in when it saves nothing.
+std::optional<x86::reg32> recordsTableSavedWith(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 eax);
+// The game's 0x446990: the kept replay named `name` made the race's; 1 if it was.
+std::optional<x86::reg32> keptReplayLoaded(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 name);
+// The game's 0x446060: the replay named `name`'s information read into the screen's lines.
+std::optional<x86::reg32> replayInfoShown(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 name);
+// The game's 0x4475a0: the replay files of the extension at `extension` listed into the menu's record `list`.
+std::optional<x86::reg32> replaysListed(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 list,
+                                        x86::reg32 extension);
+// The game's 0x472820: config.dat saved; what the code leaves in eax.
+std::optional<x86::reg32> configSaved(win32::WinApplication* app, x86::CPU& cpu);
+std::optional<x86::reg32> configSavedWith(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 eax);
+// The game's 0x472980: config.dat loaded; false when the game stopped.
+bool configLoaded(win32::WinApplication* app, x86::CPU& cpu);
+// The game's 0x4bd1e0: the race's replay saved; what the code leaves in eax.
+std::optional<x86::reg32> replaySaved(win32::WinApplication* app, x86::CPU& cpu);
+std::optional<x86::reg32> replaySavedWith(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 eax);
+// The game's 0x4bd2e0: the race's replay read; its answer.
+std::optional<x86::reg32> replayRead(win32::WinApplication* app, x86::CPU& cpu);
+// The game's 0x472300: the race's camera views made from the ones chosen; the last.
+x86::reg32 cameraViewsSet(win32::WinApplication* app);
+// The game's 0x4e9f00, EA's typeofbigfile: the kind of the BIG archive at `archive`.
+std::optional<x86::reg32> bigFileKindOf(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 archive);
+// The game's 0x4eeae0, EA's savefileadr: `count` bytes at `bytes` written to the file named `name`; how many.
+std::optional<x86::reg32> blockSaved(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 name, x86::reg32 bytes,
+                                     x86::reg32 count);
+
 }  // namespace load
-
-namespace guest
-{
-
-// The names in eax and edx; eax the answer.
-template <>
-struct ByAddress<load::writtenBefore>
-{
-    template <x86::reg32 Address>
-    static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 name,
-                                          x86::reg32 other)
-    {
-        return watcomEax(app, cpu, Address, {name, other});
-    }
-};
-
-// The archive in eax, the name in edx, the index in ebx, the offset's address in ecx, the size's
-// on the stack (ret 4); the entry's name back in eax, where it stopped in ebx and ecx.
-template <>
-struct ByAddress<load::findEntry>
-{
-    template <x86::reg32 Address>
-    static std::optional<load::BigEntry> call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 archive,
-                                              x86::reg32 name, x86::reg32 index, x86::reg32 offsetTo,
-                                              x86::reg32 sizeTo)
-    {
-        const KeptRegisters kept(cpu);
-        cpu.eax = archive;
-        cpu.edx = name;
-        cpu.ebx = index;
-        cpu.ecx = offsetTo;
-        if (!guest::call(app, cpu, Address, {sizeTo}))
-            return std::nullopt;
-        return load::BigEntry{cpu.eax, cpu.ebx, cpu.ecx};
-    }
-};
-
-// As findEntry's; eax the entry's name.
-template <>
-struct ByAddress<load::locatedEntry>
-{
-    template <x86::reg32 Address>
-    static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 archive,
-                                          x86::reg32 name, x86::reg32 index, x86::reg32 offsetTo,
-                                          x86::reg32 sizeTo)
-    {
-        const KeptRegisters kept(cpu);
-        cpu.eax = archive;
-        cpu.edx = name;
-        cpu.ebx = index;
-        cpu.ecx = offsetTo;
-        if (!guest::call(app, cpu, Address, {sizeTo}))
-            return std::nullopt;
-        return cpu.eax;
-    }
-};
-
-// The name in eax, the bytes in edx, the count in ebx; eax the answer.
-template <>
-struct ByAddress<load::saveBlockQuietly>
-{
-    template <x86::reg32 Address>
-    static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 name,
-                                          x86::reg32 bytes, x86::reg32 count)
-    {
-        return watcomEax(app, cpu, Address, {name, bytes, count});
-    }
-};
-
-// The angle in eax; eax the answer.
-struct SavesAngle
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 angle)
-    {
-        watcom(app, cpu, Address, {angle});
-        return cpu.eax;
-    }
-};
-
-template <>
-struct ByAddress<load::sineOf> : SavesAngle
-{
-};
-
-template <>
-struct ByAddress<load::cosineOf> : SavesAngle
-{
-};
-
-}  // namespace guest
 }  // namespace nfs3hp
 
 #endif

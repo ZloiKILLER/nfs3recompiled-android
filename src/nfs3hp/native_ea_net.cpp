@@ -3,8 +3,11 @@
 #include "native_ea_memory.h"
 #include "native_ea_net.h"
 #include "native_ea_threads.h"
+#include "native_frontend_glue.h"
+#include "native_frontend_netb.h"
 #include "native_game.h"
 #include "native_guest.h"
+#include "native_raceload.h"
 #include "native_watcom.h"
 #include "port_snd_stream_calls.h"
 #include "native_windows.h"
@@ -14,9 +17,14 @@
 
 #include <optional>
 
-/* EA's network layer under the menus: packets sent, NET and CONN, the queues, LAYER.  disassemble_nfs3hp.py binds each address to the function of that
- * name here (EA_NET_NATIVES), and the generated code calls it by name.
- * tools/game_checks holds each against its generated code.
+/* The esp a guest call's scope began with put back at its end: what guest::EspKept did of it (the other
+ * registers are the thunks' args now). */
+namespace
+{
+using nfs3hp::guest::EspKept;
+}  // namespace
+
+/* EA's network layer under the menus: packets sent, NET and CONN, the queues, LAYER.  The game's code calls each by the name it has here.
  *
  * The game's side (0x49ecb0 to 0x4a6690): the network's state is at
  * 0x7a2274 to 0x7a25b4 -- the machines in the game (their count in
@@ -58,7 +66,7 @@
  * and their addresses at 0xa0b030 to 0xa0b040.
  *
  * The network's functions are typed: a core of its own name, and the
- * adapter under the game's name, for the dispatch and the callers still on
+ * thunk under the game's name, for the dispatch and the callers still on
  * registers, leaving each register its callers read as the code leaves it
  * (none it was handed an argument in) -- what a Windows function or a
  * callee left in one the code does not restore too, which the cores hand
@@ -204,34 +212,32 @@ struct Saved
  * leaves them as handed, or one whose registers are handed on, is given as
  * the code has them -- and `words` pushed (the first at the top), taken off
  * after it; every register but eax as it was before after it, esp too
- * (guest::KeptRegisters).  What the callee left in the four; nullopt when
+ * (guest::EspKept).  What the callee left in the four; nullopt when
  * the game stopped. */
 std::optional<Regs> callWith(App* app, CPU& cpu, reg32 target, Regs in, std::initializer_list<reg32> words = {})
 {
-    const guest::KeptRegisters kept(cpu);
-    cpu.eax = in.eax;
-    cpu.edx = in.edx;
-    cpu.ebx = in.ebx;
-    cpu.ecx = in.ecx;
-    if (!guest::call(app, cpu, target, words))
+    x86::Args registers;
+    registers.eax = in.eax;
+    registers.edx = in.edx;
+    registers.ebx = in.ebx;
+    registers.ecx = in.ecx;
+    const std::optional<reg32> eax = guest::pointerCall(app, cpu, target, registers, words);
+    if (!eax)
         return std::nullopt;
-    return Regs{cpu.eax, cpu.edx, cpu.ebx, cpu.ecx};
+    return Regs{*eax, registers.edx, registers.ebx, registers.ecx};
 }
 
 /* EnterCriticalSection or LeaveCriticalSection (`Function`) on `lock`: the
- * port's own, called as C++ (native_windows.h); in the check through its
- * import's slot `Slot`, whose stand-in leaves eax as handed now and then --
- * `eax`, as the code has it, where what it leaves there is read.  Every
+ * port's own, called as C++ (native_windows.h).  `eax`, as the code has it, where what it leaves there is read.  Every
  * register but eax kept; eax as it leaves it. */
 template <reg32 Slot, auto Function>
 std::optional<reg32> lockCall(App* app, CPU& cpu, reg32 lock, std::optional<reg32> eax = std::nullopt)
 {
-    const guest::KeptRegisters kept(cpu);
-    if (eax)
-        cpu.eax = *eax;
-    if (!guest::windows<Slot, Function>(app, cpu, lock))
+    const EspKept kept(cpu);
+    const auto left = guest::windows<Slot, Function>(app, cpu, lock);
+    if (!left)
         return std::nullopt;
-    return cpu.eax;
+    return eax ? *eax : *left;  // the lock's functions leave eax as it is
 }
 
 /* An Error from `file`'s `function` at `line` (set where Error reads them,
@@ -247,11 +253,10 @@ std::optional<reg32> reportError(App* app, CPU& cpu, reg32 file, reg32 function,
     guest::Words more({});
     for (const reg32* word = words.begin() + 1; word < words.end(); ++word)
         more.word[more.count++] = *word;
-    cpu.eax = eax;
     guest::direct<0x401010, ea::error>(app, cpu, *words.begin(), more);
     if (cpu.terminate)
         return std::nullopt;
-    return cpu.eax;
+    return eax;  // Error keeps eax as the code handed it over
 }
 
 /* The queue `queue` uninitialized, as the queues report one in `function`
@@ -299,52 +304,52 @@ void pushRegisters(App* app, reg32 esp, std::initializer_list<reg32> registers)
     }
 }
 
-/* The adapters' end: eax the answer, the return address taken off. */
-void answer(CPU& cpu, reg32 result)
+/* The thunks' end: eax the answer, the return address taken off. */
+void answer(CPU& cpu, x86::Args& args, reg32 result)
 {
-    cpu.eax = result;
+    args.eax = result;
     cpu.esp += 4;
 }
 
 }  // namespace
 
-void dropMachine(App* app, CPU& cpu);
-void announceMachineLeft(App* app, CPU& cpu);
-void endNetworkGame(App* app, CPU& cpu);
-void sessionIndex(App* app, CPU& cpu);
-void forgetPendingPlayer(App* app, CPU& cpu);
-void sendOverLink(App* app, CPU& cpu);
-void sendPacket(App* app, CPU& cpu);
-void resetNetwork(App* app, CPU& cpu);
-void closeNetwork(App* app, CPU& cpu);
-void machineNumber(App* app, CPU& cpu);
-void playerMachine(App* app, CPU& cpu);
-void netTrace(App* app, CPU& cpu);
-void netShutGame(App* app, CPU& cpu);
-void netEndGame(App* app, CPU& cpu);
-void netKillPlayer(App* app, CPU& cpu);
-void netCheckPlayer(App* app, CPU& cpu);
-void connRestore(App* app, CPU& cpu);
-void connSend(App* app, CPU& cpu);
-void connClose(App* app, CPU& cpu);
-void qnth(App* app, CPU& cpu);
-void qunlink(App* app, CPU& cpu);
-void qfree(App* app, CPU& cpu);
-void qremove(App* app, CPU& cpu);
-void qlength(App* app, CPU& cpu);
-void qposition(App* app, CPU& cpu);
-void qfindindex(App* app, CPU& cpu);
-void huffUnpack(App* app, CPU& cpu);
-void runUnpack(App* app, CPU& cpu);
-void dxtBlock(App* app, CPU& cpu);
-void dxtUnpack(App* app, CPU& cpu);
-void pairExpand(App* app, CPU& cpu);
-void pairUnpack(App* app, CPU& cpu);
-void layerSend(App* app, CPU& cpu);
-void layerCallPacker(App* app, CPU& cpu);
-void layerPackFromTop(App* app, CPU& cpu);
-void layerFree(App* app, CPU& cpu);
-void layerSendPacket(App* app, CPU& cpu);
+x86::reg32 dropMachine(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 announceMachineLeft(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 endNetworkGame(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 sessionIndex(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 forgetPendingPlayer(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 sendOverLink(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 sendPacket(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 resetNetwork(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 closeNetwork(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 machineNumber(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 playerMachine(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 netTrace(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 netShutGame(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 netEndGame(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 netKillPlayer(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 netCheckPlayer(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 connRestore(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 connSend(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 connClose(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 qnth(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 qunlink(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 qfree(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 qremove(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 qlength(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 qposition(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 qfindindex(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 huffUnpack(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 runUnpack(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 dxtBlock(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 dxtUnpack(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 pairExpand(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 pairUnpack(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 layerSend(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 layerCallPacker(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 layerPackFromTop(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 layerFree(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 layerSendPacket(App* app, CPU& cpu, x86::Args& args);
 
 namespace
 {
@@ -414,10 +419,10 @@ std::optional<reg32> traceNet(App* app, CPU& cpu, reg32 name)
 {
     if (sreg32(at(app, kTraceLevel)) < 1)
         return name;
-    const auto left = callWith(app, cpu, kNetMessage, {name, 0, 0, 0}, {0, 0});
-    if (!left)
+    const reg32 left = guest::direct<0x512180, frontend::netb::commEvent>(app, cpu, name, 0u, 0u, 0u, 0u, 0u);
+    if (cpu.terminate)
         return std::nullopt;
-    return left->eax;
+    return left;
 }
 
 /* The NET object `net`'s function at `slot` of its functions, traced as
@@ -427,15 +432,22 @@ std::optional<reg32> callNet(App* app, CPU& cpu, reg32 net, reg32 name, reg32 sl
     if (!traceNet(app, cpu, name))
         return std::nullopt;
     const reg32 functions = at(app, net + kNetFunctions);
-    return guest::watcomEax(app, cpu, at(app, functions + slot), {net, argument});
+    return guest::pointerCall(app, cpu, at(app, functions + slot), {net, argument});
 }
 
 /* 0x4f5040: whether the player `player` is the NET object `net`'s: its
- * check's function asked with the object's game.  No trace. */
+ * check function (the object's) asked with the object's game.  No trace. */
 std::optional<reg32> checkNetPlayer(App* app, CPU& cpu, reg32 net, reg32 player)
 {
     const reg32 check = at(app, net + kNetCheck);
-    return guest::watcomEax(app, cpu, at(app, check + kCheckSlot), {at(app, net + kNetGame), player});
+    return guest::pointerCall(app, cpu, at(app, check + kCheckSlot), {at(app, net + kNetGame), player});
+}
+
+/* The same with ebx `third`, which the object's check function reads (two addresses compared). */
+std::optional<reg32> checkNetPlayerWith(App* app, CPU& cpu, reg32 net, reg32 player, reg32 third)
+{
+    const reg32 check = at(app, net + kNetCheck);
+    return guest::pointerCall(app, cpu, at(app, check + kCheckSlot), {at(app, net + kNetGame), player, third});
 }
 
 /* 0x50dc00: the element `n` + 1 past `element` -- its next, and on -- or 0
@@ -592,7 +604,7 @@ std::optional<reg32> queuePosition(App* app, CPU& cpu, reg32 queue, reg32 elemen
         reg32 elementsPriority = 0;
         if (priority != 0)
         {
-            const auto own = guest::watcomEax(app, cpu, priority, {element, at(app, queue + kQueuePriorityArgument)});
+            const auto own = guest::pointerCall(app, cpu, priority, {element, at(app, queue + kQueuePriorityArgument)});
             if (!own)
                 return std::nullopt;
             elementsPriority = *own;
@@ -601,7 +613,7 @@ std::optional<reg32> queuePosition(App* app, CPU& cpu, reg32 queue, reg32 elemen
         {
             if (priority != 0)
             {
-                const auto its = guest::watcomEax(app, cpu, priority, {current, at(app, queue + kQueuePriorityArgument)});
+                const auto its = guest::pointerCall(app, cpu, priority, {current, at(app, queue + kQueuePriorityArgument)});
                 if (!its)
                     return std::nullopt;
                 if (*its > elementsPriority)
@@ -671,12 +683,11 @@ std::optional<Regs> gatherAndSend(App* app, CPU& cpu, reg32 connection, reg32 co
     const auto sent = callWith(app, cpu, at(app, functions + kSendSlot), {connection, *block, total, functions});
     if (!sent)
         return std::nullopt;
-    // By address: the free's edx and ebx are what this leaves, which native_ea_memory.h's purgeBlock
-    // does not give back.
-    const auto freed = callWith(app, cpu, kFree, {*block, sent->edx, sent->ebx, sent->eax});
+    // The free keeps every register but eax: edx and ebx stay what the send left.
+    const auto freed = guest::direct<kFree, ea::purgeBlock>(app, cpu, *block);
     if (!freed)
         return std::nullopt;
-    return Regs{sent->eax, freed->edx, freed->ebx, pieces};
+    return Regs{sent->eax, sent->edx, sent->ebx, pieces};
 }
 
 /* 0x512530, EA's LAYER_callpacker: the packet -- `count` pieces at `pieces`
@@ -768,7 +779,7 @@ std::optional<reg32> closeConnection(App* app, CPU& cpu, reg32 connection)
     if (connection == 0 || at(app, connection + kConnectionOpen) == 0)
         return 0;
     const reg32 functions = at(app, connection + kConnectionFunctions);
-    const auto closed = guest::watcomEax(app, cpu, at(app, functions + kCloseSlot), {connection});
+    const auto closed = guest::pointerCall(app, cpu, at(app, functions + kCloseSlot), {connection});
     if (!closed)
         return std::nullopt;
     if (*closed != 0 && at(app, at(app, connection + kConnectionFunctions) + kCountsSlot) != 0)
@@ -839,7 +850,7 @@ std::optional<reg32> endNetGame(App* app, CPU& cpu, reg32 net)
     if (*position == 0xffffffff)
         return 1;
     const reg32 functions = at(app, net + kNetFunctions);
-    return guest::watcomEax(app, cpu, at(app, functions + kEndGameSlot), {net, functions});
+    return guest::pointerCall(app, cpu, at(app, functions + kEndGameSlot), {net, functions});
 }
 
 /* 0x49ecb0: the connection dropped, if it is one and open: closed, its
@@ -1174,15 +1185,15 @@ std::optional<reg32> resetNetworkState(App* app, CPU& cpu, reg32 alsoLostToo)
     guest::direct<0x4e070c, ea::clearBytes>(app, cpu, kStateBlock, kStateBlockBytes);
     guest::direct<0x4e070c, ea::clearBytes>(app, cpu, kPlayerStates, kStatesBytes);
     // By address: what it leaves in eax is this one's, which ea::clearBytes does not give back.
-    const auto cleared = callWith(app, cpu, kFillZero, {kMachineStates, kStatesBytes, 1, alsoLostToo});
-    if (!cleared)
+    const reg32 cleared = guest::direct<0x4e070c, ea::clearBytes>(app, cpu, kMachineStates, kStatesBytes);
+    if (cpu.terminate)
         return std::nullopt;
     putWord16(app, kNetworkHost, 1);
     putWord16(app, kConnectionLost, 0);
     put(app, kGameState, 0);
     if (alsoLostToo != 0)
         putWord16(app, kConnectionLostToo, 0);
-    return cleared->eax;
+    return cleared;
 }
 
 /* 0x4a65e0: the network closed: the game's timers stopped; a host tells the
@@ -1194,16 +1205,16 @@ std::optional<reg32> resetNetworkState(App* app, CPU& cpu, reg32 alsoLostToo)
  * game bug kept), the word 0xc.  cpu.esp where the call leaves it: the
  * packet under the 3 registers the code pushes (written: the send's check
  * reads 9 words of it).  eax, and ecx as the callees left it. */
-std::optional<Regs> closeNetworkAt(App* app, CPU& cpu)
+std::optional<Regs> closeNetworkAt(App* app, CPU& cpu, reg32 ecx)
 {
-    pushRegisters(app, cpu.esp, {cpu.ebx, cpu.edx, cpu.ebp});
+    // The three registers the code pushes are not written (only the frame's depth is kept).
     const Lowered frame(cpu, 3 * 4 + 4);
     const reg32 packet = cpu.esp;
     // The game's timers run (0x4e7630) with 0: their eax.  ebp at the code's frame (above the
     // packet), which the code's call leaves the timers to hand their tasks.
     const auto timersRun = [&]() -> std::optional<reg32> {
-        const guest::KeptRegisters kept(cpu);
-        cpu.ebp = packet + 4;
+        const EspKept kept(cpu);
+        const port::HeldEbp held(cpu, packet + 4);
         const port::Result ran = guest::direct<0x4e7630, port::stream::runDueTasks>(app, cpu, packet - 4, 0u);
         if (!ran)
             return std::nullopt;
@@ -1231,260 +1242,290 @@ std::optional<Regs> closeNetworkAt(App* app, CPU& cpu)
     const auto ended = below(cpu, 4, [&] { return endNetwork(app, cpu, *again); });
     if (!ended)
         return std::nullopt;
-    // By address: the four registers it leaves are handed on, which native_raceload.h's
-    // closeAllMessages does not give back.
-    const auto closed = callWith(app, cpu, kCloseMessages, {*ended, cpu.edx, cpu.ebx, cpu.ecx});
+    // Both keep every register but eax: ecx stays what the caller had.
+    const auto closed = guest::direct<kCloseMessages, raceload::messagesClosedAs>(app, cpu, *ended);
     if (!closed)
         return std::nullopt;
-    const auto freed = callWith(app, cpu, kFreeNetworkLocks, *closed);
-    if (!freed)
+    guest::direct<kFreeNetworkLocks, frontend::glue::freeNetworkLocks>(app, cpu);
+    if (cpu.terminate)
         return std::nullopt;
     const auto reset = resetNetworkState(app, cpu, 0);
     if (!reset)
         return std::nullopt;
     gameSettings(app).networkGame = 0;
-    return Regs{*reset, 0, 0, freed->ecx};
+    return Regs{*reset, 0, 0, ecx};
 }
 
 }  // namespace
 
 /* 0x49ecb0: dropConnection of eax. */
-void dropMachine(App* app, CPU& cpu)
+x86::reg32 dropMachine(App* app, CPU& cpu, x86::Args& args)
 {
-    if (const auto dropped = dropConnection(app, cpu, cpu.eax))
-        answer(cpu, *dropped);
+    if (const auto dropped = dropConnection(app, cpu, args.eax))
+        answer(cpu, args, *dropped);
+    return args.eax;
 }
 
 /* 0x49ecf0: announceLeft of machine eax. */
-void announceMachineLeft(App* app, CPU& cpu)
+x86::reg32 announceMachineLeft(App* app, CPU& cpu, x86::Args& args)
 {
-    const Saved saved{cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp};
-    if (const auto told = announceLeft(app, cpu, cpu.eax, saved))
-        answer(cpu, *told);
+    const Saved saved{args.ebx, args.ecx, args.edx, args.esi, args.edi, args.ebp};
+    if (const auto told = announceLeft(app, cpu, args.eax, saved))
+        answer(cpu, args, *told);
+    return args.eax;
 }
 
 /* 0x49eed0: endNetwork. */
-void endNetworkGame(App* app, CPU& cpu)
+x86::reg32 endNetworkGame(App* app, CPU& cpu, x86::Args& args)
 {
-    if (const auto ended = endNetwork(app, cpu, cpu.eax))
-        answer(cpu, *ended);
+    if (const auto ended = endNetwork(app, cpu, args.eax))
+        answer(cpu, args, *ended);
+    return args.eax;
 }
 
 /* 0x49f1c0: findSession of id eax. */
-void sessionIndex(App* app, CPU& cpu)
+x86::reg32 sessionIndex(App* app, CPU& cpu, x86::Args& args)
 {
-    answer(cpu, findSession(app, cpu.eax));
+    answer(cpu, args, findSession(app, args.eax));
+    return args.eax;
 }
 
 /* 0x49f550: forgetPending of the player eax. */
-void forgetPendingPlayer(App* app, CPU& cpu)
+x86::reg32 forgetPendingPlayer(App* app, CPU& cpu, x86::Args& args)
 {
-    if (const auto forgotten = forgetPending(app, cpu, cpu.eax))
-        answer(cpu, *forgotten);
+    if (const auto forgotten = forgetPending(app, cpu, args.eax))
+        answer(cpu, args, *forgotten);
+    return args.eax;
 }
 
 /* 0x4a5d10: sendLinked to machine eax of edx, ebx long; edx and ebx as it
  * leaves them. */
-void sendOverLink(App* app, CPU& cpu)
+x86::reg32 sendOverLink(App* app, CPU& cpu, x86::Args& args)
 {
-    if (const auto sent = sendLinked(app, cpu, cpu.eax, cpu.edx, cpu.ebx))
+    if (const auto sent = sendLinked(app, cpu, args.eax, args.edx, args.ebx))
     {
-        cpu.edx = sent->edx;
-        cpu.ebx = sent->ebx;
-        answer(cpu, sent->eax);
+        args.edx = sent->edx;
+        args.ebx = sent->ebx;
+        answer(cpu, args, sent->eax);
     }
+    return args.eax;
 }
 
 /* 0x4a60e0: sendPacketTo the connection eax of edx, ebx long. */
-void sendPacket(App* app, CPU& cpu)
+x86::reg32 sendPacket(App* app, CPU& cpu, x86::Args& args)
 {
-    if (const auto sent = sendPacketTo(app, cpu, cpu.eax, cpu.edx, cpu.ebx))
-        answer(cpu, sent->eax);
+    if (const auto sent = sendPacketTo(app, cpu, args.eax, args.edx, args.ebx))
+        answer(cpu, args, sent->eax);
+    return args.eax;
 }
 
 /* 0x4a6390: resetNetworkState, the second lost flag too for eax nonzero. */
-void resetNetwork(App* app, CPU& cpu)
+x86::reg32 resetNetwork(App* app, CPU& cpu, x86::Args& args)
 {
-    if (const auto reset = resetNetworkState(app, cpu, cpu.eax))
-        answer(cpu, *reset);
+    if (const auto reset = resetNetworkState(app, cpu, args.eax))
+        answer(cpu, args, *reset);
+    return args.eax;
 }
 
 /* 0x4a65e0: closeNetworkAt; ecx as it leaves it. */
-void closeNetwork(App* app, CPU& cpu)
+x86::reg32 closeNetwork(App* app, CPU& cpu, x86::Args& args)
 {
-    if (const auto closed = closeNetworkAt(app, cpu))
+    if (const auto closed = closeNetworkAt(app, cpu, args.ecx))
     {
-        cpu.ecx = closed->ecx;
-        answer(cpu, closed->eax);
+        args.ecx = closed->ecx;
+        answer(cpu, args, closed->eax);
     }
+    return args.eax;
 }
 
 /* 0x4a6650: machineOf the connection eax. */
-void machineNumber(App* app, CPU& cpu)
+x86::reg32 machineNumber(App* app, CPU& cpu, x86::Args& args)
 {
-    answer(cpu, machineOf(app, cpu.eax));
+    answer(cpu, args, machineOf(app, args.eax));
+    return args.eax;
 }
 
 /* 0x4a6690: machineOfPlayer of ax. */
-void playerMachine(App* app, CPU& cpu)
+x86::reg32 playerMachine(App* app, CPU& cpu, x86::Args& args)
 {
-    answer(cpu, machineOfPlayer(app, cpu.ax));
+    answer(cpu, args, machineOfPlayer(app, x86::reg16(args.eax)));
+    return args.eax;
 }
 
 /* 0x4f4c50: traceNet of the name eax. */
-void netTrace(App* app, CPU& cpu)
+x86::reg32 netTrace(App* app, CPU& cpu, x86::Args& args)
 {
-    if (const auto traced = traceNet(app, cpu, cpu.eax))
-        answer(cpu, *traced);
+    if (const auto traced = traceNet(app, cpu, args.eax))
+        answer(cpu, args, *traced);
+    return args.eax;
 }
 
 /* 0x4f4f50, EA's NET_shutgame: the NET object eax's game shut, edx how
  * (its function +0x24). */
-void netShutGame(App* app, CPU& cpu)
+x86::reg32 netShutGame(App* app, CPU& cpu, x86::Args& args)
 {
-    if (const auto shut = callNet(app, cpu, cpu.eax, kShutGameName, kShutGameSlot, cpu.edx))
-        answer(cpu, *shut);
+    if (const auto shut = callNet(app, cpu, args.eax, kShutGameName, kShutGameSlot, args.edx))
+        answer(cpu, args, *shut);
+    return args.eax;
 }
 
 /* 0x4f4f90: endNetGame of the NET object eax. */
-void netEndGame(App* app, CPU& cpu)
+x86::reg32 netEndGame(App* app, CPU& cpu, x86::Args& args)
 {
-    if (const auto ended = endNetGame(app, cpu, cpu.eax))
-        answer(cpu, *ended);
+    if (const auto ended = endNetGame(app, cpu, args.eax))
+        answer(cpu, args, *ended);
+    return args.eax;
 }
 
 /* 0x4f4ff0, EA's NET_killplayer: the player edx killed in the NET object
  * eax's game (its function +0x34). */
-void netKillPlayer(App* app, CPU& cpu)
+x86::reg32 netKillPlayer(App* app, CPU& cpu, x86::Args& args)
 {
-    if (const auto killed = callNet(app, cpu, cpu.eax, kKillPlayerName, kKillPlayerSlot, cpu.edx))
-        answer(cpu, *killed);
+    if (const auto killed = callNet(app, cpu, args.eax, kKillPlayerName, kKillPlayerSlot, args.edx))
+        answer(cpu, args, *killed);
+    return args.eax;
 }
 
 /* 0x4f5040: checkNetPlayer of the NET object eax, the player edx. */
-void netCheckPlayer(App* app, CPU& cpu)
+x86::reg32 netCheckPlayer(App* app, CPU& cpu, x86::Args& args)
 {
-    if (const auto its = checkNetPlayer(app, cpu, cpu.eax, cpu.edx))
-        answer(cpu, *its);
+    if (const auto its = checkNetPlayer(app, cpu, args.eax, args.edx))
+        answer(cpu, args, *its);
+    return args.eax;
 }
 
 /* 0x4f5280: restoreConnections. */
-void connRestore(App* app, CPU& cpu)
+x86::reg32 connRestore(App* app, CPU& cpu, x86::Args& args)
 {
-    if (const auto restored = restoreConnections(app, cpu, cpu.eax))
-        answer(cpu, *restored);
+    if (const auto restored = restoreConnections(app, cpu, args.eax))
+        answer(cpu, args, *restored);
+    return args.eax;
 }
 
 /* 0x4f5310: sendOnConnection eax of edx, ebx long. */
-void connSend(App* app, CPU& cpu)
+x86::reg32 connSend(App* app, CPU& cpu, x86::Args& args)
 {
-    if (const auto sent = sendOnConnection(app, cpu, cpu.eax, cpu.edx, cpu.ebx))
-        answer(cpu, sent->eax);
+    if (const auto sent = sendOnConnection(app, cpu, args.eax, args.edx, args.ebx))
+        answer(cpu, args, sent->eax);
+    return args.eax;
 }
 
 /* 0x4f5330: closeConnection of eax. */
-void connClose(App* app, CPU& cpu)
+x86::reg32 connClose(App* app, CPU& cpu, x86::Args& args)
 {
-    if (const auto closed = closeConnection(app, cpu, cpu.eax))
-        answer(cpu, *closed);
+    if (const auto closed = closeConnection(app, cpu, args.eax))
+        answer(cpu, args, *closed);
+    return args.eax;
 }
 
 /* 0x50dc00: nth of eax, edx. */
-void qnth(App* app, CPU& cpu)
+x86::reg32 qnth(App* app, CPU& cpu, x86::Args& args)
 {
-    answer(cpu, nth(app, cpu.eax, cpu.edx));
+    answer(cpu, args, nth(app, args.eax, args.edx));
+    return args.eax;
 }
 
 /* 0x50dc20: unlink the element edx from the queue eax. */
-void qunlink(App* app, CPU& cpu)
+x86::reg32 qunlink(App* app, CPU& cpu, x86::Args& args)
 {
-    answer(cpu, unlink(app, cpu.eax, cpu.edx));
+    answer(cpu, args, unlink(app, args.eax, args.edx));
+    return args.eax;
 }
 
 /* 0x50dde0: freeQueueLock of the queue eax. */
-void qfree(App* app, CPU& cpu)
+x86::reg32 qfree(App* app, CPU& cpu, x86::Args& args)
 {
-    if (const auto freed = freeQueueLock(app, cpu, cpu.eax))
-        answer(cpu, *freed);
+    if (const auto freed = freeQueueLock(app, cpu, args.eax))
+        answer(cpu, args, *freed);
+    return args.eax;
 }
 
 /* 0x50e150: removeFromQueue of the element edx from the queue eax. */
-void qremove(App* app, CPU& cpu)
+x86::reg32 qremove(App* app, CPU& cpu, x86::Args& args)
 {
-    if (const auto removed = removeFromQueue(app, cpu, cpu.eax, cpu.edx, cpu.edi))
+    if (const auto removed = removeFromQueue(app, cpu, args.eax, args.edx, args.edi))
     {
-        answer(cpu, *removed);
+        answer(cpu, args, *removed);
     }
+    return args.eax;
 }
 
 /* 0x50e1d0: queueLength of the queue eax. */
-void qlength(App* app, CPU& cpu)
+x86::reg32 qlength(App* app, CPU& cpu, x86::Args& args)
 {
-    if (const auto length = queueLength(app, cpu, cpu.eax))
-        answer(cpu, *length);
+    if (const auto length = queueLength(app, cpu, args.eax))
+        answer(cpu, args, *length);
+    return args.eax;
 }
 
 /* 0x50e220: queuePosition of the element edx in the queue eax. */
-void qposition(App* app, CPU& cpu)
+x86::reg32 qposition(App* app, CPU& cpu, x86::Args& args)
 {
-    if (const auto position = queuePosition(app, cpu, cpu.eax, cpu.edx))
+    if (const auto position = queuePosition(app, cpu, args.eax, args.edx))
     {
-        answer(cpu, *position);
+        answer(cpu, args, *position);
     }
+    return args.eax;
 }
 
 /* 0x50e470: findInQueue of element edx of the queue eax. */
-void qfindindex(App* app, CPU& cpu)
+x86::reg32 qfindindex(App* app, CPU& cpu, x86::Args& args)
 {
-    if (const auto found = findInQueue(app, cpu, cpu.eax, cpu.edx))
+    if (const auto found = findInQueue(app, cpu, args.eax, args.edx))
     {
-        answer(cpu, *found);
+        answer(cpu, args, *found);
     }
+    return args.eax;
 }
 
 /* 0x5123b0: gatherAndSend of the edx pieces at ebx on the connection eax. */
-void layerSend(App* app, CPU& cpu)
+x86::reg32 layerSend(App* app, CPU& cpu, x86::Args& args)
 {
-    if (const auto sent = gatherAndSend(app, cpu, cpu.eax, cpu.edx, cpu.ebx))
-        answer(cpu, sent->eax);
+    if (const auto sent = gatherAndSend(app, cpu, args.eax, args.edx, args.ebx))
+        answer(cpu, args, sent->eax);
+    return args.eax;
 }
 
 /* 0x512530: callPacker of the ebx pieces at ecx on the connection eax to
  * layer edx of the queue on the stack, taken off (stdcall). */
-void layerCallPacker(App* app, CPU& cpu)
+x86::reg32 layerCallPacker(App* app, CPU& cpu, x86::Args& args)
 {
-    if (const auto packed = callPacker(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx, at(app, cpu.esp + 4)))
+    if (const auto packed = callPacker(app, cpu, args.eax, args.edx, args.ebx, args.ecx, at(app, cpu.esp + 4)))
     {
-        answer(cpu, packed->eax);
+        answer(cpu, args, packed->eax);
         cpu.esp += 4;
     }
+    return args.eax;
 }
 
 /* 0x512630: packFromTop of the edx pieces at ebx on the connection eax, the
  * queue of layers ecx. */
-void layerPackFromTop(App* app, CPU& cpu)
+x86::reg32 layerPackFromTop(App* app, CPU& cpu, x86::Args& args)
 {
-    if (const auto packed = packFromTop(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx))
-        answer(cpu, packed->eax);
+    if (const auto packed = packFromTop(app, cpu, args.eax, args.edx, args.ebx, args.ecx))
+        answer(cpu, args, packed->eax);
+    return args.eax;
 }
 
 /* 0x5126c0: freeLayers of the connection eax. */
-void layerFree(App* app, CPU& cpu)
+x86::reg32 layerFree(App* app, CPU& cpu, x86::Args& args)
 {
-    if (const auto freed = freeLayers(app, cpu, cpu.eax))
-        answer(cpu, *freed);
+    if (const auto freed = freeLayers(app, cpu, args.eax))
+        answer(cpu, args, *freed);
+    return args.eax;
 }
 
 /* 0x512770: sendDownLayers of the edx pieces at ebx on the connection eax;
  * edx and ebx as it leaves them. */
-void layerSendPacket(App* app, CPU& cpu)
+x86::reg32 layerSendPacket(App* app, CPU& cpu, x86::Args& args)
 {
-    if (const auto sent = sendDownLayers(app, cpu, cpu.eax, cpu.edx, cpu.ebx))
+    if (const auto sent = sendDownLayers(app, cpu, args.eax, args.edx, args.ebx))
     {
-        cpu.edx = sent->edx;
-        cpu.ebx = sent->ebx;
-        answer(cpu, sent->eax);
+        args.edx = sent->edx;
+        args.ebx = sent->ebx;
+        answer(cpu, args, sent->eax);
     }
+    return args.eax;
 }
 
 namespace
@@ -1758,34 +1799,39 @@ Regs unpackPairs(App* app, CPU& cpu, reg32 source, reg32 to)
 }
 
 /* 0x510110: unpackRuns from eax to edx. */
-void runUnpack(App* app, CPU& cpu)
+x86::reg32 runUnpack(App* app, CPU& cpu, x86::Args& args)
 {
-    if (const auto total = unpackRuns(app, cpu, cpu.eax, cpu.edx))
-        answer(cpu, *total);
+    if (const auto total = unpackRuns(app, cpu, args.eax, args.edx))
+        answer(cpu, args, *total);
+    return args.eax;
 }
 
 /* 0x510420: unpackBlock at ebx to eax, edx bytes a row. */
-void dxtBlock(App* app, CPU& cpu)
+x86::reg32 dxtBlock(App* app, CPU& cpu, x86::Args& args)
 {
-    answer(cpu, unpackBlock(app, cpu.eax, cpu.edx, cpu.ebx));
+    answer(cpu, args, unpackBlock(app, args.eax, args.edx, args.ebx));
+    return args.eax;
 }
 
 /* 0x510760: unpackDxt from eax to edx, the blocks too for ebx not 0. */
-void dxtUnpack(App* app, CPU& cpu)
+x86::reg32 dxtUnpack(App* app, CPU& cpu, x86::Args& args)
 {
-    answer(cpu, unpackDxt(app, cpu.eax, cpu.edx, cpu.ebx).eax);
+    answer(cpu, args, unpackDxt(app, args.eax, args.edx, args.ebx).eax);
+    return args.eax;
 }
 
 /* 0x510820: expandPair of al. */
-void pairExpand(App* app, CPU& cpu)
+x86::reg32 pairExpand(App* app, CPU& cpu, x86::Args& args)
 {
-    answer(cpu, expandPair(app, cpu.eax));
+    answer(cpu, args, expandPair(app, args.eax));
+    return args.eax;
 }
 
 /* 0x510870: unpackPairs from eax to edx. */
-void pairUnpack(App* app, CPU& cpu)
+x86::reg32 pairUnpack(App* app, CPU& cpu, x86::Args& args)
 {
-    answer(cpu, unpackPairs(app, cpu, cpu.eax, cpu.edx).eax);
+    answer(cpu, args, unpackPairs(app, cpu, args.eax, args.edx).eax);
+    return args.eax;
 }
 
 namespace
@@ -2048,13 +2094,14 @@ reg32 unpackHuffman(App* app, reg32 f, reg32 source, reg32 to, reg32 withTables)
 
 /* 0x50ed50: unpackHuffman from eax to edx, the tables read for ebx not 0;
  * the frame under the 4 registers the code pushes. */
-void huffUnpack(App* app, CPU& cpu)
+x86::reg32 huffUnpack(App* app, CPU& cpu, x86::Args& args)
 {
-    answer(cpu, unpackHuffman(app, cpu.esp - kHuffFrame, cpu.eax, cpu.edx, cpu.ebx));
+    answer(cpu, args, unpackHuffman(app, cpu.esp - kHuffFrame, args.eax, args.edx, args.ebx));
+    return args.eax;
 }
 
 /* ---- The typed cores of native_ea_net.h's list for the game's other code (guest::direct): the
- * functions above as their adapters run them. ---- */
+ * functions above as their thunks run them. ---- */
 
 reg32 sessionIndexOf(App* app, reg32 id)
 {
@@ -2068,7 +2115,7 @@ std::optional<reg32> connectionDropped(App* app, CPU& cpu, reg32 connection)
 
 std::optional<reg32> machineLeftAnnounced(App* app, CPU& cpu, reg32 machine)
 {
-    const Saved saved{cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp};
+    const Saved saved{};  // the pushed registers' values are dropped
     return announceLeft(app, cpu, machine, saved);
 }
 
@@ -2079,7 +2126,7 @@ std::optional<reg32> networkReset(App* app, CPU& cpu, reg32 alsoLostToo)
 
 std::optional<reg32> networkClosed(App* app, CPU& cpu)
 {
-    const auto closed = closeNetworkAt(app, cpu);
+    const auto closed = closeNetworkAt(app, cpu, 0);
     if (!closed)
         return std::nullopt;
     return closed->eax;
@@ -2113,6 +2160,41 @@ std::optional<reg32> queueLockFreed(App* app, CPU& cpu, reg32 queue)
 std::optional<reg32> queueLengthOf(App* app, CPU& cpu, reg32 queue)
 {
     return queueLength(app, cpu, queue);
+}
+
+std::optional<reg32> networkGameEnded(App* app, CPU& cpu, reg32 handed)
+{
+    return endNetwork(app, cpu, handed);
+}
+
+std::optional<reg32> netGameEnded(App* app, CPU& cpu, reg32 net)
+{
+    return endNetGame(app, cpu, net);
+}
+
+std::optional<reg32> netGameShut(App* app, CPU& cpu, reg32 net, reg32 how)
+{
+    return callNet(app, cpu, net, kShutGameName, kShutGameSlot, how);
+}
+
+std::optional<reg32> netPlayerChecked(App* app, CPU& cpu, reg32 net, reg32 player, reg32 third)
+{
+    return checkNetPlayerWith(app, cpu, net, player, third);
+}
+
+std::optional<reg32> queueRemoved(App* app, CPU& cpu, reg32 queue, reg32 element, reg32 forNone)
+{
+    return removeFromQueue(app, cpu, queue, element, forNone);
+}
+
+std::optional<reg32> queuePositionOf(App* app, CPU& cpu, reg32 queue, reg32 element)
+{
+    return queuePosition(app, cpu, queue, element);
+}
+
+std::optional<reg32> queueElementAt(App* app, CPU& cpu, reg32 queue, reg32 index)
+{
+    return findInQueue(app, cpu, queue, index);
 }
 
 }  // namespace ea

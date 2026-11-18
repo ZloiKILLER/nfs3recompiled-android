@@ -1,8 +1,13 @@
+#include "native_controls_queue.h"
 #include "native_frontend_simc.h"
+#include "native_track.h"
+#include "native_carstate.h"
 #include "native_watcom.h"
 #include "game_settings.h"
 #include "native_controls_input.h"
+#include "native_collide.h"
 #include "native_frontend.h"
+#include "native_frontend_fx.h"
 #include "native_ea_support.h"
 #include "native_frontend_loop.h"
 #include "native_frontend_loopb.h"
@@ -17,12 +22,13 @@
 #include "native_load_cardb.h"
 #include "native_vertices.h"
 #include "port_text.h"
+#include "native_graphics.h"
 #include <nfs3hp.h>
 #include <fpu.h>
 #include <cstring>
 #include <initializer_list>
 
-/* What was left generated of the simulation above 0x4b7000, decompiled, and the
+/* What was left of the simulation above 0x4b7000, decompiled, and the
  * pan-and-zoom widget's last small functions:
  *
  *   quaternions and matrices  a car's pose mixed and slerped, quaternion to matrix
@@ -43,14 +49,14 @@
  * Watcom's callers may go on with them.
  *
  * Plan step 5: each function a typed core in frontend::simc (native_frontend_simc.h), in
- * a frame of its own where it calls or hands out its frame (fe::Frame), and an adapter
+ * a frame of its own where it calls or hands out its frame (fe::Frame), and a thunk
  * under the game's name for the calls by address.  A core of the simulation's files calls
  * another as C++ (guest::direct), and the typed cores of other files too (fe::direct); the
  * rest of the game still by address. */
 namespace nfs3hp
 {
 
-float zoomHalfWidth(win32::WinApplication* app);  // tools/apply_widescreen.py, nfs3hp_main.cpp
+float zoomHalfWidth(win32::WinApplication* app);  // the port's widescreen change, nfs3hp_main.cpp
 
 namespace
 {
@@ -124,7 +130,7 @@ void copyWords(Guest& guest, reg32 to, reg32 from, reg32 count)
         guest.setDword(to + 4 * i, guest.dword(from + 4 * i));
 }
 
-/* idiv of a sign-extended dividend: both results, as the generated code has them. */
+/* idiv of a sign-extended dividend: both results, as the game's code has them. */
 struct Division
 {
     reg32 quotient;
@@ -140,7 +146,6 @@ Division divide(reg32 dividend, reg32 divisor)
 
 /* The game's functions these call. */
 constexpr reg32 kArcCosine = 0x4f9482;          // st(0) in, its arc cosine out
-constexpr reg32 kMultiply = 0x4e0280;
 
 /* The car a player's view is on: the replay's if there is one, or the race's. */
 constexpr reg32 kReplayCars = 0x5e10b8, kRaceCars = 0x5e10b0;
@@ -206,7 +211,7 @@ reg32 startTelevision(win32::WinApplication* app, x86::CPU& cpu, Guest& guest, r
         for (reg32 kind = 0; kind < kTvCameraKinds; ++kind)
             guest.setDword(kDirectorAllowed + record + 4 * kind, 1);
         const reg32 camera = guest.dword(kTvCameras + 4 * guest.dword(kDirectorNext + record));
-        left = guest.call(kSwitchCamera, args({ camera, player }));
+        left = *fe::direct<kSwitchCamera, carstate::cameraSwitched>(guest.app(), guest.cpu(), camera, player);
     }
     return left;
 }
@@ -252,12 +257,12 @@ x86::reg32 simc::poseBlend(App* app, CPU& cpu, reg32 quatA, reg32 quatB, reg32 p
     return quatA;
 }
 
-void simPoseBlend(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 simPoseBlend(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4b70f0", 12, 0, nullptr, 0, fe::kRestoreAll };
-    const reg32 quatA = cpu.eax, quatB = cpu.edx, placeA = cpu.ebx, placeB = cpu.ecx;
+    const reg32 quatA = args.eax, quatB = args.edx, placeA = args.ebx, placeB = args.ecx;
     const reg32 t = guest::at(app, cpu.esp + 4), quatOut = guest::at(app, cpu.esp + 8), placeOut = guest::at(app, cpu.esp + 12);
-    fe::runWhole(app, cpu, site,
+    return fe::runThunk(app, cpu, args, site,
                  [&](Guest&) { return simc::poseBlend(app, cpu, quatA, quatB, placeA, placeB, t, quatOut, placeOut); });
 }
 
@@ -289,10 +294,11 @@ x86::reg32 simc::quatSlerp(App* app, CPU& cpu, reg32 from, reg32 to, reg32 tBits
     double fromWeight, toWeight;
     if (above(status))
     {
-        cpu.eax = left;
-        guest.fpu().push(cosine);
-        left = guest.call(kArcCosine);
-        const Float angle = guest.fpu().take();
+        x86::Args arc;
+        arc.floatIn[0] = cosine;
+        arc.floatsIn = 1;
+        left = fx::callAt(guest, kArcCosine, args({ left }), &arc);
+        const Float angle = arc.floatResult;
         const Float sine = fp::sin(angle);
         const Float t = fromBits(tBits);
         const Float sineFrom = fp::sin(fp::mul(fp::sub(1.0, t), angle));
@@ -306,7 +312,6 @@ x86::reg32 simc::quatSlerp(App* app, CPU& cpu, reg32 from, reg32 to, reg32 tBits
         const double t = fromBits(tBits);
         fromWeight = fp::sub(1.0, t);
         toWeight = t;
-        guest.leaveEdx(highWordOf(t));
     }
     for (reg32 i = 0; i < 3; ++i)
     {
@@ -318,11 +323,11 @@ x86::reg32 simc::quatSlerp(App* app, CPU& cpu, reg32 from, reg32 to, reg32 tBits
     return left;
 }
 
-void simQuatSlerp(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 simQuatSlerp(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4b71e0", 8, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi };
-    const reg32 from = cpu.eax, to = cpu.edx, t = guest::at(app, cpu.esp + 4), out = guest::at(app, cpu.esp + 8);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return simc::quatSlerp(app, cpu, from, to, t, out); });
+    const reg32 from = args.eax, to = args.edx, t = guest::at(app, cpu.esp + 4), out = guest::at(app, cpu.esp + 8);
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return simc::quatSlerp(app, cpu, from, to, t, out); });
 }
 
 /* sub_4b7300: the quaternion at edx negated if its negative is nearer the one at eax:
@@ -355,11 +360,11 @@ x86::reg32 simc::quatNearer(App* app, CPU& cpu, reg32 a, reg32 b)
     return left;
 }
 
-void simQuatNearer(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 simQuatNearer(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4b7300", 0, 0, nullptr, 0, fe::kRestoreAll };
-    const reg32 a = cpu.eax, b = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return simc::quatNearer(app, cpu, a, b); });
+    const reg32 a = args.eax, b = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return simc::quatNearer(app, cpu, a, b); });
 }
 
 /* sub_4b73c0: the 3x3 matrix at eax made the quaternion at edx: by its trace when
@@ -415,11 +420,11 @@ x86::reg32 simc::quatFromMatrix(App* app, CPU& cpu, reg32 matrix, reg32 out)
     return bitsOf(w);
 }
 
-void simQuatFromMatrix(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 simQuatFromMatrix(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4b73c0", 0, 0, nullptr, 0, fe::kRestoreAll };
-    const reg32 matrix = cpu.eax, out = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return simc::quatFromMatrix(app, cpu, matrix, out); });
+    const reg32 matrix = args.eax, out = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return simc::quatFromMatrix(app, cpu, matrix, out); });
 }
 
 /* sub_4b7590: the quaternion at eax made the 3x3 matrix at edx. */
@@ -456,11 +461,11 @@ x86::reg32 simc::matrixFromQuat(App* app, CPU& cpu, reg32 quat, reg32 out)
     return quat;
 }
 
-void simMatrixFromQuat(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 simMatrixFromQuat(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4b7590", 0, 0, nullptr, 0, fe::kRestoreAll };
-    const reg32 quat = cpu.eax, out = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return simc::matrixFromQuat(app, cpu, quat, out); });
+    const reg32 quat = args.eax, out = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return simc::matrixFromQuat(app, cpu, quat, out); });
 }
 
 /* sub_4b7680: two 3x3 matrices, eax and edx, slerped through quaternions by the
@@ -474,15 +479,14 @@ x86::reg32 simc::matrixSlerp(App* app, CPU& cpu, reg32 from, reg32 to, reg32 t, 
     guest::direct<0x4b73c0, quatFromMatrix>(app, cpu, to, toQuat);
     guest::direct<0x4b71e0, quatSlerp>(app, cpu, fromQuat, toQuat, t, mixed);
     // `out` in edx stays there after it, as the code leaves it.
-    guest.leaveEdx(out);
     return guest::direct<0x4b7590, matrixFromQuat>(app, cpu, mixed, out);
 }
 
-void simMatrixSlerp(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 simMatrixSlerp(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4b7680", 8, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx };
-    const reg32 from = cpu.eax, to = cpu.edx, t = guest::at(app, cpu.esp + 4), out = guest::at(app, cpu.esp + 8);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return simc::matrixSlerp(app, cpu, from, to, t, out); });
+    const reg32 from = args.eax, to = args.edx, t = guest::at(app, cpu.esp + 4), out = guest::at(app, cpu.esp + 8);
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return simc::matrixSlerp(app, cpu, from, to, t, out); });
 }
 
 /* sub_4b7720: the 3x3 matrix at ebx is eax minus edx. */
@@ -494,11 +498,11 @@ x86::reg32 simc::matrixSubtract(App* app, CPU& cpu, reg32 a, reg32 b, reg32 out)
     return a;
 }
 
-void simMatrixSubtract(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 simMatrixSubtract(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4b7720", 0, 0, nullptr, 0, fe::kRestoreAll };
-    const reg32 a = cpu.eax, b = cpu.edx, out = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return simc::matrixSubtract(app, cpu, a, b, out); });
+    const reg32 a = args.eax, b = args.edx, out = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return simc::matrixSubtract(app, cpu, a, b, out); });
 }
 
 /* sub_4b7780: the 3x3 matrix at ebx is eax plus edx. */
@@ -510,11 +514,11 @@ x86::reg32 simc::matrixAdd(App* app, CPU& cpu, reg32 a, reg32 b, reg32 out)
     return a;
 }
 
-void simMatrixAdd(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 simMatrixAdd(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4b7780", 0, 0, nullptr, 0, fe::kRestoreAll };
-    const reg32 a = cpu.eax, b = cpu.edx, out = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return simc::matrixAdd(app, cpu, a, b, out); });
+    const reg32 a = args.eax, b = args.edx, out = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return simc::matrixAdd(app, cpu, a, b, out); });
 }
 
 /* sub_4b77e0: the 3x3 matrix at eax times the float on the stack, into the pointer
@@ -529,11 +533,11 @@ x86::reg32 simc::matrixScale(App* app, CPU& cpu, reg32 matrix, reg32 factorBits,
     return matrix;
 }
 
-void simMatrixScale(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 simMatrixScale(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4b77e0", 8, 0, nullptr, 0, fe::kRestoreAll };
-    const reg32 matrix = cpu.eax, factor = guest::at(app, cpu.esp + 4), out = guest::at(app, cpu.esp + 8);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return simc::matrixScale(app, cpu, matrix, factor, out); });
+    const reg32 matrix = args.eax, factor = guest::at(app, cpu.esp + 4), out = guest::at(app, cpu.esp + 8);
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return simc::matrixScale(app, cpu, matrix, factor, out); });
 }
 
 /* sub_4b7840: the 3x3 matrix at eax made orthonormal again: M = M (M'M)^-1/2, the
@@ -565,16 +569,15 @@ x86::reg32 simc::matrixOrthonormalise(App* app, CPU& cpu, reg32 matrix, reg32 te
         guest::direct<0x4b77e0, matrixScale>(app, cpu, power, guest.dword(kCoefficients + 4 * i), term);
         guest::direct<0x4b7780, matrixAdd>(app, cpu, sum, term, sum);
     }
-    // By address: what it leaves in eax is this function's.
-    return guest.call(kMultiply, args({ matrix, sum, matrix }));
+    return fe::direct<0x4e0280, vertices::multiplyMatrixEax>(app, cpu, matrix, sum, matrix);
 }
 
-void simMatrixOrthonormalise(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 simMatrixOrthonormalise(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4b7840", 0, 0, nullptr, 0,
                           fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 matrix = cpu.eax, terms = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return simc::matrixOrthonormalise(app, cpu, matrix, terms); });
+    const reg32 matrix = args.eax, terms = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return simc::matrixOrthonormalise(app, cpu, matrix, terms); });
 }
 
 /* sub_4b79c0: the 3x3 matrix at eax turned a quarter: the second row is the third,
@@ -592,11 +595,11 @@ x86::reg32 simc::matrixQuarterTurn(App* app, CPU& cpu, reg32 matrix)
     return matrix;
 }
 
-void simMatrixQuarterTurn(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 simMatrixQuarterTurn(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4b79c0", 0, 0, nullptr, 0, fe::kRestoreAll };
-    const reg32 matrix = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return simc::matrixQuarterTurn(app, cpu, matrix); });
+    const reg32 matrix = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return simc::matrixQuarterTurn(app, cpu, matrix); });
 }
 
 /* sub_4ea680: the 3x3 matrix at eax turned about its first row, by the angle on the
@@ -631,11 +634,11 @@ x86::reg32 simc::turnAboutFirstRow(App* app, CPU& cpu, reg32 matrix, reg32 angle
     return left;
 }
 
-void simTurnAboutFirstRow(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 simTurnAboutFirstRow(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4ea680", 8, 0, nullptr, 0, fe::kRestoreAll };
-    const reg32 matrix = cpu.eax, angleAt = cpu.esp + 4, out = guest::at(app, cpu.esp + 8);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return simc::turnAboutFirstRow(app, cpu, matrix, angleAt, out); });
+    const reg32 matrix = args.eax, angleAt = cpu.esp + 4, out = guest::at(app, cpu.esp + 8);
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return simc::turnAboutFirstRow(app, cpu, matrix, angleAt, out); });
 }
 
 /* sub_4ea820: the 3x3 matrix at eax turned about its last row, as sub_4ea680. */
@@ -668,11 +671,11 @@ x86::reg32 simc::turnAboutLastRow(App* app, CPU& cpu, reg32 matrix, reg32 angleA
     return left;
 }
 
-void simTurnAboutLastRow(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 simTurnAboutLastRow(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4ea820", 8, 0, nullptr, 0, fe::kRestoreAll };
-    const reg32 matrix = cpu.eax, angleAt = cpu.esp + 4, out = guest::at(app, cpu.esp + 8);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return simc::turnAboutLastRow(app, cpu, matrix, angleAt, out); });
+    const reg32 matrix = args.eax, angleAt = cpu.esp + 4, out = guest::at(app, cpu.esp + 8);
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return simc::turnAboutLastRow(app, cpu, matrix, angleAt, out); });
 }
 
 /* sub_4ea920: the square root of the float on the stack, onto the x87's. */
@@ -681,17 +684,13 @@ double simc::squareRootOf(App*, reg32 value)
     return fp::sqrt(fromBits(value));
 }
 
-void simc::squareRoot(App* app, CPU& cpu, reg32 value)
-{
-    cpu.fpu.push(Float(squareRootOf(app, value)));
-}
-
-void simSquareRoot(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 simSquareRoot(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4ea920", 4, 0, nullptr, 0, fe::kRestoreAll };
-    const reg32 eax = cpu.eax, value = guest::at(app, cpu.esp + 4);
-    fe::runWhole(app, cpu, site, [&](Guest&) {
-        simc::squareRoot(app, cpu, value);
+    const reg32 eax = args.eax, value = guest::at(app, cpu.esp + 4);
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
+        args.floatSet = true;
+        args.floatResult = simc::squareRootOf(app, value);
         return eax;
     });
 }
@@ -718,37 +717,37 @@ x86::reg32 simc::viewPass(App* app, CPU& cpu, reg32 pass, reg32 record4, reg32 r
     guest.setDword(kView + 0x68, record68);
     guest.setDword(kView + 0x70, record70);
     guest.setDword(kView + 0x6c, record6c);
-    guest.call(kChooseView, args({ kView, 0 }));
-    guest.call(kSetMirrored, args({ kView }));
+    fe::direct<kChooseView, carstate::cameraViewChosen>(guest.app(), guest.cpu(), kView, 0);
+    fe::direct<kSetMirrored, collide::setViewMirrored>(guest.app(), guest.cpu(), kView);
     if (pass == 0)
     {
-        guest.leaveEcx(bitsOf(kOneFifth));
         guest.setDword(kFirstShare, bitsOf(kFourFifths));
         guest.setDword(kSecondShare, bitsOf(kOneFifth));
     }
     else if (pass == 1)
     {
-        guest.leaveEbx(bitsOf(kOneFifth));
         guest.setDword(kFirstShare, bitsOf(kOneFifth));
         guest.setDword(kSecondShare, 0);
     }
     else
     {
-        return guest.eax();
+        return 0;
     }
-    guest.call(kAmbientSounds, args({ kView }));
-    guest.call(kRaceFrame, args({ pass }));
-    guest.call(kChooseView, args({ kView, 2 }));
+    fe::direct<kAmbientSounds, track::ambientAround>(guest.app(), guest.cpu(), kView);
+    fe::direct<0x4bc160, graphics::raceFrameDrawn>(app, cpu, pass);
+    fe::direct<kChooseView, carstate::cameraViewChosen>(guest.app(), guest.cpu(), kView, 2);
     const reg32 first = guest.dword(0x7a3cf0), second = guest.dword(0x7a3cf4);
-    return guest.call(kDrawMirrored, args({ kView, first }, { first, second }));
+    (void)second;
+    fe::direct<kDrawMirrored, collide::listDrawnMirrored>(app, cpu, kView, first);
+    return kView;
 }
 
-void simViewPass(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 simViewPass(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4bc470", 4, 0, nullptr, 0, fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 pass = cpu.eax, record4 = cpu.edx, record68 = cpu.ebx, record6c = cpu.ecx;
+    const reg32 pass = args.eax, record4 = args.edx, record68 = args.ebx, record6c = args.ecx;
     const reg32 record70 = guest::at(app, cpu.esp + 4);
-    fe::runWhole(app, cpu, site,
+    return fe::runThunk(app, cpu, args, site,
                  [&](Guest&) { return simc::viewPass(app, cpu, pass, record4, record68, record6c, record70); });
 }
 
@@ -789,12 +788,12 @@ x86::reg32 simc::setView(App* app, CPU& cpu, reg32 view)
     return car;
 }
 
-void simSetView(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 simSetView(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4dbde0", 0, 0, nullptr, 0,
                           fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx | fe::kRestoreEsi };
-    const reg32 view = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return simc::setView(app, cpu, view); });
+    const reg32 view = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return simc::setView(app, cpu, view); });
 }
 
 /* sub_4d5720: nothing of its own: the race frame's end, sub_434a90, every register as it
@@ -803,13 +802,13 @@ x86::reg32 simc::raceFrameEnd(App* app, CPU& cpu)
 {
     Guest guest(app, cpu);
     const fe::Frame locals(guest, cpu, 4);
-    return guest.call(0x434a90);
+    return fe::direct<0x434a90, collide::fogColour>(app, cpu) ? 1 : 0;
 }
 
-void simRaceFrameEnd(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 simRaceFrameEnd(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4d5720", 0, 0, nullptr, 0, kRestoreNone };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return simc::raceFrameEnd(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return simc::raceFrameEnd(app, cpu); });
 }
 
 /* ---------------------------------------------------------------------------
@@ -867,10 +866,10 @@ x86::reg32 simc::panelPointer(App* app, CPU& cpu)
     return reg32(0);
 }
 
-void simPanelPointer(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 simPanelPointer(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4bd4d0", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return simc::panelPointer(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return simc::panelPointer(app, cpu); });
 }
 
 /* sub_4bd640: the replay's panel each frame: a camera asked for last frame made
@@ -882,9 +881,9 @@ x86::reg32 simc::panelKeys(App* app, CPU& cpu)
     constexpr reg32 kDirectorWanted = 0x7d36a8;
     Guest guest(app, cpu);
     const fe::Frame locals(guest, cpu, 24);
-    const auto pressed = [&](reg32 key) { return guest.call(kKeyPressed, args({ key, 1 })); };
+    const auto pressed = [&](reg32 key) { return fe::direct<0x48f8d0, controls::keyDownNow>(app, cpu, key, 1); };
     const reg32 players = gameSettings(guest).playMode == 1 ? 2 : 1;
-    reg32 left = guest.eax();
+    reg32 left = 0;
 
     const reg32 wanted = guest.dword(kPanelCameraWanted);
     if (sreg32(wanted) > 0 && guest.dword(kPanelCameraChanged) != 0)
@@ -893,10 +892,10 @@ x86::reg32 simc::panelKeys(App* app, CPU& cpu)
         for (reg32 player = 0; player < players; ++player)
         {
             guest.setDword(kDirectorOn + player * kDirectorBytes, 0);
-            guest.call(kSwitchCamera, args({ guest.dword(kPanelCameras + 4 * guest.dword(kPanelCamera)), player }));
+            fe::direct<kSwitchCamera, carstate::cameraSwitched>(guest.app(), guest.cpu(), guest.dword(kPanelCameras + 4 * guest.dword(kPanelCamera)), player);
             left = guest.dword(kPanelCamera);
             if (guest.dword(kPanelCameras + 4 * left) == kCameraChase)
-                left = guest.call(kPickChaseNode, args({ player }));
+                left = fe::direct<kPickChaseNode, carstate::chaseNodePicked>(guest.app(), guest.cpu(), player);
         }
     }
 
@@ -992,16 +991,15 @@ x86::reg32 simc::panelKeys(App* app, CPU& cpu)
     // The game's code hands it 0 in eax, which it does not read: there as the code has it.
     if (guest.dword(kDirectorWanted) != 0)
     {
-        cpu.eax = 0;
         left = guest::direct<0x426680, sima::camerasStep>(app, cpu);
     }
     return left;
 }
 
-void simPanelKeys(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 simPanelKeys(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4bd640", 0, 0, nullptr, 0, fe::kRestoreAll };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return simc::panelKeys(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return simc::panelKeys(app, cpu); });
 }
 
 /* ---------------------------------------------------------------------------
@@ -1014,21 +1012,20 @@ x86::reg32 simc::tvSetCamera(App* app, CPU& cpu, reg32 player, reg32 camera)
     Guest guest(app, cpu);
     const fe::Frame locals(guest, cpu, 16);
     guest::direct<0x4bdcc0, tvStartShot>(app, cpu, player, camera);
-    guest.leaveEdx(guest.dword(kReplayCars + 4 * player));
     const reg32 current = cameraOfCar(guest, player);
     if (current == camera)
         return current;
-    reg32 left = guest.call(kSwitchCamera, args({ camera, player }));
+    reg32 left = *fe::direct<kSwitchCamera, carstate::cameraSwitched>(guest.app(), guest.cpu(), camera, player);
     if (camera == kCameraChase)
-        left = guest.call(kPickChaseNode, args({ player }));
+        left = fe::direct<kPickChaseNode, carstate::chaseNodePicked>(guest.app(), guest.cpu(), player);
     return left;
 }
 
-void simTvSetCamera(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 simTvSetCamera(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4bdb60", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdi };
-    const reg32 player = cpu.eax, camera = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return simc::tvSetCamera(app, cpu, player, camera); });
+    const reg32 player = args.eax, camera = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return simc::tvSetCamera(app, cpu, player, camera); });
 }
 
 /* sub_4bdbd0: player eax's next shot: with the director on, the next camera of the
@@ -1052,11 +1049,11 @@ x86::reg32 simc::tvNextCamera(App* app, CPU& cpu, reg32 player)
     return guest::direct<0x4bdb60, tvSetCamera>(app, cpu, player, camera);
 }
 
-void simTvNextCamera(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 simTvNextCamera(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4bdbd0", 0, 0, nullptr, 0, fe::kRestoreAll };
-    const reg32 player = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return simc::tvNextCamera(app, cpu, player); });
+    const reg32 player = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return simc::tvNextCamera(app, cpu, player); });
 }
 
 /* sub_4bdc70: 1 when player eax's shot has run its length. */
@@ -1068,11 +1065,11 @@ x86::reg32 simc::tvShotOver(App* app, CPU& cpu, reg32 player)
     return reg32(sreg32(elapsed) > sreg32(guest.dword(kDirectorShotLength + record)) ? 1 : 0);
 }
 
-void simTvShotOver(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 simTvShotOver(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4bdc70", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx };
-    const reg32 player = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return simc::tvShotOver(app, cpu, player); });
+    const reg32 player = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return simc::tvShotOver(app, cpu, player); });
 }
 
 /* sub_4bdcc0: player eax's shot begins now, as long as camera edx's are; edx left the player. */
@@ -1082,15 +1079,14 @@ x86::reg32 simc::tvStartShot(App* app, CPU& cpu, reg32 player, reg32 camera)
     const reg32 record = player * kDirectorBytes;
     guest.setDword(kDirectorShotStart + record, guest.dword(kRaceClock) - kClockStart);
     guest.setDword(kDirectorShotLength + record, camera == kCameraShortShot ? 0xa0 : 0x140);
-    guest.leaveEdx(player);
     return record;
 }
 
-void simTvStartShot(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 simTvStartShot(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4bdcc0", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx };
-    const reg32 player = cpu.eax, camera = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return simc::tvStartShot(app, cpu, player, camera); });
+    const reg32 player = args.eax, camera = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return simc::tvStartShot(app, cpu, player, camera); });
 }
 
 /* sub_4bdd10: the largest of ebx rows of column eax of the replay's table of what
@@ -1107,16 +1103,14 @@ x86::reg32 simc::tvBusiest(App* app, CPU& cpu, reg32 column, reg32 row, reg32 co
         if (sreg32(value) > sreg32(largest))
             largest = value;
     }
-    guest.leaveEdx(row);
-    guest.leaveEbx(count);
     return largest;
 }
 
-void simTvBusiest(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 simTvBusiest(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4bdd10", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 column = cpu.eax, row = cpu.edx, count = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return simc::tvBusiest(app, cpu, column, row, count); });
+    const reg32 column = args.eax, row = args.edx, count = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return simc::tvBusiest(app, cpu, column, row, count); });
 }
 
 /* sub_4bdd70: the director's choice for player eax each frame: by the busiest thing
@@ -1167,7 +1161,7 @@ x86::reg32 simc::tvDirect(App* app, CPU& cpu, reg32 player)
         break;
     case 6:
     {
-        const reg32 spot = guest.call(kNearestSpot, args({ player }));
+        const reg32 spot = *fe::direct<kNearestSpot, carstate::spotNearestTo>(guest.app(), guest.cpu(), player);
         if (spot == kNoSpot && over == 0)
             return spot;
         return guest::direct<0x4bdb60, tvSetCamera>(app, cpu, player, kCameraShortShot);
@@ -1188,11 +1182,11 @@ x86::reg32 simc::tvDirect(App* app, CPU& cpu, reg32 player)
     return guest::direct<0x4bdbd0, tvNextCamera>(app, cpu, player);
 }
 
-void simTvDirect(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 simTvDirect(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4bdd70", 0, 0, nullptr, 0, fe::kRestoreAll };
-    const reg32 player = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return simc::tvDirect(app, cpu, player); });
+    const reg32 player = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return simc::tvDirect(app, cpu, player); });
 }
 
 /* ---------------------------------------------------------------------------
@@ -1208,11 +1202,11 @@ x86::reg32 simc::isNumberCharacter(App*, CPU&, reg32 eax)
     return reg32((eax & 0xffffff00u) | (number ? 1u : 0u));
 }
 
-void simIsNumberCharacter(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 simIsNumberCharacter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4be000", 0, 0, nullptr, 0, fe::kRestoreAll };
-    const reg32 eax = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return simc::isNumberCharacter(app, cpu, eax); });
+    const reg32 eax = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return simc::isNumberCharacter(app, cpu, eax); });
 }
 
 /* sub_4be1a0: 0 on one half-tick of every 32 / eax (the clock's, edx further on),
@@ -1224,15 +1218,14 @@ x86::reg32 simc::offBeat(App* app, CPU& cpu, reg32 rate, reg32 offset)
     const reg32 tick = reg32((clock - (clock >> 31)) >> 1) + offset;
     const reg32 period = divide(0x20, rate).quotient;
     const reg32 remainder = divide(tick, period).remainder;
-    guest.leaveEdx(remainder);
     return reg32(remainder != 0 ? 1 : 0);
 }
 
-void simOffBeat(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 simOffBeat(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4be1a0", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi };
-    const reg32 rate = cpu.eax, offset = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return simc::offBeat(app, cpu, rate, offset); });
+    const reg32 rate = args.eax, offset = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return simc::offBeat(app, cpu, rate, offset); });
 }
 
 /* The sirens: a record of 80 bytes per car that has one on. */
@@ -1284,17 +1277,14 @@ x86::reg32 simc::sirenOn(App* app, CPU& cpu, reg32 index, reg32 node, reg32 side
     // The game's code hands it `up` and 1 in edx and ebx too, which it does not read.
     fe::direct<0x4972f0, vertices::normaliseVector>(app, cpu, line);
     // Its three registers stay as they are handed, as the code leaves them.
-    guest.leaveEcx(siren);
-    guest.leaveEdx(up);
-    guest.leaveEbx(siren + 0x3c);
     return guest::direct<0x4e0160, simd::cross>(app, cpu, line, up, siren + 0x3c);
 }
 
-void simSirenOn(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 simSirenOn(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4c9dd0", 0, 0, nullptr, 0, fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 index = cpu.eax, node = cpu.edx, side = cpu.ebx, clock = cpu.ecx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return simc::sirenOn(app, cpu, index, node, side, clock); });
+    const reg32 index = args.eax, node = args.edx, side = args.ebx, clock = args.ecx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return simc::sirenOn(app, cpu, index, node, side, clock); });
 }
 
 /* sub_4c9f50: siren eax off. */
@@ -1306,11 +1296,11 @@ x86::reg32 simc::sirenOff(App* app, CPU& cpu, reg32 index)
     return offset;
 }
 
-void simSirenOff(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 simSirenOff(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4c9f50", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    const reg32 index = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return simc::sirenOff(app, cpu, index); });
+    const reg32 index = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return simc::sirenOff(app, cpu, index); });
 }
 
 /* sub_4ea570: the angle of (edx, eax) in 16-bit fixed point, 0x10000 to the turn:
@@ -1337,7 +1327,6 @@ x86::reg32 simc::angle(App* app, CPU& cpu, reg32 y, reg32 x)
     if (y == x)
     {
         angle = 0x2000;
-        guest.leaveEdx(x);
     }
     else
     {
@@ -1354,12 +1343,11 @@ x86::reg32 simc::angle(App* app, CPU& cpu, reg32 y, reg32 x)
         // The game's code hands it the 64 bits' address in esi: its `out`.
         fe::direct<0x503b00, wina::shiftTo64>(app, cpu, y, 0x20, wide);
         cpu.esp = wide - 4;
-        const reg32 ratio = guest.call(kDivide64, args({}, { guest.dword(wide), guest.dword(wide + 4), x }));
+        const reg32 ratio = fx::callAt(guest, kDivide64, args({}, { guest.dword(wide), guest.dword(wide + 4), x }));
         const reg32 entry = (ratio >> 24) * 4;
         const reg32 fraction = (ratio >> 8) & 0xffff;
         const reg32 from = guest.dword(kArcTangents + entry);
         const reg32 step = ((guest.dword(kArcTangents + entry + 4) - from) * fraction) >> 16;
-        guest.leaveEdx(step);
         angle = from + step;
     }
     switch (octant)
@@ -1383,11 +1371,11 @@ x86::reg32 simc::angle(App* app, CPU& cpu, reg32 y, reg32 x)
     }
 }
 
-void simAngle(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 simAngle(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4ea570", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi };
-    const reg32 y = cpu.eax, x = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return simc::angle(app, cpu, y, x); });
+    const reg32 y = args.eax, x = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return simc::angle(app, cpu, y, x); });
 }
 
 /* sub_4ea654: how many entries the pack at eax has. */
@@ -1397,11 +1385,11 @@ x86::reg32 simc::packCount(App* app, CPU& cpu, reg32 pack)
     return guest.dword(pack + 8);
 }
 
-void simPackCount(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 simPackCount(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4ea654", 0, 0, nullptr, 0, fe::kRestoreAll };
-    const reg32 pack = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return simc::packCount(app, cpu, pack); });
+    const reg32 pack = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return simc::packCount(app, cpu, pack); });
 }
 
 /* sub_4ea658: entry edx of the pack at eax, or 0 past its end. */
@@ -1413,11 +1401,11 @@ x86::reg32 simc::packEntry(App* app, CPU& cpu, reg32 pack, reg32 entry)
     return reg32(pack + guest.dword(pack + entry * 8 + 0x14));
 }
 
-void simPackEntry(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 simPackEntry(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4ea658", 0, 0, nullptr, 0, fe::kRestoreAll };
-    const reg32 pack = cpu.eax, entry = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return simc::packEntry(app, cpu, pack, entry); });
+    const reg32 pack = args.eax, entry = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return simc::packEntry(app, cpu, pack, entry); });
 }
 
 /* ---------------------------------------------------------------------------
@@ -1435,11 +1423,11 @@ x86::reg32 simc::interiorMapX(App* app, CPU& cpu, reg32 car)
     return record == 0 ? kNoCar : reg32(guest.word(record + 0x38c));
 }
 
-void viewInteriorMapX(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 viewInteriorMapX(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_43bcc0", 0, 0, nullptr, 0, kRestoreNone };
-    const reg32 car = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return simc::interiorMapX(app, cpu, car); });
+    const reg32 car = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return simc::interiorMapX(app, cpu, car); });
 }
 
 /* sub_465320: the widget's table's +0x10: the item at eax, shown now, placed: its
@@ -1449,7 +1437,6 @@ x86::reg32 simc::viewLaidOut(App* app, CPU& cpu, reg32 item)
     Guest guest(app, cpu);
     const fe::Frame locals(guest, cpu, 12);
     // The game's code hands it 0x21 in edx too, which it does not read: there as the code has it.
-    guest.leaveEdx(0x21);
     if (fe::direct<0x44a660, loop::shownNow>(app, cpu, item) != 0)
     {
         guest.setWord(item + 0x1e, 0x140);
@@ -1460,11 +1447,11 @@ x86::reg32 simc::viewLaidOut(App* app, CPU& cpu, reg32 item)
     return reg32(0);
 }
 
-void viewLaidOut(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 viewLaidOut(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_465320", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEdx };
-    const reg32 item = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return simc::viewLaidOut(app, cpu, item); });
+    const reg32 item = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return simc::viewLaidOut(app, cpu, item); });
 }
 
 /* sub_465360: the widget's table's +4: nothing. */
@@ -1473,11 +1460,11 @@ x86::reg32 simc::viewNoEntry(App*, CPU&, reg32 eax)
     return eax;
 }
 
-void viewNoEntry(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 viewNoEntry(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_465360", 0, 0, nullptr, 0, fe::kRestoreAll };
-    const reg32 eax = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return simc::viewNoEntry(app, cpu, eax); });
+    const reg32 eax = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return simc::viewNoEntry(app, cpu, eax); });
 }
 
 /* sub_465370: the widget's table's +0: the showcase's car's interior picture loaded
@@ -1485,7 +1472,6 @@ void viewNoEntry(win32::WinApplication* app, x86::CPU& cpu)
 x86::reg32 simc::viewLoadCar(App* app, CPU& cpu)
 {
     constexpr reg32 kCar = 0x664798, kCarShown = 0x678940;
-    constexpr reg32 kCarFlag = 0x4395c0;
     constexpr reg32 kSprintf = 0x4df690, kStrcmp = 0x4ee310;
     constexpr reg32 kFileFormat = 0x53ab3c, kCredits = 0x53ab48, kNumberedFormat = 0x53ab54, kFolderFormat = 0x53ab60;
     constexpr reg32 kTraceFile = 0x53ab78, kTraceFormat = 0x53ab9c;
@@ -1506,13 +1492,12 @@ x86::reg32 simc::viewLoadCar(App* app, CPU& cpu)
         fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), file, kNumberedFormat, guest::Words{guest.dword(kCar)});
         guest.copyString(folder, kInteriorRoot);
     }
-    if (guest.call(kCarFlag, args({ guest.dword(kCar) })) != 0)
+    if (*fe::direct<0x4395c0, load::flag4Of>(guest.app(), guest.cpu(), guest.dword(kCar)) != 0)
         fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), folder, kFolderFormat, guest::Words{kCarsRoot, carFolder});
     else
         guest.copyString(folder, kInteriorRoot);
     // The game's code hands it the ebx it has and 1.0 in ecx too, which it does not read: there as
     // the code has them.
-    guest.leaveEcx(bitsOf(kFullScale));
     fe::direct<0x464700, view::makeTiles>(app, cpu, file, folder);
     guest.setDword(kPanBase, bitsOf(kFullScale));
     guest.setDword(kMapOffsetY, 0);
@@ -1532,10 +1517,10 @@ x86::reg32 simc::viewLoadCar(App* app, CPU& cpu)
     return mapX;
 }
 
-void viewLoadCar(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 viewLoadCar(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_465370", 0, 0, nullptr, 0, fe::kRestoreAll };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return simc::viewLoadCar(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return simc::viewLoadCar(app, cpu); });
 }
 
 }

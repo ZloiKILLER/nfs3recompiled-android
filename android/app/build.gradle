@@ -39,11 +39,9 @@ android {
         externalNativeBuild {
             cmake {
                 /* AGP compiles the debug variant with no -O flag at all, so
-                 * clang defaults to -O0.  For ~60 MB of generated virtual-CPU
-                 * code that is the difference between a playable frame rate and
-                 * something that feels interpreted; the desktop reference build
-                 * is Release.  This lands after CMAKE_CXX_FLAGS_DEBUG, so it
-                 * wins, while -g is kept for symbolicating native crashes. */
+                 * clang defaults to -O0, far from a playable frame rate.  This
+                 * lands after CMAKE_CXX_FLAGS_DEBUG, so it wins, while -g is
+                 * kept for symbolicating native crashes. */
                 cppFlags "-O2 -ffp-contract=off"
                 arguments(
                     "-DANDROID_STL=c++_shared",
@@ -53,10 +51,7 @@ android {
                     // dialog -- the assertion machinery itself still runs, and a
                     // simpleperf profile put SDL_ReportAssertion at ~1% of total
                     // CPU. "release" keeps the cheap assertions and drops that one.
-                    "-DSDL_ASSERTIONS=release",
-                    // WITH_MMX is the checks' only: the game's code they hold the
-                    // port against still has MMX, cpuid and rdtsc.  The port has none.
-                    "-DWITH_MMX=OFF"
+                    "-DSDL_ASSERTIONS=release"
                 )
                 // Only nfs3hp is wired up for Android (see the NFS_BUILD_NFS2SE
                 // guard in the root CMakeLists.txt); the default is already OFF.

@@ -5,6 +5,7 @@
 #include "host_system.h"
 #include "native_windows.h"
 #include "port.h"
+#include "port_sound_calls.h"
 
 #include <lib/winapp.h>
 #include <winapi/types.h>
@@ -24,10 +25,9 @@
  * Each of the library's functions is here twice: as C++ with arguments and a
  * result, which the rewrites call -- the game's sound effects among them --
  * and as the game's entry, by the name the game's code knows
- * (disassemble_nfs3hp.py binds its address to it), an adapter around the
+ * (its address is bound to it), a thunk around the
  * first.  None of the game's callers reads more of what the library's code
- * leaves than eax (tools/game_checks holds the adapters to Watcom's
- * convention), so each rewrite gives back only its result.
+ * leaves than eax, so each rewrite gives back only its result.
  *
  * The records stay where the game has them while the game's code shares
  * them -- the mixer reads the channels, the streams the voices -- and are
@@ -278,14 +278,39 @@ template <reg32 Slot, auto Function, typename... Words>
 inline bool callWindows(App* app, CPU& cpu, reg32 esp, Args a, reg32& result, Words... words)
 {
     cpu.esp = esp;
-    cpu.eax = a.eax;
-    cpu.edx = a.edx;
-    cpu.ebx = a.ebx;
-    cpu.ecx = a.ecx;
+    // a host call's result when it has none: eax as it was
+    const std::optional<reg32> eax = guest::windowsKeeping<Slot, Function>(app, cpu, a.eax, words...);
+    if (!eax)
+        return false;
+    result = *eax;
+    return true;
+}
+
+/* The same with no register set: a Windows function takes its words only.  esp where the game's code has it
+ * at the call. */
+template <reg32 Slot, auto Function, typename... Words>
+inline bool callWindowsWords(App* app, CPU& cpu, reg32 esp, reg32& result, Words... words)
+{
+    cpu.esp = esp;
     const std::optional<reg32> eax = guest::windows<Slot, Function>(app, cpu, words...);
     if (!eax)
         return false;
     result = *eax;
+    return true;
+}
+
+/* callWindowsWords with `eax` what the game's code has in eax at the call, and
+ * then what the call leaves there: its result, or for a Windows function with
+ * none, eax as it was.  A call to the host, which stays as it is
+ * this pass: eax set for it is the one register it writes. */
+template <reg32 Slot, auto Function, typename... Words>
+inline bool callWindowsEax(App* app, CPU& cpu, reg32 esp, reg32& eax, Words... words)
+{
+    cpu.esp = esp;
+    const std::optional<reg32> left = guest::windowsKeeping<Slot, Function>(app, cpu, eax, words...);
+    if (!left)
+        return false;
+    eax = *left;
     return true;
 }
 
@@ -334,7 +359,7 @@ Result channelVolume(App* app, CPU& cpu, reg32 esp, int32_t index, int32_t left,
 Result channelSendLevel(App* app, CPU& cpu, reg32 esp, int32_t index, uint8_t level);
 Result voiceSendLevel(App* app, CPU& cpu, reg32 esp, int32_t index, int32_t level);
 int32_t refreshVolume(App* app, int32_t index);
-Result voiceVolume(App* app, CPU& cpu, reg32 esp, int32_t index, int32_t volume);
+Result voiceVolume(App* app, CPU& cpu, reg32 esp, int32_t index, int32_t volume, reg32 ebp);
 reg32 refreshPitch(App* app, int32_t index);
 x86::Float pitchScale(App* app, CPU& cpu, int32_t cents);
 int32_t stepFor(App* app, CPU& cpu, int32_t rate, int32_t mixRate, int32_t pitch);
@@ -344,14 +369,18 @@ Result placeVoice(App* app, CPU& cpu, reg32 esp, int32_t index, uint32_t positio
 Result panVoice(App* app, CPU& cpu, reg32 esp, int32_t index, int32_t pan);
 Result silenceChannel(App* app, CPU& cpu, reg32 esp, int32_t index);
 Result stopVoice(App* app, CPU& cpu, reg32 esp, int32_t index);
-Result tickSound(App* app, CPU& cpu, reg32 esp);
+Result tickSoundFrom(App* app, CPU& cpu, reg32 esp, reg32 eax, reg32 edx, reg32 ecx, reg32 ebp);
+// 0x4ffce0 (eacsnd's buffer position): the three floats at `to` from the angle and the elevation; the pan's second side.
+Result bufferPositioned(App* app, CPU& cpu, reg32 esp, uint32_t angle, uint32_t elevation, reg32 to);
 Result stopSound(App* app, CPU& cpu, reg32 esp, reg32 handle);
 Result soundStatus(App* app, CPU& cpu, reg32 esp, reg32 handle);
 Result stopAllSounds(App* app, CPU& cpu, reg32 esp);
 Result fadeSound(App* app, CPU& cpu, reg32 esp, reg32 handle, int32_t ticks, int32_t target);
-Result volumeNow(App* app, CPU& cpu, reg32 esp, reg32 handle, int32_t volume);
+Result volumeNow(App* app, CPU& cpu, reg32 esp, reg32 handle, int32_t volume, reg32 ebp);
+Result setVolumeFrom(App* app, CPU& cpu, reg32 esp, reg32 handle, int32_t volume, reg32 ebp);
 Result setVolume(App* app, CPU& cpu, reg32 esp, reg32 handle, int32_t volume);
 Result bendNow(App* app, CPU& cpu, reg32 esp, reg32 handle, int32_t bend);
+Result setBendFrom(App* app, CPU& cpu, reg32 esp, reg32 handle, int32_t bend, reg32 ebx, reg32 esi, reg32 edi);
 Result setBend(App* app, CPU& cpu, reg32 esp, reg32 handle, int32_t bend);
 Result placeSound(App* app, CPU& cpu, reg32 esp, reg32 handle, reg32 position, int32_t elevation);
 Result panSound(App* app, CPU& cpu, reg32 esp, reg32 handle, int32_t pan);
@@ -394,36 +423,39 @@ void clearTimbre(Timbre& timbre, Places& places);
 void addDataPlaces(Timbre& timbre, const Places& places);
 Result playTimbre(App* app, CPU& cpu, reg32 esp, Timbre& timbre, reg32 sample, const PlayOptions& options,
                   const Places& places, int32_t key, int32_t velocity, int32_t pitchOffset);
+Result playPatchFrom(App* app, CPU& cpu, reg32 esp, reg32 patch, const PlayOptions& options, reg32 ebp);
 Result playPatch(App* app, CPU& cpu, reg32 esp, reg32 patch, const PlayOptions& options);
 Result resolvePatch(App* app, CPU& cpu, reg32 esp, reg32 patch, reg32 base);
-Result unresolvePatch(App* app, CPU& cpu, reg32 esp, reg32 patch);
+Result unresolvePatch(App* app, CPU& cpu, reg32 esp, reg32 patch, reg32 esi, reg32 ebp);
 Result sampleInfo(App* app, CPU& cpu, reg32 esp, reg32 patch, reg32 info);
 int32_t bankState(App* app, int32_t bank);
-Result removePatch(App* app, CPU& cpu, reg32 esp, int32_t bank, int32_t index);
+Result removePatch(App* app, CPU& cpu, reg32 esp, int32_t bank, int32_t index, reg32 esi, reg32 ebp);
 Result freeBankHandle(App* app, CPU& cpu, reg32 esp);
 Result downloadBank(App* app, CPU& cpu, reg32 esp, reg32 bank, reg32 base);
 Result resolveSample(App* app, CPU& cpu, reg32 esp, reg32 tags, reg32 base);
-Result unresolveSample(App* app, CPU& cpu, reg32 esp, reg32 tags);
+Result unresolveSample(App* app, CPU& cpu, reg32 esp, reg32 tags, reg32 esi, reg32 ebp);
 Result startChannel(App* app, CPU& cpu, reg32 esp, int32_t index, reg32 format, reg32 compression, reg32 mode,
-                    ChannelStart& start);
+                    ChannelStart& start, reg32 edi, reg32 ebp);
 Result playSample(App* app, CPU& cpu, reg32 esp, reg32 tags, int32_t mode, int32_t index, int32_t pan,
                   SamplePlay& play);
 Result playPackets(App* app, CPU& cpu, reg32 esp, int32_t index, int32_t pan, int32_t volume, int32_t pitch,
                    int32_t send, int32_t priority, reg32 sample);
 Result checkPlayOptions(App* app, CPU& cpu, reg32 esp, reg32 at);
-Result removePatches(App* app, CPU& cpu, reg32 esp, int32_t bank, int32_t count);
-Result removeBank(App* app, CPU& cpu, reg32 esp, int32_t bank);
+Result removePatches(App* app, CPU& cpu, reg32 esp, int32_t bank, int32_t count, reg32 esi, reg32 ebp);
+Result removeBank(App* app, CPU& cpu, reg32 esp, int32_t bank, reg32 esi, reg32 ebp);
+Result removeEveryBankFrom(App* app, CPU& cpu, reg32 esp, int32_t bank, reg32 esi, reg32 ebp);
 Result removeEveryBank(App* app, CPU& cpu, reg32 esp, int32_t bank);
 Result addBank(App* app, CPU& cpu, reg32 esp, reg32 bank, reg32& handle);
 Result bankHeaderSize(App* app, CPU& cpu, reg32 esp, int32_t bank);
 Result copyBankHeader(App* app, CPU& cpu, reg32 esp, reg32 to, int32_t bank);
 Result bankHasPatch(App* app, CPU& cpu, reg32 esp, int32_t bank, int32_t patch);
+Result masterVolumeFrom(App* app, CPU& cpu, reg32 esp, int32_t volume, reg32 ebp);
 Result setMasterVolume(App* app, CPU& cpu, reg32 esp, int32_t volume);
 
-/* The bus's effect (port_snd_fx.cpp): iSNDwinsetfx's core and its adapter,
+/* The bus's effect (port_snd_fx.cpp): iSNDwinsetfx's core and its thunk,
  * what the driver's start calls through its pointer. */
 Result applyBusEffect(App* app, CPU& cpu, reg32 esp, reg32 type);
-void iSNDwinsetfx(App* app, CPU& cpu);
+x86::reg32 iSNDwinsetfx(App* app, CPU& cpu, x86::Args& args);
 
 }  // namespace port
 }  // namespace nfs3hp

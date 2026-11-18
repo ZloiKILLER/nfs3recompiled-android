@@ -1,16 +1,32 @@
 #include "game_settings.h"
+#include "native_load_carmodels.h"
 #include "port_fields.h"
+#include "port_gamecall.h"
 #include "port_draw2d.h"
 #include "port_text.h"
 #include "native_windows.h"
 #include "host_window.h"
 #include "native_ea_memory.h"
+#include "native_frontend_dialogs.h"
 #include "native_frontend_glue.h"
+#include "native_frontend_menud.h"
+#include "native_frontend_screen.h"
 #include "native_load_cardb.h"
 #include "native_watcom.h"
+#include "native_frontend_loada.h"
+#include "native_frontend_loop.h"
+#include "native_frontend_menus.h"
+#include "native_frontend_wata.h"
+#include "native_vertices.h"
+#include "native_ea_formats.h"
+#include "port_sound_effects.h"
 #include "port_loop.h"
+#include "port_shapes.h"
 #include "native_graphics.h"
 
+#include <cmath>
+#include <optional>
+#include <type_traits>
 #include <cstring>
 #include <functional>
 
@@ -30,8 +46,8 @@
  * the car's colours, a list of them opened under its swatch, and the car
  * records' colours (0x4397xx) and the colour wheel's from them.
  *
- * Each function is a typed core under its own name and an adapter under the
- * game's.  The adapter takes the arguments from the registers and the stack
+ * Each function is a typed core under its own name and a thunk under the
+ * game's.  The thunk takes the arguments from the registers and the stack
  * and gives back what Watcom's convention promises the caller: the result in
  * eax -- what the game's code leaves there, bits it did not mean included --
  * every other register as it was, a stdcall's stack words taken off.  The
@@ -43,34 +59,19 @@
  * keep.
  *
  * The cores call each other as C++; the port's 2D drawing, text, shapes and
- * the menu's click as the C++ adapters they are (as the game's code calls
+ * the menu's click as the C++ thunks they are (as the game's code calls
  * their addresses); what is not rewritten -- the menu loop's, the dialogs',
  * the car records', the pointer's, the runtime's, EA's, the render state and
  * the clipper -- by address, from where the game's code had its stack, its
- * frame's words where the game's code points them.  tools/game_checks holds
- * each adapter against the game's code (fields.inc).
+ * frame's words where the game's code points them.
  *
  * The x87's arithmetic is the game's to the bit: each product and sum through
- * cpu.fpu under the control word as it is, a value stored as a float where
+ * single precision, a value stored as a float where
  * the code stores one, the compares leaving the status word as the code's. */
 namespace nfs3hp
 {
 namespace port
 {
-/* Other files' adapters, declared by their type: tools/game_checks/generate.py
- * finds a native's file by its `void name(` definition, which a declaration
- * written so would be taken for. */
-using Adapter = void(App* app, CPU& cpu);
-/* port_sound_effects.cpp's menu click (0x4181d0). */
-Adapter playMenuEffect;
-
-namespace shapes
-{
-/* port_shapes.cpp's, called as the game's code calls them: a menu shape by
- * name, its textures made, its size, an art record drawn, a shape drawn. */
-Adapter shapeByName, artShapeTextures, shapeSize, drawArtShape, drawShape;  // 0x4d5db0, 0x4d6390, 0x4d66f0, 0x4d7160, 0x4d7990
-}  // namespace shapes
-
 namespace fields
 {
 
@@ -78,6 +79,15 @@ namespace
 {
 
 using Float = x86::Float;
+
+/* What an fcom leaves in the status word (c3, c2 and c0 of the x87's), as fp::compare gives it. */
+struct FpuStatus
+{
+    x86::reg16 word = 0;
+    void set(const Float& a, const Float& b) { word = fp::compare(a, b); }
+    bool c0() const { return (word & 0x100) != 0; }
+    bool c3() const { return (word & 0x4000) != 0; }
+};
 
 /* ---- The game's records ---- */
 
@@ -261,26 +271,26 @@ constexpr reg32 kNoCarText = 0x537690;
  * (placed, in a box, the line under it), the car records', the runtime's,
  * EA's memory, the text's height, the render state, the clippers. */
 constexpr reg32 kShownNow = 0x44a660, kFindItem = 0x442a40, kMenuNamed = 0x44aeb0, kItemChanged = 0x44a470;
-constexpr reg32 kColourSetState = 0x449df0, kQuestion = 0x4446d0;
+constexpr reg32 kColourSetState = 0x449df0;
 constexpr reg32 kSetPointer = 0x49bfc0, kPointerInBox = 0x49c1f0, kLineAtPointer = 0x49c1c0;
-constexpr reg32 kCarRecord = 0x439a50, kFecText = 0x439af0, kCarFecPath = 0x43b680, kWriteCarFec = 0x43b4f0;
-constexpr reg32 kRgbToHsv = 0x49c880, kSaveSettings = 0x4dcbc0;
+constexpr reg32 kCarRecord = 0x439a50;
+constexpr reg32 kSaveSettings = 0x4dcbc0;
 constexpr reg32 kSprintf = 0x4df690, kSscanf = 0x4f0548, kStrncpy = 0x4e0e30, kMemset = 0x4e0640;
 constexpr reg32 kAllocate = 0x4e1620, kFree = 0x4e1890;
 constexpr reg32 kFontHeight = 0x4f0840, kTextExtent = 0x4f0c90, kCursorQuad = 0x4d1120;
 constexpr reg32 kRenderState = 0x431900, kClipTriangle = 0x4c11b0, kClipQuad = 0x4c12e0;
 
 /* The port's own, called as the game's code calls their addresses. */
-constexpr guest::Native kSelectFont = text::selectFont, kTextWidth = text::textWidth;         // 0x452100, 0x452020
-constexpr guest::Native kDrawMenuText = text::drawMenuText, kDrawTextAt = text::drawTextAt;   // 0x452190, 0x451590
-constexpr guest::Native kSetTextColour = text::setTextColour, kLanguageText = text::languageText;  // 0x4513c0, 0x4d1850
-constexpr guest::Native kFlushFonts = text::flushFonts;  // 0x4d1340
-constexpr guest::Native kToScreenX = text::toScreenX, kToScreenY = text::toScreenY;  // 0x451400, 0x451440
-constexpr guest::Native kGradient = draw2d::gradientRectangle, kFilled = draw2d::filledRectangle;  // 0x4d8550, 0x4d8910
-constexpr guest::Native kFrame = draw2d::frame, kFieldBox = draw2d::drawFieldBox;  // 0x4d8930, 0x4d8ac0
-constexpr guest::Native kAccented = draw2d::accentedCharacter, kScreenCharacter = draw2d::drawScreenCharacter;
-constexpr guest::Native kShapeByName = shapes::shapeByName, kDrawShape = shapes::drawShape;  // 0x4d5db0, 0x4d7990
-constexpr guest::Native kMenuClick = playMenuEffect;  // 0x4181d0
+constexpr reg32 kSelectFont = 0x452100, kTextWidth = 0x452020;  // 0x452100, 0x452020
+constexpr reg32 kDrawMenuText = 0x452190, kDrawTextAt = 0x451590;  // 0x452190, 0x451590
+constexpr reg32 kSetTextColour = 0x4513c0, kLanguageText = 0x4d1850;  // 0x4513c0, 0x4d1850
+constexpr reg32 kFlushFonts = 0x4d1340;  // 0x4d1340
+constexpr reg32 kToScreenX = 0x451400, kToScreenY = 0x451440;  // 0x451400, 0x451440
+constexpr reg32 kGradient = 0x4d8550, kFilled = 0x4d8910;  // 0x4d8550, 0x4d8910
+constexpr reg32 kFrame = 0x4d8930, kFieldBox = 0x4d8ac0;  // 0x4d8930, 0x4d8ac0
+constexpr reg32 kAccented = 0x4d9320, kScreenCharacter = 0x4d95c0;
+constexpr reg32 kShapeByName = 0x4d5db0, kDrawShape = 0x4d7990;  // 0x4d5db0, 0x4d7990
+constexpr reg32 kMenuClick = 0x4181d0;  // 0x4181d0
 
 constexpr reg32 kEnter = 0xd, kEscape = 0x1b, kBackspace = 8, kDelete = 0x5300;
 constexpr reg32 kUp = 0x4800, kDown = 0x5000, kLeft = 0x4b00, kRight = 0x4d00;
@@ -409,38 +419,153 @@ reg32 valueOf(const std::optional<T>& value)
  * loaded as the call by address loads them (`a`) and kept after it, as the callee keeps them;
  * `result` its eax; false when the game stopped in it. */
 template <reg32 Address, auto Core, typename... A>
-bool callCore(App* app, CPU& cpu, reg32 esp, Args a, reg32& result, A... args)
+bool callCore(App* app, CPU& cpu, reg32 esp, reg32& result, A... args)
 {
     cpu.esp = esp;
-    cpu.eax = a.eax;
-    cpu.edx = a.edx;
-    cpu.ebx = a.ebx;
-    cpu.ecx = a.ecx;
     const auto value = guest::direct<Address, Core>(app, cpu, args...);
     if (cpu.terminate)
         return false;
     result = valueOf(value);
-    cpu.eax = result;
     return true;
 }
 
 /* The same for a core whose answer is no eax (the render state's): `result` left as it is. */
 template <reg32 Address, auto Core, typename... A>
-bool callCoreNoEax(App* app, CPU& cpu, reg32 esp, Args a, A... args)
+bool callCoreNoEax(App* app, CPU& cpu, reg32 esp, A... args)
 {
     cpu.esp = esp;
-    cpu.eax = a.eax;
-    cpu.edx = a.edx;
-    cpu.ebx = a.ebx;
-    cpu.ecx = a.ecx;
     guest::direct<Address, Core>(app, cpu, args...);
     return !cpu.terminate;
 }
 
-/* The menu loop's: whether `item`, of widget `type`, is on the screen shown. */
-bool shownNow(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 type, reg32& r, reg32 ebx = 0, reg32 ecx = 0)
+/* The typed cores called as C++ where the game's code calls their addresses, from `esp` (the call's frame
+ * base esp - 4 - 4 * Words): their answer in `*result` when given; false when the game stopped in one. */
+template <class T>
+struct is_optional : std::false_type
 {
-    return callGame(app, cpu, esp, kShownNow, {item, type, ebx, ecx}, {}, r);
+};
+template <class T>
+struct is_optional<std::optional<T>> : std::true_type
+{
+};
+
+template <class F>
+bool runCore(CPU& cpu, reg32 esp, reg32* result, F f)
+{
+    cpu.esp = esp;
+    if constexpr (std::is_void_v<decltype(f())>)
+    {
+        f();
+        return !cpu.terminate;
+    }
+    else
+    {
+        const auto v = f();
+        if (cpu.terminate)
+            return false;
+        if constexpr (is_optional<std::decay_t<decltype(v)>>::value)
+        {
+            if (!v)
+                return false;
+            if (result != nullptr)
+                *result = reg32(*v);
+        }
+        else if (result != nullptr)
+            *result = reg32(v);
+        return true;
+    }
+}
+
+template <reg32 Address, auto Core, unsigned Words, typename... A>
+bool coreAt(App* app, CPU& cpu, reg32 esp, reg32* result, A... args)
+{
+    return runCore(cpu, esp, result,
+                   [&] { return guest::direct<Address, Core>(app, cpu, reg32(esp - 4 - 4 * Words), args...); });
+}
+
+template <reg32 Address, auto Core, typename... A>
+bool plainAt(App* app, CPU& cpu, reg32 esp, reg32* result, A... args)
+{
+    return runCore(cpu, esp, result, [&] { return guest::direct<Address, Core>(app, cpu, args...); });
+}
+
+/* A core that leaves eax as it came: `*result` is `eax` after it. */
+template <reg32 Address, auto Core, typename... A>
+bool keepAt(App* app, CPU& cpu, reg32 esp, reg32* result, reg32 eax, A... args)
+{
+    if (result != nullptr)
+        *result = eax;
+    return runCore(cpu, esp, nullptr, [&] { return guest::direct<Address, Core>(app, cpu, args...); });
+}
+
+/* A box core whose four colours the game's code pushes. */
+template <reg32 Address, auto Core>
+bool boxedAt(App* app, CPU& cpu, reg32 esp, reg32* result, reg32 x, reg32 y, reg32 width, reg32 height, reg32 c0,
+             reg32 c1, reg32 c2, reg32 c3)
+{
+    const uint32_t colours[4] = {c0, c1, c2, c3};
+    return coreAt<Address, Core, 4>(app, cpu, esp, result, x, y, width, height, static_cast<const uint32_t*>(colours));
+}
+
+/* The same, called by name, as C++. */
+template <auto Core, unsigned Words, typename... A>
+bool namedAt(App* app, CPU& cpu, reg32 esp, reg32* result, A... args)
+{
+    return runCore(cpu, esp, result, [&] {
+        const auto v = Core(app, cpu, reg32(esp - 4 - 4 * Words), args...);
+        cpu.esp = esp;
+        return v;
+    });
+}
+
+template <auto Core, typename... A>
+auto callNamedCore(App* app, CPU& cpu, A... args)
+{
+    if constexpr (std::is_invocable_v<decltype(Core), App*, CPU&, A...>)
+        return Core(app, cpu, args...);
+    else
+        return Core(app, args...);
+}
+
+template <auto Core, typename... A>
+bool namedPlainAt(App* app, CPU& cpu, reg32 esp, reg32* result, A... args)
+{
+    return runCore(cpu, esp, result, [&] { return callNamedCore<Core>(app, cpu, args...); });
+}
+
+template <auto Core, typename... A>
+bool keepNamedAt(App* app, CPU& cpu, reg32 esp, reg32* result, reg32 eax, A... args)
+{
+    if (result != nullptr)
+        *result = eax;
+    return runCore(cpu, esp, nullptr, [&] { return callNamedCore<Core>(app, cpu, args...); });
+}
+
+template <auto Core>
+bool boxedNamedAt(App* app, CPU& cpu, reg32 esp, reg32* result, reg32 x, reg32 y, reg32 width, reg32 height, reg32 c0,
+                  reg32 c1, reg32 c2, reg32 c3)
+{
+    const uint32_t colours[4] = {c0, c1, c2, c3};
+    return namedAt<Core, 4>(app, cpu, esp, result, x, y, width, height, static_cast<const uint32_t*>(colours));
+}
+
+/* 0x4d1850, by name (esp restored). */
+bool lineAt(App* app, CPU& cpu, reg32 esp, reg32* result, int32_t number, reg32 edx)
+{
+    cpu.esp = esp;
+    const auto v = text::lineText(app, cpu, esp - 4, number, edx);
+    cpu.esp = esp;
+    if (!v)
+        return false;
+    if (result != nullptr)
+        *result = reg32(*v);
+    return true;
+}
+
+/* The menu loop's: whether `item`, of widget `type`, is on the screen shown. */
+bool shownNow(App* app, CPU& cpu, reg32 esp, reg32 item, reg32& r)
+{
+    return plainAt<kShownNow, frontend::loop::shownNow>(app, cpu, esp, &r, item);
 }
 
 /* sprintf into `buffer`, its format's words after it. */
@@ -451,13 +576,14 @@ bool format(App* app, CPU& cpu, reg32 esp, std::initializer_list<reg32> words)
     for (const reg32* v = w + 2; v != words.end(); ++v)
         more.word[more.count++] = *v;
     reg32 ignored;
-    return callCore<kSprintf, watcom::clib::sprintf>(app, cpu, esp, {}, ignored, w[0], w[1], more);
+    return callCore<kSprintf, watcom::clib::sprintf>(app, cpu, esp, ignored, w[0], w[1], more);
 }
 
 /* The dialog's question, its text at kDialogText: an OK. */
 bool question(App* app, CPU& cpu, reg32 esp, reg32& r)
 {
-    return callGame(app, cpu, esp, kQuestion, {2, kDialogLines, 1, kDialogButtons}, {0, 1, 0, 0}, r);
+    return callCore<0x4446d0, frontend::dialogs::openQuestion>(app, cpu, esp - 4 * 4, r, 2u, kDialogLines, 1u,
+                                                               kDialogButtons, 0u, 1u, 0u, 0u);
 }
 
 /* The clip code of the corner at `at`: 0x10 behind the eye or past the far
@@ -511,7 +637,7 @@ Result colourRgb(App* app, CPU& cpu, reg32 esp, reg32 car, int32_t colour, int32
 
 bool carRecordOf(App* app, CPU& cpu, reg32 esp, reg32 car, reg32& rec)
 {
-    return callCore<kCarRecord, load::recordAt>(app, cpu, esp, {car}, rec, car);
+    return callCore<kCarRecord, load::recordAt>(app, cpu, esp, rec, car);
 }
 
 }  // namespace
@@ -520,7 +646,6 @@ bool carRecordOf(App* app, CPU& cpu, reg32 esp, reg32 car, reg32& rec)
 Result colourCount(App* app, CPU& cpu, reg32 esp, reg32 car)
 {
     const reg32 at = esp - 4;
-    HeldEbp held(cpu, at);
     reg32 rec;
     if (!carRecordOf(app, cpu, at, car, rec))
         return {};
@@ -541,11 +666,16 @@ Result customColour(App* app, CPU& cpu, reg32 esp, reg32 car)
 
 }  // namespace
 
+/* 0x439780's core: car `car`'s custom colour's number; esp the frame base. */
+Result customColourOf(App* app, CPU& cpu, reg32 esp, reg32 car)
+{
+    return customColour(app, cpu, esp, car);
+}
+
 /* 0x439790's: the colour player `player` chose for it, -1 for no player. */
 Result chosenColour(App* app, CPU& cpu, reg32 esp, reg32 car, int32_t player)
 {
     const reg32 at = esp - 4;
-    HeldEbp held(cpu, at);
     reg32 rec;
     if (!carRecordOf(app, cpu, at, car, rec))
         return {};
@@ -558,7 +688,6 @@ Result chosenColour(App* app, CPU& cpu, reg32 esp, reg32 car, int32_t player)
 Result carTextOf(App* app, CPU& cpu, reg32 esp, reg32 car, int32_t n)
 {
     const reg32 at = esp - 8;
-    HeldEbp held(cpu, at);
     reg32 rec;
     if (!carRecordOf(app, cpu, at, car, rec))
         return {};
@@ -568,7 +697,7 @@ Result carTextOf(App* app, CPU& cpu, reg32 esp, reg32 car, int32_t n)
     if (n > last)
         return int32_t(kNoCarText);
     reg32 r;
-    if (!callGame(app, cpu, at, kFecText, {rec + 4, reg32(n), 0, reg32(last)}, {}, r))
+    if (!callCore<0x439af0, load::fecTextOf>(app, cpu, at, r, rec + 4, reg32(n)))
         return {};
     return int32_t(r);
 }
@@ -586,10 +715,9 @@ Result colourName(App* app, CPU& cpu, reg32 esp, reg32 car, int32_t colour)
 Result colourSaved(App* app, CPU& cpu, reg32 esp, reg32 car)
 {
     const reg32 ebp = esp - 0x10, at = ebp - 0x12c, path = ebp - 0x12c;
-    HeldEbp held(cpu, ebp);
     reg32 rec, r;
-    if (!carRecordOf(app, cpu, at, car, rec) || !callGame(app, cpu, at, kCarFecPath, {car, path, rec, car}, {}, r)
-        || !callGame(app, cpu, at, kWriteCarFec, {path, rec, rec, car}, {}, r))
+    if (!carRecordOf(app, cpu, at, car, rec) || !callCore<0x43b680, load::fecPathOf>(app, cpu, at, r, car, path)
+        || !callCore<0x43b4f0, load::fecWritten>(app, cpu, at, r, path, rec))
         return {};
     return r == 0 ? 0 : -1;
 }
@@ -601,7 +729,6 @@ Result colourSaved(App* app, CPU& cpu, reg32 esp, reg32 car)
 Result colourSet(App* app, CPU& cpu, reg32 esp, reg32 car, int32_t player, int32_t colour)
 {
     const reg32 at = esp - 0xc;
-    HeldEbp held(cpu, at);
     reg32 rec;
     if (!carRecordOf(app, cpu, at, car, rec))
         return {};
@@ -623,7 +750,6 @@ Result colourRgb(App* app, CPU& cpu, reg32 esp, reg32 car, int32_t colour, int32
                  reg32 out2, reg32 out3)
 {
     const reg32 at = esp - 0xc;
-    HeldEbp held(cpu, at);
     reg32 rec;
     if (!carRecordOf(app, cpu, at, car, rec))
         return {};
@@ -650,13 +776,18 @@ Result colourRgb(App* app, CPU& cpu, reg32 esp, reg32 car, int32_t colour, int32
 
 }  // namespace
 
+Result carColourBytes(App* app, CPU& cpu, reg32 esp, reg32 car, int32_t colour, int32_t player, reg32 out0, reg32 out1,
+                      reg32 out2, reg32 out3)
+{
+    return colourRgb(app, cpu, esp, car, colour, player, out0, out1, out2, out3);
+}
+
 /* 0x4398c0's: player `player`'s custom colour of car `car` set, saved: 0 or
  * -1. */
 Result customColourSet(App* app, CPU& cpu, reg32 esp, reg32 car, int32_t player, uint8_t b0, uint8_t b1, uint8_t b2,
                        uint8_t b3)
 {
     const reg32 at = esp - 8;
-    HeldEbp held(cpu, at);
     reg32 rec;
     if (!carRecordOf(app, cpu, at, car, rec))
         return {};
@@ -685,7 +816,6 @@ Result customColoursRefreshed(App* app, CPU& cpu, reg32 esp, reg32 eax)
     if (gameSettings(app).replayMode != 0)
         return int32_t(eax);
     const reg32 at = esp - 0x14, inner = at - 0xc - 4;
-    HeldEbp held(cpu, at);
     const Result c0 = chosenColour(app, cpu, inner, gameSettings(app).players[0].car, 0);
     if (!c0 || !colourRgb(app, cpu, inner, gameSettings(app).players[0].car, *c0, 0, SETTINGS_ADDRESS(players[0].colour), SETTINGS_ADDRESS(players[0].colour[1]), SETTINGS_ADDRESS(players[0].colour[2]), SETTINGS_ADDRESS(players[0].colour[3])))
         return {};
@@ -696,7 +826,7 @@ Result customColoursRefreshed(App* app, CPU& cpu, reg32 esp, reg32 eax)
     if (!r1)
         return {};
     reg32 r;
-    if (!callGame(app, cpu, at, kSaveSettings, {reg32(*r1), reg32(*c1), 1, SETTINGS_ADDRESS(players[1].colour)}, {}, r))
+    if (!plainAt<kSaveSettings, frontend::loada::tuningForPlayers>(app, cpu, at, &r))
         return {};
     return int32_t(r);
 }
@@ -709,9 +839,8 @@ namespace
 Result wheelFromCar(App* app, CPU& cpu, reg32 esp, reg32 item)
 {
     const reg32 ebp = esp - 0x18, at = ebp - 0x30;
-    HeldEbp held(cpu, ebp);
     reg32 r;
-    if (!shownNow(app, cpu, at, item, 0x13, r))
+    if (!shownNow(app, cpu, at, item, r))
         return {};
     if (r == 0)
         return 0;
@@ -724,7 +853,7 @@ Result wheelFromCar(App* app, CPU& cpu, reg32 esp, reg32 item)
     setWord(app, ebp - 0x2c, byteAt(app, ebp - 0x10));
     setWord(app, ebp - 0x28, byteAt(app, ebp - 0xc));
     setWord(app, ebp - 0x24, 0xff);
-    if (!callGame(app, cpu, at, kRgbToHsv, {ebp - 0x30, ebp - 0x20, reg32(player), 0xff}, {}, r))
+    if (!callCore<0x49c880, load::colourToHsv>(app, cpu, at, r, ebp - 0x30, ebp - 0x20))
         return {};
     for (reg32 i = 0; i < 3; ++i)
     {
@@ -741,15 +870,14 @@ Result wheelFromCar(App* app, CPU& cpu, reg32 esp, reg32 item)
 Result wheelGiven(App* app, CPU& cpu, reg32 esp, reg32 item, int32_t player)
 {
     const reg32 at = esp - 0xc;
-    HeldEbp held(cpu, at);
     reg32 r;
-    if (!shownNow(app, cpu, at, item, 0x13, r, reg32(player), item))
+    if (!shownNow(app, cpu, at, item, r))
         return {};
     if (r == 0)
         return 0;
     setWord(app, item + 0x60, reg32(player));
     if (!wheelFromCar(app, cpu, at - 4, item)
-        || !callGame(app, cpu, at, kItemChanged, {item, reg32(player), reg32(player), item}, {}, r))
+        || !gameCall(app, cpu, at, kItemChanged, {item, reg32(player), reg32(player), item}, {}, r))
         return {};
     const uint8_t state = uint8_t(byteAt(app, item + 5) & 0xeb);
     setByte(app, item + 5, uint8_t(state | 4));
@@ -759,46 +887,46 @@ Result wheelGiven(App* app, CPU& cpu, reg32 esp, reg32 item, int32_t player)
 }  // namespace
 
 /* 0x439760: eax a car: how many colours it has. */
-void carColourCount(App* app, CPU& cpu)
+x86::reg32 carColourCount(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, colourCount(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, colourCount(app, cpu, e.esp, e.eax));
 }
 
 /* 0x439780: eax a car: its custom colour's number. */
-void carCustomColour(App* app, CPU& cpu)
+x86::reg32 carCustomColour(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, customColour(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, customColour(app, cpu, e.esp, e.eax));
 }
 
 /* 0x439790: eax a car, edx a player: the colour the player chose. */
-void carColour(App* app, CPU& cpu)
+x86::reg32 carColour(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, chosenColour(app, cpu, e.esp, e.eax, int32_t(e.edx)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, chosenColour(app, cpu, e.esp, e.eax, int32_t(e.edx)));
 }
 
 /* 0x4397c0: eax a car, edx a colour: its name. */
-void carColourName(App* app, CPU& cpu)
+x86::reg32 carColourName(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, colourName(app, cpu, e.esp, e.eax, int32_t(e.edx)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, colourName(app, cpu, e.esp, e.eax, int32_t(e.edx)));
 }
 
 /* 0x4397d0: eax a car, edx a player, ebx a colour: set and saved. */
-void setCarColour(App* app, CPU& cpu)
+x86::reg32 setCarColour(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, colourSet(app, cpu, e.esp, e.eax, int32_t(e.edx), int32_t(e.ebx)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, colourSet(app, cpu, e.esp, e.eax, int32_t(e.edx), int32_t(e.ebx)));
 }
 
 /* 0x439810 (stdcall 0xc): eax a car, edx a colour, ebx a player: its bytes to
  * [ecx] and the stack's three pointers. */
-void carColourRgb(App* app, CPU& cpu)
+x86::reg32 carColourRgb(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu,
+    const Entry e(cpu, args);
+    return e.finish(cpu, args,
              colourRgb(app, cpu, e.esp, e.eax, int32_t(e.edx), int32_t(e.ebx), e.ecx, e.arg(app, 0), e.arg(app, 1),
                        e.arg(app, 2)),
              0xc);
@@ -806,48 +934,48 @@ void carColourRgb(App* app, CPU& cpu)
 
 /* 0x4398c0 (stdcall 8): eax a car, edx a player: its custom colour bl, cl and
  * the stack's two bytes. */
-void setCarCustomColour(App* app, CPU& cpu)
+x86::reg32 setCarCustomColour(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu,
+    const Entry e(cpu, args);
+    return e.finish(cpu, args,
              customColourSet(app, cpu, e.esp, e.eax, int32_t(e.edx), uint8_t(e.ebx), uint8_t(e.ecx),
                              uint8_t(e.arg(app, 0)), uint8_t(e.arg(app, 1))),
              8);
 }
 
 /* 0x439ab0: eax a car, edx a number: its text. */
-void carText(App* app, CPU& cpu)
+x86::reg32 carText(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, carTextOf(app, cpu, e.esp, e.eax, int32_t(e.edx)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, carTextOf(app, cpu, e.esp, e.eax, int32_t(e.edx)));
 }
 
 /* 0x43b7f0: eax a car: its record saved. */
-void saveCarColours(App* app, CPU& cpu)
+x86::reg32 saveCarColours(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, colourSaved(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, colourSaved(app, cpu, e.esp, e.eax));
 }
 
 /* 0x43dbe0: the colour wheel eax from its car. */
-void wheelFromCarColour(App* app, CPU& cpu)
+x86::reg32 wheelFromCarColour(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, wheelFromCar(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, wheelFromCar(app, cpu, e.esp, e.eax));
 }
 
 /* 0x43dd50: the colour wheel eax given to player edx. */
-void wheelForPlayer(App* app, CPU& cpu)
+x86::reg32 wheelForPlayer(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, wheelGiven(app, cpu, e.esp, e.eax, int32_t(e.edx)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, wheelGiven(app, cpu, e.esp, e.eax, int32_t(e.edx)));
 }
 
 /* 0x472360: the custom colours taken into the settings. */
-void refreshCustomColours(App* app, CPU& cpu)
+x86::reg32 refreshCustomColours(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, customColoursRefreshed(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, customColoursRefreshed(app, cpu, e.esp, e.eax));
 }
 
 /* ======== A field's text and cursor ======== */
@@ -866,7 +994,7 @@ void cursorColourSet(App* app, reg32 colour)
 bool cursor3d(App* app, CPU& cpu, reg32 at, float x, int32_t y, int32_t shape, reg32 counted)
 {
     const int32_t whole = chopped<int32_t>(cpu, Float(x));
-    return callGame(app, cpu, at, kCursorQuad, {reg32(whole), reg32(y), 0, counted}, {bitsOf(ofInt(shape))});
+    return gameCall(app, cpu, at, kCursorQuad, {reg32(whole), reg32(y), 0, counted}, {bitsOf(ofInt(shape))});
 }
 
 /* 0x4d11f0's: text `text` in the 3D card's font at x, y, the cursor before
@@ -875,7 +1003,6 @@ Result cursorText3d(App* app, CPU& cpu, reg32 esp, reg32 text, int32_t x, int32_
                     reg32 show)
 {
     const reg32 ebp = esp - 0xc, at = ebp - 0x1c;
-    HeldEbp held(cpu, ebp);
     const reg32 colour = kTextColour(app) | 0xff000000;
     float place = ofInt(x);
     int32_t i = 0;
@@ -910,7 +1037,6 @@ Result cursorDrawn(App* app, CPU& cpu, reg32 esp, int32_t x, int32_t y, int32_t 
     if (kOverRace(app) != 0)
         return x;
     const reg32 at = esp - 0xc - 0x10;
-    HeldEbp held(cpu, esp - 0xc);
     const int32_t font = kScreenFont(app);
     const int32_t size = font == 0x24 ? 0x20 : font == 0x10 ? 0x1c : font == 0xd ? 0x18 : 0x10;
     // The corners: 0 at x, y, 1 right of it, 2 below that, 3 below 0.
@@ -939,11 +1065,11 @@ Result cursorDrawn(App* app, CPU& cpu, reg32 esp, int32_t x, int32_t y, int32_t 
     setWord(app, kQuad + 0x20, word(app, kQuad + 0x40));
     setFloat(app, kQuad + 0x44, bottom);
     reg32 r;
-    if (!callCoreNoEax<kRenderState, graphics::sendState>(app, cpu, at, {1, 0, reg32(width), word(app, kQuad + 0x40)},
+    if (!callCoreNoEax<kRenderState, graphics::sendState>(app, cpu, at,
                                                           reg32(1), reg32(0)))
         return {};
     markCorners(app, 4);
-    if (!callGame(app, cpu, at, kClipQuad, {kQuad, kQuad + 0x20, kQuad + 0x40, kQuad + 0x60}, {}, r))
+    if (!coreAt<kClipQuad, vertices::quadClippedAt, 0>(app, cpu, at, &r, kQuad, kQuad + 0x20, kQuad + 0x40, kQuad + 0x60))
         return {};
     for (const reg32 colour : {0x70u, 0x10u, 0x50u, 0x30u})
         setWord(app, kQuad + colour, 0xffffffff);
@@ -962,11 +1088,10 @@ Result cursorText(App* app, CPU& cpu, reg32 esp, reg32 text, int32_t x, int32_t 
         kNudge.set(app, 0);
         return 0;
     }
-    HeldEbp held(cpu, ebp);
     const reg32 colour = kScreenTextColour(app) | 0xff000000;
     const reg32 cursorColour = kCursorColour(app) | 0xff000000;
     reg32 r;
-    if (!callCoreNoEax<kRenderState, graphics::sendState>(app, cpu, at, {1, kFontTexture(app), reg32(y), 0}, reg32(1),
+    if (!callCoreNoEax<kRenderState, graphics::sendState>(app, cpu, at, reg32(1),
                                                           kFontTexture(app)))
         return {};
     int32_t place = x, i = 0;
@@ -978,7 +1103,7 @@ Result cursorText(App* app, CPU& cpu, reg32 esp, reg32 text, int32_t x, int32_t 
         reg32 index;
         if (kScreenFont(app) == 0x24)
         {
-            if (!callGame(app, cpu, at, kAccented, {c, c, reg32(y), 0}, {}, index))
+            if (!coreAt<0x4d9320, draw2d::accented, 0>(app, cpu, at, &index, reg32(c)))
                 return {};
         }
         else
@@ -987,9 +1112,9 @@ Result cursorText(App* app, CPU& cpu, reg32 esp, reg32 text, int32_t x, int32_t 
         if (i == cursor && show != 0
             && !cursorDrawn(app, cpu, at - 4 - 4, place, y, width, cursorColour, cursorColour))
             return {};
-        if (!callGame(app, cpu, at, kScreenCharacter,
-                      {byteAt(app, kGlyphU + index), byteAt(app, kGlyphV + index), reg32(place), reg32(y)},
-                      {w, byteAt(app, kGlyphHeight + index), colour, c, measure}, r))
+        if (!coreAt<0x4d95c0, draw2d::screenCharacter, 5>(
+                app, cpu, at, &r, int32_t(byteAt(app, kGlyphU + index)), int32_t(byteAt(app, kGlyphV + index)), place, y,
+                int32_t(w), int32_t(byteAt(app, kGlyphHeight + index)), colour, measure))
             return {};
         place = int32_t(reg32(place) + r);
     }
@@ -1007,12 +1132,11 @@ Result fieldText(App* app, CPU& cpu, reg32 esp, reg32 text, int32_t x, int32_t y
                  reg32 show)
 {
     const reg32 at = esp - 0xc;
-    HeldEbp held(cpu, at);
     if (kOverRace(app) != 0)
     {
         reg32 sx, sy;
-        if (!callGame(app, cpu, at, kToScreenX, {reg32(x), reg32(x), reg32(y), reg32(cursor)}, {}, sx)
-            || !callGame(app, cpu, at, kToScreenY, {reg32(y), sx, reg32(y), reg32(cursor)}, {}, sy))
+        if (!plainAt<0x451400, text::screenX>(app, cpu, at, &sx, reg32(x))
+            || !plainAt<0x451440, text::screenY>(app, cpu, at, &sy, reg32(y)))
             return {};
         const Result r = cursorText3d(app, cpu, at - 8 - 4, text, int32_t(sx), int32_t(sy), cursor, width, show);
         if (!r)
@@ -1020,7 +1144,7 @@ Result fieldText(App* app, CPU& cpu, reg32 esp, reg32 text, int32_t x, int32_t y
         if ((kMenuBits1(app) & 0x20) == 0)
             return r;
         reg32 f;
-        if (!callGame(app, cpu, at, kFlushFonts, {reg32(*r), sx, sy, reg32(cursor)}, {}, f))
+        if (!coreAt<0x4d1340, text::fontsDrawn, 0>(app, cpu, at, &f))
             return {};
         return int32_t(f);
     }
@@ -1035,24 +1159,23 @@ Result fieldLine(App* app, CPU& cpu, reg32 esp, reg32 text, int32_t x, int32_t y
                  reg32 colour, int32_t cursor, int32_t width, reg32 cursorColour, reg32 show)
 {
     const reg32 at = esp - 0xc - 4;
-    HeldEbp held(cpu, esp - 0xc);
     reg32 r;
-    if (!callGame(app, cpu, at, kSelectFont, {font, font, reg32(y), reg32(align)}, {}, r))
+    if (!keepNamedAt<text::selectFontOf>(app, cpu, at, &r, font, font))
         return {};
     if (align == 1 || align == 4 || align == 2 || align == 5)
     {
-        if (!callGame(app, cpu, at, kTextWidth, {text, font, reg32(y), reg32(align)}, {}, r))
+        if (!namedAt<text::menuTextWidth, 0>(app, cpu, at, &r, text, font))
             return {};
         x = int32_t(reg32(x) - reg32(align == 1 || align == 4 ? int32_t(r) : halved(int32_t(r))));
     }
     if (align > 2)
     {
-        if (!callGame(app, cpu, at, kSetTextColour, {8, font, reg32(y), reg32(align)}, {}, r)
-            || !callGame(app, cpu, at, kDrawTextAt, {text, reg32(x) + 1, reg32(y) + 1, reg32(align)}, {}, r))
+        if (!keepAt<0x4513c0, text::textColourSet>(app, cpu, at, &r, 8, 8)
+            || !coreAt<0x451590, text::textDrawnAt, 0>(app, cpu, at, &r, text, reg32(x) + 1, reg32(y) + 1))
             return {};
     }
     cursorColourSet(app, cursorColour);
-    if (!callGame(app, cpu, at, kSetTextColour, {colour, show, reg32(y), reg32(width)}, {}, r))
+    if (!keepAt<0x4513c0, text::textColourSet>(app, cpu, at, &r, colour, colour))
         return {};
     return fieldText(app, cpu, at - 8 - 4, text, x, y, cursor, width, show);
 }
@@ -1063,14 +1186,13 @@ Result fieldLine(App* app, CPU& cpu, reg32 esp, reg32 text, int32_t x, int32_t y
 Result spacedText(App* app, CPU& cpu, reg32 esp, reg32 text, int32_t x, int32_t y, int32_t font, reg32 edx)
 {
     const reg32 ebp = esp - 0xc, at = ebp - 0x20, character = ebp - 0x10;
-    HeldEbp held(cpu, ebp);
     setWord(app, ebp - 0x18, text);
     setHalf(app, ebp - 0xc, x);
     setHalf(app, ebp - 8, font);
     const int32_t font16 = half(app, ebp - 8);
     reg32 r;
-    if (!callGame(app, cpu, at, kSelectFont, {reg32(font16), edx, reg32(y), reg32(font)}, {}, r)
-        || !callGame(app, cpu, at, kFontHeight, {reg32(font16), edx, reg32(y), reg32(font)}, {}, r))
+    if (!keepNamedAt<text::selectFontOf>(app, cpu, at, &r, reg32(font16), reg32(font16))
+        || !plainAt<kFontHeight, frontend::wata::textDepth>(app, cpu, at, &r))
         return {};
     const int32_t spacing = chopped<int32_t>(cpu, fp::mul(Float(x86::sreg32(r)), Float(kSpacing(app))));
     setWord(app, ebp - 0x14, r);
@@ -1083,28 +1205,25 @@ Result spacedText(App* app, CPU& cpu, reg32 esp, reg32 text, int32_t x, int32_t 
         y = int32_t(int16_t(y)) - halved(int32_t(half(app, ebp - 4)) * spacing);
     for (int16_t i = 0; int32_t(i) < int32_t(half(app, ebp - 4)); ++i)
     {
-        if (!callCore<kStrncpy, watcom::clib::strncpy>(app, cpu, at, {character, word(app, ebp - 0x18), 1, reg32(i)}, r,
+        if (!callCore<kStrncpy, watcom::clib::strncpy>(app, cpu, at, r,
                                                        character, word(app, ebp - 0x18), reg32(1)))
             return {};
         // The font as the code takes it, before the character is written.
         const reg32 fontNow = reg32(int32_t(half(app, ebp - 8)));
         if (!format(app, cpu, at, {character, kCharSpace, byteAt(app, word(app, ebp - 0x18) + reg32(int32_t(i)))})
-            || !callGame(app, cpu, at, kTextWidth, {character, fontNow, 1, reg32(i)}, {}, r))
+            || !namedAt<text::menuTextWidth, 0>(app, cpu, at, &r, character, fontNow))
             return {};
         const int32_t left = int32_t(half(app, ebp - 0xc)) - halved(int32_t(r));
         setWord(app, ebp - 0x20, reg32(left));
         if (half(app, esp + 4) > 2)
         {
             const int32_t down = spacing * int32_t(i);
-            if (!callGame(app, cpu, at, kSetTextColour, {8, reg32(down), reg32(spacing), reg32(i)}, {}, r)
-                || !callGame(app, cpu, at, kDrawTextAt,
-                             {character, reg32(left) + 1, reg32(int32_t(int16_t(y)) + down) + 1, reg32(i)}, {}, r))
+            if (!keepAt<0x4513c0, text::textColourSet>(app, cpu, at, &r, 8, 8)
+                || !coreAt<0x451590, text::textDrawnAt, 0>(app, cpu, at, &r, character, reg32(left) + 1, reg32(int32_t(int16_t(y)) + down) + 1))
                 return {};
         }
-        if (!callGame(app, cpu, at, kSetTextColour, {word(app, esp + 8), reg32(left), reg32(spacing), reg32(i)}, {}, r)
-            || !callGame(app, cpu, at, kDrawTextAt,
-                         {character, reg32(left), reg32(int32_t(int16_t(y)) + int32_t(i) * spacing), reg32(i)}, {},
-                         r))
+        if (!keepAt<0x4513c0, text::textColourSet>(app, cpu, at, &r, word(app, esp + 8), word(app, esp + 8))
+            || !coreAt<0x451590, text::textDrawnAt, 0>(app, cpu, at, &r, character, reg32(left), reg32(int32_t(int16_t(y)) + int32_t(i) * spacing)))
             return {};
     }
     return half(app, ebp - 4);
@@ -1113,19 +1232,19 @@ Result spacedText(App* app, CPU& cpu, reg32 esp, reg32 text, int32_t x, int32_t 
 }  // namespace
 
 /* 0x4513e0: the cursor's colour, eax. */
-void setCursorColour(App* app, CPU& cpu)
+x86::reg32 setCursorColour(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     cursorColourSet(app, e.eax);
-    e.back(cpu, e.eax);
+    return e.back(cpu, args, e.eax);
 }
 
 /* 0x4515e0 (stdcall 8): text eax at edx, ebx, the cursor before character
  * ecx, its width and whether it shows the stack's words. */
-void drawFieldText(App* app, CPU& cpu)
+x86::reg32 drawFieldText(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu,
+    const Entry e(cpu, args);
+    return e.finish(cpu, args,
              fieldText(app, cpu, e.esp, e.eax, int32_t(e.edx), int32_t(e.ebx), int32_t(e.ecx),
                        int32_t(e.arg(app, 0)), e.arg(app, 1)),
              8);
@@ -1134,10 +1253,10 @@ void drawFieldText(App* app, CPU& cpu)
 /* 0x452220 (stdcall 0x18): text eax in font ecx at edx, ebx; the stack's its
  * alignment, colour, cursor, the cursor's width, its colour, whether it
  * shows. */
-void drawFieldLine(App* app, CPU& cpu)
+x86::reg32 drawFieldLine(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu,
+    const Entry e(cpu, args);
+    return e.finish(cpu, args,
              fieldLine(app, cpu, e.esp, e.eax, int32_t(e.edx), int32_t(e.ebx), e.ecx, int32_t(e.arg(app, 0)),
                        e.arg(app, 1), int32_t(e.arg(app, 2)), int32_t(e.arg(app, 3)), e.arg(app, 4), e.arg(app, 5)),
              0x18);
@@ -1145,22 +1264,23 @@ void drawFieldLine(App* app, CPU& cpu)
 
 /* 0x4522c0 (stdcall 8): text eax in font cx a character a line at dx, ebx;
  * its alignment (a word) and colour the stack's. */
-void drawSpacedText(App* app, CPU& cpu)
+x86::reg32 drawSpacedText(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     pushed(app, e.esp, {e.esi, e.edi, e.ebp});
     const Result r = spacedText(app, cpu, e.esp, e.eax, int32_t(e.edx), int32_t(e.ebx), int32_t(e.ecx), e.edx);
-    e.finish(cpu, r, 8);
+    const reg32 left = e.finish(cpu, args, r, 8);
     if (r)
-        popped(app, e.esp, {&cpu.esi, &cpu.edi, &cpu.ebp});
+        popped(app, e.esp, {&args.esi, &args.edi, &args.ebp});
+    return left;
 }
 
 /* 0x4d11f0 (stdcall 8): text eax in the 3D card's font at edx, ebx, the
  * cursor before character ecx where the stack's second word, of the first. */
-void drawCursorText3d(App* app, CPU& cpu)
+x86::reg32 drawCursorText3d(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu,
+    const Entry e(cpu, args);
+    return e.finish(cpu, args,
              cursorText3d(app, cpu, e.esp, e.eax, int32_t(e.edx), int32_t(e.ebx), int32_t(e.ecx),
                           int32_t(e.arg(app, 0)), e.arg(app, 1)),
              8);
@@ -1168,20 +1288,20 @@ void drawCursorText3d(App* app, CPU& cpu)
 
 /* 0x4da560 (stdcall 4): the 2D screens' cursor at eax, edx, ebx wide, in ecx
  * and the stack's colour. */
-void drawCursor(App* app, CPU& cpu)
+x86::reg32 drawCursor(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, cursorDrawn(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx), int32_t(e.ebx), e.ecx, e.arg(app, 0)),
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, cursorDrawn(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx), int32_t(e.ebx), e.ecx, e.arg(app, 0)),
              4);
 }
 
 /* 0x4da8c0 (stdcall 0xc): text eax on a 2D screen at edx, ebx (ecx: only
  * measured), the cursor before the stack's character, its width, whether
  * it shows. */
-void drawCursorText(App* app, CPU& cpu)
+x86::reg32 drawCursorText(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu,
+    const Entry e(cpu, args);
+    return e.finish(cpu, args,
              cursorText(app, cpu, e.esp, e.eax, int32_t(e.edx), int32_t(e.ebx), e.ecx, int32_t(e.arg(app, 0)),
                         int32_t(e.arg(app, 1)), e.arg(app, 2)),
              0xc);
@@ -1204,16 +1324,15 @@ Result listLaidOut(App* app, CPU& cpu, reg32 esp, reg32 item);
 Result listWidth(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 edx)
 {
     const reg32 ebp = esp - 0x14, at = ebp - 0x100, text = ebp - 0x100;
-    HeldEbp held(cpu, ebp);
     reg32 r;
-    if (!callGame(app, cpu, at, kLanguageText, {0x2b, edx, 0, item}, {}, r) || !format(app, cpu, at, {text, kEllipsis, r})
-        || !callGame(app, cpu, at, kTextWidth, {text, 0x12, 0, item}, {}, r))
+    if (!lineAt(app, cpu, at, &r, 0x2b, edx) || !format(app, cpu, at, {text, kEllipsis, r})
+        || !namedAt<text::menuTextWidth, 0>(app, cpu, at, &r, text, 0x12))
         return {};
     colourList(app, item).boxWidth = int16_t(r);
     for (int32_t i = 0; i < colourList(app, item).count; ++i)
     {
         const Result name = colourName(app, cpu, at - 4, word(app, colourList(app, item).car), i);
-        if (!name || !callGame(app, cpu, at, kTextWidth, {reg32(*name), 0x12, reg32(i), item}, {}, r))
+        if (!name || !namedAt<text::menuTextWidth, 0>(app, cpu, at, &r, reg32(*name), 0x12))
             return {};
         if (int32_t(r) > colourList(app, item).boxWidth)
             colourList(app, item).boxWidth = int16_t(r);
@@ -1231,7 +1350,6 @@ Result listRefreshed(App* app, CPU& cpu, reg32 esp, reg32 item)
     setByte(app, ebp - 8, 0xff);
     if (item == 0)
         return 0;
-    HeldEbp held(cpu, ebp);
     const int32_t player = colourList(app, item).player != 0 ? 1 : 0;
     const reg32 car = player != 0 ? SETTINGS_ADDRESS(players[1].car) : SETTINGS_ADDRESS(players[0].car);
     reg32 rec;
@@ -1265,7 +1383,7 @@ namespace
 Result framed(App* app, CPU& cpu, reg32 esp, reg32 x, reg32 y, reg32 width, reg32 height, reg32 colour)
 {
     reg32 r;
-    if (!callGame(app, cpu, esp - 8, kFrame, {x, y, width, height}, {colour}, r))
+    if (!namedAt<draw2d::outline, 1>(app, cpu, esp - 8, &r, x, y, width, height, colour))
         return {};
     return int32_t(r);
 }
@@ -1277,7 +1395,6 @@ Result colourLine(App* app, CPU& cpu, reg32 esp, reg32 item, int32_t colour, int
                   reg32 swatch)
 {
     const reg32 ebp = esp - 0xc, at = ebp - 0x11c, text = ebp - 0x11c;
-    HeldEbp held(cpu, ebp);
     reg32 r, textColour;
     if (swatch != 0)
     {
@@ -1286,7 +1403,7 @@ Result colourLine(App* app, CPU& cpu, reg32 esp, reg32 item, int32_t colour, int
             return {};
         const reg32 argb = 0xff000000 | reg32(byteAt(app, ebp - 0xc)) << 16 | reg32(byteAt(app, ebp - 8)) << 8
                            | byteAt(app, ebp - 4);
-        if (!callGame(app, cpu, at, kFilled, {reg32(x), reg32(y) + 1, 0x10, 0xd}, {argb}, r))
+        if (!namedAt<draw2d::filled, 1>(app, cpu, at, &r, reg32(x), reg32(y) + 1, 0x10, 0xd, argb))
             return {};
         const Result f = framed(app, cpu, at - 4 - 4, reg32(x), reg32(y) + 1, 0x10, 0xc, lit != 0 ? 0xffffe440 : 0xff7b8ab5);
         if (!f)
@@ -1297,7 +1414,7 @@ Result colourLine(App* app, CPU& cpu, reg32 esp, reg32 item, int32_t colour, int
     }
     else
     {
-        if (!callCore<kColourSetState, loop::keysTakenOf>(app, cpu, at, {item, reg32(colour), reg32(x), reg32(y)}, r,
+        if (!callCore<kColourSetState, loop::keysTakenOf>(app, cpu, at, r,
                                                           at - 4, item))
             return {};
         textColour = r != 0 ? 0x4a96 : 0xffe440;
@@ -1313,12 +1430,12 @@ Result colourLine(App* app, CPU& cpu, reg32 esp, reg32 item, int32_t colour, int
     {
         if (swatch != 0)
         {
-            if (!callGame(app, cpu, at, kLanguageText, {0x2b, textColour, swatch, reg32(colour)}, {}, name)
+            if (!lineAt(app, cpu, at, &name, 0x2b, textColour)
                 || !format(app, cpu, at, {text, kEllipsis, name}))
                 return {};
             name = text;
         }
-        else if (!callGame(app, cpu, at - 8, kLanguageText, {0x2b, reg32(x), reg32(y), 0x12}, {}, name))
+        else if (!lineAt(app, cpu, at - 8, &name, 0x2b, reg32(x)))
             return {};
     }
     else
@@ -1328,7 +1445,7 @@ Result colourLine(App* app, CPU& cpu, reg32 esp, reg32 item, int32_t colour, int
             return {};
         name = reg32(*n);
     }
-    if (!callGame(app, cpu, at, kDrawMenuText, {name, reg32(x), reg32(y), 0x12}, {0, textColour}, r))
+    if (!namedAt<text::menuTextDrawn, 2>(app, cpu, at, &r, name, reg32(x), reg32(y), 0x12, 0, textColour))
         return {};
     return int32_t(r);
 }
@@ -1339,9 +1456,8 @@ Result colourLine(App* app, CPU& cpu, reg32 esp, reg32 item, int32_t colour, int
 Result listDrawn(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 hot)
 {
     const reg32 ebp = esp - 0x14, at = ebp - 8;
-    HeldEbp held(cpu, ebp);
     reg32 r;
-    if (!shownNow(app, cpu, at, item, 0x12, r, hot, item))
+    if (!shownNow(app, cpu, at, item, r))
         return {};
     if (r == 0)
         return 0;
@@ -1359,22 +1475,20 @@ Result listDrawn(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 hot)
         if (colourList(app, item).open != 0)
         {
             if (!callCore<kPointerInBox, frontend::glue::pointerInBox>(
-                    app, cpu, at, {item + 0x1a, colourList(app, item).car, hot, item}, r, item + 0x1a))
+                    app, cpu, at, r, item + 0x1a))
                 return {};
             if (r != 0)
             {
-                if (!callGame(app, cpu, at, kLineAtPointer, {reg32(int32_t(colourList(app, item).boxY)), 0x10, hot, item},
-                              {}, r))
+                if (!callCore<0x49c1c0, frontend::menud::pointerListLine>(
+                        app, cpu, at, r,
+                        int32_t(colourList(app, item).boxY), 0x10))
                     return {};
                 const int32_t line = int32_t(r);
                 if (line >= 0 && line < colourList(app, item).count && line != colourList(app, item).highlighted)
                     colourList(app, item).highlighted = line;
             }
             const ColourList& l = colourList(app, item);
-            if (!callGame(app, cpu, at, kFieldBox,
-                          {reg32(int32_t(l.boxX)), reg32(int32_t(l.boxY)), reg32(int32_t(l.boxWidth)),
-                           reg32(int32_t(l.boxHeight))},
-                          {0xa0000040, 0xa0000040, 0xd0222222, 0xd0222222}, r))
+            if (!boxedNamedAt<draw2d::drawFieldBoxOf>(app, cpu, at, &r, reg32(int32_t(l.boxX)), reg32(int32_t(l.boxY)), reg32(int32_t(l.boxWidth)), reg32(int32_t(l.boxHeight)), 0xa0000040, 0xa0000040, 0xd0222222, 0xd0222222))
                 return {};
             int16_t lineY = int16_t(colourList(app, item).boxY + 5);
             const int16_t lineX = int16_t(colourList(app, item).boxX + 0xf);
@@ -1386,18 +1500,15 @@ Result listDrawn(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 hot)
                 lineY = int16_t(lineY + 0x10);
             }
             const int32_t x = colourList(app, item).x, y = colourList(app, item).y;
-            if (!callGame(app, cpu, at, kDrawShape, {reg32(int32_t(colourList(app, item).arrow)), reg32(x), reg32(y + 0xd), reg32(y)}, {}, r)
-                || !callGame(app, cpu, at, kDrawShape, {reg32(int32_t(colourList(app, item).box)), reg32(x + 0xc), reg32(y), reg32(y)}, {}, r)
-                || !callGame(app, cpu, at, kDrawMenuText,
-                             {colourList(app, item).label, reg32(int32_t(colourList(app, item).boxX) + 0xf),
-                              reg32(y - 1), 0x12},
-                             {0, 0xffe440}, r))
+            if (!coreAt<0x4d7990, shapes::drawShapeOf, 0>(app, cpu, at, &r, reg32(int32_t(colourList(app, item).arrow)), reg32(x), reg32(y + 0xd))
+                || !coreAt<0x4d7990, shapes::drawShapeOf, 0>(app, cpu, at, &r, reg32(int32_t(colourList(app, item).box)), reg32(x + 0xc), reg32(y))
+                || !namedAt<text::menuTextDrawn, 2>(app, cpu, at, &r, colourList(app, item).label, reg32(int32_t(colourList(app, item).boxX) + 0xf), reg32(y - 1), 0x12, 0, 0xffe440))
                 return {};
         }
         else
         {
             const int32_t x = colourList(app, item).x, y = colourList(app, item).y;
-            if (!callGame(app, cpu, at, kDrawShape, {reg32(int32_t(colourList(app, item).arrow)), reg32(x), reg32(y + 0xd), reg32(y)}, {}, r))
+            if (!coreAt<0x4d7990, shapes::drawShapeOf, 0>(app, cpu, at, &r, reg32(int32_t(colourList(app, item).arrow)), reg32(x), reg32(y + 0xd)))
                 return {};
         }
     }
@@ -1412,17 +1523,16 @@ Result listDrawn(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 hot)
 Result listShown(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 ebx)
 {
     const reg32 at = esp - 0xc;
-    HeldEbp held(cpu, at);
     reg32 r;
-    if (!shownNow(app, cpu, at, item, 0x12, r, ebx, item))
+    if (!shownNow(app, cpu, at, item, r))
         return {};
     if (r == 0)
         return 0;
     colourList(app, item).open = 0;
-    if (!callGame(app, cpu, at, kShapeByName, {kArrowName, 0x12, ebx, item}, {}, r))
+    if (!namedAt<shapes::shapeNamed, 0>(app, cpu, at, &r, kArrowName))
         return {};
     colourList(app, item).arrow = int16_t(r);
-    if (!callGame(app, cpu, at, kShapeByName, {kBoxName, 0x12, ebx, item}, {}, r))
+    if (!namedAt<shapes::shapeNamed, 0>(app, cpu, at, &r, kBoxName))
         return {};
     ColourList& l = colourList(app, item);
     l.chosen = 0;
@@ -1443,7 +1553,7 @@ Result pointedAtColour(App* app, CPU& cpu, reg32 esp, reg32 item)
     const reg32 y = (reg32(l.highlighted) << 4) + reg32(int32_t(l.boxY)) + 0x10;
     const reg32 x = reg32(halved(l.boxWidth) + l.boxX);
     reg32 r;
-    if (!callGame(app, cpu, esp - 0x10, kSetPointer, {x, y, y, item}, {}, r))
+    if (!callCore<0x49bfc0, frontend::screen::setPointer>(app, cpu, esp - 0x10, r, x, y))
         return {};
     return int32_t(r);
 }
@@ -1461,7 +1571,6 @@ Result listOpened(App* app, CPU& cpu, reg32 esp, reg32 item, int16_t open)
 Result colourChosen(App* app, CPU& cpu, reg32 esp, reg32 item)
 {
     const reg32 at = esp - 0x18;
-    HeldEbp held(cpu, at);
     ColourList& l = colourList(app, item);
     const bool changed = l.chosen != l.highlighted;
     l.chosen = l.highlighted;
@@ -1474,16 +1583,16 @@ Result colourChosen(App* app, CPU& cpu, reg32 esp, reg32 item)
     reg32 eax = reg32(*r), menu;
     if (colourList(app, item).player == 0)
     {
-        if (!callCore<kMenuNamed, loop::currentMenuOf>(app, cpu, at, {eax, kFirstCarItem}, menu)
-            || !callGame(app, cpu, at, kFindItem, {menu, kFirstCarItem}, {}, eax))
+        if (!callCore<kMenuNamed, loop::currentMenuOf>(app, cpu, at, menu)
+            || !plainAt<kFindItem, frontend::menus::findItem>(app, cpu, at, &eax, menu, kFirstCarItem))
             return {};
         if (eax != 0)
             setByte(app, eax + 0xb3, 1);
     }
     if (colourList(app, item).player == 1)
     {
-        if (!callCore<kMenuNamed, loop::currentMenuOf>(app, cpu, at, {eax, kSecondCarItem}, menu)
-            || !callGame(app, cpu, at, kFindItem, {menu, kSecondCarItem}, {}, eax))
+        if (!callCore<kMenuNamed, loop::currentMenuOf>(app, cpu, at, menu)
+            || !plainAt<kFindItem, frontend::menus::findItem>(app, cpu, at, &eax, menu, kSecondCarItem))
             return {};
         if (eax != 0)
             setByte(app, eax + 0xb3, 1);
@@ -1498,16 +1607,15 @@ Result colourChosen(App* app, CPU& cpu, reg32 esp, reg32 item)
 Result listKey(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 ebx)
 {
     const reg32 at = esp - 0x10;
-    HeldEbp held(cpu, at);
     const uint16_t key = uint16_t(ebx);
     reg32 r;
-    if (!shownNow(app, cpu, at, item, 0x12, r, ebx, item))
+    if (!shownNow(app, cpu, at, item, r))
         return {};
     if (r == 0)
         return 0;
     if (colourList(app, item).car == 0)
         return 0;
-    const auto click = [&] { return callGame(app, cpu, at, kMenuClick, {1, 0x7f, ebx, item}, {}, r); };
+    const auto click = [&] { return coreAt<0x4181d0, playMenuEffectOf, 0>(app, cpu, at, &r, 1, 0x7f); };
     const auto shut = [&]() -> Result {
         if (!click() || !listOpened(app, cpu, at - 4, item, 0))
             return {};
@@ -1537,7 +1645,7 @@ Result listKey(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 ebx)
         return shut();
     if (key != kEnter && key != kLeft)
         return 0;
-    if (!callCore<kPointerInBox, frontend::glue::pointerInBox>(app, cpu, at, {item + 0x1a, 0x7f, ebx, item}, r,
+    if (!callCore<kPointerInBox, frontend::glue::pointerInBox>(app, cpu, at, r,
                                                                item + 0x1a))
         return {};
     if (r == 0)
@@ -1550,8 +1658,8 @@ Result listKey(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 ebx)
     if (*custom != colourList(app, item).highlighted)
         return 2;
     reg32 menu, wheel;
-    if (!callCore<kMenuNamed, loop::currentMenuOf>(app, cpu, at, {reg32(*custom), kColourEdit}, menu)
-        || !callGame(app, cpu, at, kFindItem, {menu, kColourEdit}, {}, wheel))
+    if (!callCore<kMenuNamed, loop::currentMenuOf>(app, cpu, at, menu)
+        || !plainAt<kFindItem, frontend::menus::findItem>(app, cpu, at, &wheel, menu, kColourEdit))
         return {};
     if (wheel != 0 && !wheelGiven(app, cpu, at - 4, wheel, colourList(app, item).player))
         return {};
@@ -1563,9 +1671,8 @@ Result listKey(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 ebx)
 Result listLaidOut(App* app, CPU& cpu, reg32 esp, reg32 item)
 {
     const reg32 at = esp - 0xc;
-    HeldEbp held(cpu, at);
     reg32 r;
-    if (!shownNow(app, cpu, at, item, 0x12, r, 0, item))
+    if (!shownNow(app, cpu, at, item, r))
         return {};
     if (r == 0)
         return 0;
@@ -1600,98 +1707,98 @@ Result listLaidOut(App* app, CPU& cpu, reg32 esp, reg32 item)
 }  // namespace
 
 /* 0x4569a0: the colours' list eax's width. */
-void colourListWidth(App* app, CPU& cpu)
+x86::reg32 colourListWidth(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, listWidth(app, cpu, e.esp, e.eax, e.edx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, listWidth(app, cpu, e.esp, e.eax, e.edx));
 }
 
 /* 0x456a20: the colours' list eax's colours taken from its car. */
-void colourListRefresh(App* app, CPU& cpu)
+x86::reg32 colourListRefresh(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, listRefreshed(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, listRefreshed(app, cpu, e.esp, e.eax));
 }
 
 /* 0x456b50 (stdcall 8): colour edx's line of the list eax at ebx, ecx; lit
  * and with its swatch the stack's words. */
-void drawColourLine(App* app, CPU& cpu)
+x86::reg32 drawColourLine(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu,
+    const Entry e(cpu, args);
+    return e.finish(cpu, args,
              colourLine(app, cpu, e.esp, e.eax, int32_t(e.edx), int32_t(e.ebx), int32_t(e.ecx), e.arg(app, 0),
                         e.arg(app, 1)),
              8);
 }
 
 /* 0x456ce0: the colours' list eax drawn, the pointer's line lit where edx. */
-void drawColourList(App* app, CPU& cpu)
+x86::reg32 drawColourList(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, listDrawn(app, cpu, e.esp, e.eax, e.edx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, listDrawn(app, cpu, e.esp, e.eax, e.edx));
 }
 
 /* 0x456ea0: the colours' list eax shown. */
-void colourListShown(App* app, CPU& cpu)
+x86::reg32 colourListShown(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, listShown(app, cpu, e.esp, e.eax, e.ebx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, listShown(app, cpu, e.esp, e.eax, e.ebx));
 }
 
 /* 0x456f10: the pointer on the list eax's lit line. */
-void pointAtColour(App* app, CPU& cpu)
+x86::reg32 pointAtColour(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, pointedAtColour(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, pointedAtColour(app, cpu, e.esp, e.eax));
 }
 
 /* 0x456f50, 0x456f70: the list eax opened, shut. */
-void openColourList(App* app, CPU& cpu)
+x86::reg32 openColourList(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, listOpened(app, cpu, e.esp, e.eax, 1));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, listOpened(app, cpu, e.esp, e.eax, 1));
 }
 
-void closeColourList(App* app, CPU& cpu)
+x86::reg32 closeColourList(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, listOpened(app, cpu, e.esp, e.eax, 0));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, listOpened(app, cpu, e.esp, e.eax, 0));
 }
 
 /* 0x456f90: the list eax's lit colour chosen. */
-void chooseColour(App* app, CPU& cpu)
+x86::reg32 chooseColour(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, colourChosen(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, colourChosen(app, cpu, e.esp, e.eax));
 }
 
 /* 0x457030: key bx on the list eax. */
-void colourListKey(App* app, CPU& cpu)
+x86::reg32 colourListKey(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, listKey(app, cpu, e.esp, e.eax, e.ebx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, listKey(app, cpu, e.esp, e.eax, e.ebx));
 }
 
 /* 0x4571e0: the list eax laid out. */
-void layoutColourList(App* app, CPU& cpu)
+x86::reg32 layoutColourList(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, listLaidOut(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, listLaidOut(app, cpu, e.esp, e.eax));
 }
 
 /* 0x457250: the list hidden: nothing. */
-void colourListHidden(App* app, CPU& cpu)
+x86::reg32 colourListHidden(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, e.eax);
+    const Entry e(cpu, args);
+    return e.back(cpu, args, e.eax);
 }
 
 /* 0x4d8aa0 (stdcall 4): a frame around eax, edx, ebx wide, ecx high in the
  * stack's colour. */
-void drawFrameAt(App* app, CPU& cpu)
+x86::reg32 drawFrameAt(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, framed(app, cpu, e.esp, e.eax, e.edx, e.ebx, e.ecx, e.arg(app, 0)), 4);
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, framed(app, cpu, e.esp, e.eax, e.edx, e.ebx, e.ecx, e.arg(app, 0)), 4);
 }
 
 /* ======== The fields typed into ======== */
@@ -1715,7 +1822,7 @@ Result keyTyped(App* app, CPU& cpu, reg32 esp, reg32 typed, int32_t size, reg32 
     {
         setWord(app, cursor, 0);
         reg32 r;
-        if (!callCore<kMemset, watcom::clib::memset>(app, cpu, esp - 0xc - 8, {typed, 0, reg32(size), ecx}, r, typed,
+        if (!callCore<kMemset, watcom::clib::memset>(app, cpu, esp - 0xc - 8, r, typed,
                                                      reg32(0), reg32(size)))
             return {};
         return 2;
@@ -1771,7 +1878,7 @@ bool labelled(App* app, CPU& cpu, reg32 ebp, reg32 item, reg32 hot, reg32 type, 
     for (reg32 i = 0; i < 0x100; i += 4)
         setWord(app, at + i, word(app, blank + i));
     reg32 r;
-    if (!shownNow(app, cpu, at, item, type, r, item, 0))
+    if (!shownNow(app, cpu, at, item, r))
         return false;
     shown = r != 0;
     if (!shown)
@@ -1780,15 +1887,15 @@ bool labelled(App* app, CPU& cpu, reg32 ebp, reg32 item, reg32 hot, reg32 type, 
     l.colour = hot != 0 ? 0xffe440 : 0xff649dfd;
     l.x = it.x;
     l.y = it.y;
-    if (!callGame(app, cpu, at, kSelectFont, {0x12, type, item, 0}, {}, r))
+    if (!keepNamedAt<text::selectFontOf>(app, cpu, at, &r, 0x12, 0x12))
         return false;
     const reg32 label = word(app, item + 0x3c);
     if (label != 0)
     {
-        if (!callGame(app, cpu, at, kTextWidth, {label, 0x12, reg32(l.y), 0}, {}, r))
+        if (!namedAt<text::menuTextWidth, 0>(app, cpu, at, &r, label, 0x12))
             return false;
         setWord(app, ebp - 0x10, r);
-        if (!callGame(app, cpu, at, kDrawMenuText, {label, reg32(l.x), reg32(l.y), 0x12}, {0, l.colour}, r))
+        if (!namedAt<text::menuTextDrawn, 2>(app, cpu, at, &r, label, reg32(l.x), reg32(l.y), 0x12, 0, l.colour))
             return false;
     }
     l.labelWidth = word(app, ebp - 0x10);
@@ -1808,8 +1915,7 @@ bool typedLine(App* app, CPU& cpu, reg32 ebp, reg32 typed, const Labelled& l, in
 bool valueLine(App* app, CPU& cpu, reg32 ebp, const Labelled& l)
 {
     reg32 r;
-    return callGame(app, cpu, ebp - 0x114, kDrawMenuText, {ebp - 0x114, reg32(l.x) + l.labelWidth, reg32(l.y), 0x12},
-                    {0, l.colour}, r);
+    return namedAt<text::menuTextDrawn, 2>(app, cpu, ebp - 0x114, &r, ebp - 0x114, reg32(l.x) + l.labelWidth, reg32(l.y), 0x12, 0, l.colour);
 }
 
 /* A field's unit's name, its value's format's last word: 0 for none. */
@@ -1822,7 +1928,6 @@ reg32 unitOf(uint8_t shown, reg32 unit, reg32 units)
 Result intDrawn(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 hot)
 {
     const reg32 ebp = esp - 0x14, at = ebp - 0x114, text = ebp - 0x114;
-    HeldEbp held(cpu, ebp);
     bool shown;
     Labelled l;
     if (!labelled(app, cpu, ebp, item, hot, 0xa, kIntBlank, shown, l))
@@ -1845,7 +1950,6 @@ Result intDrawn(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 hot)
 Result charDrawn(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 hot)
 {
     const reg32 ebp = esp - 0x14, at = ebp - 0x114, text = ebp - 0x114;
-    HeldEbp held(cpu, ebp);
     bool shown;
     Labelled l;
     if (!labelled(app, cpu, ebp, item, hot, 0xb, kCharBlank, shown, l))
@@ -1870,7 +1974,6 @@ Result charDrawn(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 hot)
 Result floatDrawn(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 hot, bool fixed)
 {
     const reg32 ebp = esp - 0x14, at = ebp - 0x114, text = ebp - 0x114;
-    HeldEbp held(cpu, ebp);
     bool shown;
     Labelled l;
     if (!labelled(app, cpu, ebp, item, hot, fixed ? 0xd : 0xc, fixed ? kFixedBlank : kFloatBlank, shown, l))
@@ -1910,7 +2013,7 @@ Result typingStarted(App* app, CPU& cpu, reg32 at, reg32 item, reg32 typed, reg3
     setHalf(app, item + 0x40, 1);
     setWord(app, cursor, 0);
     reg32 r;
-    if (!callCore<kMemset, watcom::clib::memset>(app, cpu, at, {typed, 0, size, item}, r, typed, reg32(0), reg32(size)))
+    if (!callCore<kMemset, watcom::clib::memset>(app, cpu, at, r, typed, reg32(0), reg32(size)))
         return {};
     record<Item>(app, item).state |= 4;
     return 2;
@@ -1920,18 +2023,17 @@ Result typingStarted(App* app, CPU& cpu, reg32 at, reg32 item, reg32 typed, reg3
 bool told(App* app, CPU& cpu, reg32 at, reg32 function, reg32 item, reg32 edx, reg32 ebx)
 {
     reg32 r;
-    return function == 0 || callGame(app, cpu, at, function, {item, edx, ebx, item}, {}, r);
+    return function == 0 || gameCall(app, cpu, at, function, {item, edx, ebx, item}, {}, r);
 }
 
 /* 0x457e30's: a key on an edint. */
 Result intKey(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 ebx)
 {
     const reg32 ebp = esp - 0x10, at = ebp - 8;
-    HeldEbp held(cpu, ebp);
     const uint16_t key = uint16_t(ebx);
     setWord(app, ebp - 8, 0);
     reg32 r;
-    if (!shownNow(app, cpu, at, item, 0xa, r, ebx, item))
+    if (!shownNow(app, cpu, at, item, r))
         return {};
     if (r == 0)
         return 0;
@@ -1951,7 +2053,7 @@ Result intKey(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 ebx)
         reg32 n;
         // By address: sscanf runs the runtime's own code below the words it pushes, which a direct
         // call would put 4 bytes lower than the game's call does.
-        if (!callGame(app, cpu, at, kSscanf, {}, {item + 0x60, kD, ebp - 8}, n))
+        if (!plainAt<kSscanf, watcom::clib::sscanf>(app, cpu, at, &n, item + 0x60, kD, guest::Words({ebp - 8})))
             return {};
         const IntField& f = record<IntField>(app, item);
         if (f.checked == 1)
@@ -1959,7 +2061,6 @@ Result intKey(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 ebx)
             const int32_t v = int32_t(word(app, ebp - 8));
             if (v < f.least || v > f.most)
             {
-                pushed(app, at - 4, {item, item, ebp});
                 if (!asked(app, cpu, at - 4 - 0xc, {kDialogText, kIntRange, reg32(f.least), reg32(f.most)}))
                     return {};
                 n = 0;
@@ -1990,11 +2091,10 @@ Result intKey(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 ebx)
 Result charKey(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 ebx)
 {
     const reg32 ebp = esp - 0x10, at = ebp - 8;
-    HeldEbp held(cpu, ebp);
     const uint16_t key = uint16_t(ebx);
     setByte(app, ebp - 4, 0);
     reg32 r;
-    if (!shownNow(app, cpu, at, item, 0xb, r, ebx, item))
+    if (!shownNow(app, cpu, at, item, r))
         return {};
     if (r == 0)
         return 0;
@@ -2014,7 +2114,7 @@ Result charKey(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 ebx)
         reg32 n;
         // By address: sscanf runs the runtime's own code below the words it pushes, which a direct
         // call would put 4 bytes lower than the game's call does.
-        if (!callGame(app, cpu, at, kSscanf, {}, {item + 0x58, kD, ebp - 4}, n))
+        if (!plainAt<kSscanf, watcom::clib::sscanf>(app, cpu, at, &n, item + 0x58, kD, guest::Words({ebp - 4})))
             return {};
         const CharField& f = record<CharField>(app, item);
         if (f.checked == 1)
@@ -2022,7 +2122,6 @@ Result charKey(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 ebx)
             const uint8_t v = byteAt(app, ebp - 4);
             if (v < f.least || v > f.most)
             {
-                pushed(app, at - 4, {item, item, ebp});
                 if (!asked(app, cpu, at - 4 - 0xc, {kDialogText, kIntRange, f.least, f.most}))
                     return {};
                 n = 0;
@@ -2055,12 +2154,12 @@ Result charKey(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 ebx)
 /* 0x458b80's, 0x459090's: a key on an edfloat, an edfixed. */
 Result floatKey(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 ebx, bool fixed)
 {
+    FpuStatus st;
     const reg32 ebp = esp - 0x10, at = ebp - 8;
-    HeldEbp held(cpu, ebp);
     const uint16_t key = uint16_t(ebx);
     setWord(app, ebp - 8, 0);
     reg32 r;
-    if (!shownNow(app, cpu, at, item, fixed ? 0xd : 0xc, r, ebx, item))
+    if (!shownNow(app, cpu, at, item, r))
         return {};
     if (r == 0)
         return 0;
@@ -2080,7 +2179,7 @@ Result floatKey(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 ebx, bool fixed
         reg32 n;
         // By address: sscanf runs the runtime's own code below the words it pushes, which a direct
         // call would put 4 bytes lower than the game's call does.
-        if (!callGame(app, cpu, at, kSscanf, {}, {item + 0x64, kScanF, ebp - 8}, n))
+        if (!plainAt<kSscanf, watcom::clib::sscanf>(app, cpu, at, &n, item + 0x64, kScanF, guest::Words({ebp - 8})))
             return {};
         const FloatField& f = record<FloatField>(app, item);
         const auto scaled = [&] {
@@ -2093,12 +2192,12 @@ Result floatKey(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 ebx, bool fixed
                 out = scaled() < int32_t(f.least) || scaled() > int32_t(f.most);
             else
             {
-                cpu.fpu.compare(Float(floatAt(app, ebp - 8)), Float(fromBits(f.least)));
-                out = cpu.fpu.status.c0;
+                st.set(Float(floatAt(app, ebp - 8)), Float(fromBits(f.least)));
+                out = st.c0();
                 if (!out)
                 {
-                    cpu.fpu.compare(Float(floatAt(app, ebp - 8)), Float(fromBits(f.most)));
-                    out = !cpu.fpu.status.c0 && !cpu.fpu.status.c3;
+                    st.set(Float(floatAt(app, ebp - 8)), Float(fromBits(f.most)));
+                    out = !st.c0() && !st.c3();
                 }
             }
             if (out)
@@ -2152,7 +2251,7 @@ Result laidOut(App* app, CPU& cpu, reg32 at, reg32 item, reg32 type, reg32 esi,
                const std::function<bool(reg32&)>& valueWidth)
 {
     reg32 r;
-    if (!shownNow(app, cpu, at, item, type, r, 0, item))
+    if (!shownNow(app, cpu, at, item, r))
         return {};
     if (r == 0)
         return 0;
@@ -2162,7 +2261,7 @@ Result laidOut(App* app, CPU& cpu, reg32 at, reg32 item, reg32 type, reg32 esi,
     it.boxY = it.y;
     reg32 labelWidth = esi;
     const reg32 label = word(app, item + 0x3c);
-    if (label != 0 && !callGame(app, cpu, at, kTextWidth, {label, 0x12, item, item}, {}, labelWidth))
+    if (label != 0 && !namedAt<text::menuTextWidth, 0>(app, cpu, at, &labelWidth, label, 0x12))
         return {};
     reg32 w;
     if (!valueWidth(w))
@@ -2178,8 +2277,8 @@ bool valueWidth(App* app, CPU& cpu, reg32 at, reg32 item, reg32 typed, reg32 tex
                 std::initializer_list<reg32> words, reg32& w)
 {
     if (record<IntField>(app, item).editing != 0)
-        return callGame(app, cpu, at, kTextWidth, {typed, 0x12, item, item}, {}, w);
-    return format(app, cpu, at, words) && callGame(app, cpu, at, kTextWidth, {text, 0x12, item, item}, {}, w);
+        return namedAt<text::menuTextWidth, 0>(app, cpu, at, &w, typed, 0x12);
+    return format(app, cpu, at, words) && namedAt<text::menuTextWidth, 0>(app, cpu, at, &w, text, 0x12);
 }
 
 /* The fields' shown and hidden: typing stopped; shown, the function told
@@ -2188,7 +2287,7 @@ Result fieldShown(App* app, CPU& cpu, reg32 at, reg32 item, reg32 type, reg32 ch
                   bool tell)
 {
     reg32 r;
-    if (!shownNow(app, cpu, at, item, type, r, ebx, item))
+    if (!shownNow(app, cpu, at, item, r))
         return {};
     if (r == 0)
         return 0;
@@ -2200,7 +2299,7 @@ Result fieldShown(App* app, CPU& cpu, reg32 at, reg32 item, reg32 type, reg32 ch
     const reg32 function = word(app, item + changed);
     if (function == 0 || word(app, item + value) == 0)
         return int32_t(r);
-    if (!callGame(app, cpu, at, function, {item, item, (ebx & 0xffff0000) | uint16_t(editing), item}, {}, r))
+    if (!gameCall(app, cpu, at, function, {item, item, (ebx & 0xffff0000) | uint16_t(editing), item}, {}, r))
         return {};
     return int32_t(r);
 }
@@ -2210,7 +2309,7 @@ Result fieldBound(App* app, CPU& cpu, reg32 at, reg32 item, reg32 type, reg32 va
                   reg32 valueAt, reg32 functionAt)
 {
     reg32 r;
-    if (!shownNow(app, cpu, at, item, type, r, function, item))
+    if (!shownNow(app, cpu, at, item, r))
         return {};
     if (r == 0)
         return 0;
@@ -2224,24 +2323,23 @@ Result fieldBound(App* app, CPU& cpu, reg32 at, reg32 item, reg32 type, reg32 va
 Result stringDrawn(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 hot, reg32 ebx, reg32 ecx)
 {
     const reg32 ebp = esp - 0x14, at = ebp - 0x14;
-    HeldEbp held(cpu, ebp);
     reg32 r;
-    if (!shownNow(app, cpu, at, item, 9, r, ebx, ecx))
+    if (!shownNow(app, cpu, at, item, r))
         return {};
     if (r == 0)
         return 0;
     const reg32 colour = hot != 0 ? 0xffe440 : 0xff649dfd;
     const int32_t y = record<StringField>(app, item).y;
     int32_t x = record<StringField>(app, item).x;
-    if (!callGame(app, cpu, at, kSelectFont, {0x12, 9, 0, ecx}, {}, r))
+    if (!keepNamedAt<text::selectFontOf>(app, cpu, at, &r, 0x12, 0x12))
         return {};
     const reg32 label = record<StringField>(app, item).label;
     if (label != 0)
     {
-        if (!callGame(app, cpu, at, kTextWidth, {label, 0x12, 0, 0x12}, {}, r))
+        if (!namedAt<text::menuTextWidth, 0>(app, cpu, at, &r, label, 0x12))
             return {};
         setWord(app, ebp - 0x14, r);
-        if (!callGame(app, cpu, at, kDrawMenuText, {label, reg32(x), reg32(y), 0x12}, {0, colour}, r))
+        if (!namedAt<text::menuTextDrawn, 2>(app, cpu, at, &r, label, reg32(x), reg32(y), 0x12, 0, colour))
             return {};
     }
     x = int16_t(x + int32_t(word(app, ebp - 0x14)) + 0xa);
@@ -2250,18 +2348,18 @@ Result stringDrawn(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 hot, reg32 e
         return 0;
     if (f.editing == 0)
     {
-        if (!callGame(app, cpu, at, kDrawMenuText, {f.target, reg32(x), reg32(y), 0x12}, {0, colour}, r))
+        if (!namedAt<text::menuTextDrawn, 2>(app, cpu, at, &r, f.target, reg32(x), reg32(y), 0x12, 0, colour))
             return {};
         return 0;
     }
-    if (!callGame(app, cpu, at, kDrawMenuText, {f.buffer, reg32(x), reg32(y), 0x12}, {0, colour}, r))
+    if (!namedAt<text::menuTextDrawn, 2>(app, cpu, at, &r, f.buffer, reg32(x), reg32(y), 0x12, 0, colour))
         return {};
     StringField& g = record<StringField>(app, item);
     g.blink = int16_t((int32_t(g.blink) + 1) % 0x1e);
     if (g.blink >= 0xf)
         return 0;
-    if (!callGame(app, cpu, at - 8, kTextWidth, {g.buffer, 0x12, reg32(y), 0x12}, {}, r)
-        || !callGame(app, cpu, at, kDrawMenuText, {kUnderline, reg32(x) + r, reg32(y), 0x12}, {0, colour}, r))
+    if (!namedAt<text::menuTextWidth, 0>(app, cpu, at - 8, &r, g.buffer, 0x12)
+        || !namedAt<text::menuTextDrawn, 2>(app, cpu, at, &r, kUnderline, reg32(x) + r, reg32(y), 0x12, 0, colour))
         return {};
     return 0;
 }
@@ -2273,10 +2371,9 @@ Result stringDrawn(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 hot, reg32 e
 Result stringKey(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 ebx)
 {
     const reg32 at = esp - 0x10;
-    HeldEbp held(cpu, at);
     const uint16_t key = uint16_t(ebx);
     reg32 r;
-    if (!shownNow(app, cpu, at, item, 9, r, ebx, item))
+    if (!shownNow(app, cpu, at, item, r))
         return {};
     if (r == 0)
         return 0;
@@ -2289,8 +2386,7 @@ Result stringKey(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 ebx)
         f.editing = 1;
         if (f.target != 0)
         {
-            if (!callCore<kStrncpy, watcom::clib::strncpy>(app, cpu, at,
-                                                           {f.buffer, f.target, reg32(int32_t(f.maxLength) - 1), item}, r,
+            if (!callCore<kStrncpy, watcom::clib::strncpy>(app, cpu, at, r,
                                                            f.buffer, f.target, reg32(int32_t(f.maxLength) - 1)))
                 return {};
         }
@@ -2307,8 +2403,7 @@ Result stringKey(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 ebx)
     {
         f.editing = 0;
         if (f.target != 0
-            && !callCore<kStrncpy, watcom::clib::strncpy>(app, cpu, at,
-                                                          {f.target, f.buffer, reg32(int32_t(f.maxLength)), item}, r,
+            && !callCore<kStrncpy, watcom::clib::strncpy>(app, cpu, at, r,
                                                           f.target, f.buffer, reg32(int32_t(f.maxLength))))
             return {};
         if (!told(app, cpu, at, record<StringField>(app, item).changed, item, 0, 0))
@@ -2342,16 +2437,15 @@ Result stringKey(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 ebx)
 Result charLaidOut(App* app, CPU& cpu, reg32 esp, reg32 item)
 {
     const reg32 ebp = esp - 0x14, at = ebp - 8;
-    HeldEbp held(cpu, ebp);
     reg32 r;
-    if (!shownNow(app, cpu, at, item, 0xb, r, item, 0))
+    if (!shownNow(app, cpu, at, item, r))
         return {};
     if (r == 0)
         return 0;
     reg32 off = 0;
     if (record<CharField>(app, item).checked != 0)
     {
-        if (!callGame(app, cpu, at, kTextWidth, {record<CharField>(app, item).label, 0x12, item, item}, {}, r))
+        if (!namedAt<text::menuTextWidth, 0>(app, cpu, at, &r, record<CharField>(app, item).label, 0x12))
             return {};
         off = r + 0xa;
     }
@@ -2360,7 +2454,7 @@ Result charLaidOut(App* app, CPU& cpu, reg32 esp, reg32 item)
     f.boxY = f.y;
     f.boxHeight = 0x1d;
     reg32 labelWidth, w = 0;
-    if (!callGame(app, cpu, at, kTextWidth, {f.label, 0x12, item, item}, {}, labelWidth))
+    if (!namedAt<text::menuTextWidth, 0>(app, cpu, at, &labelWidth, f.label, 0x12))
         return {};
     if (record<CharField>(app, item).value != 0
         && !valueWidth(app, cpu, at, item, item + 0x58, ebp - 8,
@@ -2375,113 +2469,108 @@ Result charLaidOut(App* app, CPU& cpu, reg32 esp, reg32 item)
 
 /* 0x457ae0 (stdcall 4): key cx typed into the line eax, edx long, at the
  * cursor [ebx]; dots refused where the stack's word. */
-void editKey(App* app, CPU& cpu)
+x86::reg32 editKey(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, keyTyped(app, cpu, e.esp, e.eax, int32_t(e.edx), e.ebx, e.ecx, e.arg(app, 0)), 4);
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, keyTyped(app, cpu, e.esp, e.eax, int32_t(e.edx), e.ebx, e.ecx, e.arg(app, 0)), 4);
 }
 
 /* 0x457c40, 0x458480, 0x458940, 0x458e30: an edint, edchar, edfloat, edfixed
  * eax drawn, lit where edx. */
-void drawIntField(App* app, CPU& cpu)
+x86::reg32 drawIntField(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, intDrawn(app, cpu, e.esp, e.eax, e.edx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, intDrawn(app, cpu, e.esp, e.eax, e.edx));
 }
 
-void drawCharField(App* app, CPU& cpu)
+x86::reg32 drawCharField(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, charDrawn(app, cpu, e.esp, e.eax, e.edx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, charDrawn(app, cpu, e.esp, e.eax, e.edx));
 }
 
-void drawFloatField(App* app, CPU& cpu)
+x86::reg32 drawFloatField(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, floatDrawn(app, cpu, e.esp, e.eax, e.edx, false));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, floatDrawn(app, cpu, e.esp, e.eax, e.edx, false));
 }
 
-void drawFixedField(App* app, CPU& cpu)
+x86::reg32 drawFixedField(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, floatDrawn(app, cpu, e.esp, e.eax, e.edx, true));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, floatDrawn(app, cpu, e.esp, e.eax, e.edx, true));
 }
 
 /* 0x457df0, 0x458640: "Min Value %d, Max Value %d" of eax and edx (their low
  * bytes for an edchar) put up. */
-void intRangeMessage(App* app, CPU& cpu)
+x86::reg32 intRangeMessage(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    HeldEbp held(cpu, e.esp - 0xc);
+    const Entry e(cpu, args);
     pushed(app, e.esp, {e.ebx, e.ecx, e.ebp});
-    e.finish(cpu, asked(app, cpu, e.esp - 0xc, {kDialogText, kIntRange, e.eax, e.edx}));
+    return e.finish(cpu, args, asked(app, cpu, e.esp - 0xc, {kDialogText, kIntRange, e.eax, e.edx}));
 }
 
-void charRangeMessage(App* app, CPU& cpu)
+x86::reg32 charRangeMessage(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    HeldEbp held(cpu, e.esp - 0xc);
+    const Entry e(cpu, args);
     pushed(app, e.esp, {e.ebx, e.ecx, e.ebp});
-    e.finish(cpu, asked(app, cpu, e.esp - 0xc, {kDialogText, kIntRange, e.eax & 0xff, e.edx & 0xff}));
+    return e.finish(cpu, args, asked(app, cpu, e.esp - 0xc, {kDialogText, kIntRange, e.eax & 0xff, e.edx & 0xff}));
 }
 
 /* 0x458b20 (stdcall 8): "Min Value %f, Max Value %f" of the stack's floats. */
-void floatRangeMessage(App* app, CPU& cpu)
+x86::reg32 floatRangeMessage(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    HeldEbp held(cpu, e.esp - 0x10);
+    const Entry e(cpu, args);
     const Words least = wordsOf(double(Float(fromBits(e.arg(app, 0)))));
     const Words most = wordsOf(double(Float(fromBits(e.arg(app, 1)))));
-    e.finish(cpu, asked(app, cpu, e.esp - 0x10, {kDialogText, kFloatRange, least.lo, least.hi, most.lo, most.hi}), 8);
+    return e.finish(cpu, args, asked(app, cpu, e.esp - 0x10, {kDialogText, kFloatRange, least.lo, least.hi, most.lo, most.hi}), 8);
 }
 
 /* 0x459020: of the 16.16 numbers eax and edx. */
-void fixedRangeMessage(App* app, CPU& cpu)
+x86::reg32 fixedRangeMessage(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    HeldEbp held(cpu, e.esp - 0xc);
+    const Entry e(cpu, args);
     const Float unit = Float(kFixedUnit2(app));
     const Words most = wordsOf(double(fp::mul(Float(x86::sreg32(e.edx)), unit)));
     const Words least = wordsOf(double(fp::mul(unit, Float(x86::sreg32(e.eax)))));
-    e.finish(cpu, asked(app, cpu, e.esp - 0xc - 8, {kDialogText, kFloatRange, least.lo, least.hi, most.lo, most.hi}));
+    return e.finish(cpu, args, asked(app, cpu, e.esp - 0xc - 8, {kDialogText, kFloatRange, least.lo, least.hi, most.lo, most.hi}));
 }
 
 /* 0x457e30, 0x458690, 0x458b80, 0x459090: key bx on an edint, edchar, edfloat,
  * edfixed eax. */
-void intFieldKey(App* app, CPU& cpu)
+x86::reg32 intFieldKey(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, intKey(app, cpu, e.esp, e.eax, e.ebx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, intKey(app, cpu, e.esp, e.eax, e.ebx));
 }
 
-void charFieldKey(App* app, CPU& cpu)
+x86::reg32 charFieldKey(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, charKey(app, cpu, e.esp, e.eax, e.ebx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, charKey(app, cpu, e.esp, e.eax, e.ebx));
 }
 
-void floatFieldKey(App* app, CPU& cpu)
+x86::reg32 floatFieldKey(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, floatKey(app, cpu, e.esp, e.eax, e.ebx, false));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, floatKey(app, cpu, e.esp, e.eax, e.ebx, false));
 }
 
-void fixedFieldKey(App* app, CPU& cpu)
+x86::reg32 fixedFieldKey(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, floatKey(app, cpu, e.esp, e.eax, e.ebx, true));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, floatKey(app, cpu, e.esp, e.eax, e.ebx, true));
 }
 
 /* 0x457f70, 0x458340, 0x4587e0, 0x458ce0, 0x459210: the field eax laid out. */
-void layoutIntField(App* app, CPU& cpu)
+x86::reg32 layoutIntField(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     const reg32 ebp = e.esp - 0x18, at = ebp - 0xc;
     const reg32 item = e.eax;
     pushed(app, e.esp, {e.ebx, e.ecx, e.edx, e.esi, e.edi, e.ebp});
     Result r;
     {
-    HeldEbp held(cpu, ebp);
     r = laidOut(app, cpu, at, item, 0xa, e.esi, [&](reg32& w) {
                  const IntField& f = record<IntField>(app, item);
                  w = 0;
@@ -2489,43 +2578,44 @@ void layoutIntField(App* app, CPU& cpu)
                         || valueWidth(app, cpu, at, item, item + 0x60, ebp - 0xc, {ebp - 0xc, kD, word(app, f.value)}, w);
              });
     }
-    e.finish(cpu, r);
+    const reg32 left = e.finish(cpu, args, r);
     if (r)
-        popped(app, e.esp, {&cpu.ebx, &cpu.ecx, &cpu.edx, &cpu.esi, &cpu.edi, &cpu.ebp});
+        popped(app, e.esp, {&args.ebx, &args.ecx, &args.edx, &args.esi, &args.edi, &args.ebp});
+    return left;
 }
 
-void layoutStringField(App* app, CPU& cpu)
+x86::reg32 layoutStringField(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     const reg32 at = e.esp - 0x14;
-    HeldEbp held(cpu, at);
     const reg32 item = e.eax;
-    e.finish(cpu, laidOut(app, cpu, at, item, 9, e.esi, [&](reg32& w) {
+    return e.finish(cpu, args, laidOut(app, cpu, at, item, 9, e.esi, [&](reg32& w) {
                  const reg32 target = record<StringField>(app, item).target;
                  w = 0;
-                 return target == 0 || callGame(app, cpu, at, kTextWidth, {target, 0x12, item, target}, {}, w);
+                 return target == 0 || namedAt<text::menuTextWidth, 0>(app, cpu, at, &w, target, 0x12);
              }));
+    return args.eax;
 }
 
-void layoutCharField(App* app, CPU& cpu)
+x86::reg32 layoutCharField(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     pushed(app, e.esp, {e.ebx, e.ecx, e.edx, e.esi, e.ebp});
     const Result r = charLaidOut(app, cpu, e.esp, e.eax);
-    e.finish(cpu, r);
+    const reg32 left = e.finish(cpu, args, r);
     if (r)
-        popped(app, e.esp, {&cpu.ebx, &cpu.ecx, &cpu.edx, &cpu.esi, &cpu.ebp});
+        popped(app, e.esp, {&args.ebx, &args.ecx, &args.edx, &args.esi, &args.ebp});
+    return left;
 }
 
-void layoutFloatField(App* app, CPU& cpu)
+x86::reg32 layoutFloatField(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     const reg32 ebp = e.esp - 0x18, at = ebp - 0x14;
     const reg32 item = e.eax;
     pushed(app, e.esp, {e.ebx, e.ecx, e.edx, e.esi, e.edi, e.ebp});
     Result r;
     {
-    HeldEbp held(cpu, ebp);
     r = laidOut(app, cpu, at, item, 0xc, e.esi, [&](reg32& w) {
                  const FloatField& f = record<FloatField>(app, item);
                  w = 0;
@@ -2535,20 +2625,20 @@ void layoutFloatField(App* app, CPU& cpu)
                  return valueWidth(app, cpu, at, item, item + 0x64, ebp - 0x14, {ebp - 0x14, kF6, whole}, w);
              });
     }
-    e.finish(cpu, r);
+    const reg32 left = e.finish(cpu, args, r);
     if (r)
-        popped(app, e.esp, {&cpu.ebx, &cpu.ecx, &cpu.edx, &cpu.esi, &cpu.edi, &cpu.ebp});
+        popped(app, e.esp, {&args.ebx, &args.ecx, &args.edx, &args.esi, &args.edi, &args.ebp});
+    return left;
 }
 
-void layoutFixedField(App* app, CPU& cpu)
+x86::reg32 layoutFixedField(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     const reg32 ebp = e.esp - 0x18, at = ebp - 0x10;
     const reg32 item = e.eax;
     pushed(app, e.esp, {e.ebx, e.ecx, e.edx, e.esi, e.edi, e.ebp});
     Result r;
     {
-    HeldEbp held(cpu, ebp);
     r = laidOut(app, cpu, at, item, 0xd, e.esi, [&](reg32& w) {
                  const FloatField& f = record<FloatField>(app, item);
                  w = 0;
@@ -2557,110 +2647,110 @@ void layoutFixedField(App* app, CPU& cpu)
                                       w);
              });
     }
-    e.finish(cpu, r);
+    const reg32 left = e.finish(cpu, args, r);
     if (r)
-        popped(app, e.esp, {&cpu.ebx, &cpu.ecx, &cpu.edx, &cpu.esi, &cpu.edi, &cpu.ebp});
+        popped(app, e.esp, {&args.ebx, &args.ecx, &args.edx, &args.esi, &args.edi, &args.ebp});
+    return left;
 }
 
 /* 0x458010, 0x458050 ...: the field eax shown (its function told), hidden. */
-void intFieldShown(App* app, CPU& cpu)
+x86::reg32 intFieldShown(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, fieldShown(app, cpu, e.esp - 0x10, e.eax, 0xa, 0x6c, 0x58, e.ebx, true));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, fieldShown(app, cpu, e.esp - 0x10, e.eax, 0xa, 0x6c, 0x58, e.ebx, true));
 }
 
-void intFieldHidden(App* app, CPU& cpu)
+x86::reg32 intFieldHidden(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, fieldShown(app, cpu, e.esp - 0xc, e.eax, 0xa, 0, 0, e.ebx, false));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, fieldShown(app, cpu, e.esp - 0xc, e.eax, 0xa, 0, 0, e.ebx, false));
 }
 
-void charFieldShown(App* app, CPU& cpu)
+x86::reg32 charFieldShown(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, fieldShown(app, cpu, e.esp - 0x10, e.eax, 0xb, 0x60, 0x50, e.ebx, true));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, fieldShown(app, cpu, e.esp - 0x10, e.eax, 0xb, 0x60, 0x50, e.ebx, true));
 }
 
-void charFieldHidden(App* app, CPU& cpu)
+x86::reg32 charFieldHidden(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, fieldShown(app, cpu, e.esp - 0xc, e.eax, 0xb, 0, 0, e.ebx, false));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, fieldShown(app, cpu, e.esp - 0xc, e.eax, 0xb, 0, 0, e.ebx, false));
 }
 
-void floatFieldShown(App* app, CPU& cpu)
+x86::reg32 floatFieldShown(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, fieldShown(app, cpu, e.esp - 0x10, e.eax, 0xc, 0x74, 0x58, e.ebx, true));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, fieldShown(app, cpu, e.esp - 0x10, e.eax, 0xc, 0x74, 0x58, e.ebx, true));
 }
 
-void floatFieldHidden(App* app, CPU& cpu)
+x86::reg32 floatFieldHidden(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, fieldShown(app, cpu, e.esp - 0xc, e.eax, 0xc, 0, 0, e.ebx, false));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, fieldShown(app, cpu, e.esp - 0xc, e.eax, 0xc, 0, 0, e.ebx, false));
 }
 
-void fixedFieldShown(App* app, CPU& cpu)
+x86::reg32 fixedFieldShown(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, fieldShown(app, cpu, e.esp - 0x10, e.eax, 0xd, 0x74, 0x58, e.ebx, true));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, fieldShown(app, cpu, e.esp - 0x10, e.eax, 0xd, 0x74, 0x58, e.ebx, true));
 }
 
-void fixedFieldHidden(App* app, CPU& cpu)
+x86::reg32 fixedFieldHidden(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, fieldShown(app, cpu, e.esp - 0xc, e.eax, 0xd, 0, 0, e.ebx, false));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, fieldShown(app, cpu, e.esp - 0xc, e.eax, 0xd, 0, 0, e.ebx, false));
 }
 
 /* 0x458080, 0x458910, 0x458e00, 0x459320: the field eax's value at edx, its
  * function ebx. */
-void bindIntField(App* app, CPU& cpu)
+x86::reg32 bindIntField(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, fieldBound(app, cpu, e.esp - 0xc, e.eax, 0xa, e.edx, e.ebx, 0x58, 0x6c));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, fieldBound(app, cpu, e.esp - 0xc, e.eax, 0xa, e.edx, e.ebx, 0x58, 0x6c));
 }
 
-void bindCharField(App* app, CPU& cpu)
+x86::reg32 bindCharField(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, fieldBound(app, cpu, e.esp - 0xc, e.eax, 0xb, e.edx, e.ebx, 0x50, 0x60));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, fieldBound(app, cpu, e.esp - 0xc, e.eax, 0xb, e.edx, e.ebx, 0x50, 0x60));
 }
 
-void bindFloatField(App* app, CPU& cpu)
+x86::reg32 bindFloatField(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, fieldBound(app, cpu, e.esp - 0xc, e.eax, 0xc, e.edx, e.ebx, 0x58, 0x74));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, fieldBound(app, cpu, e.esp - 0xc, e.eax, 0xc, e.edx, e.ebx, 0x58, 0x74));
 }
 
-void bindFixedField(App* app, CPU& cpu)
+x86::reg32 bindFixedField(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, fieldBound(app, cpu, e.esp - 0xc, e.eax, 0xd, e.edx, e.ebx, 0x58, 0x74));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, fieldBound(app, cpu, e.esp - 0xc, e.eax, 0xd, e.edx, e.ebx, 0x58, 0x74));
 }
 
 /* 0x4580b0: an edstring eax drawn, lit where edx. */
-void drawStringField(App* app, CPU& cpu)
+x86::reg32 drawStringField(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, stringDrawn(app, cpu, e.esp, e.eax, e.edx, e.ebx, e.ecx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, stringDrawn(app, cpu, e.esp, e.eax, e.edx, e.ebx, e.ecx));
 }
 
 /* 0x4581f0: key bx on an edstring eax. */
-void stringFieldKey(App* app, CPU& cpu)
+x86::reg32 stringFieldKey(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, stringKey(app, cpu, e.esp, e.eax, e.ebx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, stringKey(app, cpu, e.esp, e.eax, e.ebx));
 }
 
 /* 0x4583b0: an edstring eax shown: its buffer (`maxLength`, 11 for none, and
  * its ending) allocated. */
-void stringFieldShown(App* app, CPU& cpu)
+x86::reg32 stringFieldShown(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     const reg32 at = e.esp - 0x14, item = e.eax;
-    HeldEbp held(cpu, at);
     reg32 r;
-    if (!shownNow(app, cpu, at, item, 9, r, e.ebx, item))
-        return;
+    if (!shownNow(app, cpu, at, item, r))
+        return args.eax;
     if (r != 0)
     {
         StringField& f = record<StringField>(app, item);
@@ -2668,23 +2758,22 @@ void stringFieldShown(App* app, CPU& cpu)
             f.editing = 0;
         if (f.maxLength == 0)
             f.maxLength = 0xb;
-        if (!callCore<kAllocate, ea::reserved>(app, cpu, at, {kNoName, reg32(int32_t(f.maxLength) + 1), 0, item}, r,
+        if (!callCore<kAllocate, ea::reserved>(app, cpu, at, r,
                                                kNoName, reg32(int32_t(f.maxLength) + 1), reg32(0)))
-            return;
+            return args.eax;
         record<StringField>(app, item).buffer = r;
     }
-    e.back(cpu, r);
+    return e.back(cpu, args, r);
 }
 
 /* 0x458410: an edstring eax hidden: its buffer freed. */
-void stringFieldHidden(App* app, CPU& cpu)
+x86::reg32 stringFieldHidden(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     const reg32 at = e.esp - 0x10, item = e.eax;
-    HeldEbp held(cpu, at);
     reg32 r;
-    if (!shownNow(app, cpu, at, item, 9, r, item, item))
-        return;
+    if (!shownNow(app, cpu, at, item, r))
+        return args.eax;
     if (r != 0)
     {
         StringField& f = record<StringField>(app, item);
@@ -2692,12 +2781,12 @@ void stringFieldHidden(App* app, CPU& cpu)
             f.editing = 0;
         if (f.buffer != 0)
         {
-            if (!callCore<kFree, ea::purgeBlock>(app, cpu, at, {f.buffer, f.buffer, item, item}, r, f.buffer))
-                return;
+            if (!callCore<kFree, ea::purgeBlock>(app, cpu, at, r, f.buffer))
+                return args.eax;
             record<StringField>(app, item).buffer = 0;
         }
     }
-    e.back(cpu, r);
+    return e.back(cpu, args, r);
 }
 
 /* ======== The list of lines (List) ======== */
@@ -2720,7 +2809,6 @@ Result triangle(App* app, CPU& cpu, reg32 esp, int32_t x0, int32_t y0, int32_t x
                 int32_t y2, reg32 c0, reg32 c1, reg32 c2)
 {
     const reg32 at = esp - 0xc - 0x14;
-    HeldEbp held(cpu, esp - 0xc);
     reg32 r;
     if (kOverRace(app) != 0)
     {
@@ -2730,14 +2818,14 @@ Result triangle(App* app, CPU& cpu, reg32 esp, int32_t x0, int32_t y0, int32_t x
             setWord(app, kQuad + 0x20 * corner + 0xc, kNearW);
         }
         reg32 sx0, sx1, sx2, sy0, sy1, sy2;
-        if (!callGame(app, cpu, at, kToScreenX, {reg32(x0), reg32(y0), reg32(x1), reg32(y1)}, {}, sx0)
-            || !callGame(app, cpu, at, kToScreenX, {reg32(x1), reg32(y0), reg32(x1), reg32(y1)}, {}, sx1)
-            || !callGame(app, cpu, at, kToScreenX, {word(app, x2At), reg32(y0), sx1, reg32(y1)}, {}, sx2))
+        if (!plainAt<0x451400, text::screenX>(app, cpu, at, &sx0, reg32(x0))
+            || !plainAt<0x451400, text::screenX>(app, cpu, at, &sx1, reg32(x1))
+            || !plainAt<0x451400, text::screenX>(app, cpu, at, &sx2, word(app, x2At)))
             return {};
         setWord(app, x2At, sx2);
-        if (!callGame(app, cpu, at, kToScreenY, {reg32(y0), reg32(y0), sx1, reg32(y1)}, {}, sy0)
-            || !callGame(app, cpu, at, kToScreenY, {reg32(y1), sy0, sx1, reg32(y1)}, {}, sy1)
-            || !callGame(app, cpu, at, kToScreenY, {reg32(y2), sy0, sx1, sy1}, {}, sy2))
+        if (!plainAt<0x451440, text::screenY>(app, cpu, at, &sy0, reg32(y0))
+            || !plainAt<0x451440, text::screenY>(app, cpu, at, &sy1, reg32(y1))
+            || !plainAt<0x451440, text::screenY>(app, cpu, at, &sy2, reg32(y2)))
             return {};
         x0 = int32_t(sx0);
         x1 = int32_t(sx1);
@@ -2764,11 +2852,12 @@ Result triangle(App* app, CPU& cpu, reg32 esp, int32_t x0, int32_t y0, int32_t x
     setFloat(app, kQuad + 0x24, ofInt(y1));
     setFloat(app, kQuad + 0x44, ofInt(y2));
     setFloat(app, kQuad + 0x40, ofInt(int32_t(word(app, x2At))));
-    if (!callCoreNoEax<kRenderState, graphics::sendState>(app, cpu, at, {1, 0, reg32(x1), reg32(y1)}, reg32(1),
+    if (!callCoreNoEax<kRenderState, graphics::sendState>(app, cpu, at, reg32(1),
                                                           reg32(0)))
         return {};
     const reg32 ecx = markCorners(app, 3);
-    if (!callGame(app, cpu, at, kClipTriangle, {kQuad, kQuad + 0x20, kQuad + 0x40, ecx}, {}, r))
+    NFS2_USE(ecx);
+    if (!coreAt<kClipTriangle, vertices::triangleClippedAt, 0>(app, cpu, at, &r, kQuad, kQuad + 0x20, kQuad + 0x40))
         return {};
     return int32_t(r);
 }
@@ -2796,9 +2885,9 @@ Result listTriangle(App* app, CPU& cpu, reg32 at, int32_t x0, int32_t y0, int32_
 Result listBoxDrawn(App* app, CPU& cpu, reg32 esp, reg32 item)
 {
     const reg32 ebp = esp - 0x14, at = ebp - 0x118, text = ebp - 0x118;
-    HeldEbp held(cpu, ebp);
     reg32 r;
-    if (!callGame(app, cpu, at, kTextExtent, {kAg, ebp - 0x18, ebp - 0x18, ebp - 0x18}, {0x678a40}, r))
+    if (!plainAt<kTextExtent, frontend::wata::textMeasure>(app, cpu, at, &r, kAg, ebp - 0x18, ebp - 0x18, ebp - 0x18,
+                                                           0x678a40))
         return {};
     const auto bottom = [&] {
         return int32_t(reg32(int32_t(listBox(app, item).y))
@@ -2806,7 +2895,7 @@ Result listBoxDrawn(App* app, CPU& cpu, reg32 esp, reg32 item)
     };
     const auto right = [&] { return int32_t(listBox(app, item).x) + listBox(app, item).width; };
     const auto gradient = [&](int32_t a, int32_t b, int32_t c, int32_t d, reg32 from, reg32 to) {
-        return callGame(app, cpu, at, kGradient, {reg32(a), reg32(b), reg32(c), reg32(d)}, {from, to}, r);
+        return namedAt<draw2d::gradient, 2>(app, cpu, at, &r, reg32(a), reg32(b), reg32(c), reg32(d), from, to);
     };
     if (!gradient(listBox(app, item).x, listBox(app, item).y, right(), bottom(), 0xff0000aa, 0xff00aa00))
         return {};
@@ -2829,8 +2918,7 @@ Result listBoxDrawn(App* app, CPU& cpu, reg32 esp, reg32 item)
         const reg32 colour = int32_t(i) + listBox(app, item).first == listBox(app, item).chosen ? 0xffe440
                              : (mark & 0x80) != 0                                               ? 0xffffff
                                                                                                 : 0x908080;
-        if (!callGame(app, cpu, at, kDrawMenuText,
-                      {text, reg32(int32_t(listBox(app, item).x)), reg32(int32_t(lineY)), 0x12}, {0, colour}, r))
+        if (!namedAt<text::menuTextDrawn, 2>(app, cpu, at, &r, text, reg32(int32_t(listBox(app, item).x)), reg32(int32_t(lineY)), 0x12, 0, colour))
             return {};
         setByte(app, line, mark);
         lineY = int16_t(lineY + int16_t(kLineHeight(app)));
@@ -2874,8 +2962,9 @@ Result pointedAtLine(App* app, CPU& cpu, reg32 esp, reg32 item)
         x -= 0x1e;
     kPointerX.set(app, x);
     reg32 r;
-    if (!callGame(app, cpu, esp - 0x14, kSetPointer,
-                  {reg32(x), reg32(kPointerY(app)), reg32(shown), reg32(int32_t(l.boxY))}, {}, r))
+    if (!callCore<0x49bfc0, frontend::screen::setPointer>(
+            app, cpu, esp - 0x14, r,
+            reg32(x), reg32(kPointerY(app))))
         return {};
     return int32_t(r);
 }
@@ -2930,9 +3019,8 @@ int32_t partAt(App* app, reg32 item, int32_t x, int32_t y)
 Result chosenAt(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 edx, int32_t x, int32_t y)
 {
     const reg32 ebp = esp - 0xc, at = ebp - 4;
-    HeldEbp held(cpu, ebp);
     reg32 r;
-    if (!shownNow(app, cpu, at, item, 7, r, reg32(x), reg32(y)))
+    if (!shownNow(app, cpu, at, item, r))
         return {};
     if (r == 0)
         return 0;
@@ -2941,7 +3029,7 @@ Result chosenAt(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 edx, int32_t x,
     l.chosen = int16_t(line + l.first);
     if (l.choose == 0)
         return 0;
-    if (!callGame(app, cpu, at, l.choose, {item, edx, reg32(int32_t(l.chosen)), 0}, {}, r))
+    if (!gameCall(app, cpu, at, l.choose, {item, edx, reg32(int32_t(l.chosen)), 0}, {}, r))
         return {};
     return int32_t(r);
 }
@@ -2952,9 +3040,8 @@ Result chosenAt(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 edx, int32_t x,
 Result listBoxKeyed(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 edx, reg32 ebx)
 {
     const reg32 ebp = esp - 0x10, at = ebp - 4;
-    HeldEbp held(cpu, ebp);
     reg32 r;
-    if (!shownNow(app, cpu, at, item, 7, r, ebx, 0))
+    if (!shownNow(app, cpu, at, item, r))
         return {};
     if (r == 0)
         return 0;
@@ -2993,10 +3080,9 @@ Result listBoxKeyed(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 edx, reg32 
 Result listBoxLaidOut(App* app, CPU& cpu, reg32 esp, reg32 item)
 {
     const reg32 ebp = esp - 0x14, at = ebp - 4;
-    HeldEbp held(cpu, ebp);
     reg32 r;
-    if (!callGame(app, cpu, at, kTextExtent, {kAg, ebp - 4, ebp - 4, ebp - 4}, {0x678a40}, r)
-        || !shownNow(app, cpu, at, item, 7, r, ebp - 4, ebp - 4))
+    if (!plainAt<kTextExtent, frontend::wata::textMeasure>(app, cpu, at, &r, kAg, ebp - 4, ebp - 4, ebp - 4, 0x678a40)
+        || !shownNow(app, cpu, at, item, r))
         return {};
     if (r == 0)
         return 0;
@@ -3012,70 +3098,69 @@ Result listBoxLaidOut(App* app, CPU& cpu, reg32 esp, reg32 item)
 }  // namespace
 
 /* 0x465500: the list eax drawn. */
-void drawListBox(App* app, CPU& cpu)
+x86::reg32 drawListBox(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, listBoxDrawn(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, listBoxDrawn(app, cpu, e.esp, e.eax));
 }
 
 /* 0x465880: the pointer on the list eax's chosen line. */
-void pointAtListBoxLine(App* app, CPU& cpu)
+x86::reg32 pointAtListBoxLine(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, pointedAtLine(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, pointedAtLine(app, cpu, e.esp, e.eax));
 }
 
 /* 0x4658f0, 0x465950: the list eax's next, previous line; quietly where ebx. */
-void listBoxDown(App* app, CPU& cpu)
+x86::reg32 listBoxDown(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, listMoved(app, cpu, e.esp, e.eax, e.ebx, true));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, listMoved(app, cpu, e.esp, e.eax, e.ebx, true));
 }
 
-void listBoxUp(App* app, CPU& cpu)
+x86::reg32 listBoxUp(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, listMoved(app, cpu, e.esp, e.eax, e.ebx, false));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, listMoved(app, cpu, e.esp, e.eax, e.ebx, false));
 }
 
 /* 0x4659a0: the part of the list eax at edx, ebx. */
-void listBoxPartAt(App* app, CPU& cpu)
+x86::reg32 listBoxPartAt(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, reg32(partAt(app, e.eax, int32_t(e.edx), int32_t(e.ebx))));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, reg32(partAt(app, e.eax, int32_t(e.edx), int32_t(e.ebx))));
 }
 
 /* 0x465a10: whether edx, ebx is on the list eax's scroll bar. */
-void listBoxArrowAt(App* app, CPU& cpu)
+x86::reg32 listBoxArrowAt(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, partAt(app, e.eax, int32_t(e.edx), int32_t(e.ebx)) != 0 ? 1 : 0);
+    const Entry e(cpu, args);
+    return e.back(cpu, args, partAt(app, e.eax, int32_t(e.edx), int32_t(e.ebx)) != 0 ? 1 : 0);
 }
 
 /* 0x465a30: key bx on the list eax (edx handed to its function). */
-void listBoxKey(App* app, CPU& cpu)
+x86::reg32 listBoxKey(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, listBoxKeyed(app, cpu, e.esp, e.eax, e.edx, e.ebx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, listBoxKeyed(app, cpu, e.esp, e.eax, e.edx, e.ebx));
 }
 
 /* 0x465ba0: the list eax laid out. */
-void layoutListBox(App* app, CPU& cpu)
+x86::reg32 layoutListBox(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, listBoxLaidOut(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, listBoxLaidOut(app, cpu, e.esp, e.eax));
 }
 
 /* 0x465c10: the list eax shown: from its first line, 3 rows and 0x118 wide
  * for none. */
-void listBoxShown(App* app, CPU& cpu)
+x86::reg32 listBoxShown(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     const reg32 item = e.eax, at = e.esp - 0x10;
-    HeldEbp held(cpu, at);
     reg32 r;
-    if (!shownNow(app, cpu, at, item, 7, r, item, item))
-        return;
+    if (!shownNow(app, cpu, at, item, r))
+        return args.eax;
     if (r != 0)
     {
         ListBox& l = listBox(app, item);
@@ -3086,42 +3171,41 @@ void listBoxShown(App* app, CPU& cpu)
         if (l.width == 0)
             l.width = 0x118;
     }
-    e.back(cpu, r);
+    return e.back(cpu, args, r);
 }
 
 /* 0x465c60: the list eax hidden: its lines freed. */
-void listBoxHidden(App* app, CPU& cpu)
+x86::reg32 listBoxHidden(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     const reg32 item = e.eax, at = e.esp - 0x10;
-    HeldEbp held(cpu, at);
     reg32 r;
-    if (!shownNow(app, cpu, at, item, 7, r, item, item))
-        return;
+    if (!shownNow(app, cpu, at, item, r))
+        return args.eax;
     if (r != 0)
     {
         const reg32 lines = listBox(app, item).lines;
-        if (lines != 0 && !callCore<kFree, ea::purgeBlock>(app, cpu, at, {lines, lines, item, item}, r, lines))
-            return;
+        if (lines != 0 && !callCore<kFree, ea::purgeBlock>(app, cpu, at, r, lines))
+            return args.eax;
         listBox(app, item).lines = 0;
     }
-    e.back(cpu, r);
+    return e.back(cpu, args, r);
 }
 
 /* 0x465ca0 (stdcall 4): the list eax's line at ecx chosen, its function
  * handed edx. */
-void listBoxChooseAt(App* app, CPU& cpu)
+x86::reg32 listBoxChooseAt(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, chosenAt(app, cpu, e.esp, e.eax, e.edx, int32_t(e.ebx), int32_t(e.ecx)), 4);
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, chosenAt(app, cpu, e.esp, e.eax, e.edx, int32_t(e.ebx), int32_t(e.ecx)), 4);
 }
 
 /* 0x4d8570 (stdcall 0x14): the triangle eax, edx; ebx, ecx; the stack's
  * corner and its three colours. */
-void drawShadedTriangle(App* app, CPU& cpu)
+x86::reg32 drawShadedTriangle(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu,
+    const Entry e(cpu, args);
+    return e.finish(cpu, args,
              triangle(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx), int32_t(e.ebx), int32_t(e.ecx), e.esp + 4,
                       int32_t(e.arg(app, 1)), e.arg(app, 2), e.arg(app, 3), e.arg(app, 4)),
              0x14);
@@ -3210,10 +3294,10 @@ constexpr reg32 kSetClip = 0x4bebe0, kFloor = 0x4f1c30, kLocateShape = 0x4ef270,
 constexpr reg32 kGetKeyStateSlot = 0x534738, kArtShapes = 0x8b48c0, kStrncmp = 0x4eb390;
 constexpr Var<int32_t> kArtShapeCount{0x8b7628};
 constexpr Var<reg32> kArtFile{0x559228};
-constexpr guest::Native kTexturedQuad = draw2d::drawTexturedQuad, kShadedQuad = draw2d::drawShadedQuad;
-constexpr guest::Native kViewport = text::viewport;
-constexpr guest::Native kShapeSize = shapes::shapeSize, kArtTextures = shapes::artShapeTextures;
-constexpr guest::Native kDrawArt = shapes::drawArtShape;
+constexpr reg32 kTexturedQuad = 0x4db000, kShadedQuad = 0x4db380;
+constexpr reg32 kViewport = 0x4beb80;
+constexpr reg32 kShapeSize = 0x4d66f0, kArtTextures = 0x4d6390;
+constexpr reg32 kDrawArt = 0x4d7160;
 
 int32_t partsOf(App* app, int32_t kind)
 {
@@ -3292,15 +3376,15 @@ int32_t thumbPlaced(App* app, CPU& cpu, reg32 item, reg32 startAt, reg32 endAt, 
  * to their words).  On the x87's stack as the code leaves it. */
 std::optional<Float> snapped(App* app, CPU& cpu, reg32 esp)
 {
+    FpuStatus st;
     const reg32 ebp = esp - 0xc, at = ebp - 0x10, stepAt = esp + 4, valueAt = esp + 8;
-    HeldEbp held(cpu, ebp);
     bool snap = true;
     if (int32_t(word(app, stepAt)) > int32_t(kOne))
         setWord(app, stepAt, kOne);
     else
     {
-        cpu.fpu.compare(Float(0.0), Float(floatAt(app, valueAt)));
-        if (!cpu.fpu.status.c0 && !cpu.fpu.status.c3)
+        st.set(Float(0.0), Float(floatAt(app, valueAt)));
+        if (!st.c0() && !st.c3())
             setWord(app, stepAt, 0);
         snap = (word(app, stepAt) & 0x7fffffff) != 0;
     }
@@ -3308,16 +3392,15 @@ std::optional<Float> snapped(App* app, CPU& cpu, reg32 esp)
     {
         const Float steps = fp::div(Float(floatAt(app, valueAt)), Float(floatAt(app, stepAt)));
         setFloat(app, ebp - 0x10, float(steps));
-        const Words d = wordsOf(double(steps));
-        if (!callGame(app, cpu, at, kFloor, {}, {d.lo, d.hi}))
-            return {};
-        setFloat(app, ebp - 8, float(cpu.fpu.pop()));
+        // 0x4f1c30's floor of the double: exact, as the host's.
+        NFS2_USE(at);
+        setFloat(app, ebp - 8, float(std::floor(double(steps))));
         const Float rest = fp::sub(Float(floatAt(app, ebp - 0x10)), Float(floatAt(app, ebp - 8)));
         setFloat(app, ebp - 0xc, float(fp::abs(rest)));
         if ((word(app, ebp - 0xc) & 0x7fffffff) != 0)
         {
-            cpu.fpu.compare(Float(floatAt(app, ebp - 0xc)), Float(kHalf(app)));
-            const Float whole = !cpu.fpu.status.c0 ? fp::add(Float(1.0), Float(floatAt(app, ebp - 8)))
+            st.set(Float(floatAt(app, ebp - 0xc)), Float(kHalf(app)));
+            const Float whole = !st.c0() ? fp::add(Float(1.0), Float(floatAt(app, ebp - 8)))
                                                    : Float(floatAt(app, ebp - 8));
             setFloat(app, ebp - 4, float(fp::mul(whole, Float(floatAt(app, stepAt)))));
         }
@@ -3330,8 +3413,8 @@ std::optional<Float> snapped(App* app, CPU& cpu, reg32 esp)
         setWord(app, ebp - 4, kOne);
     else
     {
-        cpu.fpu.compare(Float(0.0), Float(floatAt(app, ebp - 4)));
-        if (!cpu.fpu.status.c0 && !cpu.fpu.status.c3)
+        st.set(Float(0.0), Float(floatAt(app, ebp - 4)));
+        if (!st.c0() && !st.c3())
             setWord(app, ebp - 4, 0);
     }
     return Float(floatAt(app, ebp - 4));
@@ -3350,7 +3433,7 @@ Result changeTold(App* app, CPU& cpu, reg32 at, reg32 item, reg32 eax, reg32 edx
     if (function == 0)
         return int32_t(eax);
     reg32 r;
-    if (!callGame(app, cpu, at, function, {item, edx, function, 0}, {}, r))
+    if (!gameCall(app, cpu, at, function, {item, edx, function, 0}, {}, r))
         return {};
     return int32_t(r);
 }
@@ -3370,17 +3453,17 @@ reg32 thumbMoved(App* app, reg32 item, reg32 left, reg32 startAt, reg32 placeAt)
  * function told. */
 Result valueSet(App* app, CPU& cpu, reg32 esp, reg32 item)
 {
+    FpuStatus st;
     const reg32 ebp = esp - 0x14, at = ebp - 0x18, valueAt = esp + 4;
-    HeldEbp held(cpu, ebp);
     const double value = double(Float(floatAt(app, valueAt)));
     app->getMemory<double>(ebp - 0x18) = value;
-    cpu.fpu.compare(Float(1.0), Float(value));
-    if (cpu.fpu.status.c0)
+    st.set(Float(1.0), Float(value));
+    if (st.c0())
         setWord(app, valueAt, kOne);
     else
     {
-        cpu.fpu.compare(Float(0.0), Float(value));
-        if (!cpu.fpu.status.c0 && !cpu.fpu.status.c3)
+        st.set(Float(0.0), Float(value));
+        if (!st.c0() && !st.c3())
             setWord(app, valueAt, 0);
     }
     const std::optional<Float> r = snappedAt(app, cpu, at, slider(app, item).step, word(app, valueAt));
@@ -3397,17 +3480,18 @@ Result valueSet(App* app, CPU& cpu, reg32 esp, reg32 item)
  * 1 past 1, a hundredth for none or less.  eax as fnstsw leaves it. */
 reg32 arrowStepSet(App* app, CPU& cpu, reg32 item, reg32 step, int32_t axis, reg32 eax)
 {
+    FpuStatus st;
     const reg32 to = item + reg32(axis) * 4 + 0x48;
     const Float value = Float(double(floatOf(step)));
-    cpu.fpu.compare(Float(1.0), value);
-    if (cpu.fpu.status.c0)
+    st.set(Float(1.0), value);
+    if (st.c0())
     {
         setWord(app, to, kOne);
-        return (eax & 0xffff0000) | cpu.fpu.status.word;
+        return (eax & 0xffff0000) | st.word;
     }
-    cpu.fpu.compare(Float(0.0), value);
-    setWord(app, to, cpu.fpu.status.c0 ? step : kHundredth);
-    return cpu.fpu.status.c0 ? step : (eax & 0xffff0000) | cpu.fpu.status.word;
+    st.set(Float(0.0), value);
+    setWord(app, to, st.c0() ? step : kHundredth);
+    return st.c0() ? step : (eax & 0xffff0000) | st.word;
 }
 
 /* 0x469590's: the slider dragged to `place` along its track: its value that
@@ -3416,7 +3500,6 @@ reg32 arrowStepSet(App* app, CPU& cpu, reg32 item, reg32 step, int32_t axis, reg
 Result draggedTo(App* app, CPU& cpu, reg32 esp, reg32 item, int16_t place)
 {
     const reg32 ebp = esp - 0x10, at = ebp - 0x1c;
-    HeldEbp held(cpu, ebp);
     thumbPlaced(app, cpu, item, ebp - 0x14, ebp - 8, ebp - 0x18, ebp - 4);
     if (place < 0)
         setHalf(app, ebp - 4, 0);
@@ -3495,16 +3578,16 @@ void fromFarEnd(App* app, reg32 lengthAt, reg32 placeAt)
  * 1 (from the far end) and 3, for axis 2 part 4; its function told. */
 Result twoAxisValueSet(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 eax)
 {
+    FpuStatus st;
     const reg32 ebp = esp - 0x18, at = ebp - 0x10, valueAt = esp + 4;
-    HeldEbp held(cpu, ebp);
     const int32_t axis = int32_t(word(app, esp + 8));
     if (int32_t(word(app, valueAt)) > int32_t(kOne))
         setWord(app, valueAt, kOne);
     else
     {
-        cpu.fpu.compare(Float(0.0), Float(floatAt(app, valueAt)));
-        eax = (eax & 0xffff0000) | cpu.fpu.status.word;
-        if (!cpu.fpu.status.c0 && !cpu.fpu.status.c3)
+        st.set(Float(0.0), Float(floatAt(app, valueAt)));
+        eax = (eax & 0xffff0000) | st.word;
+        if (!st.c0() && !st.c3())
             setWord(app, valueAt, 0);
     }
     const std::optional<Float> r = snappedAt(app, cpu, at, slider(app, item).step, word(app, valueAt));
@@ -3550,7 +3633,6 @@ Result twoAxisValueSet(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 eax)
 Result twoAxisDragged(App* app, CPU& cpu, reg32 esp, reg32 item, int16_t to, int32_t axis)
 {
     const reg32 ebp = esp - 0x10, at = ebp - 0x20;
-    HeldEbp held(cpu, ebp);
     setHalf(app, ebp - 8, to);
     const reg32 start = ebp - 0x1c, end = ebp - 0x14, length = ebp - 0x18, place = ebp - 0x10;
     const auto placed = [&](reg32 part) {
@@ -3622,10 +3704,10 @@ Result twoAxisDragged(App* app, CPU& cpu, reg32 esp, reg32 item, int16_t to, int
  * is not within 0 and 1).  Let go, the thumb put down, the repeat stopped. */
 Result sliderTracked(App* app, CPU& cpu, reg32 esp, reg32 item)
 {
+    FpuStatus st;
     const reg32 ebp = esp - 0x18, at = ebp - 0x14;
-    HeldEbp held(cpu, ebp);
     reg32 e;
-    if (!callCore<kMouseHolds, frontend::glue::mouseKey>(app, cpu, at, {item, item}, e))
+    if (!callCore<kMouseHolds, frontend::glue::mouseKey>(app, cpu, at, e))
         return {};
     Slider& s = slider(app, item);
     if (e == 0)
@@ -3681,10 +3763,10 @@ Result sliderTracked(App* app, CPU& cpu, reg32 esp, reg32 item)
             slider(app, item).held = 0;
     }
     // The step: its own, or the arrows' where it is not within 0 and 1.
-    cpu.fpu.compare(Float(0.0), floatOf(slider(app, item).step));
-    e = (e & 0xffff0000) | cpu.fpu.status.word;
+    st.set(Float(0.0), floatOf(slider(app, item).step));
+    e = (e & 0xffff0000) | st.word;
     reg32 step;
-    if (cpu.fpu.status.c0 && int32_t(slider(app, item).step) <= int32_t(kOne))
+    if (st.c0() && int32_t(slider(app, item).step) <= int32_t(kOne))
         step = slider(app, item).step;
     else
         e = step = slider(app, item).arrowSteps[0];
@@ -3700,16 +3782,16 @@ Result sliderTracked(App* app, CPU& cpu, reg32 esp, reg32 item)
         {
             v = fp::sub(v, floatOf(step));
             setFloat(app, item + 0x54, float(v));
-            cpu.fpu.compare(Float(0.0), v);
-            if (!cpu.fpu.status.c0 && !cpu.fpu.status.c3)
+            st.set(Float(0.0), v);
+            if (!st.c0() && !st.c3())
                 slider(app, item).values[0] = 0;
         }
         else
         {
             v = fp::add(v, floatOf(step));
             setFloat(app, item + 0x54, float(v));
-            cpu.fpu.compare(Float(1.0), v);
-            if (cpu.fpu.status.c0)
+            st.set(Float(1.0), v);
+            if (st.c0())
                 slider(app, item).values[0] = kOne;
         }
         if (!valueSet(app, cpu, argsBelow(app, at, {slider(app, item).values[0], 0}), item))
@@ -3728,9 +3810,8 @@ Result sliderTracked(App* app, CPU& cpu, reg32 esp, reg32 item)
 Result twoAxisTracked(App* app, CPU& cpu, reg32 esp, reg32 item)
 {
     const reg32 ebp = esp - 0x18, at = ebp - 0x10;
-    HeldEbp held(cpu, ebp);
     reg32 e;
-    if (!callCore<kMouseHolds, frontend::glue::mouseKey>(app, cpu, at, {item, item}, e))
+    if (!callCore<kMouseHolds, frontend::glue::mouseKey>(app, cpu, at, e))
         return {};
     Slider& s = slider(app, item);
     if (e == 0)
@@ -3782,11 +3863,11 @@ Result twoAxisTracked(App* app, CPU& cpu, reg32 esp, reg32 item)
  * or the arrows' where that is not within 0 and 1.  2 for a key taken. */
 Result sliderKeyed(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 ebx)
 {
+    FpuStatus st;
     const reg32 at = esp - 0x10 - 4;
-    HeldEbp held(cpu, esp - 0x10);
     const uint16_t key = uint16_t(ebx);
-    cpu.fpu.compare(Float(0.0), floatOf(slider(app, item).step));
-    const reg32 step = cpu.fpu.status.c0 && int32_t(slider(app, item).step) <= int32_t(kOne)
+    st.set(Float(0.0), floatOf(slider(app, item).step));
+    const reg32 step = st.c0() && int32_t(slider(app, item).step) <= int32_t(kOne)
                            ? slider(app, item).step
                            : slider(app, item).arrowSteps[0];
     if (slider(app, item).held != 0)
@@ -3808,16 +3889,16 @@ Result sliderKeyed(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 ebx)
     {
         v = fp::sub(v, floatOf(step));
         setFloat(app, item + 0x54, float(v));
-        cpu.fpu.compare(Float(0.0), v);
-        if (!cpu.fpu.status.c0 && !cpu.fpu.status.c3)
+        st.set(Float(0.0), v);
+        if (!st.c0() && !st.c3())
             slider(app, item).values[0] = 0;
     }
     else
     {
         v = fp::add(v, floatOf(step));
         setFloat(app, item + 0x54, float(v));
-        cpu.fpu.compare(Float(1.0), v);
-        if (cpu.fpu.status.c0)
+        st.set(Float(1.0), v);
+        if (st.c0())
             slider(app, item).values[0] = kOne;
     }
     if (!valueSet(app, cpu, argsBelow(app, at, {slider(app, item).values[0], 0}), item))
@@ -3831,26 +3912,22 @@ Result sliderKeyed(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 ebx)
  * 2 for a key taken. */
 Result twoAxisKeyed(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 ebx)
 {
+    FpuStatus st;
     const reg32 ebp = esp - 0x10, at = ebp - 0x10;
-    HeldEbp held(cpu, ebp);
     const uint16_t key = uint16_t(ebx);
     if (uint16_t(slider(app, item).held) != 0xffff)
         return 0;
     if (key != kLeft && key != kRight)
         return 0;
     // GetAsyncKeyState(Shift), the registers and esp as the code has them: the port's own, called as
-    // C++ (native_windows.h); in the check through its import's slot.
+    // C++ (native_windows.h).
     cpu.esp = at;
-    cpu.eax = ebx;
-    cpu.edx = 0;
-    cpu.ebx = item;
-    cpu.ecx = uint16_t(slider(app, item).held);
     const std::optional<reg32> r = guest::windows<kGetKeyStateSlot, &host::asyncKeyState>(app, cpu, 0x10);
     if (!r)
         return {};
     const int32_t axis = (*r & 0x8000) != 0 ? 0 : 1;
-    cpu.fpu.compare(Float(0.0), floatOf(slider(app, item).step));
-    const reg32 step = cpu.fpu.status.c0 && int32_t(slider(app, item).step) <= int32_t(kOne)
+    st.set(Float(0.0), floatOf(slider(app, item).step));
+    const reg32 step = st.c0() && int32_t(slider(app, item).step) <= int32_t(kOne)
                            ? slider(app, item).step
                            : slider(app, item).arrowSteps[axis];
     const reg32 valueAt = item + 0x54 + 4 * reg32(axis);
@@ -3859,16 +3936,16 @@ Result twoAxisKeyed(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 ebx)
     {
         v = fp::sub(v, floatOf(step));
         setFloat(app, valueAt, float(v));
-        cpu.fpu.compare(Float(0.0), v);
-        if (!cpu.fpu.status.c0 && !cpu.fpu.status.c3)
+        st.set(Float(0.0), v);
+        if (!st.c0() && !st.c3())
             setWord(app, valueAt, 0);
     }
     else
     {
         v = fp::add(v, floatOf(step));
         setFloat(app, valueAt, float(v));
-        cpu.fpu.compare(Float(1.0), v);
-        if (cpu.fpu.status.c0)
+        st.set(Float(1.0), v);
+        if (st.c0())
             setWord(app, valueAt, kOne);
     }
     if (!twoAxisValueSet(app, cpu, argsBelow(app, at, {word(app, valueAt), reg32(axis)}), item, item))
@@ -3889,26 +3966,25 @@ Result partSizes(App* app, CPU& cpu, reg32 esp, reg32 item);
 Result shapeOf(App* app, CPU& cpu, reg32 esp, reg32 name, reg32 ebx)
 {
     const reg32 at = esp - 0x14;
-    HeldEbp held(cpu, at);
     reg32 r;
     for (int32_t i = 0; i < kArtShapeCount(app); ++i)
     {
         ebx = 4;
-        if (!callCore<kStrncmp, watcom::clib::strncmp>(app, cpu, at, {kArtShapes + reg32(i) * 0x14 + 0x10, name, 4, name},
+        if (!callCore<kStrncmp, watcom::clib::strncmp>(app, cpu, at,
                                                        r, kArtShapes + reg32(i) * 0x14 + 0x10, name, reg32(4)))
             return {};
         if (r == 0)
             return i;
     }
     reg32 shape, made;
-    if (!callGame(app, cpu, at, kLocateShape, {kArtFile(app), name, ebx, name}, {}, shape))
+    if (!plainAt<kLocateShape, ea::shapeLocated>(app, cpu, at, &shape, kArtFile(app), name))
         return {};
     if (shape == 0)
         return -1;
-    if (!callGame(app, cpu, at, kArtTextures, {shape, 0, ebx, name}, {}, made))
+    if (!coreAt<0x4d6390, shapes::artTexturesOf, 0>(app, cpu, at, &made, shape, 0, name))
         return {};
     if (made != 0
-        && !callCore<kStrncpy, watcom::clib::strncpy>(app, cpu, at, {kArtShapes + made * 0x14 + 0x10, name, 4, name}, r,
+        && !callCore<kStrncpy, watcom::clib::strncpy>(app, cpu, at, r,
                                                       kArtShapes + made * 0x14 + 0x10, name, reg32(4)))
         return {};
     return int32_t(made);
@@ -3917,7 +3993,6 @@ Result shapeOf(App* app, CPU& cpu, reg32 esp, reg32 name, reg32 ebx)
 Result partSizes(App* app, CPU& cpu, reg32 esp, reg32 item)
 {
     const reg32 at = esp - 0x18 - 4;
-    HeldEbp held(cpu, esp - 0x18);
     for (int32_t i = 0;; ++i)
     {
         const int32_t kind = slider(app, item).kind;
@@ -3960,7 +4035,7 @@ Result partSizes(App* app, CPU& cpu, reg32 esp, reg32 item)
         const reg32 partAt = item + 0x7c + 8 * reg32(i);
         reg32 r;
         if (half(app, b) != -1
-            && !callGame(app, cpu, at, kShapeSize, {reg32(int32_t(half(app, b))), partAt + 4, partAt + 6, item}, {}, r))
+            && !namedPlainAt<shapes::shapeSizeOf>(app, cpu, at, &r, reg32(int32_t(half(app, b))), partAt + 4, partAt + 6))
             return {};
         SliderPart& q = slider(app, item).parts[i];
         if (q.height <= 0 || q.width <= 0)
@@ -4041,7 +4116,6 @@ void placedByRow(App* app, reg32 item)
 Result sliderSetUp(App* app, CPU& cpu, reg32 esp, reg32 item)
 {
     const reg32 at = esp - 0x10;
-    HeldEbp held(cpu, at);
     placedByRow(app, item);
     sliderPlaced(app, item);
     arrowStepSet(app, cpu, item, slider(app, item).arrowSteps[0], 0, item);
@@ -4068,7 +4142,6 @@ Result sliderSetUp(App* app, CPU& cpu, reg32 esp, reg32 item)
 Result twoAxisSetUp(App* app, CPU& cpu, reg32 esp, reg32 item)
 {
     const reg32 at = esp - 0x10;
-    HeldEbp held(cpu, at);
     placedByRow(app, item);
     twoAxisPlacedParts(app, item);
     reg32 e = item;
@@ -4136,37 +4209,39 @@ bool artQuad(App* app, CPU& cpu, reg32 at, int32_t x0, int32_t y0, int32_t x1, i
              int32_t x3, int32_t y3, reg32 places, reg32 colour)
 {
     const auto t = [&](reg32 i) { return word(app, places + 4 * i); };
-    return callGame(app, cpu, at, kTexturedQuad, {reg32(x0), reg32(y0), reg32(x1), reg32(y1)},
-                    {reg32(x2), reg32(y2), reg32(x3), reg32(y3), t(0), t(1), t(2), t(3), t(4), t(5), t(6), t(7),
-                     kArtTexture(app), colour});
+    return coreAt<0x4db000, draw2d::texturedQuad, 14>(
+        app, cpu, at, nullptr,
+        draw2d::ArtQuad{{x0, x1, x2, x3}, {y0, y1, y2, y3}, {t(0), t(2), t(4), t(6)}, {t(1), t(3), t(5), t(7)},
+                        kArtTexture(app), colour});
 }
 
 /* A quad of four colours, its corners from (x0, y0) round. */
 bool colourQuad(App* app, CPU& cpu, reg32 at, int32_t x0, int32_t y0, int32_t x1, int32_t y1, int32_t x2, int32_t y2,
                 int32_t x3, int32_t y3, reg32 c0, reg32 c1, reg32 c2, reg32 c3)
 {
-    return callGame(app, cpu, at, kShadedQuad, {reg32(x0), reg32(y0), reg32(x1), reg32(y1)},
-                    {reg32(x2), reg32(y2), reg32(x3), reg32(y3), c0, c1, c2, c3});
+    return coreAt<0x4db380, draw2d::shadedQuad, 8>(app, cpu, at, nullptr,
+                                                   draw2d::ShadedQuad{{x0, x1, x2, x3}, {y0, y1, y2, y3}, {c0, c1, c2, c3}});
 }
 
 /* The clip set to a rectangle of the screen's own. */
 bool clipped(App* app, CPU& cpu, reg32 at, reg32 left, reg32 top, reg32 right, reg32 bottom)
 {
-    return callGame(app, cpu, at, kSetClip, {left, top, right, bottom});
+    return plainAt<kSetClip, graphics::clipSet>(app, cpu, at, nullptr, x86::sreg32(left), x86::sreg32(top),
+                                                x86::sreg32(right), x86::sreg32(bottom));
 }
 
 /* The screen's viewport kept in the frame at `kept` (left, top, width,
  * height: eax's, edx's, ebx's, ecx's words) and put back. */
 bool viewportKept(App* app, CPU& cpu, reg32 at, reg32 left, reg32 top, reg32 width, reg32 height)
 {
-    return callGame(app, cpu, at, kViewport, {left, top, width, height});
+    return plainAt<0x4beb80, text::viewportOf>(app, cpu, at, nullptr, left, top, width, height);
 }
 
 /* 0x469680's: a slider drawn. */
 Result sliderDrawn(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 hot)
 {
+    FpuStatus st;
     const reg32 ebp = esp - 0x14, at = ebp - 0xc4, text = ebp - 0xc4;
-    HeldEbp held(cpu, ebp);
     for (reg32 i = 0; i < 0x20; i += 4)
         setWord(app, text + i, word(app, kSliderBlank + i));
     // The viewport kept: its left, top, width and height.
@@ -4198,15 +4273,11 @@ Result sliderDrawn(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 hot)
         {
             // No art: a rectangle in its kind's colour, the hot arrow or thumb framed.
             const reg32 fill = word(app, kPartColours + 0x30 * reg32(kind) + 8 * reg32(part)) | 0xff000000;
-            if (!callGame(app, cpu, at, kFilled, {reg32(int32_t(p.x)), reg32(int32_t(p.y)), reg32(int32_t(p.width)),
-                                                  reg32(int32_t(p.height))},
-                          {fill}, r))
+            if (!namedAt<draw2d::filled, 1>(app, cpu, at, &r, reg32(int32_t(p.x)), reg32(int32_t(p.y)), reg32(int32_t(p.width)), reg32(int32_t(p.height)), fill))
                 return false;
             if (hot == 0 || part != under || (part != 0 && part != 2 && part != 3))
                 return true;
-            return callGame(app, cpu, at, kFrame, {reg32(int32_t(p.x)), reg32(int32_t(p.y)), reg32(int32_t(p.width)),
-                                                   reg32(int32_t(p.height))},
-                            {0xffffe440}, r);
+            return namedAt<draw2d::outline, 1>(app, cpu, at, &r, reg32(int32_t(p.x)), reg32(int32_t(p.y)), reg32(int32_t(p.width)), reg32(int32_t(p.height)), 0xffffe440);
         }
         const int32_t x = p.x, y = p.y, w = p.width, h = p.height;
         const reg32 alpha = slider(app, item).alphaOn != 0 && (kRenderFlags(app) & 2) == 0
@@ -4260,9 +4331,7 @@ Result sliderDrawn(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 hot)
             {
                 if (half(app, shapeAt(kind, 1, 1)) == -1)
                     return true;
-                if (!callGame(app, cpu, at, kDrawArt, {reg32(int32_t(half(app, shapeAt(kind, 1, 1)))), reg32(x),
-                                                       reg32(y), alpha},
-                              {}, r)
+                if (!namedAt<shapes::drawArt, 0>(app, cpu, at, &r, reg32(int32_t(half(app, shapeAt(kind, 1, 1)))), reg32(x), reg32(y), alpha)
                     || !viewportKept(app, cpu, at, keptLeft, keptTop, keptWidth, keptHeight))
                     return false;
                 const SliderPart& t0 = slider(app, item).parts[0];
@@ -4289,9 +4358,7 @@ Result sliderDrawn(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 hot)
                 const reg32 clipTop = onScreen(cpu, reg32(y - 2) * H, kPerHeight(app));
                 const reg32 clipLeft = onScreen(cpu, W * reg32(x), kPerWidth(app));
                 if (!clipped(app, cpu, at, clipLeft, clipTop, clipRight, clipBottom)
-                    || !callGame(app, cpu, at, kDrawArt, {reg32(int32_t(half(app, shapeAt(kind, 1, 0)))), reg32(x),
-                                                          reg32(y), alpha},
-                                 {}, r)
+                    || !namedAt<shapes::drawArt, 0>(app, cpu, at, &r, reg32(int32_t(half(app, shapeAt(kind, 1, 0)))), reg32(x), reg32(y), alpha)
                     || !restore())
                     return false;
             }
@@ -4309,9 +4376,7 @@ Result sliderDrawn(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 hot)
             const reg32 clipTop = onScreen(cpu, reg32(y - 2) * H, kPerHeight(app));
             const reg32 clipLeft = onScreen(cpu, reg32(thumbMiddle) * W, kPerWidth(app));
             if (!clipped(app, cpu, at, clipLeft, clipTop, clipRight, clipBottom)
-                || !callGame(app, cpu, at, kDrawArt, {reg32(int32_t(half(app, shapeAt(kind, part, 1)))), reg32(x),
-                                                      reg32(y), alpha},
-                             {}, r))
+                || !namedAt<shapes::drawArt, 0>(app, cpu, at, &r, reg32(int32_t(half(app, shapeAt(kind, part, 1)))), reg32(x), reg32(y), alpha))
                 return false;
             return restore();
         }
@@ -4331,17 +4396,13 @@ Result sliderDrawn(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 hot)
                                kHotPartQuads + 0xc0 * reg32(kind) + 0x20 * reg32(part), alpha);
             if (half(app, shapeAt(kind, part, 0)) == -1)
                 return true;
-            return callGame(app, cpu, at, kDrawArt, {reg32(int32_t(half(app, shapeAt(kind, part, 0)))), reg32(x),
-                                                     reg32(y), alpha},
-                            {}, r);
+            return namedAt<shapes::drawArt, 0>(app, cpu, at, &r, reg32(int32_t(half(app, shapeAt(kind, part, 0)))), reg32(x), reg32(y), alpha);
         }
         if (kOverRace(app) != 0)
             return artQuad(app, cpu, at, x0, y, x1, y, x2, y + h, x3, y + h, places, alpha);
         if (half(app, shapeAt(kind, part, 1)) == -1)
             return true;
-        return callGame(app, cpu, at, kDrawArt, {reg32(int32_t(half(app, shapeAt(kind, part, 1)))), reg32(x),
-                                                 reg32(y), alpha},
-                        {}, r);
+        return namedAt<shapes::drawArt, 0>(app, cpu, at, &r, reg32(int32_t(half(app, shapeAt(kind, part, 1)))), reg32(x), reg32(y), alpha);
     };
     if (!sliding && slider(app, item).shownScreen == slider(app, item).screen)
         for (int32_t part = partsOf(app, slider(app, item).kind) - 1; part >= 0; --part)
@@ -4354,29 +4415,25 @@ Result sliderDrawn(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 hot)
     const int32_t middleX = boxX + halved(boxWidth), middleY = boxY + halved(boxHeight);
     if (!sliding && (s.labels[0] != 0 || s.labels[1] != 0 || s.labels[2] != 0))
     {
-        if (!callGame(app, cpu, at, kSelectFont, {0x12}, {}, r))
+        if (!keepNamedAt<text::selectFontOf>(app, cpu, at, &r, 0x12, 0x12))
             return {};
         labelsShown = true;
         const int32_t y = slider(app, item).labelsBelow == 1 ? boxY + boxHeight : boxY - textHeight;
         const Slider& t = slider(app, item);
         if (t.labels[0] != 0
-            && !callGame(app, cpu, at, kDrawMenuText, {t.labels[0], reg32(int32_t(t.parts[2].x)), reg32(y), 0x12},
-                         {0, colour}, r))
+            && !namedAt<text::menuTextDrawn, 2>(app, cpu, at, &r, t.labels[0], reg32(int32_t(t.parts[2].x)), reg32(y), 0x12, 0, colour))
             return {};
         if (slider(app, item).labels[1] != 0
-            && !callGame(app, cpu, at, kDrawMenuText, {slider(app, item).labels[1], reg32(middleX), reg32(y), 0x12},
-                         {2, colour}, r))
+            && !namedAt<text::menuTextDrawn, 2>(app, cpu, at, &r, slider(app, item).labels[1], reg32(middleX), reg32(y), 0x12, 2, colour))
             return {};
         const Slider& u = slider(app, item);
         if (u.labels[2] != 0
-            && !callGame(app, cpu, at, kDrawMenuText,
-                         {u.labels[2], reg32(int32_t(u.parts[3].x) + u.parts[3].width), reg32(y), 0x12}, {1, colour},
-                         r))
+            && !namedAt<text::menuTextDrawn, 2>(app, cpu, at, &r, u.labels[2], reg32(int32_t(u.parts[3].x) + u.parts[3].width), reg32(y), 0x12, 1, colour))
             return {};
     }
     if (slider(app, item).title != 0)
     {
-        if (!callGame(app, cpu, at, kSelectFont, {0x12}, {}, r))
+        if (!keepNamedAt<text::selectFontOf>(app, cpu, at, &r, 0x12, 0x12))
             return {};
         const uint8_t alignment = slider(app, item).alignment <= 4 ? slider(app, item).alignment : 0;
         int32_t x, y, align;
@@ -4454,8 +4511,7 @@ Result sliderDrawn(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 hot)
                     at_ += t.slide < 0x64 ? int32_t(t.slide) : 0x64;
                 }
             }
-            if (!callGame(app, cpu, at, kDrawMenuText, {slider(app, item).title, reg32(at_), reg32(y), 0x12},
-                          {reg32(align), colour}, r))
+            if (!namedAt<text::menuTextDrawn, 2>(app, cpu, at, &r, slider(app, item).title, reg32(at_), reg32(y), 0x12, reg32(align), colour))
                 return {};
         }
     }
@@ -4470,13 +4526,12 @@ Result sliderDrawn(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 hot)
         p = fp::mul(p, Float(kPercentScale(app)));
         p = fp::mul(p, Float(kPercentScale2(app)));
         const float scaled = float(p);
-        cpu.fpu.compare(Float(0.0), Float(scaled));
+        st.set(Float(0.0), Float(scaled));
         const float rounded =
-            float(fp::add(Float(scaled), Float(cpu.fpu.status.c0 || cpu.fpu.status.c3 ? kRoundUp(app) : kRoundDown(app))));
+            float(fp::add(Float(scaled), Float(st.c0() || st.c3() ? kRoundUp(app) : kRoundDown(app))));
         const int32_t n = chopped<int32_t>(cpu, Float(rounded));
         if (!format(app, cpu, at, {text, kPercent, reg32(n), 0x25})
-            || !callGame(app, cpu, at, kDrawMenuText, {text, reg32(boxX + boxWidth + 0xa), reg32(y), 0x12},
-                         {0, colour}, r))
+            || !namedAt<text::menuTextDrawn, 2>(app, cpu, at, &r, text, reg32(boxX + boxWidth + 0xa), reg32(y), 0x12, 0, colour))
             return {};
     }
     return 0;
@@ -4489,8 +4544,8 @@ Result sliderDrawn(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 hot)
  * 2D screen --, its title by its alignment, its values as percentages. */
 Result twoAxisDrawn(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 hot)
 {
+    FpuStatus st;
     const reg32 ebp = esp - 0x14, at = ebp - 0xa0, text = ebp - 0xa0;
-    HeldEbp held(cpu, ebp);
     for (reg32 i = 0; i < 0x40; i += 4)
         setWord(app, text + i, word(app, kTwoAxisBlank + i));
     // The frame's words the code keeps a part's place and size in, which its
@@ -4512,8 +4567,7 @@ Result twoAxisDrawn(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 hot)
         return (lit ? kHotPartQuads : kPartQuads) + 0xc0 * reg32(int32_t(slider(app, item).kind)) + 0x20 * reg32(part);
     };
     const auto shapeDrawn = [&](int32_t shape) {
-        return callGame(app, cpu, at, kDrawShape,
-                        {reg32(shape), word(app, placeX), word(app, placeY), 0}, {}, r);
+        return coreAt<0x4d7990, shapes::drawShapeOf, 0>(app, cpu, at, &r, reg32(shape), word(app, placeX), word(app, placeY));
     };
     const reg32 W = reg32(kScreenWidth(app)), H = reg32(kScreenHeight(app));
     const auto drawPart = [&](int32_t part) -> bool {
@@ -4625,7 +4679,7 @@ Result twoAxisDrawn(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 hot)
         setWord(app, placeWidth, reg32(int32_t(s.boxWidth)));
         const int32_t boxX = s.boxX, boxY = s.boxY, boxWidth = s.boxWidth, boxHeight = s.boxHeight;
         const int32_t middleX = boxX + halved(boxWidth), middleY = boxY + halved(boxHeight);
-        if (!callGame(app, cpu, at, kSelectFont, {0x12}, {}, r))
+        if (!keepNamedAt<text::selectFontOf>(app, cpu, at, &r, 0x12, 0x12))
             return {};
         const uint8_t alignment = slider(app, item).alignment <= 4 ? slider(app, item).alignment : 0;
         int32_t x, y, align;
@@ -4653,8 +4707,7 @@ Result twoAxisDrawn(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 hot)
             x = boxX - 0xa;
             align = 1;
         }
-        if (!callGame(app, cpu, at, kDrawMenuText, {slider(app, item).title, reg32(x), reg32(y), 0x12},
-                      {reg32(align), colour}, r))
+        if (!namedAt<text::menuTextDrawn, 2>(app, cpu, at, &r, slider(app, item).title, reg32(x), reg32(y), 0x12, reg32(align), colour))
             return {};
     }
     // Its values, as percentages.
@@ -4665,15 +4718,14 @@ Result twoAxisDrawn(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 hot)
         if (!v)
             return {};
         const float scaled = float(fp::mul(*v, Float(kTwoAxisScale(app))));
-        cpu.fpu.compare(Float(0.0), Float(scaled));
+        st.set(Float(0.0), Float(scaled));
         percents[axis] = float(fp::add(
-            Float(scaled), Float(cpu.fpu.status.c0 || cpu.fpu.status.c3 ? kTwoAxisUp(app) : kTwoAxisDown(app))));
+            Float(scaled), Float(st.c0() || st.c3() ? kTwoAxisUp(app) : kTwoAxisDown(app))));
     }
     const int32_t across = chopped<int32_t>(cpu, Float(percents[0]));
     const int32_t up = chopped<int32_t>(cpu, Float(percents[1]));
     if (!format(app, cpu, at, {text, kTwoPercents, reg32(up), 0x25, reg32(across), 0x25})
-        || !callGame(app, cpu, at, kDrawMenuText,
-                     {text, word(app, placeX) + word(app, placeWidth) + 0xa, word(app, placeY), 0x12}, {0, colour}, r))
+        || !namedAt<text::menuTextDrawn, 2>(app, cpu, at, &r, text, word(app, placeX) + word(app, placeWidth) + 0xa, word(app, placeY), 0x12, 0, colour))
         return {};
     return 0;
 }
@@ -4685,7 +4737,6 @@ Result twoAxisDrawn(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 hot)
 Result sliderSetValueOf(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 value, reg32 axis)
 {
     const reg32 at = esp - 8;
-    HeldEbp held(cpu, at);
     const uint16_t kind = uint16_t(slider(app, item).kind);
     Result r;
     if (kind == 1)
@@ -4703,7 +4754,6 @@ Result sliderSetValueOf(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 value, 
 Result sliderDrawOf(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 hot)
 {
     const reg32 at = esp - 0x10;
-    HeldEbp held(cpu, at);
     greyed(app, item);
     const uint16_t kind = uint16_t(slider(app, item).kind);
     Result r = 0;
@@ -4722,152 +4772,153 @@ Result sliderDrawOf(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 hot)
     return r;
 }
 
-/* ---- The adapters ---- */
+/* ---- The thunks ---- */
 
 /* 0x4692c0: the part of the slider eax under the pointer, or -1. */
-void sliderPartUnderPointer(App* app, CPU& cpu)
+x86::reg32 sliderPartUnderPointer(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, reg32(partUnder(app, e.eax)));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, reg32(partUnder(app, e.eax)));
 }
 
 /* 0x469340 (stdcall 8): where the slider eax's thumb may go: the start to
  * [ebx], the end to [ecx], the length to the stack's first pointer, the place
  * to its second. */
-void sliderThumbPlace(App* app, CPU& cpu)
+x86::reg32 sliderThumbPlace(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, reg32(thumbPlaced(app, cpu, e.eax, e.ebx, e.ecx, e.arg(app, 0), e.arg(app, 1))), 8);
+    const Entry e(cpu, args);
+    return e.back(cpu, args, reg32(thumbPlaced(app, cpu, e.eax, e.ebx, e.ecx, e.arg(app, 0), e.arg(app, 1))), 8);
 }
 
 /* 0x4693c0 (stdcall 8): the stack's value snapped to the stack's step, onto
  * the x87's stack. */
-void snapToStep(App* app, CPU& cpu)
+x86::reg32 snapToStep(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     const std::optional<Float> r = snapped(app, cpu, e.esp);
     if (!r)
-        return;
-    cpu.fpu.push(*r);
-    e.back(cpu, e.eax, 8);
+        return args.eax;
+    args.floatSet = true;
+    args.floatResult = *r;
+    return e.back(cpu, args, e.eax, 8);
 }
 
 /* 0x469480 (stdcall 8): the slider eax set to the stack's value. */
-void setSliderValue(App* app, CPU& cpu)
+x86::reg32 setSliderValue(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, valueSet(app, cpu, e.esp, e.eax), 8);
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, valueSet(app, cpu, e.esp, e.eax), 8);
 }
 
 /* 0x469530, 0x46afe0 (stdcall 8): the slider eax's arrows' step, of axis
  * [esp+8] for a two-axis one. */
-void setSliderStep(App* app, CPU& cpu)
+x86::reg32 setSliderStep(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, arrowStepSet(app, cpu, e.eax, e.arg(app, 0), 0, e.eax), 8);
+    const Entry e(cpu, args);
+    return e.back(cpu, args, arrowStepSet(app, cpu, e.eax, e.arg(app, 0), 0, e.eax), 8);
 }
 
-void setTwoAxisStep(App* app, CPU& cpu)
+x86::reg32 setTwoAxisStep(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, arrowStepSet(app, cpu, e.eax, e.arg(app, 0), int32_t(e.arg(app, 1)), e.eax), 8);
+    const Entry e(cpu, args);
+    return e.back(cpu, args, arrowStepSet(app, cpu, e.eax, e.arg(app, 0), int32_t(e.arg(app, 1)), e.eax), 8);
 }
 
 /* 0x469590: the slider eax dragged to dx along its track. */
-void dragSliderTo(App* app, CPU& cpu)
+x86::reg32 dragSliderTo(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, draggedTo(app, cpu, e.esp, e.eax, int16_t(e.edx)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, draggedTo(app, cpu, e.esp, e.eax, int16_t(e.edx)));
 }
 
 /* 0x469680, 0x46b3a0: the slider, the two-axis slider eax drawn; the part
  * under the pointer lit where edx. */
-void drawSlider(App* app, CPU& cpu)
+x86::reg32 drawSlider(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, sliderDrawn(app, cpu, e.esp, e.eax, e.edx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, sliderDrawn(app, cpu, e.esp, e.eax, e.edx));
 }
 
-void drawTwoAxis(App* app, CPU& cpu)
+x86::reg32 drawTwoAxis(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, twoAxisDrawn(app, cpu, e.esp, e.eax, e.edx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, twoAxisDrawn(app, cpu, e.esp, e.eax, e.edx));
 }
 
 /* 0x46a5f0, 0x46c320: the slider, the two-axis slider eax as the mouse works
  * it. */
-void trackSlider(App* app, CPU& cpu)
+x86::reg32 trackSlider(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, sliderTracked(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, sliderTracked(app, cpu, e.esp, e.eax));
 }
 
-void trackTwoAxis(App* app, CPU& cpu)
+x86::reg32 trackTwoAxis(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, twoAxisTracked(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, twoAxisTracked(app, cpu, e.esp, e.eax));
 }
 
 /* 0x46a860, 0x46c4a0: key bx on the slider, the two-axis slider eax. */
-void sliderKey(App* app, CPU& cpu)
+x86::reg32 sliderKey(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, sliderKeyed(app, cpu, e.esp, e.eax, e.ebx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, sliderKeyed(app, cpu, e.esp, e.eax, e.ebx));
 }
 
-void twoAxisKey(App* app, CPU& cpu)
+x86::reg32 twoAxisKey(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, twoAxisKeyed(app, cpu, e.esp, e.eax, e.ebx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, twoAxisKeyed(app, cpu, e.esp, e.eax, e.ebx));
 }
 
 /* 0x46a980, 0x46c640: the slider, the two-axis slider eax's parts placed. */
-void placeSliderParts(App* app, CPU& cpu)
+x86::reg32 placeSliderParts(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, sliderPlaced(app, e.eax));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, sliderPlaced(app, e.eax));
 }
 
-void placeTwoAxisParts(App* app, CPU& cpu)
+x86::reg32 placeTwoAxisParts(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, twoAxisPlacedParts(app, e.eax));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, twoAxisPlacedParts(app, e.eax));
 }
 
 /* 0x46ab10, 0x46c820: the slider, the two-axis slider eax set up. */
-void setUpSlider(App* app, CPU& cpu)
+x86::reg32 setUpSlider(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, sliderSetUp(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, sliderSetUp(app, cpu, e.esp, e.eax));
 }
 
-void setUpTwoAxis(App* app, CPU& cpu)
+x86::reg32 setUpTwoAxis(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, twoAxisSetUp(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, twoAxisSetUp(app, cpu, e.esp, e.eax));
 }
 
 /* 0x46abb0, 0x46c8b0: the box the pointer finds the slider, the two-axis
  * slider eax in. */
-void sliderBox(App* app, CPU& cpu)
+x86::reg32 sliderBox(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, sliderBoxed(app, e.eax));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, sliderBoxed(app, e.eax));
 }
 
-void twoAxisBox(App* app, CPU& cpu)
+x86::reg32 twoAxisBox(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, twoAxisBoxed(app, e.eax));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, twoAxisBoxed(app, e.eax));
 }
 
 /* 0x46ac40 (stdcall 0xc): where thumb ebx of the two-axis slider eax may go
  * along axis edx: the start to [ecx], the end, the length and the place to
  * the stack's pointers. */
-void twoAxisThumbPlace(App* app, CPU& cpu)
+x86::reg32 twoAxisThumbPlace(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu,
+    const Entry e(cpu, args);
+    return e.back(cpu, args,
            reg32(twoAxisPlaced(app, cpu, e.eax, int32_t(e.edx), e.ebx, e.ecx, e.arg(app, 0), e.arg(app, 1),
                                e.arg(app, 2))),
            0xc);
@@ -4875,53 +4926,53 @@ void twoAxisThumbPlace(App* app, CPU& cpu)
 
 /* 0x46add0 (stdcall 8): axis [esp+8] of the two-axis slider eax set to the
  * stack's value. */
-void setTwoAxisValue(App* app, CPU& cpu)
+x86::reg32 setTwoAxisValue(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, twoAxisValueSet(app, cpu, e.esp, e.eax, e.eax), 8);
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, twoAxisValueSet(app, cpu, e.esp, e.eax, e.eax), 8);
 }
 
 /* 0x46b040: axis ebx of the two-axis slider eax dragged to dx. */
-void dragTwoAxisTo(App* app, CPU& cpu)
+x86::reg32 dragTwoAxisTo(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, twoAxisDragged(app, cpu, e.esp, e.eax, int16_t(e.edx), int32_t(e.ebx)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, twoAxisDragged(app, cpu, e.esp, e.eax, int16_t(e.edx), int32_t(e.ebx)));
 }
 
 /* 0x469080: the slider eax's parts' art and sizes. */
-void sliderPartSizes(App* app, CPU& cpu)
+x86::reg32 sliderPartSizes(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, partSizes(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, partSizes(app, cpu, e.esp, e.eax));
 }
 
 /* 0x4d5e40: the menus' shape named eax, found or made. */
-void sliderShape(App* app, CPU& cpu)
+x86::reg32 sliderShape(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, shapeOf(app, cpu, e.esp, e.eax, e.ebx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, shapeOf(app, cpu, e.esp, e.eax, e.ebx));
 }
 
 /* 0x46c950 (stdcall 8): the slider eax set to the stack's value -- a
  * two-axis one's axis the stack's second word; none of kind 1. */
-void sliderSetValue(App* app, CPU& cpu)
+x86::reg32 sliderSetValue(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, sliderSetValueOf(app, cpu, e.esp, e.eax, e.arg(app, 0), e.arg(app, 1)), 8);
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, sliderSetValueOf(app, cpu, e.esp, e.eax, e.arg(app, 0), e.arg(app, 1)), 8);
 }
 
 /* 0x46cae0: the slider eax drawn, worked by the mouse first where edx: kind 2
  * a two-axis one, kind 1 none.  Greyed as the menus grey their controls. */
-void sliderDraw(App* app, CPU& cpu)
+x86::reg32 sliderDraw(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, sliderDrawOf(app, cpu, e.esp, e.eax, e.edx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, sliderDrawOf(app, cpu, e.esp, e.eax, e.edx));
 }
 
 /* 0x46cb80: key cx on the slider eax. */
-void sliderWidgetKey(App* app, CPU& cpu)
+x86::reg32 sliderWidgetKey(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     const reg32 item = e.eax, at = e.esp - 0xc;
     const uint16_t kind = uint16_t(slider(app, item).kind);
     const reg32 key = reg32(int32_t(int16_t(e.ecx)));
@@ -4930,21 +4981,21 @@ void sliderWidgetKey(App* app, CPU& cpu)
         r = twoAxisKeyed(app, cpu, at - 4, item, key);
     else if (kind != 1)
         r = sliderKeyed(app, cpu, at - 4, item, key);
-    e.finish(cpu, r);
+    return e.finish(cpu, args, r);
 }
 
 /* 0x46cbe0: the slider eax laid out. */
-void sliderWidgetLayout(App* app, CPU& cpu)
+x86::reg32 sliderWidgetLayout(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     const uint16_t kind = uint16_t(slider(app, e.eax).kind);
-    e.back(cpu, kind == 2 ? twoAxisBoxed(app, e.eax) : kind == 1 ? e.eax : sliderBoxed(app, e.eax));
+    return e.back(cpu, args, kind == 2 ? twoAxisBoxed(app, e.eax) : kind == 1 ? e.eax : sliderBoxed(app, e.eax));
 }
 
 /* 0x46cc10: the slider eax hidden: its screen put back. */
-void sliderWidgetHidden(App* app, CPU& cpu)
+x86::reg32 sliderWidgetHidden(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     Slider& s = slider(app, e.eax);
     const uint16_t kind = uint16_t(s.kind);
     reg32 eax = (e.eax & 0xffff0000) | kind;
@@ -4953,28 +5004,27 @@ void sliderWidgetHidden(App* app, CPU& cpu)
         s.screen = s.shownScreen;
         eax = (e.eax & 0xffff0000) | uint16_t(s.shownScreen);
     }
-    e.back(cpu, eax);
+    return e.back(cpu, args, eax);
 }
 
 /* 0x46cc50: the slider eax shown: its parts' art and sizes, set up (a kind
  * past 5 made a slider's), its value set. */
-void sliderWidgetShown(App* app, CPU& cpu)
+x86::reg32 sliderWidgetShown(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     const reg32 item = e.eax, at = e.esp - 8;
-    HeldEbp held(cpu, at);
     const uint16_t kind = uint16_t(slider(app, item).kind);
     if (kind > 5)
         slider(app, item).kind = 0;
     if (kind == 2)
     {
         if (!partSizes(app, cpu, at - 4, item) || !twoAxisSetUp(app, cpu, at - 4, item))
-            return;
+            return args.eax;
     }
     else if (kind != 1)
     {
         if (!partSizes(app, cpu, at - 4, item) || !sliderSetUp(app, cpu, at - 4, item))
-            return;
+            return args.eax;
     }
     const reg32 value = slider(app, item).values[0];
     const reg32 callee = argsBelow(app, at, {value, 0});
@@ -4986,7 +5036,7 @@ void sliderWidgetShown(App* app, CPU& cpu)
         r = twoAxisValueSet(app, cpu, argsBelow(app, callee - 8, {value, 0}), item, item);
     else
         r = valueSet(app, cpu, argsBelow(app, callee - 8, {value, 0}), item);
-    e.finish(cpu, r);
+    return e.finish(cpu, args, r);
 }
 
 }  // namespace fields

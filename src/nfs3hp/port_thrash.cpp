@@ -30,8 +30,7 @@
  * here.  Each export does what the game saw of it with the port's Glide under
  * it: the same records and variables in voodoo2a's data, the same results,
  * the same calls of the game's own functions it was handed, and the same
- * renderer calls in the same order (tools/thrash_checks holds it to all of
- * those against the driver and Glide as they were).  Glide's part is folded
+ * renderer calls in the same order.  Glide's part is folded
  * in: a call of the port's Glide that did nothing is gone, one that did is the
  * renderer call it made.
  *
@@ -206,8 +205,8 @@ void closePicture(App* app)
 /* One of the game's vertices as voodoo2a reads it: x and y, Glide's 1/z (z
  * times kDepthScale), s/w and t/w (u and v times w times kTexelScale), 1/w as
  * it is, and the colour as bytes, r | g << 8 | b << 16 | a << 24.  voodoo2a's
- * code as the generator made it did its x87 arithmetic in the FPU's own type
- * without the precision control's rounding (disasm/dll.py), so this does too,
+ * code did its x87 arithmetic in the FPU's own type
+ * without the precision control's rounding, so this does too,
  * operation by operation, in the same order: in plain double, where each
  * product of floats is exact and only the one of three factors and the stores
  * to float round.  Its colour table only ever held
@@ -627,7 +626,7 @@ double fogExp(CPU& cpu, double w, float density)
 {
     const double x = -(w * double(density));
     const double t = 1.4426950408889634 * x;
-    const double fraction = cpu.fpu.rem(t, 1.0);
+    const double fraction = fp::rem(t, 1.0);
     return fp::scale(1.0 + fp::f2xm1(fraction), t);
 }
 
@@ -1046,7 +1045,7 @@ Result openMode(App* app, CPU& cpu, reg32 ebx, reg32 mode, reg32 buffers, reg32 
 bool lockHook(App* app, CPU& cpu, reg32 locking)
 {
     const reg32 hook = kLockHook(app);
-    return hook == 0 || guest::call(app, cpu, hook, {locking});
+    return hook == 0 || guest::pointerCall(app, cpu, hook, {}, {locking}).has_value();
 }
 
 /* ---- THRASH_is ---- */
@@ -1126,56 +1125,51 @@ bool fullColourTextures()
 /* ---- voodoo2a's exports, typed (port_thrash.h) ---- */
 
 /* THRASH_drawtri(a, b, c). */
-reg32 drawTri(App* app, CPU& cpu, reg32 a, reg32 b, reg32 c)
+void drawTri(App* app, CPU& cpu, reg32 a, reg32 b, reg32 c)
 {
     triangle(app, Drawing(app), a, b, c);
-    return cpu.eax;
 }
 
 /* THRASH_drawquad(a, b, c, d). */
-reg32 drawQuad(App* app, CPU& cpu, reg32 a, reg32 b, reg32 c, reg32 d)
+void drawQuad(App* app, CPU& cpu, reg32 a, reg32 b, reg32 c, reg32 d)
 {
     quad(app, Drawing(app), a, b, c, d);
-    return cpu.eax;
 }
 
 /* THRASH_drawquadmesh(count, vertices, quads): four vertex indices each. */
-reg32 drawQuadMesh(App* app, CPU& cpu, reg32 count, reg32 vertices, reg32 quads)
+void drawQuadMesh(App* app, CPU& cpu, reg32 count, reg32 vertices, reg32 quads)
 {
     const Drawing d(app);
     reg32 entry = quads;
     for (int32_t i = 0; i < int32_t(count); ++i, entry += 0x10)
         quad(app, d, meshVertex(app, vertices, entry), meshVertex(app, vertices, entry + 4),
              meshVertex(app, vertices, entry + 8), meshVertex(app, vertices, entry + 0xc));
-    return cpu.eax;
 }
 
 /* THRASH_drawtrimesh(count, vertices, triangles): three indices each. */
-reg32 drawTriMesh(App* app, CPU& cpu, reg32 count, reg32 vertices, reg32 triangles)
+void drawTriMesh(App* app, CPU& cpu, reg32 count, reg32 vertices, reg32 triangles)
 {
     const Drawing d(app);
     reg32 entry = triangles;
     for (int32_t i = 0; i < int32_t(count); ++i, entry += 0xc)
         triangle(app, d, meshVertex(app, vertices, entry), meshVertex(app, vertices, entry + 4),
                  meshVertex(app, vertices, entry + 8));
-    return cpu.eax;
 }
 
 /* THRASH_drawtrifan(count, vertices): count triangles around the first
  * vertex, the n-th of it, n + 1 and n + 2. */
-reg32 drawTriFan(App* app, CPU& cpu, reg32 count, reg32 vertices)
+void drawTriFan(App* app, CPU& cpu, reg32 count, reg32 vertices)
 {
     const Drawing d(app);
     for (int32_t i = 0; i < int32_t(count); ++i)
         triangle(app, d, vertices, vertices + reg32(i + 1) * thrash::kVertexBytes,
                  vertices + reg32(i + 2) * thrash::kVertexBytes);
-    return cpu.eax;
 }
 
 /* THRASH_drawtristrip(count, vertices): count triangles along the strip, the
  * n-th of vertices n, n + 1 and n + 2 -- every other one n, n + 2, n + 1, all
  * of them wound the same way. */
-reg32 drawTriStrip(App* app, CPU& cpu, reg32 count, reg32 vertices)
+void drawTriStrip(App* app, CPU& cpu, reg32 count, reg32 vertices)
 {
     const Drawing d(app);
     for (int32_t i = 0; i < int32_t(count); ++i)
@@ -1187,61 +1181,54 @@ reg32 drawTriStrip(App* app, CPU& cpu, reg32 count, reg32 vertices)
         else
             triangle(app, d, first, second, third);
     }
-    return cpu.eax;
 }
 
 /* THRASH_drawline(a, b). */
-reg32 drawLine(App* app, CPU& cpu, reg32 a, reg32 b)
+void drawLine(App* app, CPU& cpu, reg32 a, reg32 b)
 {
     line(app, Drawing(app), a, b);
-    return cpu.eax;
 }
 
 /* THRASH_drawlinemesh(count, vertices, lines): two indices each. */
-reg32 drawLineMesh(App* app, CPU& cpu, reg32 count, reg32 vertices, reg32 lines)
+void drawLineMesh(App* app, CPU& cpu, reg32 count, reg32 vertices, reg32 lines)
 {
     const Drawing d(app);
     reg32 entry = lines;
     for (int32_t i = 0; i < int32_t(count); ++i, entry += 8)
         line(app, d, meshVertex(app, vertices, entry), meshVertex(app, vertices, entry + 4));
-    return cpu.eax;
 }
 
 /* THRASH_drawlinestrip(count, vertices): count lines, the n-th from vertex n
  * to n + 1. */
-reg32 drawLineStrip(App* app, CPU& cpu, reg32 count, reg32 vertices)
+void drawLineStrip(App* app, CPU& cpu, reg32 count, reg32 vertices)
 {
     const Drawing d(app);
     for (int32_t i = 0; i < int32_t(count); ++i)
         line(app, d, vertices + reg32(i) * thrash::kVertexBytes, vertices + reg32(i + 1) * thrash::kVertexBytes);
-    return cpu.eax;
 }
 
 /* THRASH_drawpoint(vertex), _drawpointmesh(count, vertices, points) and
  * _drawpointstrip(count, vertices): Glide's points, of which the port's drew
  * none. */
-reg32 drawPoint(App* app, CPU& cpu, reg32 vertex)
+void drawPoint(App* app, CPU& cpu, reg32 vertex)
 {
     NFS2_USE(app);
     NFS2_USE(vertex);
-    return cpu.eax;
 }
 
-reg32 drawPointMesh(App* app, CPU& cpu, reg32 count, reg32 vertices, reg32 points)
+void drawPointMesh(App* app, CPU& cpu, reg32 count, reg32 vertices, reg32 points)
 {
     NFS2_USE(app);
     NFS2_USE(count);
     NFS2_USE(vertices);
     NFS2_USE(points);
-    return cpu.eax;
 }
 
-reg32 drawPointStrip(App* app, CPU& cpu, reg32 count, reg32 vertices)
+void drawPointStrip(App* app, CPU& cpu, reg32 count, reg32 vertices)
 {
     NFS2_USE(app);
     NFS2_USE(count);
     NFS2_USE(vertices);
-    return cpu.eax;
 }
 
 /* THRASH_talloc(width, height, format, palette, levels). */
@@ -1304,23 +1291,20 @@ reg32 clearWindow(App* app, CPU& cpu)
 }
 
 /* THRASH_flushwindow and THRASH_idle: nothing to do on a Voodoo2. */
-reg32 flushWindow(App* app, CPU& cpu)
+void flushWindow(App* app, CPU& cpu)
 {
     NFS2_USE(app);
-    return cpu.eax;
 }
 
-reg32 idle(App* app, CPU& cpu)
+void idle(App* app, CPU& cpu)
 {
     NFS2_USE(app);
-    return cpu.eax;
 }
 
 /* THRASH_pageflip: the buffers swapped -- with nothing ever pending -- the
  * guest context let go meanwhile, then the game layer's look at the frame. */
-reg32 pageFlip(App* app, CPU& cpu)
+void pageFlip(App* app, CPU& cpu)
 {
-    const reg32 eax = cpu.eax;
     if (s_renderer)
     {
         app->unlockContext(cpu);
@@ -1329,7 +1313,6 @@ reg32 pageFlip(App* app, CPU& cpu)
         if (s_swapObserver)
             s_swapObserver(app);
     }
-    return eax;
 }
 
 /* THRASH_sync(what): 0 waits for the card, 1 asks whether it is busy, 2 waits
@@ -1461,7 +1444,7 @@ reg32 about(App* app, CPU& cpu)
         put(app, kInfo + thrash::kAboutTextureFormats, kTextureFormats);
         if (fullColourTextures())
         {
-            /* tools/apply_full_colour.py: THRASH format 6, ARGB 8888, taken,
+            /* the port's full colour change: THRASH format 6, ARGB 8888, taken,
              * and handed to the renderer as such. */
             put(app, kTextureFormats + 6 * 4, 1);
             app->getMemory<x86::reg8>(kFormats + 6) = x86::reg8(kTexFmtArgb8888);
@@ -1519,7 +1502,7 @@ reg32 init(App* app, CPU& cpu)
  * filled the environment, never runs on the port.) */
 reg32 is(App* app, CPU& cpu)
 {
-    put(app, cpu.esp - 4, cpu.ebx);
+    // (voodoo2a's push ebx left ebx at esp - 4, a dead slot: nothing written.)
     const reg32 version = cpu.esp - 0x54;
     if (kLog(app) == 0)
         kLog.set(app, kDefaultLog);
@@ -1541,19 +1524,26 @@ reg32 is(App* app, CPU& cpu)
  * brought the window forward and, when the game gave it a way, had the
  * window's own thread open the mode while it waited: none of which the port's
  * Win32 did anything with.) */
-std::optional<reg32> setVideoMode(App* app, CPU& cpu, reg32 mode, reg32 buffers, reg32 auxiliary)
+std::optional<reg32> setVideoModeEbx(App* app, CPU& cpu, reg32 ebx, reg32 mode, reg32 buffers, reg32 auxiliary)
 {
-    const reg32 ebx = cpu.ebx;
     if (const reg32 findWindow = kFindWindow(app))
     {
-        if (!guest::call(app, cpu, findWindow))
+        x86::Args none;
+        const std::optional<reg32> window = guest::pointerCall(app, cpu, findWindow, none);
+        if (!window)
             return std::nullopt;
-        kWindow.set(app, cpu.eax);
+        kWindow.set(app, *window);
     }
     const Result opened = openMode(app, cpu, ebx, mode, buffers, auxiliary);
     if (!opened)
         return std::nullopt;
     return reg32(*opened);
+}
+
+/* The same for native callers: ebx matters only for no buffers, which only restore asks and takes no value of. */
+std::optional<reg32> setVideoMode(App* app, CPU& cpu, reg32 mode, reg32 buffers, reg32 auxiliary)
+{
+    return setVideoModeEbx(app, cpu, 0, mode, buffers, auxiliary);
 }
 
 /* THRASH_restore: everything let go, the window first: 1. */
@@ -1588,235 +1578,250 @@ using port::Entry;
 using port::reg32;
 namespace driver = port::driver;
 
-void THRASH_drawtri(App* app, CPU& cpu)
+x86::reg32 THRASH_drawtri(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, driver::drawTri(app, cpu, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2)), 0xc);
+    const Entry e(cpu, args);
+    driver::drawTri(app, cpu, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2));
+    return e.back(cpu, args, args.eax, 0xc);
 }
 
-void THRASH_drawquad(App* app, CPU& cpu)
+x86::reg32 THRASH_drawquad(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, driver::drawQuad(app, cpu, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2), e.arg(app, 3)), 0x10);
+    const Entry e(cpu, args);
+    driver::drawQuad(app, cpu, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2), e.arg(app, 3));
+    return e.back(cpu, args, args.eax, 0x10);
 }
 
-void THRASH_drawquadmesh(App* app, CPU& cpu)
+x86::reg32 THRASH_drawquadmesh(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, driver::drawQuadMesh(app, cpu, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2)), 0xc);
+    const Entry e(cpu, args);
+    driver::drawQuadMesh(app, cpu, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2));
+    return e.back(cpu, args, args.eax, 0xc);
 }
 
-void THRASH_drawtrimesh(App* app, CPU& cpu)
+x86::reg32 THRASH_drawtrimesh(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, driver::drawTriMesh(app, cpu, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2)), 0xc);
+    const Entry e(cpu, args);
+    driver::drawTriMesh(app, cpu, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2));
+    return e.back(cpu, args, args.eax, 0xc);
 }
 
-void THRASH_drawtrifan(App* app, CPU& cpu)
+x86::reg32 THRASH_drawtrifan(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, driver::drawTriFan(app, cpu, e.arg(app, 0), e.arg(app, 1)), 8);
+    const Entry e(cpu, args);
+    driver::drawTriFan(app, cpu, e.arg(app, 0), e.arg(app, 1));
+    return e.back(cpu, args, args.eax, 8);
 }
 
 /* voodoo2a's loop draws six at a time and keeps where the next six start in
  * the argument, which it leaves there. */
-void THRASH_drawtristrip(App* app, CPU& cpu)
+x86::reg32 THRASH_drawtristrip(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     const int32_t count = int32_t(e.arg(app, 0));
     const reg32 vertices = e.arg(app, 1);
-    const reg32 eax = driver::drawTriStrip(app, cpu, reg32(count), vertices);
+    const reg32 eax = args.eax;
+    driver::drawTriStrip(app, cpu, reg32(count), vertices);
     if (count >= 6)
         guest::put(app, e.esp + 8, vertices + reg32(count / 6) * 6 * thrash::kVertexBytes);
-    e.back(cpu, eax, 8);
+    return e.back(cpu, args, eax, 8);
 }
 
-void THRASH_drawline(App* app, CPU& cpu)
+x86::reg32 THRASH_drawline(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, driver::drawLine(app, cpu, e.arg(app, 0), e.arg(app, 1)), 8);
+    const Entry e(cpu, args);
+    driver::drawLine(app, cpu, e.arg(app, 0), e.arg(app, 1));
+    return e.back(cpu, args, args.eax, 8);
 }
 
-void THRASH_drawlinemesh(App* app, CPU& cpu)
+x86::reg32 THRASH_drawlinemesh(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, driver::drawLineMesh(app, cpu, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2)), 0xc);
+    const Entry e(cpu, args);
+    driver::drawLineMesh(app, cpu, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2));
+    return e.back(cpu, args, args.eax, 0xc);
 }
 
-void THRASH_drawlinestrip(App* app, CPU& cpu)
+x86::reg32 THRASH_drawlinestrip(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, driver::drawLineStrip(app, cpu, e.arg(app, 0), e.arg(app, 1)), 8);
+    const Entry e(cpu, args);
+    driver::drawLineStrip(app, cpu, e.arg(app, 0), e.arg(app, 1));
+    return e.back(cpu, args, args.eax, 8);
 }
 
-void THRASH_drawpoint(App* app, CPU& cpu)
+x86::reg32 THRASH_drawpoint(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, driver::drawPoint(app, cpu, e.arg(app, 0)), 4);
+    const Entry e(cpu, args);
+    driver::drawPoint(app, cpu, e.arg(app, 0));
+    return e.back(cpu, args, args.eax, 4);
 }
 
-void THRASH_drawpointmesh(App* app, CPU& cpu)
+x86::reg32 THRASH_drawpointmesh(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, driver::drawPointMesh(app, cpu, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2)), 0xc);
+    const Entry e(cpu, args);
+    driver::drawPointMesh(app, cpu, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2));
+    return e.back(cpu, args, args.eax, 0xc);
 }
 
-void THRASH_drawpointstrip(App* app, CPU& cpu)
+x86::reg32 THRASH_drawpointstrip(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, driver::drawPointStrip(app, cpu, e.arg(app, 0), e.arg(app, 1)), 8);
+    const Entry e(cpu, args);
+    driver::drawPointStrip(app, cpu, e.arg(app, 0), e.arg(app, 1));
+    return e.back(cpu, args, args.eax, 8);
 }
 
 /* thrash::kMipLinear is kMipPoint in two passes: voodoo2a writes kMipPoint
  * over the argument. */
-void THRASH_setstate(App* app, CPU& cpu)
+x86::reg32 THRASH_setstate(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     const reg32 state = e.arg(app, 0), value = e.arg(app, 1);
     const reg32 result = driver::setState(app, cpu, state, value);
     if (state == thrash::kStateMipFilter && value == thrash::kMipLinear)
         guest::put(app, e.esp + 8, thrash::kMipPoint);
-    e.back(cpu, result, 8);
+    return e.back(cpu, args, result, 8);
 }
 
-void THRASH_talloc(App* app, CPU& cpu)
+x86::reg32 THRASH_talloc(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, driver::tAlloc(app, cpu, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2), e.arg(app, 3), e.arg(app, 4)),
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, driver::tAlloc(app, cpu, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2), e.arg(app, 3), e.arg(app, 4)),
              0x14);
 }
 
-void THRASH_treset(App* app, CPU& cpu)
+x86::reg32 THRASH_treset(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, driver::tReset(app, cpu));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, driver::tReset(app, cpu));
 }
 
-void THRASH_tupdate(App* app, CPU& cpu)
+x86::reg32 THRASH_tupdate(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, driver::tUpdate(app, cpu, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2)), 0xc);
+    const Entry e(cpu, args);
+    return e.back(cpu, args, driver::tUpdate(app, cpu, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2)), 0xc);
 }
 
-void THRASH_settexture(App* app, CPU& cpu)
+x86::reg32 THRASH_settexture(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, driver::setTexture(app, cpu, e.arg(app, 0)), 4);
+    const Entry e(cpu, args);
+    return e.back(cpu, args, driver::setTexture(app, cpu, e.arg(app, 0)), 4);
 }
 
-void THRASH_window(App* app, CPU& cpu)
+x86::reg32 THRASH_window(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, driver::window(app, cpu, e.arg(app, 0)), 4);
+    const Entry e(cpu, args);
+    return e.back(cpu, args, driver::window(app, cpu, e.arg(app, 0)), 4);
 }
 
-void THRASH_clearwindow(App* app, CPU& cpu)
+x86::reg32 THRASH_clearwindow(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, driver::clearWindow(app, cpu));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, driver::clearWindow(app, cpu));
 }
 
-void THRASH_flushwindow(App* app, CPU& cpu)
+x86::reg32 THRASH_flushwindow(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, driver::flushWindow(app, cpu));
+    const Entry e(cpu, args);
+    driver::flushWindow(app, cpu);
+    return e.back(cpu, args, args.eax);
 }
 
-void THRASH_idle(App* app, CPU& cpu)
+x86::reg32 THRASH_idle(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, driver::idle(app, cpu));
+    const Entry e(cpu, args);
+    driver::idle(app, cpu);
+    return e.back(cpu, args, args.eax);
 }
 
-void THRASH_pageflip(App* app, CPU& cpu)
+x86::reg32 THRASH_pageflip(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, driver::pageFlip(app, cpu));
+    const Entry e(cpu, args);
+    const reg32 eax = args.eax;
+    driver::pageFlip(app, cpu);
+    return e.back(cpu, args, eax);
 }
 
-void THRASH_sync(App* app, CPU& cpu)
+x86::reg32 THRASH_sync(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, driver::sync(app, cpu, e.arg(app, 0)), 4);
+    const Entry e(cpu, args);
+    return e.back(cpu, args, driver::sync(app, cpu, e.arg(app, 0)), 4);
 }
 
-void THRASH_clip(App* app, CPU& cpu)
+x86::reg32 THRASH_clip(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, driver::clip(app, cpu, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2), e.arg(app, 3)), 0x10);
+    const Entry e(cpu, args);
+    return e.back(cpu, args, driver::clip(app, cpu, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2), e.arg(app, 3)), 0x10);
 }
 
-void THRASH_lockwindow(App* app, CPU& cpu)
+x86::reg32 THRASH_lockwindow(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, driver::lockWindow(app, cpu));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, driver::lockWindow(app, cpu));
 }
 
-void THRASH_unlockwindow(App* app, CPU& cpu)
+x86::reg32 THRASH_unlockwindow(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, driver::unlockWindow(app, cpu, e.arg(app, 0)), 4);
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, driver::unlockWindow(app, cpu, e.arg(app, 0)), 4);
 }
 
-void THRASH_readrect(App* app, CPU& cpu)
+x86::reg32 THRASH_readrect(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, driver::readRect(app, cpu, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2), e.arg(app, 3), e.arg(app, 4)),
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, driver::readRect(app, cpu, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2), e.arg(app, 3), e.arg(app, 4)),
              0x14);
 }
 
-void THRASH_writerect(App* app, CPU& cpu)
+x86::reg32 THRASH_writerect(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu,
-             driver::writeRect(app, cpu, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2), e.arg(app, 3), e.arg(app, 4)),
-             0x14);
+    const Entry e(cpu, args);
+    return e.finish(cpu, args,
+                    driver::writeRect(app, cpu, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2), e.arg(app, 3), e.arg(app, 4)),
+                    0x14);
 }
 
-void THRASH_about(App* app, CPU& cpu)
+x86::reg32 THRASH_about(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, driver::about(app, cpu));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, driver::about(app, cpu));
 }
 
-void THRASH_selectdisplay(App* app, CPU& cpu)
+x86::reg32 THRASH_selectdisplay(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, driver::selectDisplay(app, cpu, e.arg(app, 0)), 4);
+    const Entry e(cpu, args);
+    return e.back(cpu, args, driver::selectDisplay(app, cpu, e.arg(app, 0)), 4);
 }
 
-void THRASH_init(App* app, CPU& cpu)
+x86::reg32 THRASH_init(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, driver::init(app, cpu));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, driver::init(app, cpu));
 }
 
-void THRASH_is(App* app, CPU& cpu)
+x86::reg32 THRASH_is(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, driver::is(app, cpu));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, driver::is(app, cpu));
 }
 
-void THRASH_setvideomode(App* app, CPU& cpu)
+x86::reg32 THRASH_setvideomode(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, driver::setVideoMode(app, cpu, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2)), 0xc);
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, driver::setVideoModeEbx(app, cpu, args.ebx, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2)), 0xc);
 }
 
-void THRASH_restore(App* app, CPU& cpu)
+x86::reg32 THRASH_restore(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, driver::restore(app, cpu));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, driver::restore(app, cpu));
 }
 
 /* sub_a84360, what voodoo2a's THRASH_setvideomode handed the game to run on
- * its window's thread, message 0x465 (disassemble_nfs3hp.py binds the
- * address).  This driver hands it nobody, so it has no mode to open: 1. */
-void THRASH_modemessage(App* app, CPU& cpu)
+ * its window's thread, message 0x465.  This driver hands it nobody, so it has no mode to open: 1. */
+x86::reg32 THRASH_modemessage(App* app, CPU& cpu, x86::Args& args)
 {
     NFS2_USE(app);
-    const Entry e(cpu);
-    e.back(cpu, 1, 0x18);
+    const Entry e(cpu, args);
+    return e.back(cpu, args, 1, 0x18);
 }
 
 }  // namespace nfs3hp

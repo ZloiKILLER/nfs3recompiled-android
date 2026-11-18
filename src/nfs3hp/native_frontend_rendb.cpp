@@ -1,5 +1,7 @@
 #include "native_frontend_rendb.h"
 #include "native_watcom.h"
+#include "port_hud.h"
+#include "native_vertices.h"
 #include "game_settings.h"
 #include "native_ea_memory.h"
 #include "native_ea_support.h"
@@ -15,10 +17,33 @@
 #include "native_frontend_simd.h"
 #include "native_graphics.h"
 #include "native_vertices.h"
+#include "port_hud.h"
+#include "native_render.h"
 #include <nfs3hp.h>
 #include <cstring>
 #include <initializer_list>
 #include <iterator>
+
+/* The thunks defined below under their qualified names. */
+namespace nfs3hp
+{
+namespace frontend
+{
+x86::reg32 rendKindIsText(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendSetUpHudVertices(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendDrawBox(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendUpdateCopMarkers(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendDrawPursuitMark(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendPrepareStandings(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendTurnMatrixToRoad(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendCopyRectangle(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendLayScalesIntoHud(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendLoadHudPictures(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendQueueEightQuads(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendUnqueueEightQuads(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendFitFrameToScreen(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+}
+}
 
 /* The race's HUD, the parts of it under what port_hud.cpp and native_render.cpp
  * draw, decompiled.  All of them run on voodoo2a: nothing here is another
@@ -41,7 +66,7 @@
  * what they do is called by address.
  *
  * Plan step 5: each function a typed core in frontend::rendb (native_frontend_rendb.h), in a
- * frame of its own (fe::Frame: what it calls runs at the stack addresses it did), and an adapter
+ * frame of its own (fe::Frame: what it calls runs at the stack addresses it did), and a thunk
  * under the game's name for the calls by address.  A core of this file calls another as C++
  * (guest::direct), and the typed cores of other files too (fe::direct); the rest of the game
  * still by address. */
@@ -59,11 +84,54 @@ namespace
 
 using fe::args;
 using fe::Guest;
-using fe::X87;
 using x86::Float;
 using x86::reg16;
 using x86::reg32;
 using x86::sreg32;
+
+/* Guest::call as a call through guest::pointerCall: `arguments`' registers in eax, edx, ebx and ecx, `esi` in esi,
+ * its stack words pushed in order, esp back after; Terminated when the game stopped in it.  `floatResult`, when given,
+ * takes the float the callee gives back. */
+inline reg32 callAt(Guest& guest, reg32 function, const fe::Arguments& arguments = fe::Arguments(), reg32 esi = 0,
+                    double* floatResult = nullptr)
+{
+    x86::CPU& cpu = guest.cpu();
+    x86::Args registers;
+    reg32* const into[4] = { &registers.eax, &registers.edx, &registers.ebx, &registers.ecx };
+    for (std::size_t i = 0; i < arguments.registerCount; ++i)
+        *into[i] = arguments.registers[i];
+    registers.esi = esi;
+    const reg32 esp = cpu.esp;
+    for (std::size_t i = arguments.stackCount; i-- > 0;)
+    {
+        cpu.esp -= 4;
+        guest.setDword(cpu.esp, arguments.stack[i]);
+    }
+    const std::optional<reg32> result = guest::pointerCall(guest.app(), cpu, function, registers);
+    if (!result)
+        throw fe::Terminated();
+    cpu.esp = esp;
+    if (floatResult)
+        *floatResult = registers.floatResult;  // what the callee leaves on the x87's top, as a float result
+    return *result;
+}
+
+/* fild, fld and sub_4dfd56 with fistp (fe::FloatMath's) as plain values: no x87 behind them. */
+class FloatMath
+{
+public:
+    explicit FloatMath(Guest& guest) : m_guest(guest) {}
+    static Float integer(std::int32_t value) { return Float(sreg32(value)); }
+    Float load(reg32 address) const { return Float(m_guest.floatAt(address)); }
+    std::int32_t truncated(const Float& value)
+    {
+        const double chopped = guest::direct<0x4dfd56, watcom::clib::chop>(m_guest.app(), m_guest.cpu(), double(value));
+        return fp::toInteger<sreg32>(chopped);  // fistp
+    }
+
+private:
+    Guest& m_guest;
+};
 
 /* A double of the game's constants, as fld and fmul qword read it. */
 Float doubleAt(const Guest& guest, reg32 address)
@@ -108,7 +176,6 @@ constexpr std::uint8_t kKeepsEbxEcxEsiEdi = fe::kRestoreEbx | kKeepsEcxEsiEdi;
 constexpr reg32 kQueueQuad = 0x49bd30;         // eax a queue, edx, ebx, ecx and the stack its corners
 constexpr reg32 kUnqueueQuad = 0x49bdc0;       // likewise
 constexpr reg32 kDrawQuad = 0x4c12e0;          // eax, edx, ebx, ecx its corners
-constexpr reg32 kDrawSegment = 0x4c0b20;       // eax, edx its ends
 
 // A corner: 0x20 bytes.  What the clipping functions read of it.
 constexpr reg32 kCornerBytes = 0x20;
@@ -432,15 +499,13 @@ x86::reg32 frontend::rendb::copyRectangle(App* app, CPU& cpu, reg32 from, reg32 
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 12);
-    constexpr reg32 kMemmove = 0x4ea4f0;
     from += (fromY * fromPitch + fromX) << 2;
     const reg32 toStart = (toY * toPitch + toX) << 2;
     to += toStart;
-    guest.leaveEcx(toStart);
-    guest.leaveEdx(toPitch);
     for (reg32 rows = height; --rows != reg32(-1);)
     {
-        guest.call(kMemmove, args({ from, to, width << 2, toPitch << 2 }));
+        // memmove's ecx is kept, never read: the core takes the destination, source and count.
+        fe::direct<0x4ea4f0, ea::moveMemory>(app, cpu, to, from, width << 2);
         from += fromPitch << 2;
         to += toPitch << 2;
     }
@@ -549,7 +614,7 @@ x86::reg32 frontend::rendb::loadHudPictures(App* app, CPU& cpu)
     fe::direct<0x4a33d0, frontend::loada::stopCheck>(app, cpu);
     fe::direct<0x4e1890, ea::purgeBlock>(app, cpu, file);
     fe::direct<0x4a33d0, frontend::loada::stopCheck>(app, cpu);
-    return guest.call(kLoadCabin);
+    return callAt(guest, kLoadCabin);
 }
 
 namespace
@@ -561,7 +626,7 @@ namespace
 
 reg32 quadCall(Guest& guest, reg32 function, reg32 queue, reg32 first)
 {
-    return guest.call(function, args({ queue, first, first + 1, first + 2 }, { first + 3 }));
+    return callAt(guest, function, args({ queue, first, first + 1, first + 2 }, { first + 3 }));
 }
 
 /* A group's eight quads, the corners numbered on from eax, on the dials' queue. */
@@ -604,13 +669,12 @@ x86::reg32 frontend::rendb::fitFrameToScreen(App* app, CPU& cpu)
     const fe::Frame frame(guest, cpu, 24 + 0x3c);
     constexpr reg32 kFrameCorners = 0x791a90, kFrameFirst = 0x791a80;
     constexpr reg32 kBox = 0x7497e8;           // left, top, right, bottom
-    constexpr reg32 kBuildFrame = 0x47f650;    // eax the corners, ebx, edx, stack, ecx its inside
 
     const reg32 width = guest.dword(kViewWidth);
     const reg32 corners = guest.dword(kFrameCorners);
     const reg32 first = guest.dword(kFrameFirst);
     const reg32 height = guest.dword(kViewHeight);
-    guest.call(kBuildFrame, args({ corners, guest.dword(kBox + 4), guest.dword(kBox), guest.dword(kBox + 0xc) }, { guest.dword(kBox + 8) }));
+    fe::direct<0x47f650, render::hudFrameBuilt>(app, cpu, corners, guest.dword(kBox + 4), guest.dword(kBox), guest.dword(kBox + 0xc), guest.dword(kBox + 8));
     for (reg32 q = 0; q < 8; ++q)
         quadCall(guest, kQueueQuad, kFrameQueue, first + 4 * q);
     const auto takeOut = [&](reg32 quad) { return quadCall(guest, kUnqueueQuad, kFrameQueue, first + 4 * quad); };
@@ -620,9 +684,9 @@ x86::reg32 frontend::rendb::fitFrameToScreen(App* app, CPU& cpu)
     };
 
     // Past the right.
-    if (!jumpsAbove(fp::compare(X87::integer(std::int32_t(width)), floatFrom(guest, corners + 0x120))))
+    if (!jumpsAbove(fp::compare(FloatMath::integer(std::int32_t(width)), floatFrom(guest, corners + 0x120))))
     {
-        setFour(0x2c0, 0x2a0, 0xc0, 0xa0, float(X87::integer(std::int32_t(width - 1))));
+        setFour(0x2c0, 0x2a0, 0xc0, 0xa0, float(FloatMath::integer(std::int32_t(width - 1))));
         takeOut(2);
         takeOut(3);
         takeOut(4);
@@ -644,10 +708,10 @@ x86::reg32 frontend::rendb::fitFrameToScreen(App* app, CPU& cpu)
         takeOut(2);
     }
     // Past the bottom.  With nothing to do, eax has the comparison's word.
-    const reg16 status = fp::compare(X87::integer(std::int32_t(height)), floatFrom(guest, corners + 0x244));
+    const reg16 status = fp::compare(FloatMath::integer(std::int32_t(height)), floatFrom(guest, corners + 0x244));
     if (jumpsAbove(status))
         return (height & 0xffff0000) | status;
-    setFour(0x3e4, 0x3c4, 0x1e4, 0x1c4, float(X87::integer(std::int32_t(height - 1))));
+    setFour(0x3e4, 0x3c4, 0x1e4, 0x1c4, float(FloatMath::integer(std::int32_t(height - 1))));
     takeOut(4);
     takeOut(5);
     return takeOut(6);
@@ -687,14 +751,13 @@ x86::reg32 frontend::rendb::prepareStandings(App* app, CPU& cpu, reg32 from)
     };
     const std::int32_t ownPlace = std::int32_t(guest.dword(from + kCarPlace));
     reg32 rows = 0;
-    // What eax and edx hold at the end, which the check holds it to.
-    reg32 leftEax = reg32(ownPlace), leftEdx = from;
+    // What eax and edx hold at the end.
+    reg32 leftEax = reg32(ownPlace);
     for (std::int32_t place = 1; place <= std::int32_t(guest.dword(kCarCount)); ++place)
     {
         for (std::int32_t i = 0; i < std::int32_t(guest.dword(kCarCount)); ++i)
         {
             const reg32 car = guest.dword(kCars + 4 * reg32(i));
-            leftEdx = car;
             if (reg32(place) != guest.dword(car + kCarPlace))
                 continue;
             const reg32 row = rows * kRowBytes;
@@ -706,9 +769,8 @@ x86::reg32 frontend::rendb::prepareStandings(App* app, CPU& cpu, reg32 from)
                 guest.setDword(row + kRowGap, 0);
             else
             {
-                const reg32 gap = place > ownPlace ? 0 - guest.call(kGapBetween, args({ from, car }))
-                                                   : guest.call(kGapBetween, args({ car, from }));
-                leftEdx = guest.edx();
+                const reg32 gap = place > ownPlace ? 0 - fe::direct<0x485a60, port::hud::standingsGapOf>(guest.app(), guest.cpu(), from, car)
+                                                   : fe::direct<0x485a60, port::hud::standingsGapOf>(guest.app(), guest.cpu(), car, from);
                 guest.setDword(row + kRowGap, gap);
             }
             leftEax = row;
@@ -720,7 +782,6 @@ x86::reg32 frontend::rendb::prepareStandings(App* app, CPU& cpu, reg32 from)
     for (std::int32_t i = 0; i < std::int32_t(guest.dword(kCarCount)); ++i)
     {
         const reg32 car = guest.dword(kCars + 4 * reg32(i));
-        leftEdx = car;
         if (guest.dword(car + kCarPlace) != 0 || !outIn(car, kStateWrecked))
             continue;
         const reg32 row = rows * kRowBytes;
@@ -730,12 +791,10 @@ x86::reg32 frontend::rendb::prepareStandings(App* app, CPU& cpu, reg32 from)
         guest.setDword(row + kRowName, guest.dword(car + kCarRecord) + kNameInRecord);
         guest.setDword(row + kRowGap, 0);
         guest.setDword(row + kRowUnplaced, 1);
-        leftEdx = guest.dword(kPictures + 4 * guest.dword(car + kCarNumber));
         ++rows;
-        guest.setDword(row + kRowPicture, leftEdx);
+        guest.setDword(row + kRowPicture, guest.dword(kPictures + 4 * guest.dword(car + kCarNumber)));
     }
     guest.setDword(kRowCount, rows);
-    guest.leaveEdx(leftEdx);
     return leftEax;
 }
 
@@ -763,7 +822,7 @@ x86::reg32 frontend::rendb::updateCopMarkers(App* app, CPU& cpu, reg32 view, reg
     constexpr reg32 kMarkersShown = 0x700230, kMarkersWereShown = 0x700238;
     constexpr reg32 kMarkerCorners = 0x791ac8;
     constexpr reg32 kBoxes = 0x749878, kBoxesPerView = 0x170;
-    constexpr reg32 kSetMarkers = 0x48b5f0;    // eax a view, edx the car, ebx the one chased, ecx the colour
+
     constexpr reg32 kAddToList = 0x487350;
 
     const reg32 chased = guest.dword(car + kCarChased);
@@ -772,21 +831,21 @@ x86::reg32 frontend::rendb::updateCopMarkers(App* app, CPU& cpu, reg32 view, reg
         if (guest.dword(view * kRowsPerView + reg32(i) * kRowBytes + kRows) == kRowInPursuit)
             anyInPursuit = true;
     if ((guest.byte(car + kCarFlags) & kCarIsCop) != 0 && anyInPursuit && chased != 0)
-        guest.setDword(kMarkersShown + 4 * view, guest.call(kSetMarkers, args({ view, car, chased, kMarkersColour })));
+        guest.setDword(kMarkersShown + 4 * view,
+                       reg32(*fe::direct<0x48b5f0, port::hud::markersOf>(app, cpu, cpu.esp - 4, view, car, chased, kMarkersColour)));
     else
     {
         guest::direct<0x47fcb0, unqueueEightQuads>(app, cpu, (view << 5) + guest.dword(kMarkerCorners));
         guest.setDword(kMarkersShown + 4 * view, 0);
     }
     const reg32 shown = guest.dword(kMarkersShown + 4 * view);
-    guest.leaveEdx(shown);
     if (shown == guest.dword(kMarkersWereShown + 4 * view))
         return view * 4;
     guest.setDword(kMarkersWereShown + 4 * view, shown);
     if (shown == 0)
         return fe::direct<0x4873c0, frontend::hudx::groupDropLast>(app, cpu, view);
     const reg32 box = kBoxes + view * kBoxesPerView;
-    return guest.call(kAddToList, args({ view, guest.dword(box + 4), guest.dword(box), guest.dword(box + 0xc) }, { guest.dword(box + 8) }));
+    return callAt(guest, kAddToList, args({ view, guest.dword(box + 4), guest.dword(box), guest.dword(box + 0xc) }, { guest.dword(box + 8) }));
 }
 
 namespace
@@ -821,11 +880,11 @@ x86::reg32 frontend::rendb::drawBox(App* app, CPU& cpu, reg32 x0, reg32 y0, reg3
         storeClipCode(guest, first + i * kCornerBytes);
     fe::direct<0x431900, graphics::sendState>(app, cpu, kStateTexture, 0);
     if (filled != 0)
-        return guest.call(kDrawQuad, args({ first, second, third, fourth }));
-    guest.call(kDrawSegment, args({ first, second }));
-    guest.call(kDrawSegment, args({ second, third }));
-    guest.call(kDrawSegment, args({ third, fourth }));
-    return guest.call(kDrawSegment, args({ fourth, first }));
+        return fe::direct<0x4c12e0, vertices::quadClipped>(guest.app(), guest.cpu(), first, second, third, fourth);
+    fe::direct<0x4c0b20, render::lineDrawn>(app, cpu, first, second);
+    fe::direct<0x4c0b20, render::lineDrawn>(app, cpu, second, third);
+    fe::direct<0x4c0b20, render::lineDrawn>(app, cpu, third, fourth);
+    return *fe::direct<0x4c0b20, render::lineDrawn>(app, cpu, fourth, first);
 }
 
 namespace
@@ -878,7 +937,7 @@ void drawMarkQuad(Guest& guest, const Mark& mark, const MarkCorners& c)
     guest.setFloat(quad + 3 * kCornerBytes + kCornerY, c.y3);
     for (reg32 i = 0; i < 4; ++i)
         storeClipCode(guest, quad + i * kCornerBytes);
-    guest.call(kDrawQuad, args({ quad, quad + kCornerBytes, quad + 2 * kCornerBytes, quad + 3 * kCornerBytes }));
+    fe::direct<0x4c12e0, vertices::quadClipped>(guest.app(), guest.cpu(), quad, quad + kCornerBytes, quad + 2 * kCornerBytes, quad + 3 * kCornerBytes);
 }
 
 /* The green frame around the car, in the blank quad's colour: its top in two parts,
@@ -1026,7 +1085,7 @@ x86::reg32 frontend::rendb::drawPursuitMark(App* app, CPU& cpu, reg32 view, reg3
     constexpr reg32 kFlatView = 0x7cdb88, kRaceView = 0x7cdac0;
 
     const reg32 place = guest.frame() + kPlaceInFrame;
-    const Float width = X87::integer(std::int32_t(screenWidth));
+    const Float width = FloatMath::integer(std::int32_t(screenWidth));
     const float widthStored = float(width);
     const Float perWidth = floatFrom(guest, kPerWidth);
     const float outer = float(fp::mul(fp::mul(width, floatFrom(guest, kOuterSize)), perWidth));
@@ -1036,7 +1095,6 @@ x86::reg32 frontend::rendb::drawPursuitMark(App* app, CPU& cpu, reg32 view, reg3
     copyWords(guest, place, car + kCarPlace, 3);
     copyWords(guest, guest.frame(), kBlankQuad, kQuadBytes / 4);
     // The eye in edx for it, as the code loads it there: what this function leaves when it goes no further.
-    guest.leaveEdx(view + kViewEye);
     const frontend::sima::FloatLeft quick =
         fe::direct<0x4965b0, frontend::sima::quickDistanceOf>(app, cpu, place, view + kViewEye);
     const reg32 measured = quick.eax;
@@ -1089,7 +1147,7 @@ Float sliceNumber(const Guest& guest, reg32 at)
 {
     constexpr reg32 kPerFixed = 0x53b460;      // a double, 1/65536
     const reg32 fixed = reg32(sreg32(guest.dword(at)) >> 24) << 9;
-    return fp::mul(X87::integer(std::int32_t(fixed)), doubleAt(guest, kPerFixed));
+    return fp::mul(FloatMath::integer(std::int32_t(fixed)), doubleAt(guest, kPerFixed));
 }
 
 /* The turn, as a share of a whole one: folded so that facing back along the road
@@ -1148,7 +1206,6 @@ x86::reg32 frontend::rendb::turnMatrixToRoad(App* app, CPU& cpu, reg32 car)
     constexpr reg32 kIdentity = 0x47bb70;
     // eax, edx two matrices, ebx where to.  By address: the eax it leaves is this function's answer, and
     // its core hands back none.
-    constexpr reg32 kMultiply = 0x4e0280;
     constexpr reg32 kResult = 0x791a5c;
     constexpr reg32 kResultScale = 0x3d4ccccd; // a float, 0.05
     // The frame.
@@ -1188,27 +1245,27 @@ x86::reg32 frontend::rendb::turnMatrixToRoad(App* app, CPU& cpu, reg32 car)
                                                                                                  bitsOf(against)));
     fe::direct<0x4eaab0, frontend::simd::rotateY>(app, cpu, frame + kStart, bitsOf(turn), frame + kRotated);
     fe::direct<0x4ea9e0, frontend::simd::rotateX>(app, cpu, frame + kStart, kResultScale, frame + kScaled);
-    return guest.call(kMultiply, args({ frame + kRotated, frame + kScaled, kResult }));
+    return fe::direct<0x4e0280, vertices::multiplyMatrixEax>(app, cpu, frame + kRotated, frame + kScaled, kResult);
 }
 
 /* ---------------------------------------------------------------------------
  * Under the game's addresses
  * ------------------------------------------------------------------------- */
 
-void frontend::rendKindIsText(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendKindIsText(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_47bc20", 0, 0, nullptr, 0 };
-    const reg32 kind = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendb::kindIsText(app, cpu, kind); });
+    const reg32 kind = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendb::kindIsText(app, cpu, kind); });
 }
 
-void frontend::rendSetUpHudVertices(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendSetUpHudVertices(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_47bc40", 0, 0, nullptr, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendb::setUpHudVertices(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendb::setUpHudVertices(app, cpu); });
 }
 
-void frontend::rendDrawBox(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendDrawBox(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_47d1d0", 40, 0, nullptr, 0 };
     reg32 place[8];
@@ -1216,82 +1273,82 @@ void frontend::rendDrawBox(win32::WinApplication* app, x86::CPU& cpu)
         place[i] = app->getMemory<reg32>(cpu.esp + 4 + 4 * i);
     const reg32 filled = app->getMemory<reg32>(cpu.esp + 4 + 4 * 8);
     const reg32 colour = app->getMemory<reg32>(cpu.esp + 4 + 4 * 9);
-    fe::runWhole(app, cpu, site, [&](Guest&) {
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
         return rendb::drawBox(app, cpu, place[0], place[1], place[2], place[3], place[4], place[5], place[6], place[7],
                               filled, colour);
     });
 }
 
-void frontend::rendUpdateCopMarkers(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendUpdateCopMarkers(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_47d480", 0, 0, nullptr, 0, kKeepsEbxEcxEsiEdi };
-    const reg32 view = cpu.eax, car = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendb::updateCopMarkers(app, cpu, view, car); });
+    const reg32 view = args.eax, car = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendb::updateCopMarkers(app, cpu, view, car); });
 }
 
-void frontend::rendDrawPursuitMark(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendDrawPursuitMark(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_47d580", 0, 0, nullptr, 0, kKeepsEcxEsiEdi };
-    const reg32 view = cpu.eax, row = cpu.edx, width = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendb::drawPursuitMark(app, cpu, view, row, width); });
+    const reg32 view = args.eax, row = args.edx, width = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendb::drawPursuitMark(app, cpu, view, row, width); });
 }
 
-void frontend::rendPrepareStandings(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendPrepareStandings(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_47ee80", 0, 0, nullptr, 0, kKeepsEbxEcxEsiEdi };
-    const reg32 from = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendb::prepareStandings(app, cpu, from); });
+    const reg32 from = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendb::prepareStandings(app, cpu, from); });
 }
 
-void frontend::rendTurnMatrixToRoad(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendTurnMatrixToRoad(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_47f090", 0, 0, nullptr, 0 };
-    const reg32 car = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendb::turnMatrixToRoad(app, cpu, car); });
+    const reg32 car = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendb::turnMatrixToRoad(app, cpu, car); });
 }
 
-void frontend::rendCopyRectangle(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendCopyRectangle(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_47f2e0", 0x18, 0, nullptr, 0, kKeepsEsiEdi };
-    const reg32 from = cpu.eax, to = cpu.edx, fromX = cpu.ebx, fromY = cpu.ecx;
+    const reg32 from = args.eax, to = args.edx, fromX = args.ebx, fromY = args.ecx;
     const auto stack = [&](reg32 i) { return app->getMemory<reg32>(cpu.esp + 4 + 4 * i); };
     const reg32 toX = stack(0), toY = stack(1), fromPitch = stack(2), toPitch = stack(3), width = stack(4), height = stack(5);
-    fe::runWhole(app, cpu, site, [&](Guest&) {
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
         return rendb::copyRectangle(app, cpu, from, to, fromX, fromY, toX, toY, fromPitch, toPitch, width, height);
     });
 }
 
-void frontend::rendLayScalesIntoHud(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendLayScalesIntoHud(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_47f340", 0, 0, nullptr, 0 };
-    const reg32 file = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendb::layScalesIntoHud(app, cpu, file); });
+    const reg32 file = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendb::layScalesIntoHud(app, cpu, file); });
 }
 
-void frontend::rendLoadHudPictures(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendLoadHudPictures(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_47f590", 0, 0, nullptr, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendb::loadHudPictures(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendb::loadHudPictures(app, cpu); });
 }
 
-void frontend::rendQueueEightQuads(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendQueueEightQuads(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_47fbe0", 0, 0, nullptr, 0 };
-    const reg32 first = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendb::queueEightQuads(app, cpu, first); });
+    const reg32 first = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendb::queueEightQuads(app, cpu, first); });
 }
 
-void frontend::rendUnqueueEightQuads(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendUnqueueEightQuads(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_47fcb0", 0, 0, nullptr, 0 };
-    const reg32 first = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendb::unqueueEightQuads(app, cpu, first); });
+    const reg32 first = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendb::unqueueEightQuads(app, cpu, first); });
 }
 
-void frontend::rendFitFrameToScreen(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendFitFrameToScreen(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_47fd80", 0, 0, nullptr, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendb::fitFrameToScreen(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendb::fitFrameToScreen(app, cpu); });
 }
 
 }

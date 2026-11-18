@@ -7,12 +7,11 @@
 /* native_frontend_rendc.cpp's typed functions (what the race draws besides the track and the cars'
  * bodies: the cones, the lightning, a model's parts transformed, the driver's object lists, the
  * track lights' blinking, the sky's sprites and a few small ones), which other files call as C++
- * (guest::direct), and how the game's code calls each by address (ByAddress, for the checks'
- * stand-ins).  Each calls the game's other functions by address on `cpu` and throws fe::Terminated
- * when the game stopped in one, as Guest::call does; its result is what the game's function leaves
+ * (guest::direct), and how the game's code calls each by address.  Each calls the game's other functions by address on `cpu` and throws fe::Terminated
+ * when the game stopped in one, as a call by address does; its result is what the game's function leaves
  * in eax.  Several also leave registers they do not save as their code does (coneSideOffset's and
  * skyRandomBetween's edx, modelTransformPart's ecx and edx): a caller that reads such a register
- * calls by address.  modelTransformAll and modelTransformPart give back the depth their adapters leave
+ * calls by address.  modelTransformAll and modelTransformPart give back the depth their thunks leave
  * on the x87 besides their eax (Nearest). */
 namespace nfs3hp
 {
@@ -47,10 +46,13 @@ reg32 coneCountPass(App* app, CPU& cpu, reg32 car);
 reg32 conesHit(App* app, CPU& cpu, reg32 car);
 // The game's 0x493e50: every cone back up at its home.
 reg32 conesReset(App* app, CPU& cpu);
+reg32 conesResetKeeping(App* app, CPU& cpu, reg32 eax);  // eax: what the game's function was entered with
 // The game's 0x493ef0: the cones' rows and model, as the race loads.
 reg32 conesLoad(App* app, CPU& cpu);
+reg32 conesLoadKeeping(App* app, CPU& cpu, reg32 eax);
 // The game's 0x493fb0: the cones' rows and model given back.
 reg32 conesFree(App* app, CPU& cpu);
+reg32 conesFreeKeeping(App* app, CPU& cpu, reg32 eax);
 // The game's 0x494010: every cone stepped up to the race's tick.
 reg32 conesStep(App* app, CPU& cpu);
 // The game's 0x494170: the cones 20 slices either way of slice `centre` queued for view `view`.
@@ -69,7 +71,7 @@ reg32 boltStrike(App* app, CPU& cpu, reg32 x, reg32 y, reg32 z, reg32 angle);
 // The game's 0x494630: every live node of the lightning stepped up to the race's tick.
 reg32 boltsStep(App* app, CPU& cpu);
 // The game's 0x495600: the picture shown on the way back to the menus.
-reg32 backImage(App* app, CPU& cpu);
+reg32 backImage(App* app, CPU& cpu, reg32 eax, reg32 edx, reg32 ebx, reg32 ecx);
 // The game's 0x4964d0: the float at `value` cut to its fraction.
 reg32 wrapFraction(App* app, CPU& cpu, reg32 value);
 // The game's 0x496550: a rough distance between the 16.16 points at `a` and `b`.
@@ -107,11 +109,11 @@ reg32 modelSetColour(App* app, CPU& cpu, reg32 colour);
 Nearest modelTransformPart(App* app, CPU& cpu, reg32 model, reg32 part, reg32 matrix0, reg32 place0, reg32 matrix1,
                            reg32 place1, reg32 matrix2, reg32 place2, reg32 environment);
 /* The game's 0x49d5c0 and 0x49de20 as the game's code calls them, for register code (native_render.cpp):
- * their arguments in eax, edx, ebx, ecx and on the stack above the return address's slot at esp, every
- * register and esp left as their adapters leave them (the stack's arguments taken off); the depth the
- * adapters leave on the x87, nullopt when the game stopped in them. */
-std::optional<double> modelTransformAllCalled(App* app, CPU& cpu);
-std::optional<double> modelTransformPartCalled(App* app, CPU& cpu);
+ * their register arguments in `args` and the stack ones above the return address's slot at esp, `args` left as
+ * their thunks leave it (eax the result) and esp moved on (the stack's arguments taken off); the depth the
+ * thunks leave as the float result, nullopt when the game stopped in them. */
+std::optional<double> modelTransformAllCalled(App* app, CPU& cpu, x86::Args& args);
+std::optional<double> modelTransformPartCalled(App* app, CPU& cpu, x86::Args& args);
 // The game's 0x4a4060: a whole number from `a` to `b`, either way round, from the game's table of random bytes.
 reg32 skyRandomBetween(App* app, CPU& cpu, reg32 a, reg32 b);
 // The game's 0x4a40c0: sky sprite `sprite` put back in at an edge of the screen.
@@ -122,392 +124,6 @@ reg32 skySpritePlace(App* app, CPU& cpu, reg32 sprite);
 
 namespace guest
 {
-
-template <>
-struct ByAddress<frontend::rendc::blinkColour>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 light)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({ light }));
-    }
-};
-
-template <>
-struct ByAddress<frontend::rendc::coneSideOffset>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 slice, x86::reg32 kind)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({ slice, kind }));
-    }
-};
-
-// The slice in eax, the side in edx, out in esi.
-template <>
-struct ByAddress<frontend::rendc::coneEdgePoint>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 slice, x86::reg32 side, x86::reg32 out)
-    {
-        cpu.esi = out;
-        return fe::callByAddress(app, cpu, Address, fe::args({ slice, side }));
-    }
-};
-
-template <>
-struct ByAddress<frontend::rendc::conesPlace>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({}));
-    }
-};
-
-template <>
-struct ByAddress<frontend::rendc::coneCountPass>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 car)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({ car }));
-    }
-};
-
-template <>
-struct ByAddress<frontend::rendc::conesHit>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 car)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({ car }));
-    }
-};
-
-template <>
-struct ByAddress<frontend::rendc::conesReset>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({}));
-    }
-};
-
-template <>
-struct ByAddress<frontend::rendc::conesLoad>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({}));
-    }
-};
-
-template <>
-struct ByAddress<frontend::rendc::conesFree>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({}));
-    }
-};
-
-template <>
-struct ByAddress<frontend::rendc::conesStep>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({}));
-    }
-};
-
-template <>
-struct ByAddress<frontend::rendc::conesDraw>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 view, x86::reg32 centre)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({ view, centre }));
-    }
-};
-
-template <>
-struct ByAddress<frontend::rendc::boltsClear>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({}));
-    }
-};
-
-template <>
-struct ByAddress<frontend::rendc::boltGlow>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 out, x86::reg32 brightness)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({ out, brightness }));
-    }
-};
-
-template <>
-struct ByAddress<frontend::rendc::boltFreeNode>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({}));
-    }
-};
-
-// The parent, the slot, the depth and the fork in eax, edx, ebx and ecx; the bend's bits on the stack (ret 4).
-template <>
-struct ByAddress<frontend::rendc::boltBranch>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 parent, x86::reg32 slot,
-                           x86::reg32 depth, x86::reg32 forkAt, x86::reg32 bend)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({ parent, slot, depth, forkAt }, { bend }));
-    }
-};
-
-// All four on the stack (ret 0x10).
-template <>
-struct ByAddress<frontend::rendc::boltStrike>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 x, x86::reg32 y, x86::reg32 z,
-                           x86::reg32 angle)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({}, { x, y, z, angle }));
-    }
-};
-
-template <>
-struct ByAddress<frontend::rendc::boltsStep>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({}));
-    }
-};
-
-template <>
-struct ByAddress<frontend::rendc::backImage>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({}));
-    }
-};
-
-template <>
-struct ByAddress<frontend::rendc::wrapFraction>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 value)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({ value }));
-    }
-};
-
-template <>
-struct ByAddress<frontend::rendc::approximateDistance>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 a, x86::reg32 b)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({ a, b }));
-    }
-};
-
-// All five on the stack (ret 0x14).
-template <>
-struct ByAddress<frontend::rendc::rotatePlane>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 x, x86::reg32 y, x86::reg32 turn,
-                           x86::reg32 outX, x86::reg32 outY)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({}, { x, y, turn, outX, outY }));
-    }
-};
-
-// The points in eax and edx, the limit's bits on the stack (ret 4).
-template <>
-struct ByAddress<frontend::rendc::withinFlatDistance>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 a, x86::reg32 b, x86::reg32 limit)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({ a, b }, { limit }));
-    }
-};
-
-template <>
-struct ByAddress<frontend::rendc::objectsBegin>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({}));
-    }
-};
-
-// The view in eax, the pair in edx, the depth on the stack (ret 4).
-template <>
-struct ByAddress<frontend::rendc::objectsDraw>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 view, x86::reg32 pair,
-                           x86::reg32 depth)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({ view, pair }, { depth }));
-    }
-};
-
-// Out in esi.
-template <>
-struct ByAddress<frontend::rendc::objectsEnd>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 out)
-    {
-        cpu.esi = out;
-        return fe::callByAddress(app, cpu, Address, fe::args({}));
-    }
-};
-
-// Out in esi.
-template <>
-struct ByAddress<frontend::rendc::objectsCopy>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 out)
-    {
-        cpu.esi = out;
-        return fe::callByAddress(app, cpu, Address, fe::args({}));
-    }
-};
-
-template <>
-struct ByAddress<frontend::rendc::modelFree>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 model)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({ model }));
-    }
-};
-
-// Four in eax, edx, ebx and ecx, two on the stack (ret 8); the depth taken off the x87's stack.
-template <>
-struct ByAddress<frontend::rendc::modelTransformAll>
-{
-    template <x86::reg32 Address>
-    static frontend::rendc::Nearest call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 model,
-                                         x86::reg32 matrix1, x86::reg32 place1, x86::reg32 matrix2, x86::reg32 place2,
-                                         x86::reg32 environment)
-    {
-        const x86::reg32 eax = fe::callByAddress(app, cpu, Address, fe::args({ model, matrix1, place1, matrix2 },
-                                                 { place2, environment }));
-        return { eax, double(cpu.fpu.take()) };
-    }
-};
-
-template <>
-struct ByAddress<frontend::rendc::modelSetAlphas>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 high, x86::reg32 low)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({ high, low }));
-    }
-};
-
-template <>
-struct ByAddress<frontend::rendc::modelSetShading>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 shading)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({ shading }));
-    }
-};
-
-template <>
-struct ByAddress<frontend::rendc::modelSetLight>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 light)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({ light }));
-    }
-};
-
-template <>
-struct ByAddress<frontend::rendc::modelSetEnvironment>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 direction)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({ direction }));
-    }
-};
-
-template <>
-struct ByAddress<frontend::rendc::modelSetColour>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 colour)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({ colour }));
-    }
-};
-
-// Four in eax, edx, ebx and ecx, five on the stack (ret 0x14); the depth taken off the x87's stack.
-template <>
-struct ByAddress<frontend::rendc::modelTransformPart>
-{
-    template <x86::reg32 Address>
-    static frontend::rendc::Nearest call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 model,
-                                         x86::reg32 part, x86::reg32 matrix0, x86::reg32 place0, x86::reg32 matrix1,
-                                         x86::reg32 place1, x86::reg32 matrix2, x86::reg32 place2,
-                                         x86::reg32 environment)
-    {
-        const x86::reg32 eax = fe::callByAddress(app, cpu, Address, fe::args({ model, part, matrix0, place0 },
-                                                 { matrix1, place1, matrix2, place2, environment }));
-        return { eax, double(cpu.fpu.take()) };
-    }
-};
-
-template <>
-struct ByAddress<frontend::rendc::skyRandomBetween>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 a, x86::reg32 b)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({ a, b }));
-    }
-};
-
-template <>
-struct ByAddress<frontend::rendc::skySpritePlace>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 sprite)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({ sprite }));
-    }
-};
 
 }  // namespace guest
 }  // namespace nfs3hp

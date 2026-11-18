@@ -4,6 +4,7 @@
 #include "native_ea_memory.h"
 #include "native_ea_net.h"
 #include "native_ea_threads.h"
+#include "native_game.h"
 #include "native_frontend.h"
 #include "native_frontend_dialogs.h"
 #include "native_frontend_glue.h"
@@ -15,10 +16,12 @@
 #include "host_threads.h"
 #include "port_buttons.h"
 #include "port_dialogs.h"
+#include "port_draw2d.h"
 #include "port_loop.h"
 #include "port_menus.h"
 #include "port_snd_stream_calls.h"
 #include "port_sound_music.h"
+#include "native_graphics.h"
 #include <nfs3hp.h>
 #include <lib/winapp.h>
 #include <winapi/types.h>
@@ -28,15 +31,72 @@
 #include <utility>
 #include <cstddef>
 
+/* The thunks defined below by qualified name, declared where they are defined (the header's declarations are the thunks'). */
+namespace nfs3hp
+{
+namespace frontend {
+x86::reg32 connectApplyPlayerVector(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 connectListingRedraw(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 ipxRefreshGames(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 connectOpenProtocolList(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 connectOpenAddressDialog(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 connectModemLabel(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 connectComPortLabel(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 ipxGameNameAnswer(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 connectAddressAnswer(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 connectTcpAnswer(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 connectProtocolListAnswer(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 connectSerialAnswer(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 connectPhoneAnswer(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 connectModemAnswer(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 connectRaceNetMissingAnswer(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 connectRaceNetAnswer(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 connectRaceNetClicked(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 connectTcpClicked(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 connectSerialClicked(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 connectModemClicked(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 ipxCreateGameClicked(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 ipxRefreshClicked(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 connectOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 connectOnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 ipxOnFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 ipxOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 ipxOnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 connectFlushKeys(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 connectSetEditField(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 connectSetPointer(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 connectConnectionAvailable(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 connectListSessions(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 connectCreateSession(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 connectJoinSession(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 connectUseTcp(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 connectFindAddress(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 connectSetUpEndpoint(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 connectEnumerateServices(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 connectFindConnections(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 connectServiceFound(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 connectSessionFound(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 connectQueuePeerByName(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 connectQueuePeer(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 connectClearPeerSlots(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 connectRememberPeer(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 connectClearQueue(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 connectEnqueuePeer(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 connectStartConnection(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 connectListModems(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 connectSetUpLink(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 connectShakeHands(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+}  // frontend
+}  // namespace nfs3hp
+
 namespace nfs3hp
 {
 namespace
 {
 
-/* A typed core called as C++ (fe::direct) whose function changes no register but eax (as
- * tools/frontend_checks/specs_from_exe.py reads it): the registers left as the call by address
- * leaves them -- `words` in eax, edx, ebx and ecx as that call loads them, the first `Taken` of
- * them the core's arguments -- and its result in eax, which the call by address leaves there. */
+/* A typed core called as C++ (fe::direct) whose function changes no register but eax: the first `Taken` of `words` its arguments (the
+ * rest what the game's code has in the other registers, which the function does not read); its
+ * result. */
 template <x86::reg32 Address, auto Core, std::size_t... I>
 auto directOf(win32::WinApplication* app, x86::CPU& cpu, const x86::reg32* words, std::index_sequence<I...>)
 {
@@ -47,15 +107,11 @@ template <x86::reg32 Address, auto Core, std::size_t Taken, typename... Words>
 x86::reg32 directKept(win32::WinApplication* app, x86::CPU& cpu, Words... words)
 {
     const x86::reg32 all[] = { x86::reg32(words)..., 0 };
-    x86::reg32* const into[] = { &cpu.eax, &cpu.edx, &cpu.ebx, &cpu.ecx };
-    for (std::size_t i = 0; i < sizeof...(Words) && i < 4; ++i)
-        *into[i] = all[i];
     const auto result = directOf<Address, Core>(app, cpu, all, std::make_index_sequence<Taken>{});
     if constexpr (std::is_same_v<std::remove_cv_t<decltype(result)>, x86::reg32>)
-        cpu.eax = result;
+        return result;
     else
-        cpu.eax = *result;
-    return cpu.eax;
+        return *result;
 }
 
 }  // namespace
@@ -70,19 +126,19 @@ x86::reg32 directKept(win32::WinApplication* app, x86::CPU& cpu, Words... words)
  *   ipx        IPX.MNU: the games found on the network, a game's name, creating
  *              one, joining one, the list looked for again every so often.
  *
- * The port hides RaceNet, the modem and the serial cable (tools/apply_hide_connections.py):
+ * The port hides RaceNet, the modem and the serial cable (the port's hidden connections change):
  * connect gives those three items no handler, so their questions below are not
  * reached any more; they are kept as the game has them.
  *
  * Plan step 5: each function a typed core in frontend::connect (native_frontend_connect.h), in a
- * frame of its own where the game's function has one (fe::Frame), and an adapter under the game's
+ * frame of its own where the game's function has one (fe::Frame), and a thunk under the game's
  * name for the calls by address.  A core of this file calls another as C++ (guest::direct); the
  * rest of the game still by address. */
 namespace nfs3hp
 {
 
 /* The TCP/IP port a race is hosted and joined on, the launcher's (nfs3hp_main.cpp,
- * tools/apply_network_port.py). */
+ * the port's network port change). */
 x86::reg32 networkPort();
 
 namespace
@@ -150,9 +206,7 @@ constexpr x86::reg32 kMemset = 0x4e0640;
 constexpr x86::reg32 kStrncat = 0x4eedf0;
 constexpr x86::reg32 kSprintf = 0x4df690;
 // The menu engine's.
-constexpr x86::reg32 kTakeWindow = 0x4d9120;
 constexpr x86::reg32 kDrawPointer = 0x4dab90;
-constexpr x86::reg32 kFlip = 0x4d9140;
 constexpr x86::reg32 kSelectListUp = 0x4633d0;
 // The handlers these screens hand the menu engine.
 constexpr x86::reg32 kListingRedraw = 0x43f1f0;
@@ -182,17 +236,17 @@ void putText(Guest& guest, x86::reg32 at, std::uint32_t id)
     guest.setDword(at, fe::text(guest, id));
 }
 
-/* sub_44b170: the screen drawn again and shown, the registers handed on as they are. */
+/* sub_44b170: the screen drawn again and shown.  It reads no register (the ones its code hands on
+ * to what it calls are the caller's leftovers, which none of those reads). */
 void redrawMenu(Guest& guest, CPU& cpu)
 {
-    fe::direct<0x44b170, port::buttons::redrawn>(guest.app(), cpu, cpu.esp - 4,
-                                                 port::Args{ cpu.eax, cpu.edx, cpu.ebx, cpu.ecx });
+    fe::direct<0x44b170, port::buttons::redrawn>(guest.app(), cpu, cpu.esp - 4, port::Args{});
 }
 
-/* sub_444a60: the message to go on the next pass, eax handed on as it is. */
+/* sub_444a60: the message to go on the next pass.  It reads no register. */
 void endMessage(Guest& guest, CPU& cpu)
 {
-    fe::direct<0x444a60, port::dialogs::endMessageOf>(guest.app(), cpu, cpu.eax);
+    fe::direct<0x444a60, port::dialogs::endMessageOf>(guest.app(), cpu, 0);
 }
 
 void flush(Guest& guest, CPU& cpu)
@@ -264,8 +318,9 @@ x86::reg32 frontend::connect::refreshGames(App* app, CPU& cpu, reg32 list)
         guest.setDword(guest.dword(list + kListRows), line);
         guest.setByte(guest.dword(list + kListRows) + 4, 0);
     }
-    // By address: the eax it leaves is this function's answer, and its core hands back none.
-    return guest.call(kSelectListUp, fe::args({ list }));
+    // The eax it leaves is the item it was handed.
+    fe::direct<kSelectListUp, port::buttons::selectLaidOut>(guest.app(), guest.cpu(), list);
+    return list;
 }
 
 /* ---------------------------------------------------------------------------
@@ -332,8 +387,8 @@ x86::reg32 frontend::connect::openAddressDialog(App* app, CPU& cpu)
     putText(guest, kLines + 4, 0xa);
     putText(guest, kButtons, 0xf9);
     putText(guest, kButtons + 4, 0xc6);
-    fe::openDialog(guest, { 2, kLines, 2, kButtons, 0, SETTINGS_ADDRESS(tcpAddress), 0x1d, 1, kAddressAnswer });
-    return guest.eax();
+    return fe::direct<0x444c20, frontend::dialogs::openEdit>(app, cpu, 2, kLines, 2, kButtons, 0,
+                                                            SETTINGS_ADDRESS(tcpAddress), 0x1d, 1, kAddressAnswer);
 }
 
 /* sub_43f640: the player's name typed for a game to create: the list next. */
@@ -367,7 +422,6 @@ x86::reg32 frontend::connect::addressAnswer(App* app, CPU& cpu, reg32 answer, re
     const x86::reg32 typed = fe::dialogEditText(guest);
     guest.setByte(closes, 0);
     const std::uint32_t focus = fe::dialogFocus(guest);
-    guest.leaveEdx(0);
     if (answer == fe::kDialogEscape)
     {
         guest.setByte(closes, 1);
@@ -390,7 +444,6 @@ x86::reg32 frontend::connect::addressAnswer(App* app, CPU& cpu, reg32 answer, re
             fe::messageBox(guest, kConnecting);
             for (int i = 0; i < kMessageRedraws; ++i)
                 redrawMenu(guest, cpu);
-            guest.leaveEdx(kMessageRedraws);
             if (guest::direct<0x49e800, joinSession>(app, cpu, endpoint) != 0)
             {
                 endMessage(guest, cpu);
@@ -455,7 +508,6 @@ x86::reg32 frontend::connect::protocolListAnswer(App* app, CPU& cpu, reg32 answe
         case 0:
             if (guest.byte(kDevFlags) & kSkipNetwork)
             {
-                guest.leaveEdx(3);
                 guest.setByte(closes, 1);
                 gameSettings(guest).raceType = 3;
                 return kMenuGoOn;
@@ -476,8 +528,6 @@ x86::reg32 frontend::connect::protocolListAnswer(App* app, CPU& cpu, reg32 answe
         case 2:
             gameSettings(guest).playMode = 2;
             guest.setWord(kNetworkHost, 1);
-            // The call hands edx 1, which sub_4c3f90 does not read but keeps, for this function's return.
-            guest.leaveEdx(1);
             if (guest::direct<0x4c3f90, startConnection>(app, cpu, gameSettings(guest).chosenModem) != 0)
             {
                 endMessage(guest, cpu);
@@ -505,7 +555,6 @@ x86::reg32 frontend::connect::protocolListAnswer(App* app, CPU& cpu, reg32 answe
         guest.setDword(kNetworkKind, 0);
         break;
     case 1:
-        guest.leaveEdx(0);
         guest.setDword(kKindTick, 0);
         break;
     case 3:
@@ -587,7 +636,6 @@ x86::reg32 frontend::connect::serialAnswer(App* app, CPU& cpu, reg32 answer, reg
     {
         const std::int32_t next = std::int32_t(gameSettings(guest).comPort + 1) % kComPorts;
         gameSettings(guest).comPort = x86::reg32(next);
-        guest.leaveEdx(x86::reg32(next));
         guest::direct<0x43f610, comPortLabel>(app, cpu);
     }
     else if (focus == 2)
@@ -625,8 +673,6 @@ x86::reg32 frontend::connect::phoneAnswer(App* app, CPU& cpu, reg32 answer, reg3
         guest.setByte(closes, 1);
         guest.setWord(kNetworkHost, 0);
         gameSettings(guest).playMode = 2;
-        // The call hands edx 2, which sub_4c3f90 does not read but keeps, for this function's return.
-        guest.leaveEdx(2);
         if (guest::direct<0x4c3f90, startConnection>(app, cpu, gameSettings(guest).chosenModem) != 0)
         {
             endMessage(guest, cpu);
@@ -668,7 +714,6 @@ x86::reg32 frontend::connect::modemAnswer(App* app, CPU& cpu, reg32 answer, reg3
             guest.setByte(closes, 0);
             const std::int32_t next = std::int32_t(gameSettings(guest).chosenModem + 1) % modems;
             gameSettings(guest).chosenModem = x86::reg32(next);
-            guest.leaveEdx(x86::reg32(next));
             guest.setDword(kModemButton, guest::direct<0x43f550, modemLabel>(app, cpu));
             return 0;
         }
@@ -760,7 +805,6 @@ x86::reg32 frontend::connect::raceNetAnswer(App* app, CPU& cpu, reg32 answer, re
         const std::uint32_t focus = fe::dialogFocus(guest);
         if (focus == 0)
         {
-            guest.leaveEdx(3);
             guest.setDword(kRaceNetDial, 3);
             return kMenuRaceNetDial;
         }
@@ -827,7 +871,7 @@ x86::reg32 frontend::connect::tcpClicked(App* app, CPU& cpu)
 
 /* sub_4405c0: connect as it opens: what this machine cannot do greyed out, the
  * buttons' handlers.  The port's own: RaceNet hidden with IPX and TCP/IP moved up
- * into its place, the modem and serial hidden (tools/apply_hide_connections.py),
+ * into its place, the modem and serial hidden (the port's hidden connections change),
  * none of the three with a handler -- the game gives them sub_43fd10, sub_43ff50
  * and sub_43fee0. */
 x86::reg32 frontend::connect::connectEnter(App* app, CPU& cpu, reg32 menu)
@@ -896,8 +940,9 @@ x86::reg32 frontend::connect::connectExit(App* app, CPU& cpu, reg32 menu)
     if (guest.dword(chosen + fe::item::kType) != kButton || codelink == 0)
         return 0;
     const auto is = [&](const GuestString& name) {
+        // ebx, which the code hands on too, it does not read.
         return *fe::direct<0x4429c0, port::menus::codelinkMatched>(app, cpu, cpu.esp - 4, codelink, name.address,
-                                                                  cpu.ebx) != 0;
+                                                                  0) != 0;
     };
     if (is(kModem))
         gameSettings(guest).playMode = 2;
@@ -1061,7 +1106,6 @@ constexpr x86::reg32 kStrstr = 0x4e0820;
 constexpr x86::reg32 kStrncpy = 0x4e0e30;
 constexpr x86::reg32 kFillZero = 0x4e070c;
 constexpr x86::reg32 kResetNetwork = 0x4a6390;
-constexpr x86::reg32 kOpenMessages = 0x42d790;
 constexpr x86::reg32 kEndNetworkGame = 0x49eed0;
 constexpr x86::reg32 kCloseNetwork = 0x4a65e0;
 // This group's, handed to the comm library to call back.
@@ -1073,8 +1117,8 @@ constexpr x86::reg32 kQueuePeer = 0x49f4b0;
 constexpr x86::reg32 kEnterLock = 0x5344b8, kLeaveLock = 0x534588;
 constexpr x86::reg32 kNetworkLock = 0x55ecb4;
 
-/* A function of Windows', its words handed: the port's own, called as C++ (native_windows.h); in
- * the check through its import's slot.  Terminated when the game stopped in it, as Guest::call. */
+/* A function of Windows', its words handed: the port's own, called as C++ (native_windows.h).
+ * Terminated when the game stopped in it, as Guest::call. */
 template <x86::reg32 Slot, auto Function, typename... Words>
 x86::reg32 windows(Guest& guest, x86::CPU& cpu, Words... words)
 {
@@ -1117,17 +1161,17 @@ x86::reg32 frontend::connect::connectionAvailable(App* app, CPU& cpu, reg32 kind
     };
     if (listed())
         return 1;
-    guest::direct<0x49f150, findConnections>(app, cpu);
+    guest::direct<0x49f150, findConnections>(app, cpu, 0);
     return listed() ? 1 : 0;
 }
 
 /* sub_49f150: the connections looked for, once: Winsock's IPX, its TCP/IP, and
  * what the comm library has. */
-x86::reg32 frontend::connect::findConnections(App* app, CPU& cpu)
+x86::reg32 frontend::connect::findConnections(App* app, CPU& cpu, reg32 handed)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 20);
-    x86::reg32 eax = cpu.eax;   // as it came, then as the lock's making leaves it
+    x86::reg32 eax = handed;   // as it came, then as the lock's making leaves it
     if (guest.dword(kConnectionsLock) == 0)
     {
         eax = *fe::direct<0x4eb2e0, ea::newLock>(app, cpu);
@@ -1165,7 +1209,6 @@ x86::reg32 frontend::connect::enumerateServices(App* app, CPU& cpu, reg32 baud, 
         copyBytes(guest, connection + kConnectionGuid, kGatherGuid, 16);
         guest.setDword(connection + kConnectionListed, 0);
         guest.setDword(kConnectionCount, n + 1);
-        guest.leaveEdx(n);
     }
     const x86::reg32 dialUp = fe::direct<0x49f790, frontend::neta::rasAvailable>(app, cpu);
     if (dialUp == 0)
@@ -1201,9 +1244,6 @@ x86::reg32 frontend::connect::serviceFound(App* app, CPU& cpu, reg32 guid, reg32
     copyBytes(guest, connection + kConnectionGuid, guid, 16);
     guest.setDword(connection + kConnectionListed, 1);
     guest.setDword(kConnectionCount, n + 1);
-    guest.leaveEbx(1);
-    guest.leaveEcx(0);
-    guest.leaveEdx(n);
     return 1;
 }
 
@@ -1236,19 +1276,14 @@ x86::reg32 frontend::connect::listSessions(App* app, CPU& cpu, reg32 lookFor, re
     guest.setDword(kSessionList, kSessionStore);
     if (redraw != 0)
         fe::direct<0x4e7520, port::stream::scheduleTask>(app, cpu, cpu.esp - 4, redraw, 4, 0);
-    // The service's own lister reads the callback, what to look for and the byte in edx, ebx and ecx,
-    // which NET_getgames hands on as they came.
-    guest.leaveEdx(kSessionFound);
-    guest.leaveEbx(lookFor);
-    guest.leaveEcx(none);
-    if (fe::direct<0x4f4eb0, frontend::neta::getGames>(app, cpu, kComm) == 0)
+    // The service's own lister reads the callback, what to look for and the byte, which
+    // NET_getgames hands on.
+    if (fe::direct<0x4f4eb0, frontend::neta::getGames>(app, cpu, kComm, kSessionFound, lookFor, none) == 0)
     {
-        guest.leaveEcx(redraw);
         if (redraw != 0)
             fe::direct<0x4e75e0, port::stream::unscheduleTask>(app, cpu, redraw);
         return kSessionCount;
     }
-    guest.leaveEbx(redraw);
     if (redraw != 0)
         fe::direct<0x4e75e0, port::stream::unscheduleTask>(app, cpu, redraw);
 
@@ -1275,8 +1310,6 @@ x86::reg32 frontend::connect::listSessions(App* app, CPU& cpu, reg32 lookFor, re
             copyBytes(guest, game(chosen), swap, kGameSize);
         }
     }
-    guest.leaveEbx(x86::reg32(count));
-    guest.leaveEcx(x86::reg32(count));
     return kSessionCount;
 }
 
@@ -1293,9 +1326,8 @@ x86::reg32 frontend::connect::sessionFound(App* app, CPU& cpu, reg32 comm, reg32
     for (std::int32_t i = 0; i < count; ++i)
     {
         const x86::reg32 there = list + x86::reg32(i) * kGameSize + kSessionAddress;
-        if (guest.call(kCommSamePeer, fe::args({ comm, address, there })) != 0)
+        if (*fe::direct<0x4f5040, ea::netPlayerChecked>(app, cpu, comm, address, there) != 0)
         {
-            guest.leaveEcx(x86::reg32(i));
             return 1;
         }
     }
@@ -1306,15 +1338,12 @@ x86::reg32 frontend::connect::sessionFound(App* app, CPU& cpu, reg32 comm, reg32
     copyBytes(guest, game + kSessionAddress, address, kPeerAddressSize);
     const std::uint16_t was = guest.word(kSessionCount);
     guest.setWord(kSessionCount, std::uint16_t(was + 1));
-    guest.leaveEbx(x86::reg32(was) + 1);
-    guest.leaveEcx(0);
-    guest.leaveEdx(list);
     return 1;
 }
 
 /* sub_49e5f0: a game created on the connection of this kind, under `name`, and the
  * network's state made anew for it; on a connection of Winsock's own, on the port
- * the launcher says (tools/apply_network_port.py). */
+ * the launcher says (the port's network port change). */
 x86::reg32 frontend::connect::createSession(App* app, CPU& cpu, reg32 name, reg32 kind)
 {
     Guest guest(app, cpu);
@@ -1333,7 +1362,7 @@ x86::reg32 frontend::connect::createSession(App* app, CPU& cpu, reg32 name, reg3
     guest.copyString(kHostName, name);
     for (x86::reg32 i = 1; i < 8; ++i)
         guest.setWord(kMachineSlots + 2 * i, 0xffff);
-    guest::direct<0x49f650, clearQueue>(app, cpu);
+    guest::direct<0x49f650, clearQueue>(app, cpu, 0);
     guest.copyString(kCommName, name);
     guest.setDword(kCommBlocks, guest.dword(kNetworkKind) == 0 ? 2 : 8);
     if (guest.dword(kCurrentConnection) != 0)
@@ -1352,21 +1381,19 @@ x86::reg32 frontend::connect::createSession(App* app, CPU& cpu, reg32 name, reg3
     }
     guest.setDword(kCurrentConnection, kind);
     fe::direct<0x4a6500, frontend::neta::sessionReset>(app, cpu);
-    guest.call(kOpenMessages);
+    fe::direct<0x42d790, raceload::messagesOpened>(app, cpu);
     if (guest.dword(connection + kConnectionListed) != 0)
     {
         guest.setDword(kCommWaitBlocks, 0x10);
-        // The service's own maker reads the name, the byte and the handler in edx, ebx and ecx, which
-        // NET_newgame hands on as they came.
-        guest.leaveEdx(kCommName);
-        guest.leaveEbx(none);
-        guest.leaveEcx(kQueuePeerByName);
-        const x86::reg32 created = fe::direct<0x4f4f10, frontend::neta::newGame>(app, cpu, kComm);
+        // The service's own maker reads the name, the byte and the handler, which NET_newgame hands
+        // on.
+        const x86::reg32 created =
+            fe::direct<0x4f4f10, frontend::neta::newGame>(app, cpu, kComm, kCommName, none, kQueuePeerByName);
         guest.setDword(kCommWaitBlocks, 0);
         if (created == 0)
         {
             fe::messageBox(guest, kNoConnection);
-            directKept<0x4f5280, ea::connectionsRestored, 1>(guest.app(), guest.cpu(), guest.cpu().eax);
+            directKept<0x4f5280, ea::connectionsRestored, 1>(guest.app(), guest.cpu(), 0);
             fe::direct<0x42d7f0, raceload::closeAllMessages>(app, cpu);
             fe::direct<0x49a4d0, frontend::glue::freeNetworkLocks>(app, cpu);
             directKept<0x4a6390, ea::networkReset, 1>(guest.app(), guest.cpu(), 0);
@@ -1396,7 +1423,7 @@ x86::reg32 frontend::connect::joinSession(App* app, CPU& cpu, reg32 endpoint)
     const auto lost = [&] {
         fe::messageBox(guest, kNoConnection);
         guest.setWord(kConnectionLost, 1);
-        directKept<0x4f5280, ea::connectionsRestored, 1>(guest.app(), guest.cpu(), guest.cpu().eax);
+        directKept<0x4f5280, ea::connectionsRestored, 1>(guest.app(), guest.cpu(), 0);
         guest.setWord(kConnectionLost, 0);
         directKept<0x4a65e0, ea::networkClosed, 0>(guest.app(), guest.cpu());
         return x86::reg32(0);
@@ -1404,13 +1431,8 @@ x86::reg32 frontend::connect::joinSession(App* app, CPU& cpu, reg32 endpoint)
 
     if (guest.dword(connectionAt(index) + kConnectionListed) != 0)
     {
-        // The service's own joiner reads the endpoint and the byte in edx and ebx, which NET_setgame
-        // hands on as they came; the index in ecx as the game's code puts it there (NET_setgame keeps
-        // it, the service in ecx meanwhile).
-        guest.leaveEdx(endpoint);
-        guest.leaveEbx(none);
-        guest.leaveEcx(index);
-        if (std::int32_t(fe::direct<0x4f4ed0, frontend::neta::setGame>(app, cpu, kComm)) <= 0)
+        // The service's own joiner reads the endpoint and the byte, which NET_setgame hands on.
+        if (std::int32_t(fe::direct<0x4f4ed0, frontend::neta::setGame>(app, cpu, kComm, endpoint, none, index)) <= 0)
         {
             fe::messageBox(guest, kNoConnection);
             directKept<0x4a6390, ea::networkReset, 1>(guest.app(), guest.cpu(), 0);
@@ -1420,7 +1442,7 @@ x86::reg32 frontend::connect::joinSession(App* app, CPU& cpu, reg32 endpoint)
         {
             if (fe::direct<0x4a65b0, frontend::neta::hostGone>(app, cpu) != 0)
             {
-                guest.call(kEndNetworkGame);
+                fe::direct<0x49eed0, ea::networkGameEnded>(app, cpu, 0);
                 directKept<0x4a6390, ea::networkReset, 1>(guest.app(), guest.cpu(), 0);
                 return 0;
             }
@@ -1432,8 +1454,8 @@ x86::reg32 frontend::connect::joinSession(App* app, CPU& cpu, reg32 endpoint)
     {
         fe::messageBox(guest, kNoConnection);
         guest.setWord(kConnectionLost, 1);
-        guest.call(kEndNetworkGame);
-        directKept<0x4f5280, ea::connectionsRestored, 1>(guest.app(), guest.cpu(), guest.cpu().eax);
+        fe::direct<0x49eed0, ea::networkGameEnded>(app, cpu, 0);
+        directKept<0x4f5280, ea::connectionsRestored, 1>(guest.app(), guest.cpu(), 0);
         guest.setWord(kConnectionLost, 0);
         fe::direct<0x49a4d0, frontend::glue::freeNetworkLocks>(app, cpu);
         directKept<0x4a6390, ea::networkReset, 1>(guest.app(), guest.cpu(), 0);
@@ -1445,7 +1467,7 @@ x86::reg32 frontend::connect::joinSession(App* app, CPU& cpu, reg32 endpoint)
             return lost();
     }
     guest.setDword(kNetworkKind, guest.dword(kHostsKind));
-    guest.call(kOpenMessages);
+    fe::direct<0x42d790, raceload::messagesOpened>(app, cpu);
     if (fe::direct<0x4a6ce0, frontend::neta::compareVersions>(app, cpu, 0) == 0)
         return lost();
     return 1;
@@ -1486,12 +1508,9 @@ x86::reg32 frontend::connect::findAddress(App* app, CPU& cpu, reg32 host, reg32 
         return 0;
     if (host == 0)
         return 0;
-    // The service's own lookup reads the host, the port and where the address goes in edx, ebx and
-    // ecx, which its call through the table hands on as they came.
-    guest.leaveEdx(host);
-    guest.leaveEbx(networkPort());
-    guest.leaveEcx(kEndpoint);
-    if (fe::direct<0x4f5050, frontend::neta::servicePollCall>(app, cpu, kComm) != 0)
+    // The service's own lookup reads the host, the port and where the address goes, which its call
+    // through the table hands on.
+    if (fe::direct<0x4f5050, frontend::neta::servicePollCall>(app, cpu, kComm, host, networkPort(), kEndpoint) != 0)
     {
         copyBytes(guest, address, kEndpoint, kPeerAddressSize);
         return 1;
@@ -1514,7 +1533,6 @@ x86::reg32 frontend::connect::setUpEndpoint(App* app, CPU& cpu, reg32 address, r
     copyBytes(guest, record + 0x34, address, kPeerAddressSize);
     if (guest.dword(kNetworkKind) == 2)
         guest.setDword(record + 0x24, 1);
-    guest.leaveEdx(rate < 0 ? 0xfffffffc : 0);
     return record;
 }
 
@@ -1526,7 +1544,6 @@ x86::reg32 frontend::connect::queuePeerByName(App* app, CPU& cpu, reg32 peer)
     if (guest.dword(kAdmissionsClosed) != 0)
         return 0;
     const std::int32_t known = std::int32_t(guest.dword(kPeersKnown));
-    guest.leaveEbx(x86::reg32(known));
     if (known >= kMostPeers)
         return 0;
     guest.setDword(kPeersKnown, x86::reg32(known) + 1);
@@ -1561,7 +1578,7 @@ x86::reg32 frontend::connect::rememberPeer(App* app, CPU& cpu, reg32 address)
     for (x86::reg32 i = 0; i < x86::reg32(kMostPeers); ++i)
     {
         const x86::reg32 there = guest.dword(kPeerSlots + 4 * i);
-        if (there != 0 && guest.call(kCommSamePeer, fe::args({ kComm, address, there })) != 0)
+        if (there != 0 && *fe::direct<0x4f5040, ea::netPlayerChecked>(app, cpu, kComm, address, there) != 0)
             return 0;
     }
     for (x86::reg32 i = 0; i < x86::reg32(kMostPeers); ++i)
@@ -1589,7 +1606,6 @@ x86::reg32 frontend::connect::enqueuePeer(App* app, CPU& cpu, reg32 name, reg32 
     const std::int32_t next = std::int32_t(tail + 1);
     guest.setDword(kQueueLength, guest.dword(kQueueLength) + 1);
     guest.setDword(kQueueTail, x86::reg32(next % kMostQueued));
-    guest.leaveEdx(x86::reg32(next % kMostQueued));
     return x86::reg32(next / kMostQueued);
 }
 
@@ -1602,8 +1618,7 @@ x86::reg32 frontend::connect::listModems(App* app, CPU& cpu, reg32 list)
     const fe::Frame frame(guest, cpu, 20);
     if (list == 0)
         return 0;
-    guest.call(kFillZero, fe::args({ list, 0x1c8 }));
-    x86::reg32 last = guest.eax();
+    x86::reg32 last = fe::direct<kFillZero, ea::clearBytes>(guest.app(), guest.cpu(), list, 0x1c8u);
     for (;;)
     {
         const std::int32_t n = std::int32_t(guest.dword(list));
@@ -1626,7 +1641,7 @@ x86::reg32 frontend::connect::setUpLink(App* app, CPU& cpu, reg32 service)
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 20);
     fe::direct<0x4a6500, frontend::neta::sessionReset>(app, cpu);
-    guest.call(kOpenMessages);
+    fe::direct<0x42d790, raceload::messagesOpened>(app, cpu);
     guest.setWord(kSessionPlayers, 2);
     if (guest.dword(kConnectionState) == 1)
     {
@@ -1751,7 +1766,7 @@ x86::reg32 frontend::connect::startConnection(App* app, CPU& cpu, reg32 service)
     if (state == 1)
     {
         if (guest.word(kNetworkHost) == 0)
-            fe::direct<0x4109d0, port::musicStopped>(app, cpu, cpu.esp - 4, cpu.eax);
+            fe::direct<0x4109d0, port::musicStopped>(app, cpu, cpu.esp - 4, 0);
         started = fe::direct<0x4fa550, frontend::netb::modemOpenNetwork>(app, cpu, kConnectionRecords, 0xd2, 7);
         if (guest.word(kNetworkHost) == 0)
             fe::direct<0x4104f0, port::musicStarted>(app, cpu, cpu.esp - 4, 0x16,
@@ -1768,7 +1783,7 @@ x86::reg32 frontend::connect::startConnection(App* app, CPU& cpu, reg32 service)
         {
             guest.setWord(kConnectionLost, 1);
             guest.setWord(kConnectionLostToo, 1);
-            directKept<0x4f5280, ea::connectionsRestored, 1>(guest.app(), guest.cpu(), guest.cpu().eax);
+            directKept<0x4f5280, ea::connectionsRestored, 1>(guest.app(), guest.cpu(), 0);
             leaveLock();
             started = 0;
         }
@@ -1787,12 +1802,12 @@ x86::reg32 frontend::connect::startConnection(App* app, CPU& cpu, reg32 service)
                     started = 0;
                     guest.setWord(kConnectionLost, 1);
                     guest.setWord(kConnectionLostToo, 1);
-                    directKept<0x4f5280, ea::connectionsRestored, 1>(guest.app(), guest.cpu(), guest.cpu().eax);
+                    directKept<0x4f5280, ea::connectionsRestored, 1>(guest.app(), guest.cpu(), 0);
                     break;
                 }
                 if (guest.word(kConnectionLost) != 0)
                 {
-                    directKept<0x4f5280, ea::connectionsRestored, 1>(guest.app(), guest.cpu(), guest.cpu().eax);
+                    directKept<0x4f5280, ea::connectionsRestored, 1>(guest.app(), guest.cpu(), 0);
                     started = 0;
                     break;
                 }
@@ -1822,7 +1837,6 @@ x86::reg32 frontend::connect::applyPlayerVector(App* app, CPU& cpu, reg32 packet
     gameSettings(guest).entryAt(record).digital[1] = guest.dword(packet + 8);
     const x86::reg32 last = guest.dword(packet + 0xc);
     gameSettings(guest).entryAt(record).digital[2] = last;
-    guest.leaveEbx(record);
     return last;
 }
 
@@ -1831,12 +1845,12 @@ x86::reg32 frontend::connect::listingRedraw(App* app, CPU& cpu)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 4);
-    guest.call(kTakeWindow);
+    fe::direct<0x4d9120, graphics::windowTakenAndCleared>(app, cpu);
     fe::direct<0x44a4f0, port::loop::drawItemsOf>(app, cpu, cpu.esp - 4,
                                                   fe::direct<0x44aeb0, port::loop::currentMenuOf>(app, cpu));
     fe::direct<0x49c080, frontend::glue::mouseKey>(app, cpu);
-    guest.call(kDrawPointer);
-    guest.call(kFlip);
+    fe::direct<kDrawPointer, port::draw2d::pointerDrawn>(app, cpu, cpu.esp - 4);
+    fe::direct<0x4d9140, graphics::flipAndWait>(app, cpu);
     return 0;
 }
 
@@ -1866,12 +1880,8 @@ x86::reg32 frontend::connect::flushKeys(App* app, CPU& cpu, reg32 held)
  * is on the screen now. */
 x86::reg32 frontend::connect::setEditField(App* app, CPU& cpu, reg32 field, reg32 text, reg32 third, reg32 length)
 {
-    constexpr x86::reg32 kShownOnThisScreen = 9;
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 12);
-    // The original hands it kShownOnThisScreen in edx too, which it does not take but leaves: edx as
-    // this goes back with the box not shown.
-    guest.leaveEdx(kShownOnThisScreen);
     if (fe::direct<0x44a660, frontend::loop::shownNow>(app, cpu, field) == 0)
         return 0;
     guest.setDword(field + kEditThird, third);
@@ -1910,14 +1920,14 @@ x86::reg32 frontend::connect::clearPeerSlots(App* app, CPU& cpu)
 }
 
 /* sub_49f650: the queue of peers emptied. */
-x86::reg32 frontend::connect::clearQueue(App* app, CPU& cpu)
+x86::reg32 frontend::connect::clearQueue(App* app, CPU& cpu, reg32 handed)
 {
     Guest guest(app, cpu);
     guest.setDword(kQueueHead, 0);
     guest.setDword(kQueueTail, 0);
     guest.setDword(kQueueLength, 0);
     guest.setDword(kPeersKnown, 0);
-    return guest.eax();
+    return handed;
 }
 
 namespace
@@ -1941,354 +1951,357 @@ constexpr std::uint8_t kBCSD = fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreE
 
 }
 
-/* Each stand-in: the generated function, what its ret pops, the strings it hands
+/* Each stand-in: the game's function, what its ret pops, the strings it hands
  * to the game and the registers it pushes; its frame is its core's. */
 
-void frontend::connectApplyPlayerVector(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::connectApplyPlayerVector(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_43dab0", 0, 0, nullptr, 0, 0 };
-    const x86::reg32 packet = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return connect::applyPlayerVector(app, cpu, packet); });
+    const x86::reg32 packet = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return connect::applyPlayerVector(app, cpu, packet); });
 }
 
-void frontend::connectListingRedraw(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::connectListingRedraw(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_43f1f0", 0, 0, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return connect::listingRedraw(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return connect::listingRedraw(app, cpu); });
 }
 
-void frontend::ipxRefreshGames(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::ipxRefreshGames(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_43f220", 0, 0, kRefreshStrings, std::size(kRefreshStrings), kBCDS };
-    const x86::reg32 list = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return connect::refreshGames(app, cpu, list); });
+    const x86::reg32 list = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return connect::refreshGames(app, cpu, list); });
 }
 
-void frontend::connectOpenProtocolList(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::connectOpenProtocolList(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_43f320", 0, 0, nullptr, 0 };
-    const x86::reg32 mode = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return connect::openProtocolList(app, cpu, mode); });
+    const x86::reg32 mode = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return connect::openProtocolList(app, cpu, mode); });
 }
 
-void frontend::connectOpenAddressDialog(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::connectOpenAddressDialog(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_43f4e0", 0, 0, nullptr, 0, kBCD };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return connect::openAddressDialog(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return connect::openAddressDialog(app, cpu); });
 }
 
-void frontend::connectModemLabel(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::connectModemLabel(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_43f550", 0, 0, kModemLabelStrings, std::size(kModemLabelStrings) };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return connect::modemLabel(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return connect::modemLabel(app, cpu); });
 }
 
-void frontend::connectComPortLabel(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::connectComPortLabel(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_43f610", 0, 0, kComPortStrings, std::size(kComPortStrings), 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return connect::comPortLabel(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return connect::comPortLabel(app, cpu); });
 }
 
-void frontend::ipxGameNameAnswer(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::ipxGameNameAnswer(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_43f640", 0, 0, nullptr, 0, 0 };
-    const x86::reg32 answer = cpu.eax, closes = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return connect::gameNameAnswer(app, cpu, answer, closes); });
+    const x86::reg32 answer = args.eax, closes = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return connect::gameNameAnswer(app, cpu, answer, closes); });
 }
 
-void frontend::connectAddressAnswer(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::connectAddressAnswer(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_43f680", 0, 0, nullptr, 0, kBCSD };
-    const x86::reg32 answer = cpu.eax, closes = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return connect::addressAnswer(app, cpu, answer, closes); });
+    const x86::reg32 answer = args.eax, closes = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return connect::addressAnswer(app, cpu, answer, closes); });
 }
 
-void frontend::connectTcpAnswer(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::connectTcpAnswer(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_43f760", 0, 0, nullptr, 0, fe::kRestoreEcx };
-    const x86::reg32 answer = cpu.eax, closes = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return connect::tcpAnswer(app, cpu, answer, closes); });
+    const x86::reg32 answer = args.eax, closes = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return connect::tcpAnswer(app, cpu, answer, closes); });
 }
 
-void frontend::connectProtocolListAnswer(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::connectProtocolListAnswer(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_43f7e0", 0, 0, kProtocolStrings, std::size(kProtocolStrings), kBCSD };
-    const x86::reg32 answer = cpu.eax, closes = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return connect::protocolListAnswer(app, cpu, answer, closes); });
+    const x86::reg32 answer = args.eax, closes = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return connect::protocolListAnswer(app, cpu, answer, closes); });
 }
 
-void frontend::connectSerialAnswer(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::connectSerialAnswer(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_43f960", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx };
-    const x86::reg32 answer = cpu.eax, closes = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return connect::serialAnswer(app, cpu, answer, closes); });
+    const x86::reg32 answer = args.eax, closes = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return connect::serialAnswer(app, cpu, answer, closes); });
 }
 
-void frontend::connectPhoneAnswer(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::connectPhoneAnswer(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_43fa00", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const x86::reg32 answer = cpu.eax, closes = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return connect::phoneAnswer(app, cpu, answer, closes); });
+    const x86::reg32 answer = args.eax, closes = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return connect::phoneAnswer(app, cpu, answer, closes); });
 }
 
-void frontend::connectModemAnswer(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::connectModemAnswer(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_43faf0", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi };
-    const x86::reg32 answer = cpu.eax, closes = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return connect::modemAnswer(app, cpu, answer, closes); });
+    const x86::reg32 answer = args.eax, closes = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return connect::modemAnswer(app, cpu, answer, closes); });
 }
 
-void frontend::connectRaceNetMissingAnswer(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::connectRaceNetMissingAnswer(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_43fc20", 0, 0, nullptr, 0, fe::kRestoreEcx };
-    const x86::reg32 answer = cpu.eax, closes = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return connect::raceNetMissingAnswer(app, cpu, answer, closes); });
+    const x86::reg32 answer = args.eax, closes = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return connect::raceNetMissingAnswer(app, cpu, answer, closes); });
 }
 
-void frontend::connectRaceNetAnswer(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::connectRaceNetAnswer(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_43fc50", 0, 0, nullptr, 0, fe::kRestoreEcx };
-    const x86::reg32 answer = cpu.eax, closes = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return connect::raceNetAnswer(app, cpu, answer, closes); });
+    const x86::reg32 answer = args.eax, closes = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return connect::raceNetAnswer(app, cpu, answer, closes); });
 }
 
-void frontend::connectRaceNetClicked(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::connectRaceNetClicked(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_43fd10", 0, 0, nullptr, 0, kBCDS };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return connect::raceNetClicked(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return connect::raceNetClicked(app, cpu); });
 }
 
-void frontend::connectTcpClicked(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::connectTcpClicked(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_43fe50", 0, 0, nullptr, 0, kBCDS };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return connect::tcpClicked(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return connect::tcpClicked(app, cpu); });
 }
 
-void frontend::connectSerialClicked(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::connectSerialClicked(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_43fee0", 0, 0, nullptr, 0, kBCD };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return connect::serialClicked(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return connect::serialClicked(app, cpu); });
 }
 
-void frontend::connectModemClicked(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::connectModemClicked(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_43ff50", 0, 0, nullptr, 0, kBCDS };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return connect::modemClicked(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return connect::modemClicked(app, cpu); });
 }
 
-void frontend::ipxCreateGameClicked(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::ipxCreateGameClicked(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_440040", 0, 0, nullptr, 0, kBCD };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return connect::createGameClicked(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return connect::createGameClicked(app, cpu); });
 }
 
-void frontend::ipxRefreshClicked(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::ipxRefreshClicked(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4400b0", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return connect::refreshClicked(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return connect::refreshClicked(app, cpu); });
 }
 
-void frontend::connectOnEnter(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::connectOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4405c0", 0, 0, kConnectEnterStrings, std::size(kConnectEnterStrings), kBCD };
-    const x86::reg32 menu = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return connect::connectEnter(app, cpu, menu); });
+    const x86::reg32 menu = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return connect::connectEnter(app, cpu, menu); });
 }
 
-void frontend::connectOnExit(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::connectOnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_440730", 0, 0, kConnectEnterStrings, std::size(kConnectEnterStrings), kBCDS };
-    const x86::reg32 menu = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return connect::connectExit(app, cpu, menu); });
+    const x86::reg32 menu = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return connect::connectExit(app, cpu, menu); });
 }
 
-void frontend::ipxOnFrame(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::ipxOnFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_440810", 0, 0, kIpxFrameStrings, std::size(kIpxFrameStrings) };
-    const x86::reg32 menu = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return connect::ipxFrame(app, cpu, menu); });
+    const x86::reg32 menu = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return connect::ipxFrame(app, cpu, menu); });
 }
 
-void frontend::ipxOnEnter(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::ipxOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_440890", 0, 0, kIpxEnterStrings, std::size(kIpxEnterStrings), kBCDS };
-    const x86::reg32 menu = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return connect::ipxEnter(app, cpu, menu); });
+    const x86::reg32 menu = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return connect::ipxEnter(app, cpu, menu); });
 }
 
 /* sub_440960: ipx as it closes: nothing to undo. */
-void frontend::ipxOnExit(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::ipxOnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_440960", 0, 4, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [](Guest&) { return x86::reg32(0); });
+    return fe::runThunk(app, cpu, args, site, [](Guest&) { return x86::reg32(0); });
 }
 
-void frontend::connectFlushKeys(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::connectFlushKeys(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_451940", 0, 0, nullptr, 0, 0 };
-    const x86::reg32 held = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return connect::flushKeys(app, cpu, held); });
+    const x86::reg32 held = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return connect::flushKeys(app, cpu, held); });
 }
 
-void frontend::connectSetEditField(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::connectSetEditField(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_458450", 0, 0, nullptr, 0, fe::kRestoreEsi | fe::kRestoreEdi };
-    const x86::reg32 field = cpu.eax, text = cpu.edx, third = cpu.ebx, length = cpu.ecx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return connect::setEditField(app, cpu, field, text, third, length); });
+    const x86::reg32 field = args.eax, text = args.edx, third = args.ebx, length = args.ecx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return connect::setEditField(app, cpu, field, text, third, length); });
 }
 
-void frontend::connectSetPointer(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::connectSetPointer(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_49c0e0", 0, 0, nullptr, 0, kBCD };
-    const x86::reg32 asked = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return connect::setPointer(app, cpu, asked); });
+    const x86::reg32 asked = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return connect::setPointer(app, cpu, asked); });
 }
 
-void frontend::connectConnectionAvailable(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::connectConnectionAvailable(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_49e360", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEdx };
-    const x86::reg32 kind = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return connect::connectionAvailable(app, cpu, kind); });
+    const x86::reg32 kind = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return connect::connectionAvailable(app, cpu, kind); });
 }
 
-void frontend::connectListSessions(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::connectListSessions(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_49e3d0", 0, 0, nullptr, 0, fe::kRestoreEsi | fe::kRestoreEdi };
-    const x86::reg32 lookFor = cpu.eax, player = cpu.edx, kind = cpu.ebx, redraw = cpu.ecx;
-    fe::runWhole(app, cpu, site,
+    const x86::reg32 lookFor = args.eax, player = args.edx, kind = args.ebx, redraw = args.ecx;
+    return fe::runThunk(app, cpu, args, site,
                  [&](Guest&) { return connect::listSessions(app, cpu, lookFor, player, kind, redraw); });
+    return args.eax;
 }
 
-void frontend::connectCreateSession(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::connectCreateSession(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_49e5f0", 0, 0, nullptr, 0, kBCSD };
-    const x86::reg32 name = cpu.eax, kind = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return connect::createSession(app, cpu, name, kind); });
+    const x86::reg32 name = args.eax, kind = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return connect::createSession(app, cpu, name, kind); });
 }
 
-void frontend::connectJoinSession(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::connectJoinSession(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_49e800", 0, 0, nullptr, 0 };
-    const x86::reg32 endpoint = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return connect::joinSession(app, cpu, endpoint); });
+    const x86::reg32 endpoint = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return connect::joinSession(app, cpu, endpoint); });
 }
 
-void frontend::connectUseTcp(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::connectUseTcp(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_49e9d0", 0, 0, nullptr, 0 };
-    const x86::reg32 player = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return connect::useTcp(app, cpu, player); });
+    const x86::reg32 player = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return connect::useTcp(app, cpu, player); });
 }
 
-void frontend::connectFindAddress(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::connectFindAddress(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_49ea70", 0, 0, nullptr, 0, kBCSD };
-    const x86::reg32 host = cpu.eax, address = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return connect::findAddress(app, cpu, host, address); });
+    const x86::reg32 host = args.eax, address = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return connect::findAddress(app, cpu, host, address); });
 }
 
-void frontend::connectSetUpEndpoint(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::connectSetUpEndpoint(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_49efb0", 0, 0, nullptr, 0, kBCSD };
-    const x86::reg32 address = cpu.eax, connection = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return connect::setUpEndpoint(app, cpu, address, connection); });
+    const x86::reg32 address = args.eax, connection = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return connect::setUpEndpoint(app, cpu, address, connection); });
 }
 
-void frontend::connectEnumerateServices(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::connectEnumerateServices(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_49f030", 0, 0, kEnumerateStrings, std::size(kEnumerateStrings),
                           fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const x86::reg32 baud = cpu.eax, blocks = cpu.edx, slots = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return connect::enumerateServices(app, cpu, baud, blocks, slots); });
+    const x86::reg32 baud = args.eax, blocks = args.edx, slots = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return connect::enumerateServices(app, cpu, baud, blocks, slots); });
 }
 
-void frontend::connectFindConnections(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::connectFindConnections(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_49f150", 0, 0, kFindConnectionsStrings, std::size(kFindConnectionsStrings), kBCDS };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return connect::findConnections(app, cpu); });
+    const x86::reg32 handed = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return connect::findConnections(app, cpu, handed); });
 }
 
-void frontend::connectServiceFound(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::connectServiceFound(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_49f200", 0, 0, kServiceStrings, std::size(kServiceStrings),
                           fe::kRestoreEsi | fe::kRestoreEdi };
-    const x86::reg32 guid = cpu.eax, name = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return connect::serviceFound(app, cpu, guid, name); });
+    const x86::reg32 guid = args.eax, name = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return connect::serviceFound(app, cpu, guid, name); });
 }
 
-void frontend::connectSessionFound(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::connectSessionFound(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_49f380", 0, 0, nullptr, 0, fe::kRestoreEsi | fe::kRestoreEdi };
-    const x86::reg32 comm = cpu.eax, session = cpu.edx, address = cpu.ecx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return connect::sessionFound(app, cpu, comm, session, address); });
+    const x86::reg32 comm = args.eax, session = args.edx, address = args.ecx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return connect::sessionFound(app, cpu, comm, session, address); });
 }
 
-void frontend::connectQueuePeerByName(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::connectQueuePeerByName(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_49f470", 0, 0, nullptr, 0, fe::kRestoreEsi };
-    const x86::reg32 peer = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return connect::queuePeerByName(app, cpu, peer); });
+    const x86::reg32 peer = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return connect::queuePeerByName(app, cpu, peer); });
 }
 
-void frontend::connectQueuePeer(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::connectQueuePeer(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_49f4b0", 0, 0, kQueueStrings, std::size(kQueueStrings), fe::kRestoreEsi };
-    const x86::reg32 address = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return connect::queuePeer(app, cpu, address); });
+    const x86::reg32 address = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return connect::queuePeer(app, cpu, address); });
 }
 
-void frontend::connectClearPeerSlots(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::connectClearPeerSlots(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_49f520", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return connect::clearPeerSlots(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return connect::clearPeerSlots(app, cpu); });
 }
 
-void frontend::connectRememberPeer(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::connectRememberPeer(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_49f5c0", 0, 0, nullptr, 0 };
-    const x86::reg32 address = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return connect::rememberPeer(app, cpu, address); });
+    const x86::reg32 address = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return connect::rememberPeer(app, cpu, address); });
 }
 
-void frontend::connectClearQueue(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::connectClearQueue(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_49f650", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return connect::clearQueue(app, cpu); });
+    const x86::reg32 handed = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return connect::clearQueue(app, cpu, handed); });
 }
 
-void frontend::connectEnqueuePeer(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::connectEnqueuePeer(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_49f6a0", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const x86::reg32 name = cpu.eax, address = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return connect::enqueuePeer(app, cpu, name, address); });
+    const x86::reg32 name = args.eax, address = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return connect::enqueuePeer(app, cpu, name, address); });
 }
 
-void frontend::connectStartConnection(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::connectStartConnection(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4c3f90", 0, 0, nullptr, 0 };
-    const x86::reg32 service = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return connect::startConnection(app, cpu, service); });
+    const x86::reg32 service = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return connect::startConnection(app, cpu, service); });
 }
 
-void frontend::connectListModems(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::connectListModems(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4c41d0", 0, 0, nullptr, 0,
                           fe::kRestoreEcx | fe::kRestoreEdx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const x86::reg32 list = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return connect::listModems(app, cpu, list); });
+    const x86::reg32 list = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return connect::listModems(app, cpu, list); });
 }
 
-void frontend::connectSetUpLink(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::connectSetUpLink(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4c4230", 0, 0, nullptr, 0, kBCDS };
-    const x86::reg32 service = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return connect::setUpLink(app, cpu, service); });
+    const x86::reg32 service = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return connect::setUpLink(app, cpu, service); });
 }
 
-void frontend::connectShakeHands(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::connectShakeHands(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4c4310", 0, 0, nullptr, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return connect::shakeHands(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return connect::shakeHands(app, cpu); });
 }
 
 }

@@ -27,6 +27,41 @@ exception handler and filter `__InitExceptionHandling` installs (`0x51ef08`,
 `0x51ed24`), the default `_matherr` (`0x52e3f8`), and the initializers and
 finalizers the tables at `0x56b7de` and `0x56b81a` name.
 
+## On the host's C library (plan step 7)
+
+The runtime is native whole; plan step 7 puts what of it the host's C library
+does the same on that library, over guest memory, and leaves the rest as the
+runtime's code has it -- `tools/game_checks` holds each function to the game's
+code either way:
+
+- `strcmp`, `strrchr`, `strstr`: `std::strcmp` (its sign as -1, 0 or 1),
+  `std::strrchr`, `std::strstr`.
+- `strncpy`, `memcpy`, `memmove`: `strnlen`, `std::memcpy` and `std::memset`
+  where the source and the destination share no byte; where they do, the
+  runtime's loops, a dword or a byte at a time, whose results the host's
+  copies do not promise. `memset` was `std::memset` already.
+- `sprintf` and `vsprintf` (and the typed `clib::sprintf` with its words in
+  hand): the text made in C++ on the host by `__prtf`'s rules
+  (`hostFormatText`) and written into the buffer at once, for the integer
+  conversions, `%s`, `%c` and the unknown ones with every flag, width,
+  precision and size. `__prtf`'s rules are not C's -- `'0'` pads only an
+  integer without a precision, `%#o` of 0 is `00`, `%05s` is not padded -- so
+  this is not the host's `snprintf`. A float's conversion (the x87's
+  formatter, `%hf`), `%n`, `%p`, the wide ones and far pointers, a buffer that
+  overlaps what the text is made from, and the rare register states `__prtf`
+  reads through (es over ds not at 0, a 64-bit integer under the direction
+  flag) leave the text to `__prtf` as before.
+
+What stays the runtime's own, and why: `_stricmp` (A to Z only, not the host's
+locale), `strncmp` (the bytes' difference, not just its sign), `rand` (Watcom's
+generator: the race's AI and start draw from it), `qsort` and `bsearch` (the
+game's comparator sees the runtime's order of comparisons), the heap (its
+blocks' headers and addresses are the game's, and voodoo2a shares it), the
+x87's maths and float formatting (to the bit), the streams and the handles
+(`FILE`, `__iob` and `__OSHandles` are in guest memory, which other natives
+read; under them the port's host functions already do the work), the start,
+structured exception handling and the multibyte tables.
+
 ## How it is called
 
 Watcom's register convention: arguments in `eax`, `edx`, `ebx` and `ecx`, then
@@ -36,6 +71,20 @@ those it is handed one in it may leave otherwise, and many do. The variadic
 functions (`sprintf`, `fprintf`, `sscanf`) take everything on the stack, which
 the caller clears. The runtime's helpers -- `__CHP`, `__STOSB`, `__GRO` and the
 `IF@` maths cores -- have conventions of their own, given where they are native.
+
+In native_watcom.cpp (plan step 7) the typed cores take and give back values; the
+registers live in the adapters, and in three places besides: the calls through the
+runtime's pointers (`hook<Slot>`, `through`, `matherrHook`: its hooks, the comparators,
+the scanners' and printers' character routines, the default windowing's hooks), which
+load the registers the callee takes and give back its `eax`; the way out's functions
+still written register by register (`__fatal_runtime_error`, `__DoneExceptionHandler`,
+`exit`, `getcwd`), which the typed `clib::` functions call through `runs`; and the
+finally blocks `__local_unwind` calls with `ebp`, `edi` and `ebx`. The pushes a core's
+code makes keep their room on the guest's stack and write nothing. The maths run under
+their caller's control word, handed down (`Arithmetic`: x86::FPU's rounding at its
+precision, fp::'s at 24 bits to nearest); the status word's C3, C2 and C0 come from
+`fp::compare`. `__prtf`'s segments and direction flag come down as `Segments` (all 0 in
+the game and in the checks' worlds).
 
 ## Its data
 

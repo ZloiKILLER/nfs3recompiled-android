@@ -42,12 +42,7 @@
  * second.
  *
  * sub_500864 (the mix) and sub_5004c8 (a channel's ramp, which iSNDmixstop
- * runs) are this file's entries, mixerServe and mixerRamp.  tools/game_checks
- * does not hold them against the game's code (that takes a mixer world with
- * decoders, streams and data in it); the mix was held against the game's on
- * the phone, and this rewrite against the register-level native it replaced --
- * every byte of the memory, the calls out and esp -- on random mixer worlds
- * made through the real set-ups. */
+ * runs) are this file's entries, mixerServe and mixerRamp. */
 
 namespace nfs3hp
 {
@@ -162,11 +157,11 @@ struct Mixer
     /* A call into the game, in Watcom's registers and with cdecl arguments on
      * the stack, made from the stack at `esp`; the result is its eax.  The
      * game stopping in it ends nothing here: the mix runs on to its end, as
-     * it did, and the adapter leaves the registers as they were. */
+     * it did, and the thunk leaves the registers as they were. */
     u32 guest(u32 address, u32 eax, u32 edx, u32 ebx, u32 ecx, std::initializer_list<u32> stack = {})
     {
         u32 result = 0;
-        callGame(app, cpu, esp, address, {eax, edx, ebx, ecx}, stack, result);
+        pointerGame(app, cpu, esp, address, {eax, edx, ebx, ecx}, stack, result);
         return result;
     }
 
@@ -1443,16 +1438,16 @@ reg32 rampChannel(App* app, CPU& cpu, reg32 esp, reg32 channel, reg32 frames)
 /* The game's entries: the mix (0x500864, eax the output, edx the frames) and a
  * channel's ramp (0x5004c8, eax the channel, edx the frames). */
 
-void mixerServe(App* app, CPU& cpu)
+x86::reg32 mixerServe(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, mixFrames(app, cpu, e.esp, e.eax, int32_t(e.edx), e.eax));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, mixFrames(app, cpu, e.esp, e.eax, int32_t(e.edx), e.eax));
 }
 
-void mixerRamp(App* app, CPU& cpu)
+x86::reg32 mixerRamp(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, rampChannel(app, cpu, e.esp, e.eax, e.edx));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, rampChannel(app, cpu, e.esp, e.eax, e.edx));
 }
 
 }  // namespace port

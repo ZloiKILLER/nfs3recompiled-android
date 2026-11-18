@@ -1,4 +1,7 @@
+#include "native_controls_pipeline.h"
+#include "native_controls_race.h"
 #include "native_frontend_pause.h"
+#include "native_load_saves.h"
 #include "native_watcom.h"
 #include "game_settings.h"
 #include "native_carstate.h"
@@ -10,6 +13,7 @@
 #include "native_frontend_glue.h"
 #include "native_frontend_loop.h"
 #include "native_frontend_loopb.h"
+#include "native_frontend_menus.h"
 #include "native_load_cardb.h"
 #include "port_buttons.h"
 #include "port_hud.h"
@@ -17,6 +21,69 @@
 #include "port_text.h"
 #include <nfs3hp.h>
 #include <iterator>
+#include "native_guest.h"
+
+namespace nfs3hp
+{
+namespace
+{
+
+/* A call through a pointer or to a function of the game's that has no typed core: Watcom's register
+ * arguments (eax, edx, ebx, ecx in turn) and the stack words as `arguments` have them, through
+ * guest::pointerCall; its eax, and Terminated when the game stopped in it. */
+x86::reg32 callAt(fe::Guest& guest, x86::reg32 target, const fe::Arguments& arguments = fe::Arguments())
+{
+    x86::CPU& cpu = guest.cpu();
+    x86::Args registers;
+    x86::reg32* const into[4] = { &registers.eax, &registers.edx, &registers.ebx, &registers.ecx };
+    for (std::size_t i = 0; i < arguments.registerCount; ++i)
+        *into[i] = arguments.registers[i];
+    const x86::reg32 esp = cpu.esp;
+    for (std::size_t i = arguments.stackCount; i-- > 0;)
+    {
+        cpu.esp -= 4;
+        guest.setDword(cpu.esp, arguments.stack[i]);
+    }
+    const std::optional<x86::reg32> result = guest::pointerCall(guest.app(), cpu, target, registers);
+    if (!result)
+        throw fe::Terminated();
+    cpu.esp = esp;
+    return *result;
+}
+
+}  // namespace
+}  // namespace nfs3hp
+
+namespace nfs3hp
+{
+namespace
+{
+
+/* The game's float operations on plain values: fild, the single-precision sum, difference and
+ * product (fp::), what jb and ja read after fcom, and the truncation of sub_4dfd56 and fistp. */
+struct FloatMath
+{
+    explicit FloatMath(fe::Guest& guest) : m_guest(guest) {}
+
+    static x86::Float integer(std::int32_t value) { return x86::Float(x86::sreg32(value)); }
+    x86::Float load(x86::reg32 address) const { return x86::Float(m_guest.floatAt(address)); }
+    x86::Float add(const x86::Float& a, const x86::Float& b) { return fp::add(a, b); }
+    x86::Float sub(const x86::Float& a, const x86::Float& b) { return fp::sub(a, b); }
+    x86::Float mul(const x86::Float& a, const x86::Float& b) { return fp::mul(a, b); }
+    bool above(const x86::Float& a, const x86::Float& b) { return a > b; }
+    bool below(const x86::Float& a, const x86::Float& b) { return !(a >= b); }  // or unordered
+    std::int32_t truncated(const x86::Float& value)
+    {
+        const double chopped = fe::direct<0x4dfd56, watcom::clib::chop>(m_guest.app(), m_guest.cpu(), double(value));
+        return fp::toInteger<x86::sreg32>(chopped);
+    }
+
+private:
+    fe::Guest& m_guest;
+};
+
+}  // namespace
+}  // namespace nfs3hp
 
 /* The screens of a race's pause, decompiled:
  *
@@ -39,7 +106,7 @@
  *
  * Plan step 5: each function a typed core in frontend::pause (native_frontend_pause.h), in a frame
  * of its own where the game's function has one (fe::Frame: what it calls runs at the stack
- * addresses it did), and an adapter under the game's name for the calls by address.  A core of
+ * addresses it did), and a thunk under the game's name for the calls by address.  A core of
  * this file calls another as C++ (guest::direct); the rest of the game still by address.  Where
  * several of the game's functions share a body, the body stays a helper and each has a core. */
 namespace nfs3hp
@@ -80,8 +147,6 @@ constexpr x86::reg32 kButtonKey = 0x461270;
 constexpr x86::reg32 kSprintf = 0x4df690;
 constexpr x86::reg32 kCarFlags = 0x200;            // byte of the car
 constexpr std::uint8_t kCarIsCop = 0x20;
-constexpr x86::reg32 kForcePlayerCar = 0x4710f0;
-constexpr x86::reg32 kBindPlayersControls = 0x48f1f0;
 
 // This group's own handed to the game: callbacks, handlers.
 constexpr x86::reg32 kSaveNameAnswered = 0x4478c0;
@@ -109,25 +174,54 @@ void dim(Guest& guest, CPU& cpu)
 {
     const x86::reg32 slot = guest.frame() - 4;
     guest.setDword(slot, kDimBy);
-    fe::direct<0x451530, port::text::dimmed>(guest.app(), cpu, slot, cpu.eax);
+    fe::direct<0x451530, port::text::dimmed>(guest.app(), cpu, slot, 0);  // eax: its result is not read
 }
 
-void hideItem(Guest& guest, x86::reg32 menu, const GuestString& codelink)
+/* The item of a screen named `codelink` (sub_442a40), 0 for none: the look-up's result, which the screens' functions
+ * go on with as "what the calls left". */
+x86::reg32 foundAt(Guest& guest, x86::reg32 menu, const GuestString& codelink)
 {
-    if (Item item = fe::findItem(guest, menu, codelink))
+    return fe::direct<0x442a40, frontend::menus::findItem>(guest.app(), guest.cpu(), menu, codelink.address);
+}
+
+x86::reg32 hideItem(Guest& guest, x86::reg32 menu, const GuestString& codelink)
+{
+    const x86::reg32 found = foundAt(guest, menu, codelink);
+    if (Item item = Item(guest, found))
         item.setHidden(true);
+    return found;
 }
 
-void showItem(Guest& guest, x86::reg32 menu, const GuestString& codelink)
+x86::reg32 showItem(Guest& guest, x86::reg32 menu, const GuestString& codelink)
 {
-    if (Item item = fe::findItem(guest, menu, codelink))
+    const x86::reg32 found = foundAt(guest, menu, codelink);
+    if (Item item = Item(guest, found))
         item.setHidden(false);
+    return found;
 }
 
-void disableItem(Guest& guest, x86::reg32 menu, const GuestString& codelink)
+x86::reg32 disableItem(Guest& guest, x86::reg32 menu, const GuestString& codelink)
 {
-    if (Item item = fe::findItem(guest, menu, codelink))
+    const x86::reg32 found = foundAt(guest, menu, codelink);
+    if (Item item = Item(guest, found))
         item.setDisabled(true);
+    return found;
+}
+
+/* The dialog and the question as fe::openDialog and fe::openQuestion open them (sub_444c20, sub_4446d0), with what they
+ * answer. */
+x86::reg32 openDialogAnswer(Guest& guest, const fe::Dialog& dialog)
+{
+    return fe::direct<0x444c20, frontend::dialogs::openEdit>(
+        guest.app(), guest.cpu(), dialog.lineCount, dialog.lines, dialog.buttonCount, dialog.buttons, dialog.focus,
+        dialog.edit, dialog.editLength, dialog.editMode, dialog.callback);
+}
+
+x86::reg32 openQuestionAnswer(Guest& guest, const fe::Question& question)
+{
+    return fe::direct<0x4446d0, frontend::dialogs::openQuestion>(
+        guest.app(), guest.cpu(), question.lineCount, question.lines, question.buttonCount, question.buttons,
+        question.buttonHelp, question.focus, question.column, question.callback);
 }
 
 /* Greyed out and gone, or the opposite. */
@@ -153,7 +247,7 @@ bool closedBy(Guest& guest, CPU& cpu, x86::reg32 menu, const GuestString& codeli
     return guest.dword(item + fe::item::kType) == kButton
         && *fe::direct<0x4429c0, port::menus::codelinkMatched>(guest.app(), cpu, cpu.esp - 4,
                                                                guest.dword(item + fe::item::kCodelink),
-                                                               codelink.address, cpu.ebx) != 0;
+                                                               codelink.address, 0) != 0;
 }
 
 /* The car a player looks from is a cop's: 1, or 0. */
@@ -167,7 +261,6 @@ x86::reg32 playerIsCop(Guest& guest, CPU& cpu, x86::reg32 player)
  * The saves: whether a file stands, and a game written
  * ------------------------------------------------------------------------- */
 
-constexpr x86::reg32 kSaveFile = 0x4eeae0;         // eax a path, edx what, ebx bytes
 constexpr x86::reg32 kSavesFolder = 0x7a2f34;
 constexpr std::uint32_t kSaveImageSize = 0x20f0;
 constexpr std::uint32_t kReserveFlags = 0x10;
@@ -217,7 +310,7 @@ x86::reg32 writeSave(App* app, CPU& cpu, Guest& guest, x86::reg32 name, const Gu
     x86::reg32 written = 0;
     if (guest::direct<0x478010, frontend::pause::checkSaveable>(app, cpu, copy) != 0)
     {
-        guest.call(kSaveFile, fe::args({ path, copy, kSaveImageSize }));
+        fe::direct<0x4eeae0, load::blockSaved>(app, cpu, path, copy, kSaveImageSize);
         written = 1;
     }
     fe::direct<0x4e1890, ea::purgeBlock>(app, cpu, copy);
@@ -339,8 +432,7 @@ x86::reg32 frontend::pause::askSaveName(App* app, CPU& cpu, reg32 kind)
     guest.setDword(kNameButtons, fe::text(guest, kTextOk));
     guest.setDword(kNameButtons + 4, fe::text(guest, kTextCancel));
     guest.copyString(kSaveName, SETTINGS_ADDRESS(players[0].name));
-    fe::openDialog(guest, { 1, kNameQuestion, 2, kNameButtons, 0, kSaveName, kSaveNameLength, 0, kSaveNameAnswered });
-    return guest.eax();
+    return openDialogAnswer(guest, { 1, kNameQuestion, 2, kNameButtons, 0, kSaveName, kSaveNameLength, 0, kSaveNameAnswered });
 }
 
 /* sub_447800, the question whether to write over the file answered: Yes writes
@@ -361,7 +453,7 @@ x86::reg32 frontend::pause::overwriteAnswered(App* app, CPU& cpu, reg32 answer, 
     }
     if (focus != 0)
         return 0;
-    const bool written = guest.call(guest.dword(kWriteSave), fe::args({ kSaveName })) != 0;
+    const bool written = callAt(guest, guest.dword(kWriteSave), fe::args({ kSaveName })) != 0;
     guest.setDword(kOverwriteResult, kSaveName);
     guest.setDword(kOverwriteResult + 4, fe::text(guest, written ? kTextSaved : kTextNotSaved));
     fe::direct<0x444a80, frontend::dialogs::openMessage>(app, cpu, x86::reg32(2), kOverwriteResult, kResultTime,
@@ -379,7 +471,6 @@ x86::reg32 frontend::pause::saveNameAnswered(App* app, CPU& cpu, reg32 answer, r
     const std::uint32_t focus = fe::dialogFocus(guest);
     guest.setByte(close, 0);
     const x86::reg32 typed = fe::dialogEditText(guest);
-    guest.leaveEdx(typed);
     if (answer == fe::kDialogEscape || (answer == fe::kDialogEnter && focus == 1))
     {
         guest.setByte(close, 1);
@@ -387,10 +478,10 @@ x86::reg32 frontend::pause::saveNameAnswered(App* app, CPU& cpu, reg32 answer, r
     }
     if (answer != fe::kDialogEnter || focus != 0 || typed == 0 || guest.byte(typed) == 0)
         return 0;
-    if (guest.call(guest.dword(kSaveExists), fe::args({ typed })) == 0)
+    if (callAt(guest, guest.dword(kSaveExists), fe::args({ typed })) == 0)
     {
         guest.copyString(kSaveName, typed);
-        const bool written = guest.call(guest.dword(kWriteSave), fe::args({ typed })) != 0;
+        const bool written = callAt(guest, guest.dword(kWriteSave), fe::args({ typed })) != 0;
         const x86::reg32 line = fe::text(guest, written ? kTextSaved : kTextNotSaved);
         guest.setDword(kWrittenResult, line);
         guest.setDword(kWrittenResult + 4, kSaveName);
@@ -471,11 +562,12 @@ x86::reg32 frontend::pause::hideForCop(App* app, CPU& cpu, reg32 menu)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 12);
+    x86::reg32 last = 0;
     for (const GuestString& codelink : kRacerInstruments)
-        hideItem(guest, menu, codelink);
+        last = hideItem(guest, menu, codelink);
     for (const GuestString& codelink : kCopGreyed)
-        disableItem(guest, menu, codelink);
-    return guest.eax();
+        last = disableItem(guest, menu, codelink);
+    return last;
 }
 
 /* sub_44c4e0: a racer's display: a cop's items hidden. */
@@ -483,13 +575,14 @@ x86::reg32 frontend::pause::hideForRacer(App* app, CPU& cpu, reg32 menu)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 12);
+    x86::reg32 last = 0;
     for (const GuestString& codelink : kCopInstrumentsFirst)
-        hideItem(guest, menu, codelink);
+        last = hideItem(guest, menu, codelink);
     for (const GuestString& codelink : kCopGreyed)
-        hideItem(guest, menu, codelink);
+        last = hideItem(guest, menu, codelink);
     for (const GuestString& codelink : kCopInstrumentsLast)
-        hideItem(guest, menu, codelink);
-    return guest.eax();
+        last = hideItem(guest, menu, codelink);
+    return last;
 }
 
 namespace
@@ -542,8 +635,7 @@ x86::reg32 frontend::pause::askLeave(App* app, CPU& cpu, reg32 question, reg32 l
     guest.setDword(kLeaveQuestion, fe::text(guest, question));
     guest.setDword(kLeaveButtons, fe::text(guest, kTextYes));
     guest.setDword(kLeaveButtons + 4, fe::text(guest, kTextNo));
-    fe::openQuestion(guest, { 1, kLeaveQuestion, 2, kLeaveButtons, 0, 1, 0, kAskLeaveAnswered });
-    return guest.eax();
+    return openQuestionAnswer(guest, { 1, kLeaveQuestion, 2, kLeaveButtons, 0, 1, 0, kAskLeaveAnswered });
 }
 
 namespace
@@ -617,7 +709,6 @@ x86::reg32 frontend::pause::quitChoiceAnswered(App* app, CPU& cpu, reg32 answer,
             closeBox(0);
         }
     }
-    guest.leaveEdx(result);
     return result;
 }
 
@@ -856,7 +947,7 @@ x86::reg32 mapSizeMoved(Guest& guest, CPU& cpu, x86::reg32 item, x86::reg32 scal
     if (shown == 0)
         return shown;
     const x86::Float value = fe::direct<0x46c9b0, frontend::glue::sliderValue>(guest.app(), cpu, item, x86::reg32(0));
-    fe::X87 x87(guest);
+    FloatMath x87(guest);
     size = float(x87.add(x87.mul(value, x87.load(scale)), x86::Float(1.0)));
     return item;
 }
@@ -900,8 +991,8 @@ x86::reg32 frontend::pause::cancelKey(App* app, CPU& cpu, reg32 item, reg32 menu
     const fe::Frame frame(guest, cpu, 8);
     if (key == 0xd)
         guest.setDword(kControlsDone, 0);
-    // By address: the function leaves ebx and edx as this call hands them (the key, the screen).
-    return guest.call(kButtonKey, fe::args({ item, menu, x86::reg32(std::int32_t(std::int16_t(key))) }));
+        return x86::reg32(*fe::direct<kButtonKey, port::buttons::buttonKeyed>(
+        app, cpu, cpu.esp - 4, item, x86::reg32(std::int32_t(std::int16_t(key)))));
 }
 
 /* sub_44d190, pscntl1 as it opens: the controls kept for Cancel. */
@@ -938,9 +1029,9 @@ x86::reg32 frontend::pause::onControlsExit(App* app, CPU& cpu)
     }
     else
     {
-        guest.call(kForcePlayerCar);
+        fe::direct<0x4710f0, controls::forceCarFound>(app, cpu);
     }
-    guest.call(kBindPlayersControls);
+    fe::direct<0x48f1f0, controls::playersBound>(app, cpu);
     return 0;
 }
 
@@ -1003,7 +1094,7 @@ x86::reg32 frontend::pause::onGraphicsEnter(App* app, CPU& cpu, reg32 menu)
     }
     if (Item intensity = fe::findItem(guest, menu, kIntensitySlider))
     {
-        fe::X87 x87(guest);
+        FloatMath x87(guest);
         guest.setFloat(intensity.address() + kSliderValue, float(x86::Float(gameSettings(guest).alphaIntensity)));
         fe::direct<0x46cac0, frontend::glue::sliderSetOnMove>(app, cpu, intensity.address(), kIntensityMoved);
     }
@@ -1115,7 +1206,7 @@ void openHud(App* app, CPU& cpu, Guest& guest, x86::reg32 menu, x86::reg32 scree
     dim(guest, cpu);
     if (Item map = fe::findItem(guest, menu, kMapScale))
     {
-        fe::X87 x87(guest);
+        FloatMath x87(guest);
         const x86::Float biased = x87.add(x86::Float(gameSettings(guest).hudOf(screen, kind).mapScale), x87.load(hud.mapBias));
         guest.setFloat(map.address() + kSliderValue, float(x87.mul(biased, x87.load(hud.mapScale))));
         fe::direct<0x46cac0, frontend::glue::sliderSetOnMove>(app, cpu, map.address(), hud.mapMoved[kind]);
@@ -1231,7 +1322,7 @@ x86::reg32 onHudExit(Guest& guest, CPU& cpu, x86::reg32 menu, x86::reg32 screen,
     choices.mapStyle = choiceOf(guest.dword(kHudList4Places + places), kHudList4Last);
     choices.splitTimeForm = choiceOf(guest.dword(kHudList1Places + places), kHudList1Last);
     fe::direct<0x4844c0, port::hud::hudPaneSetOf>(guest.app(), cpu, cpu.esp - 4,
-                                                  port::Args{ player, cpu.edx, cpu.ebx, cpu.ecx });
+                                                  port::Args{ player, 0, 0, 0 });
     if (closedBy(guest, cpu, menu, kHudCancel))
         copySettings(guest, SETTINGS_ADDRESS(language), kSettingsKept);
     return 0;
@@ -1253,7 +1344,6 @@ constexpr x86::reg32 kCameraMode = 0x5e1054;
 
 constexpr x86::reg32 kCameraAnswered = 0x45d770;
 constexpr x86::reg32 kCameraKey = 0x45d840;
-constexpr x86::reg32 kSetCameraViews = 0x472300;
 constexpr x86::reg32 kBuildCameraCycle = 0x423a60;
 constexpr x86::reg32 kRememberMode = 0x423ae0;     // eax a player, edx a mode
 constexpr x86::reg32 kSetCameraMode = 0x4238b0;    // likewise
@@ -1289,7 +1379,6 @@ x86::reg32 frontend::pause::cameraAnswered(App* app, CPU& cpu, reg32 answer, reg
     clearSame(views[1], views[0]);
     clearSame(views[2], views[0]);
     clearSame(views[3], views[0]);
-    guest.leaveEdx(gameSettings(guest).cameraViewsChosen[2]);
     clearSame(views[2], views[1]);
     clearSame(views[3], views[1]);
     clearSame(views[3], views[2]);
@@ -1356,15 +1445,15 @@ x86::reg32 frontend::pause::onCameraExit(App* app, CPU& cpu, reg32 menu)
         gameSettings(guest).cameraViewsChosen[3] = guest.dword(kCamera4Kept);
         return 0;
     }
-    guest.call(kSetCameraViews);
-    guest.call(kBuildCameraCycle);
-    guest.call(kRememberMode, fe::args({ 0, guest.dword(kCameraMode) }));
-    guest.call(kRememberMode, fe::args({ 1, guest.dword(kCameraMode) }));
+    fe::direct<0x472300, load::cameraViewsSet>(app, cpu);
+    fe::direct<kBuildCameraCycle, carstate::cycleBuilt>(guest.app(), guest.cpu());
+    fe::direct<kRememberMode, carstate::modeRemembered>(guest.app(), guest.cpu(), 0, guest.dword(kCameraMode));
+    fe::direct<kRememberMode, carstate::modeRemembered>(guest.app(), guest.cpu(), 1, guest.dword(kCameraMode));
     if (guest.dword(kInRace) != 0)
     {
-        guest.call(kSetCameraMode, fe::args({ 0, guest.dword(kCameraMode) }));
+        fe::direct<kSetCameraMode, carstate::cameraModePut>(guest.app(), guest.cpu(), 0, guest.dword(kCameraMode));
         if (gameSettings(guest).playMode == 1)
-            guest.call(kSetCameraMode, fe::args({ 1, guest.dword(kCameraMode) }));
+            fe::direct<kSetCameraMode, carstate::cameraModePut>(guest.app(), guest.cpu(), 1, guest.dword(kCameraMode));
     }
     return 0;
 }
@@ -1401,8 +1490,7 @@ x86::reg32 frontend::pause::quitToAsk(App* app, CPU& cpu, reg32 question, reg32 
     guest.setDword(kQuitToQuestion, fe::text(guest, question));
     guest.setDword(kQuitToButtons, fe::text(guest, kTextYes));
     guest.setDword(kQuitToButtons + 4, fe::text(guest, kTextNo));
-    fe::openQuestion(guest, { 1, kQuitToQuestion, 2, kQuitToButtons, 0, 0, 0, kQuitToAnswered });
-    return guest.eax();
+    return openQuestionAnswer(guest, { 1, kQuitToQuestion, 2, kQuitToButtons, 0, 0, 0, kQuitToAnswered });
 }
 
 /* sub_4b6930, quitto as it opens: a network race has the one way back, any
@@ -1479,7 +1567,7 @@ x86::reg32 frontend::pause::fillViewQuads(App* app, CPU& cpu)
     }
     const auto setCorners = [&](std::int32_t value, std::initializer_list<x86::reg32> corners) {
         for (const x86::reg32 at : corners)
-            guest.setFloat(at, float(fe::X87::integer(value)));
+            guest.setFloat(at, float(FloatMath::integer(value)));
     };
     setCorners(left, { 0x55fed4, 0x55ffd4 });
     setCorners(top, { 0x55fed8, 0x55fef8 });
@@ -1505,7 +1593,6 @@ void setRectHalf(Guest& guest, x86::reg32 half, x86::reg32 a, x86::reg32 b, x86:
     guest.setDword(half + 4, b);
     guest.setDword(half + 8, c);
     guest.setDword(half + 0xc, d);
-    guest.leaveEdx(d);
 }
 
 }  // namespace
@@ -1519,7 +1606,6 @@ x86::reg32 frontend::pause::readRect(App* app, CPU& cpu, reg32 rect, reg32 a, re
     guest.setDword(c, guest.dword(rect + 8));
     const x86::reg32 last = guest.dword(rect + 0xc);
     guest.setDword(d, last);
-    guest.leaveEdx(d);
     return last;
 }
 
@@ -1541,41 +1627,37 @@ constexpr std::uint8_t kEbxEcxEsiEdi = kEbxEcxEsi | fe::kRestoreEdi;
 
 /* A function of nothing. */
 template <typename Core>
-void wholeForNone(App* app, CPU& cpu, fe::Site& site, Core core)
+x86::reg32 wholeForNone(App* app, CPU& cpu, x86::Args& args, fe::Site& site, Core core)
 {
-    fe::runWhole(app, cpu, site, [&](Guest&) { return core(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return core(app, cpu); });
 }
 
 /* A function of eax: a screen, an item, a name. */
 template <typename Core>
-void wholeForOne(App* app, CPU& cpu, fe::Site& site, Core core)
+x86::reg32 wholeForOne(App* app, CPU& cpu, x86::Args& args, fe::Site& site, Core core, x86::reg32 eax)
 {
-    const x86::reg32 eax = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return core(app, cpu, eax); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return core(app, cpu, eax); });
 }
 
 /* A function of eax and edx: a dialog's callback, say. */
 template <typename Core>
-void wholeForTwo(App* app, CPU& cpu, fe::Site& site, Core core)
+x86::reg32 wholeForTwo(App* app, CPU& cpu, x86::Args& args, fe::Site& site, Core core, x86::reg32 eax, x86::reg32 edx)
 {
-    const x86::reg32 eax = cpu.eax;
-    const x86::reg32 edx = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return core(app, cpu, eax, edx); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return core(app, cpu, eax, edx); });
 }
 
 /* A rectangle's: the rectangle in eax, three in edx, ebx, ecx, the fourth on the stack. */
 template <typename Core>
-void wholeForRect(App* app, CPU& cpu, fe::Site& site, Core core)
+x86::reg32 wholeForRect(App* app, CPU& cpu, x86::Args& args, fe::Site& site, Core core, x86::reg32 rect, x86::reg32 a, x86::reg32 b, x86::reg32 c)
 {
-    const x86::reg32 rect = cpu.eax, a = cpu.edx, b = cpu.ebx, c = cpu.ecx;
     const x86::reg32 d = Guest(app, cpu).dword(cpu.esp + 4);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return core(app, cpu, rect, a, b, c, d); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return core(app, cpu, rect, a, b, c, d); });
 }
 
 /* A screen's empty handler. */
-void wholeNothing(win32::WinApplication* app, x86::CPU& cpu, fe::Site& site)
+x86::reg32 wholeNothing(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args, fe::Site& site)
 {
-    fe::runWhole(app, cpu, site, [](Guest&) { return x86::reg32(0); });
+    return fe::runThunk(app, cpu, args, site, [](Guest&) { return x86::reg32(0); });
 }
 
 const GuestString kSeriesExistsStrings[] = { kSeriesPath };
@@ -1779,390 +1861,390 @@ x86::reg32 frontend::pause::setRectSecond(App* app, CPU& cpu, reg32 rect, reg32 
 }
 
 /* The saves. */
-void frontend::pauseSeriesSaveExists(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseSeriesSaveExists(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_446510", 0, 0, kSeriesExistsStrings, std::size(kSeriesExistsStrings), kNothing };
-    wholeForOne(app, cpu, site, pause::seriesSaveExists);
+    return wholeForOne(app, cpu, args, site, pause::seriesSaveExists, args.eax);
 }
 
-void frontend::pauseWriteSeriesSave(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseWriteSeriesSave(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_446550", 0, 0, kSeriesWriteStrings, std::size(kSeriesWriteStrings) };
-    wholeForOne(app, cpu, site, pause::writeSeriesSave);
+    return wholeForOne(app, cpu, args, site, pause::writeSeriesSave, args.eax);
 }
 
-void frontend::pauseGhostExists(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseGhostExists(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_446740", 0, 0, kGhostExistsStrings, std::size(kGhostExistsStrings), kNothing };
-    wholeForOne(app, cpu, site, pause::ghostExists);
+    return wholeForOne(app, cpu, args, site, pause::ghostExists, args.eax);
 }
 
-void frontend::pauseWriteTournamentSave(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseWriteTournamentSave(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4468c0", 0, 0, kTournamentWriteStrings, std::size(kTournamentWriteStrings) };
-    wholeForOne(app, cpu, site, pause::writeTournamentSave);
+    return wholeForOne(app, cpu, args, site, pause::writeTournamentSave, args.eax);
 }
 
-void frontend::pauseTournamentSaveExists(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseTournamentSaveExists(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_446950", 0, 0, kTournamentExistsStrings, std::size(kTournamentExistsStrings),
                           kNothing };
-    wholeForOne(app, cpu, site, pause::tournamentSaveExists);
+    return wholeForOne(app, cpu, args, site, pause::tournamentSaveExists, args.eax);
 }
 
-void frontend::pauseReplayExists(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseReplayExists(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_446a90", 0, 0, kReplayExistsStrings, std::size(kReplayExistsStrings), kNothing };
-    wholeForOne(app, cpu, site, pause::replayExists);
+    return wholeForOne(app, cpu, args, site, pause::replayExists, args.eax);
 }
 
-void frontend::pauseCheckSaveable(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseCheckSaveable(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_478010", 0, 0, nullptr, 0,
                           fe::kRestoreEbx | fe::kRestoreEdx | fe::kRestoreEsi | fe::kRestoreEdi };
-    wholeForOne(app, cpu, site, pause::checkSaveable);
+    return wholeForOne(app, cpu, args, site, pause::checkSaveable, args.eax);
 }
 
-void frontend::pauseOverwriteAnswered(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseOverwriteAnswered(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_447800", 0, 0, nullptr, 0, kEbxEcxEsi };
-    wholeForTwo(app, cpu, site, pause::overwriteAnswered);
+    return wholeForTwo(app, cpu, args, site, pause::overwriteAnswered, args.eax, args.edx);
 }
 
-void frontend::pauseSaveNameAnswered(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseSaveNameAnswered(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4478c0", 0, 0, nullptr, 0, kEbxEcxEsiEdi };
-    wholeForTwo(app, cpu, site, pause::saveNameAnswered);
+    return wholeForTwo(app, cpu, args, site, pause::saveNameAnswered, args.eax, args.edx);
 }
 
-void frontend::pauseAskSaveName(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseAskSaveName(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_447a30", 0, 0, nullptr, 0 };
-    wholeForOne(app, cpu, site, pause::askSaveName);
+    return wholeForOne(app, cpu, args, site, pause::askSaveName, args.eax);
 }
 
 /* pause. */
-void frontend::pauseHideSpare(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseHideSpare(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44c2d0", 0, 0, kHideMe, std::size(kHideMe), kEcxEdx };
-    wholeForOne(app, cpu, site, pause::hideSpare);
+    return wholeForOne(app, cpu, args, site, pause::hideSpare, args.eax);
 }
 
-void frontend::pauseHideForCop(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseHideForCop(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44c360", 0, 0, kRacerInstruments, std::size(kRacerInstruments), kEcxEdx };
-    wholeForOne(app, cpu, site, pause::hideForCop);
+    return wholeForOne(app, cpu, args, site, pause::hideForCop, args.eax);
 }
 
-void frontend::pauseHideForRacer(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseHideForRacer(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44c4e0", 0, 0, kCopInstrumentsFirst, std::size(kCopInstrumentsFirst), kEcxEdx };
-    wholeForOne(app, cpu, site, pause::hideForRacer);
+    return wholeForOne(app, cpu, args, site, pause::hideForRacer, args.eax);
 }
 
-void frontend::pauseLeaveAnswered(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseLeaveAnswered(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44c610", 0, 0, nullptr, 0, fe::kRestoreEcx };
-    wholeForTwo(app, cpu, site, pause::leaveAnswered);
+    return wholeForTwo(app, cpu, args, site, pause::leaveAnswered, args.eax, args.edx);
 }
 
-void frontend::pauseRestartAnswered(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseRestartAnswered(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44c670", 0, 0, nullptr, 0, fe::kRestoreEcx };
-    wholeForTwo(app, cpu, site, pause::restartAnswered);
+    return wholeForTwo(app, cpu, args, site, pause::restartAnswered, args.eax, args.edx);
 }
 
-void frontend::pauseAskLeave(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseAskLeave(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44c6d0", 0, 0, nullptr, 0, kEbxEcx };
-    wholeForTwo(app, cpu, site, pause::askLeave);
+    return wholeForTwo(app, cpu, args, site, pause::askLeave, args.eax, args.edx);
 }
 
-void frontend::pauseQuitChoiceAnswered(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseQuitChoiceAnswered(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44c730", 0, 0, nullptr, 0, fe::kRestoreEcx };
-    wholeForTwo(app, cpu, site, pause::quitChoiceAnswered);
+    return wholeForTwo(app, cpu, args, site, pause::quitChoiceAnswered, args.eax, args.edx);
 }
 
-void frontend::pauseQuitClicked(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseQuitClicked(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44c7b0", 0, 0, nullptr, 0 };
-    wholeForNone(app, cpu, site, pause::onQuitClicked);
+    return wholeForNone(app, cpu, args, site, pause::onQuitClicked);
 }
 
-void frontend::pauseRestartClicked(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseRestartClicked(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44ca10", 0, 0, nullptr, 0, kEbxEcxEdx };
-    wholeForNone(app, cpu, site, pause::onRestartClicked);
+    return wholeForNone(app, cpu, args, site, pause::onRestartClicked);
 }
 
-void frontend::pauseSaveClicked(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseSaveClicked(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44ca80", 0, 0, nullptr, 0, kNothing };
-    wholeForNone(app, cpu, site, pause::onSaveClicked);
+    return wholeForNone(app, cpu, args, site, pause::onSaveClicked);
 }
 
-void frontend::pauseOnEnter(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44cab0", 0, 0, kPauseStrings, std::size(kPauseStrings) };
-    wholeForOne(app, cpu, site, pause::onPauseEnter);
+    return wholeForOne(app, cpu, args, site, pause::onPauseEnter, args.eax);
 }
 
-void frontend::pauseOnExit(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseOnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44cf60", 0, 4, nullptr, 0, kNothing };
-    wholeNothing(app, cpu, site);
+    return wholeNothing(app, cpu, args, site);
 }
 
 /* The sliders. */
-void frontend::pauseIntensityMoved(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseIntensityMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44cf70", 0, 0, nullptr, 0, kEcxEdx };
-    wholeForOne(app, cpu, site, pause::intensityMoved);
+    return wholeForOne(app, cpu, args, site, pause::intensityMoved, args.eax);
 }
 
-void frontend::pauseMapCopMoved(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseMapCopMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44cfa0", 0, 0, nullptr, 0, kEcxEdx };
-    wholeForOne(app, cpu, site, pause::mapCopMoved);
+    return wholeForOne(app, cpu, args, site, pause::mapCopMoved, args.eax);
 }
 
-void frontend::pauseMapRacerMoved(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseMapRacerMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44cfe0", 0, 0, nullptr, 0, kEcxEdx };
-    wholeForOne(app, cpu, site, pause::mapRacerMoved);
+    return wholeForOne(app, cpu, args, site, pause::mapRacerMoved, args.eax);
 }
 
-void frontend::pauseMapFirstCopMoved(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseMapFirstCopMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44d020", 0, 0, nullptr, 0, kEcxEdx };
-    wholeForOne(app, cpu, site, pause::mapFirstCopMoved);
+    return wholeForOne(app, cpu, args, site, pause::mapFirstCopMoved, args.eax);
 }
 
-void frontend::pauseMapFirstRacerMoved(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseMapFirstRacerMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44d060", 0, 0, nullptr, 0, kEcxEdx };
-    wholeForOne(app, cpu, site, pause::mapFirstRacerMoved);
+    return wholeForOne(app, cpu, args, site, pause::mapFirstRacerMoved, args.eax);
 }
 
-void frontend::pauseMapSecondCopMoved(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseMapSecondCopMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44d0a0", 0, 0, nullptr, 0, kEcxEdx };
-    wholeForOne(app, cpu, site, pause::mapSecondCopMoved);
+    return wholeForOne(app, cpu, args, site, pause::mapSecondCopMoved, args.eax);
 }
 
-void frontend::pauseMapSecondRacerMoved(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseMapSecondRacerMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44d0e0", 0, 0, nullptr, 0, kEcxEdx };
-    wholeForOne(app, cpu, site, pause::mapSecondRacerMoved);
+    return wholeForOne(app, cpu, args, site, pause::mapSecondRacerMoved, args.eax);
 }
 
 /* psoption, psoptn2, pscntl1. */
-void frontend::pauseOptionsOnEnter(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseOptionsOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44d120", 0, 0, kOptionsStrings, std::size(kOptionsStrings), kEcxEdx };
-    wholeForOne(app, cpu, site, pause::onOptionsEnter);
+    return wholeForOne(app, cpu, args, site, pause::onOptionsEnter, args.eax);
 }
 
-void frontend::pauseOptionsOnExit(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseOptionsOnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44d160", 0, 4, nullptr, 0, kNothing };
-    wholeNothing(app, cpu, site);
+    return wholeNothing(app, cpu, args, site);
 }
 
-void frontend::pauseControlsCancelKey(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseControlsCancelKey(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44d170", 0, 0, nullptr, 0, fe::kRestoreEcx };
-    const x86::reg32 item = cpu.eax, menu = cpu.edx;
-    const std::uint16_t key = std::uint16_t(cpu.ebx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return pause::cancelKey(app, cpu, item, menu, key); });
+    const x86::reg32 item = args.eax, menu = args.edx;
+    const std::uint16_t key = std::uint16_t(args.ebx);
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return pause::cancelKey(app, cpu, item, menu, key); });
 }
 
-void frontend::pauseControlsOnEnter(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseControlsOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44d190", 0, 0, kControlsStrings, std::size(kControlsStrings), kEbxEcxEdx };
-    wholeForOne(app, cpu, site, pause::onControlsEnter);
+    return wholeForOne(app, cpu, args, site, pause::onControlsEnter, args.eax);
 }
 
-void frontend::pauseControlsOnExit(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseControlsOnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44d220", 0, 0, nullptr, 0, kEbxEcxEdx };
-    wholeForNone(app, cpu, site, pause::onControlsExit);
+    return wholeForNone(app, cpu, args, site, pause::onControlsExit);
 }
 
 /* psgraph. */
-void frontend::pauseWidescreenClicked(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseWidescreenClicked(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44d270", 0, 0, nullptr, 0, kNothing };
-    wholeForNone(app, cpu, site, pause::onWidescreenClicked);
+    return wholeForNone(app, cpu, args, site, pause::onWidescreenClicked);
 }
 
-void frontend::pauseGraphicsOnEnter(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseGraphicsOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44d2a0", 0, 0, kGraphicsStrings, std::size(kGraphicsStrings) };
-    wholeForOne(app, cpu, site, pause::onGraphicsEnter);
+    return wholeForOne(app, cpu, args, site, pause::onGraphicsEnter, args.eax);
 }
 
-void frontend::pauseGraphicsOnFrame(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseGraphicsOnFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44d3e0", 0, 0, kProjectedStrings, std::size(kProjectedStrings), fe::kRestoreEdx };
-    wholeForOne(app, cpu, site, pause::fitProjected);
+    return wholeForOne(app, cpu, args, site, pause::fitProjected, args.eax);
 }
 
-void frontend::pauseGraphicsOnExit(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseGraphicsOnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44d420", 0, 0, kGraphicsExitStrings, std::size(kGraphicsExitStrings) };
-    wholeForOne(app, cpu, site, pause::onGraphicsExit);
+    return wholeForOne(app, cpu, args, site, pause::onGraphicsExit, args.eax);
 }
 
 /* pshud, pshud1p, pshud2p. */
-void frontend::pauseHudOnEnter(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseHudOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44d4c0", 0, 0, kHudStrings, std::size(kHudStrings) };
-    wholeForOne(app, cpu, site, pause::onHudEnter);
+    return wholeForOne(app, cpu, args, site, pause::onHudEnter, args.eax);
 }
 
-void frontend::pauseHudOnExit(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseHudOnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44d670", 0, 0, kHudExitStrings, std::size(kHudExitStrings) };
-    wholeForOne(app, cpu, site, pause::hudExit);
+    return wholeForOne(app, cpu, args, site, pause::hudExit, args.eax);
 }
 
-void frontend::pauseHud1OnEnter(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseHud1OnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44d7a0", 0, 0, kHud2Strings, std::size(kHud2Strings) };
-    wholeForOne(app, cpu, site, pause::onHud1Enter);
+    return wholeForOne(app, cpu, args, site, pause::onHud1Enter, args.eax);
 }
 
-void frontend::pauseHud1OnExit(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseHud1OnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44d9a0", 0, 0, kHudExitStrings, std::size(kHudExitStrings) };
-    wholeForOne(app, cpu, site, pause::hud1Exit);
+    return wholeForOne(app, cpu, args, site, pause::hud1Exit, args.eax);
 }
 
-void frontend::pauseHud2OnEnter(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseHud2OnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44dad0", 0, 0, kHud2Strings, std::size(kHud2Strings) };
-    wholeForOne(app, cpu, site, pause::onHud2Enter);
+    return wholeForOne(app, cpu, args, site, pause::onHud2Enter, args.eax);
 }
 
-void frontend::pauseHud2OnExit(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseHud2OnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44dcd0", 0, 0, kHudExitStrings, std::size(kHudExitStrings) };
-    wholeForOne(app, cpu, site, pause::hud2Exit);
+    return wholeForOne(app, cpu, args, site, pause::hud2Exit, args.eax);
 }
 
 /* aituner. */
-void frontend::pauseAiTunerOnEnter(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseAiTunerOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44e130", 0, 4, nullptr, 0, kNothing };
-    wholeNothing(app, cpu, site);
+    return wholeNothing(app, cpu, args, site);
 }
 
-void frontend::pauseAiTunerOnExit(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseAiTunerOnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44e140", 0, 4, nullptr, 0, kNothing };
-    wholeNothing(app, cpu, site);
+    return wholeNothing(app, cpu, args, site);
 }
 
 /* pscamera. */
-void frontend::pauseCameraAnswered(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseCameraAnswered(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_45d770", 0, 0, nullptr, 0, kEbxEcxEsiEdi };
-    wholeForTwo(app, cpu, site, pause::cameraAnswered);
+    return wholeForTwo(app, cpu, args, site, pause::cameraAnswered, args.eax, args.edx);
 }
 
-void frontend::pauseCameraKey(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseCameraKey(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_45d840", 0, 0, nullptr, 0 };
-    wholeForNone(app, cpu, site, pause::cameraKey);
+    return wholeForNone(app, cpu, args, site, pause::cameraKey);
 }
 
-void frontend::pauseCameraOnEnter(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseCameraOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_45d920", 0, 0, kCameraStrings, std::size(kCameraStrings), kEcxEdx };
-    wholeForOne(app, cpu, site, pause::onCameraEnter);
+    return wholeForOne(app, cpu, args, site, pause::onCameraEnter, args.eax);
 }
 
-void frontend::pauseCameraEnsureOne(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseCameraEnsureOne(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_45d9a0", 0, 0, nullptr, 0, kNothing };
-    wholeForNone(app, cpu, site, pause::ensureSomeCamera);
+    return wholeForNone(app, cpu, args, site, pause::ensureSomeCamera);
 }
 
-void frontend::pauseCameraOnExit(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseCameraOnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_45d9e0", 0, 0, kCameraExitStrings, std::size(kCameraExitStrings),
                           fe::kRestoreEbx | fe::kRestoreEdx };
-    wholeForOne(app, cpu, site, pause::onCameraExit);
+    return wholeForOne(app, cpu, args, site, pause::onCameraExit, args.eax);
 }
 
 /* quitto. */
-void frontend::pauseQuitToAnswered(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseQuitToAnswered(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4b67b0", 0, 0, nullptr, 0, fe::kRestoreEcx };
-    wholeForTwo(app, cpu, site, pause::quitToAnswered);
+    return wholeForTwo(app, cpu, args, site, pause::quitToAnswered, args.eax, args.edx);
 }
 
-void frontend::pauseQuitToAsk(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseQuitToAsk(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4b6810", 0, 0, nullptr, 0, kEbxEcx };
-    wholeForTwo(app, cpu, site, pause::quitToAsk);
+    return wholeForTwo(app, cpu, args, site, pause::quitToAsk, args.eax, args.edx);
 }
 
-void frontend::pauseQuitToReplay(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseQuitToReplay(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4b6870", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    wholeForNone(app, cpu, site, pause::quitToReplay);
+    return wholeForNone(app, cpu, args, site, pause::quitToReplay);
 }
 
-void frontend::pauseQuitToPost(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseQuitToPost(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4b6890", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    wholeForNone(app, cpu, site, pause::quitToPost);
+    return wholeForNone(app, cpu, args, site, pause::quitToPost);
 }
 
-void frontend::pauseQuitToMain(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseQuitToMain(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4b68d0", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    wholeForNone(app, cpu, site, pause::quitToMain);
+    return wholeForNone(app, cpu, args, site, pause::quitToMain);
 }
 
-void frontend::pauseQuitToSystem(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseQuitToSystem(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4b6910", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    wholeForNone(app, cpu, site, pause::quitToSystem);
+    return wholeForNone(app, cpu, args, site, pause::quitToSystem);
 }
 
-void frontend::pauseQuitToOnEnter(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseQuitToOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4b6930", 0, 0, kQuitToStrings, std::size(kQuitToStrings), kEbxEcxEdx };
-    wholeForOne(app, cpu, site, pause::onQuitToEnter);
+    return wholeForOne(app, cpu, args, site, pause::onQuitToEnter, args.eax);
 }
 
 /* The race's views. */
-void frontend::pauseFillViewQuads(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseFillViewQuads(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4be3d0", 0, 0, nullptr, 0 };
-    wholeForNone(app, cpu, site, pause::fillViewQuads);
+    return wholeForNone(app, cpu, args, site, pause::fillViewQuads);
 }
 
-void frontend::pauseSetRectFirst(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseSetRectFirst(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4beb00", 4, 0, nullptr, 0, kNothing };
-    wholeForRect(app, cpu, site, pause::setRectFirst);
+    return wholeForRect(app, cpu, args, site, pause::setRectFirst, args.eax, args.edx, args.ebx, args.ecx);
 }
 
-void frontend::pauseReadRect(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseReadRect(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4beb20", 4, 0, nullptr, 0, fe::kRestoreEsi };
-    wholeForRect(app, cpu, site, pause::readRect);
+    return wholeForRect(app, cpu, args, site, pause::readRect, args.eax, args.edx, args.ebx, args.ecx);
 }
 
-void frontend::pauseSetRectSecond(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pauseSetRectSecond(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4beb40", 4, 0, nullptr, 0, kNothing };
-    wholeForRect(app, cpu, site, pause::setRectSecond);
+    return wholeForRect(app, cpu, args, site, pause::setRectSecond, args.eax, args.edx, args.ebx, args.ecx);
 }
 
 }

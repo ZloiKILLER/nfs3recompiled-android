@@ -1,5 +1,8 @@
 #include "game_settings.h"
+#include "native_ea_support.h"
 #include "port_snd_sources.h"
+#include "port_sound_calls.h"
+#include "port_sound_effects.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -13,9 +16,7 @@
  * players have two (0x50 bytes each, the source at +0x18), the cops four (0x38
  * bytes each, the source first and the chase after it); the listener's place
  * is the game's.  The sounds play in the race's slots, through slotPlay and
- * slotStop (port_sound_effects.cpp) and the sirens (port_sound_siren.cpp);
- * what the game's code keeps in esi and edi around those calls is set the same
- * way (sources::HeldEsiEdi). */
+ * slotStop (port_sound_effects.cpp) and the sirens (port_sound_siren.cpp). */
 namespace nfs3hp
 {
 namespace port
@@ -24,8 +25,6 @@ namespace port
 namespace
 {
 
-using sources::callGameResult;
-using sources::HeldEsiEdi;
 using sources::quotient;
 using sources::shiftedToZero;
 
@@ -86,8 +85,8 @@ constexpr Table<reg32> kCars{0x5efa48};
 constexpr Var<int32_t> kCarCount{0x5efda4};
 constexpr Table<uint8_t> kModelPitch{0x55276c};  // each model's engine pitch, the models from 0x32
 
-// The listener's place, and what is not rewritten here: the distance from it,
-// the slots' play and stop, and the game's trace.
+// The listener's place, and what the sources call: the distance from it (port_sound_3d.cpp), the slots' play and
+// stop (port_sound_effects.cpp), and the game's trace (compiled out).
 constexpr reg32 kListener = 0x570a78;
 constexpr reg32 kSourceDistance = 0x410cb0, kSlotPlay = 0x417080, kSlotStop = 0x416f60, kGameTrace = 0x42d510;
 constexpr reg32 kTraceText = 0x536b98;
@@ -115,20 +114,22 @@ void resetSource(App* app, Source& source, reg32 car)
     kSourceCount.set(app, std::min(count, 4));
 }
 
+}  // namespace
+
 /* 0x411db0's: cop car `cop`'s distance from the listener, squared (0x15f9 with
- * no car), once the game's code has measured it. */
-Result copDistanceSquared(App* app, CPU& cpu, reg32 esp, int32_t cop)
+ * no car), measured in arithmetic `a` (the x87's precision there). */
+Result copDistanceSquared(App* app, CPU& cpu, reg32 esp, world::Arithmetic a, int32_t cop)
 {
     const reg32 frame = esp - 2 * 4;  // ebp and edx pushed
     const reg32 at = frame - 0xc;     // and a point of three words, then a word, on the stack
-    const HeldEbp ebp(cpu, frame);
     const reg32 car = kCops(app, cop).source.car;
     if (car == 0)
         return kFar;
     store<reg32>(app, at, load<reg32>(app, car + 0x98));
     store<reg32>(app, at + 4, load<reg32>(app, car + 0x9c));
     store<reg32>(app, at + 8, load<reg32>(app, car + 0xa0));
-    const Result distance = callGameResult(app, cpu, at, kSourceDistance, {kListener, at});
+    cpu.esp = at;
+    const Result distance = guest::direct<kSourceDistance, world::distanceAt>(app, cpu, a, kListener, at);
     if (!distance)
         return {};
     const int32_t whole = shiftedToZero(*distance, 16);
@@ -140,16 +141,25 @@ Result copDistanceSquared(App* app, CPU& cpu, reg32 esp, int32_t cop)
 Result copSirenPlayed(App* app, CPU& cpu, reg32 esp, int32_t siren, int32_t distance, reg32 pan, int32_t pitch)
 {
     const reg32 frame = esp - 3 * 4;  // esi, edi and ebp pushed
-    const HeldEbp ebp(cpu, frame);
-    HeldEsiEdi held(cpu);
-    held.setEsi(reg32(siren));
-    held.setEdi(pan);
     // As loud as the distance is short of 0x15f9, none below 0.
     const int32_t volume =
         std::max(quotient(imul(int32_t(uint32_t(kFar) - uint32_t(distance)), 127), kFar), 0);
     if (sources::sirenActive(app, siren) == 0)
         return sources::sirenSwitchedOn(app, cpu, frame - 4, siren, false);
     return sources::sirenTicked(app, cpu, frame - 4, siren, volume, pitch, pan);
+}
+
+/* 0x411ca0's: siren `siren` stopped. */
+Result copSirenStopped(App* app, CPU& cpu, reg32 esp, int32_t siren)
+{
+    return sources::sirenSwitchedOff(app, cpu, esp - 4 - 4, siren);
+}
+
+/* 0x411620's: the source at `source` reset, for car `car` (0: none): the source. */
+reg32 sourceResetTo(App* app, reg32 source, reg32 car)
+{
+    resetSource(app, record<Source>(app, source), car);
+    return source;
 }
 
 /* 0x411cb0's: cop car `cop`'s engine at distance `distance`, pitch `pitch`, pan
@@ -159,8 +169,6 @@ Result copEnginePlayed(App* app, CPU& cpu, reg32 esp, int32_t cop, int32_t dista
 {
     const reg32 frame = esp - 3 * 4;  // esi, edi and ebp pushed
     const reg32 at = frame - 4;       // and a local
-    const HeldEbp ebp(cpu, frame);
-    HeldEsiEdi held(cpu);
     const reg32 car = kCops(app, cop).source.car;
     const int32_t model = load<int32_t>(app, load<reg32>(app, car + 0x220) + 0x14);
     int32_t bend;
@@ -177,29 +185,24 @@ Result copEnginePlayed(App* app, CPU& cpu, reg32 esp, int32_t cop, int32_t dista
     }
     const int32_t volume = quotient(imul(int32_t(uint32_t(kFar) - uint32_t(distance)), 127), kFar);
     const int32_t slot = cop + kCopSlots;
-    held.setEsi(reg32(effect));
-    held.setEdi(reg32(slot));
-    return callGameResult(app, cpu, at, kSlotPlay,
-                          {reg32(slot), reg32(effect), reg32(std::clamp(bend, 0, 0x7f)), reg32(volume)}, {pan});
+    cpu.esp = at;
+    return guest::direct<kSlotPlay, slotPlayed>(app, cpu, at - 8, slot, effect, volume, std::clamp(bend, 0, 0x7f),
+                                                pan);
 }
 
 /* 0x411e20's: how close cop cars `from` to `from + count - 1` are, all told:
- * each's 0x15f9 less its distance (squared), at most. */
-Result copsClosenessTold(App* app, CPU& cpu, reg32 esp, int32_t count, int32_t from)
+ * each's 0x15f9 less its distance (squared), at most; measured in `a`. */
+Result copsClosenessTold(App* app, CPU& cpu, reg32 esp, world::Arithmetic a, int32_t count, int32_t from)
 {
     const reg32 frame = esp - 5 * 4;  // ebx, ecx, esi, edi and ebp pushed
-    const HeldEbp ebp(cpu, frame);
-    HeldEsiEdi held(cpu);
-    held.setEsi(reg32(count));
     int32_t sum = 0;
     const int32_t end = int32_t(uint32_t(from) + uint32_t(count));
     for (int32_t cop = from; cop < end; ++cop)
     {
-        const Result distance = copDistanceSquared(app, cpu, frame - 4, cop);
+        const Result distance = copDistanceSquared(app, cpu, frame - 4, a, cop);
         if (!distance)
             return {};
         const int32_t close = kFar - std::min(*distance, kFar);
-        held.setEdi(reg32(close));
         sum = int32_t(uint32_t(sum) + uint32_t(close));
     }
     return sum;
@@ -208,23 +211,20 @@ Result copsClosenessTold(App* app, CPU& cpu, reg32 esp, int32_t count, int32_t f
 /* 0x415050's: car `car`'s sound of the track's zones `zones` in slot `slot`: as
  * loud as the car is into its zone, from its side (turned in the mirror)
  * offset by `offset`, or the player's side in the split screen.  1 when one
- * plays, 0 when none does or the view is not the player's.  The code leaves esi
- * and edi where its sums do, which SND reads when a play fails; they are kept
- * the same here (si, di). */
+ * plays, 0 when none does or the view is not the player's. */
 Result zoneSoundPlayed(App* app, CPU& cpu, reg32 esp, int32_t slot, reg32 car, reg32 zones, reg32 offset)
 {
     const reg32 frame = esp - 3 * 4;  // esi, edi and ebp pushed
     const reg32 at = frame - 0xc;     // and three locals
-    const HeldEbp ebp(cpu, frame);
-    HeldEsiEdi held(cpu);
-    reg32 si = car, di = cpu.edi;
-    held.setEsi(si);
     if (zones == 0)
         return 0;
     const int32_t view = gameSettings(app).viewedPlayer;
     if (view != gameSettings(app).localPlayer)
     {
-        if (!callGameResult(app, cpu, at, kGameTrace, {reg32(slot), reg32(view), offset, zones}, {0x64, 2, kTraceText}))
+        // The game's trace, compiled out (its words, 0x64, 2 and kTraceText, the caller's to push): nothing.
+        cpu.esp = at;
+        guest::direct<kGameTrace, ea::traceOff>(app, cpu);
+        if (cpu.terminate)
             return {};
         return 0;
     }
@@ -233,13 +233,11 @@ Result zoneSoundPlayed(App* app, CPU& cpu, reg32 esp, int32_t slot, reg32 car, r
     for (;; zone += sizeof(Zone))
     {
         const Zone& z = record<Zone>(app, zone);
-        di = reg32(z.start);
         if (z.start <= -1)
             return 0;
         const int32_t along = load<int32_t>(app, car + 0x1c);
         if (along < z.start)
             continue;
-        di = reg32(z.end);
         if (along > z.end)
             continue;
         break;
@@ -252,22 +250,17 @@ Result zoneSoundPlayed(App* app, CPU& cpu, reg32 esp, int32_t slot, reg32 car, r
     {
         const int32_t length = int32_t(uint32_t(z.fullStart) - uint32_t(z.start));
         volume = quotient(imul(int32_t(uint32_t(along) - uint32_t(z.start)), 127), length);
-        di = reg32(length);
     }
     else if (along > z.fullEnd)
     {
         const int32_t length = int32_t(uint32_t(z.end) - uint32_t(z.fullEnd));
         volume = quotient(imul(int32_t(uint32_t(z.end) - uint32_t(along)), 127), length);
-        di = reg32(length);
     }
     else
         volume = 0x7f;
     int32_t side = z.side;
     if (gameSettings(app).mirrored != 0)
-    {
         side = negated(side);
-        di = reg32(side);
-    }
     reg32 pan;
     if (gameSettings(app).playMode == 1)
         pan = load<int32_t>(app, car + 0x1f0) != 0 ? 0xc000 : 0x3fff;
@@ -276,19 +269,14 @@ Result zoneSoundPlayed(App* app, CPU& cpu, reg32 esp, int32_t slot, reg32 car, r
         const reg32 base = reg32(volume) << 8;
         const bool loud = volume >= 0x3f;
         reg32 sides = base - 0x3f00;
-        di = reg32(side);
         if (side < 0)
         {
-            di = reg32(along);
             if (along < z.fullStart)
             {
                 if (!loud)
                     sides = 0;
                 else
-                {
-                    si = 0x10000 - sides;
-                    sides = si;
-                }
+                    sides = 0x10000 - sides;
             }
             else if (along > z.fullEnd)
                 sides = loud ? base + 0x4100 : 0x8000;
@@ -298,7 +286,6 @@ Result zoneSoundPlayed(App* app, CPU& cpu, reg32 esp, int32_t slot, reg32 car, r
         }
         else if (side > 0)
         {
-            di = reg32(along);
             if (along < z.fullStart)
             {
                 if (!loud)
@@ -306,16 +293,12 @@ Result zoneSoundPlayed(App* app, CPU& cpu, reg32 esp, int32_t slot, reg32 car, r
             }
             else
             {
-                si = di;
                 if (along > z.fullEnd)
                 {
                     if (!loud)
                         sides = 0x8000;
                     else
-                    {
-                        si = 0x8000 - sides;
-                        sides = si;
-                    }
+                        sides = 0x8000 - sides;
                 }
                 else
                     sides = 0x3fff;
@@ -325,32 +308,27 @@ Result zoneSoundPlayed(App* app, CPU& cpu, reg32 esp, int32_t slot, reg32 car, r
         else
             pan = 0;
     }
-    held.setEsi(si);
-    held.setEdi(di);
-    if (!callGameResult(app, cpu, at, kSlotPlay, {reg32(slot), reg32(z.effect), 0x40, reg32(volume)}, {pan}))
+    cpu.esp = at;
+    if (!guest::direct<kSlotPlay, slotPlayed>(app, cpu, at - 8, slot, z.effect, volume, 0x40, pan))
         return {};
     return 1;
 }
 
-}  // namespace
-
-/* The game's entries -- each its adapter, the registers and the stack in, the
+/* The game's entries -- each its thunk, the registers and the stack in, the
  * result in eax out. */
 
 /* 0x411620: source eax reset, for car edx (0: none). */
-void sourceReset(App* app, CPU& cpu)
+x86::reg32 sourceReset(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    resetSource(app, record<Source>(app, e.eax), e.edx);
-    e.back(cpu, e.eax);
+    const Entry e(cpu, args);
+    return e.back(cpu, args, sourceResetTo(app, e.eax, e.edx));
 }
 
 /* 0x411680: the sources reset as a race starts: the players' (each with its
  * car -- the first's, or each player's own in the split screen) and the cop
  * cars'.  eax 0. */
-void sourcesReset(App* app, CPU& cpu)
+Result sourcesResetOf(App* app)
 {
-    const Entry e(cpu);
     kSourceLimit.set(app, 4);
     const int32_t engineBank = kCarEngineBanks(app, std::int32_t(gameSettings(app).track));
     kSourceCount.set(app, 0);
@@ -377,17 +355,27 @@ void sourcesReset(App* app, CPU& cpu)
     for (int32_t cop = 0; cop < 4; ++cop)
         resetSource(app, kCops(app, cop).source, 0);
     kListenerChase.set(app, 0);
-    e.back(cpu, 0);
+    return 0;
+}
+
+x86::reg32 sourcesReset(App* app, CPU& cpu, x86::Args& args)
+{
+    const Entry e(cpu, args);
+    return e.back(cpu, args, *sourcesResetOf(app));
 }
 
 /* 0x411750: the cop car of car eax, not chasing yet, set chasing -- ebx its
  * chase, edx its target, ecx its distance (kept minus).  eax as the code
  * leaves it: the end of the cop cars' table. */
-void copChaseSet(App* app, CPU& cpu)
+x86::reg32 copChaseSet(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    const reg32 car = e.eax, target = e.edx;
-    const int32_t chase = int32_t(e.ebx), distance = int32_t(e.ecx);
+    const Entry e(cpu, args);
+    return e.back(cpu, args, copChaseSetOf(app, e.eax, e.edx, int32_t(e.ebx), int32_t(e.ecx)));
+}
+
+/* 0x411750's core: copChaseSet for `car`, its `target`, `chase` and `distance`; eax as the code leaves it. */
+reg32 copChaseSetOf(App* app, reg32 car, reg32 target, int32_t chase, int32_t distance)
+{
     for (int32_t cop = 0; cop < 4; ++cop)
     {
         CopSource& c = kCops(app, cop);
@@ -398,56 +386,64 @@ void copChaseSet(App* app, CPU& cpu)
         c.source.chase = chase;
         c.closeness = negated(distance);
     }
-    e.back(cpu, kCops.address(4));
+    return kCops.address(4);
 }
 
 /* 0x411c50: cop car eax's siren at distance ecx, pan edx, pitch ebx: on, or
  * its tick. */
-void copSiren(App* app, CPU& cpu)
+x86::reg32 copSiren(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, copSirenPlayed(app, cpu, e.esp, int32_t(e.eax), int32_t(e.ecx), e.edx, int32_t(e.ebx)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, copSirenPlayed(app, cpu, e.esp, int32_t(e.eax), int32_t(e.ecx), e.edx, int32_t(e.ebx)));
 }
 
 /* 0x411ca0: siren eax stopped. */
-void copSirenStop(App* app, CPU& cpu)
+x86::reg32 copSirenStop(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, sources::sirenSwitchedOff(app, cpu, e.frame(1) - 4, int32_t(e.eax)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, copSirenStopped(app, cpu, e.esp, int32_t(e.eax)));
 }
 
 /* 0x411cb0: cop car eax's engine at distance ecx, pitch ebx, pan edx, in
  * slot 0x1b on: effect 3, or the cops' own (10, or 11 for three models) with
  * the model's pitch. */
-void copEngine(App* app, CPU& cpu)
+x86::reg32 copEngine(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, copEnginePlayed(app, cpu, e.esp, int32_t(e.eax), int32_t(e.ecx), int32_t(e.ebx), e.edx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, copEnginePlayed(app, cpu, e.esp, int32_t(e.eax), int32_t(e.ecx), int32_t(e.ebx), e.edx));
+}
+
+/* 0x411da0's: cop car `cop`'s engine stopped. */
+Result copEngineStopped(App* app, CPU& cpu, reg32 esp, int32_t cop)
+{
+    const reg32 frame = esp - 4;
+    cpu.esp = frame;
+    return guest::direct<kSlotStop, slotStopped>(app, cpu, frame - 4, cop + kCopSlots);
 }
 
 /* 0x411da0: cop car eax's engine stopped. */
-void copEngineStop(App* app, CPU& cpu)
+x86::reg32 copEngineStop(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    const reg32 frame = e.frame(1);
-    const HeldEbp ebp(cpu, frame);
-    e.finish(cpu, callGameResult(app, cpu, frame, kSlotStop, {e.eax + kCopSlots}));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, copEngineStopped(app, cpu, e.esp, int32_t(e.eax)));
 }
 
 /* 0x411db0: cop car eax's distance from the listener, squared (0x15f9 with
  * no car). */
-void copDistance(App* app, CPU& cpu)
+x86::reg32 copDistance(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, copDistanceSquared(app, cpu, e.esp, int32_t(e.eax)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, copDistanceSquared(app, cpu, e.esp, world::arithmeticOf(cpu.fenv.rounding), int32_t(e.eax)));
 }
 
 /* 0x411e20: how close eax cop cars from edx on are, all told: each's 0x15f9
  * less its distance (squared), at most. */
-void copsCloseness(App* app, CPU& cpu)
+x86::reg32 copsCloseness(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, copsClosenessTold(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, copsClosenessTold(app, cpu, e.esp, world::arithmeticOf(cpu.fenv.rounding), int32_t(e.eax),
+                                    int32_t(e.edx)));
+    return args.eax;
 }
 
 /* 0x415050: car edx's sound of the track's zones (ecx: their list, 6 words
@@ -456,10 +452,10 @@ void copsCloseness(App* app, CPU& cpu)
  * from its side (turned in the mirror) offset by ebx, or the player's side
  * in the split screen.  1 when one plays; 0, or with the view not the
  * player's (0x6fd4f8). */
-void zoneSound(App* app, CPU& cpu)
+x86::reg32 zoneSound(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, zoneSoundPlayed(app, cpu, e.esp, int32_t(e.eax), e.edx, e.ecx, e.ebx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, zoneSoundPlayed(app, cpu, e.esp, int32_t(e.eax), e.edx, e.ecx, e.ebx));
 }
 
 }  // namespace port

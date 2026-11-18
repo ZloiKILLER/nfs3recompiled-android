@@ -1,11 +1,22 @@
+#include "native_raceload.h"
 #include "port_shapes.h"
 #include "port_thrash.h"
 #include "thrash_calls.h"
+#include "native_ea_memory.h"
+#include "native_graphics.h"
+#include "native_watcom.h"
+#include "native_vertices.h"
+#include "native_ea_formats.h"
+#include "native_frontend_watb.h"
+#include "native_game.h"
+#include "port_sound_speech.h"
 
 #include <cstdint>
+#include <optional>
+#include <type_traits>
 
 /* The resizing's steps and places are the game's x87 arithmetic, each sum,
- * product and quotient rounded as the control word has it (cpu.fpu) and kept
+ * product and quotient rounded as the control word has it (single precision) and kept
  * as a float where the code stores one: nothing here may be fused. */
 #if defined(__clang__)
 #pragma clang fp contract(off)
@@ -32,9 +43,7 @@
  * records stay where the game keeps them: the art's shapes at 0x8b48c0, its
  * tiles at 0x8b5090 and the room the tiles take at 0x8b7a74, the quad the
  * tiles are drawn with at 0x563ab0.
- *
- * tools/game_checks holds each adapter against the game's code for it, made
- * afresh from nfs3.exe (tools/game_checks/shapes.inc). */
+ */
 namespace nfs3hp
 {
 namespace port
@@ -91,16 +100,85 @@ constexpr reg32 kClipRight = 0x7d350c;       // the clip's rectangle: a float's 
 
 // The driver's functions are called through the game's pointers to them
 // (thrash_calls.h).  Where their eax is read, eax at the call is the game's
-// code's there, which the checks' stand-ins may leave.
+// code's there.
 constexpr reg32 kStateTextureFilter = 7;     // THRASH_setstate's: filtered (1) or not
 
 // What is not theirs: the render states, the clipper, EA's allocator, its
 // shapes and keys, the runtime's strings, the clock's wait, the trace, Error.
-constexpr reg32 kSetRenderState = 0x431900, kClipQuad = 0x4c12e0, kTrace = 0x42d500, kError = 0x401010;
+constexpr reg32 kSetRenderState = 0x431900, kClipQuad = 0x4c12e0, kError = 0x401010;
 constexpr reg32 kAllocate = 0x4e1620, kFree = 0x4e1890, kLocateShape = 0x4ef270, kInkey = 0x4f0120;
 constexpr reg32 kShapePalette = 0x4fd1c0, kStrncmp = 0x4eb390, kStrncpy = 0x4e0e30, kTickWait = 0x4c9860;
 constexpr reg32 kShapeBufferTag = 0x5495c4, kNoArtTiles = 0x549630;
 constexpr reg32 kNoPalette = 0x5495ec, kBadShapeFormat = 0x5495f8, kTooManyTiles = 0x54960c;
+
+/* The typed cores called as C++ where the game's code calls their addresses, from `esp` (the call's frame
+ * base esp - 4 - 4 * Words): their answer in `*result` when given; false when the game stopped in one. */
+template <class T>
+struct is_optional : std::false_type
+{
+};
+template <class T>
+struct is_optional<std::optional<T>> : std::true_type
+{
+};
+
+template <class F>
+bool runCore(CPU& cpu, reg32 esp, reg32* result, F f)
+{
+    cpu.esp = esp;
+    if constexpr (std::is_void_v<decltype(f())>)
+    {
+        f();
+        return !cpu.terminate;
+    }
+    else
+    {
+        const auto v = f();
+        if (cpu.terminate)
+            return false;
+        if constexpr (is_optional<std::decay_t<decltype(v)>>::value)
+        {
+            if (!v)
+                return false;
+            if (result != nullptr)
+                *result = reg32(*v);
+        }
+        else if (result != nullptr)
+            *result = reg32(v);
+        return true;
+    }
+}
+
+template <reg32 Address, auto Core, unsigned Words, typename... A>
+bool coreAt(App* app, CPU& cpu, reg32 esp, reg32* result, A... args)
+{
+    return runCore(cpu, esp, result,
+                   [&] { return guest::direct<Address, Core>(app, cpu, reg32(esp - 4 - 4 * Words), args...); });
+}
+
+template <reg32 Address, auto Core, typename... A>
+bool plainAt(App* app, CPU& cpu, reg32 esp, reg32* result, A... args)
+{
+    return runCore(cpu, esp, result, [&] { return guest::direct<Address, Core>(app, cpu, args...); });
+}
+
+/* A core that leaves eax as it came: `*result` is `eax` after it. */
+template <reg32 Address, auto Core, typename... A>
+bool keepAt(App* app, CPU& cpu, reg32 esp, reg32* result, reg32 eax, A... args)
+{
+    if (result != nullptr)
+        *result = eax;
+    return runCore(cpu, esp, nullptr, [&] { return guest::direct<Address, Core>(app, cpu, args...); });
+}
+
+/* A box core whose four colours the game's code pushes. */
+template <reg32 Address, auto Core>
+bool boxedAt(App* app, CPU& cpu, reg32 esp, reg32* result, reg32 x, reg32 y, reg32 width, reg32 height, reg32 c0,
+             reg32 c1, reg32 c2, reg32 c3)
+{
+    const uint32_t colours[4] = {c0, c1, c2, c3};
+    return coreAt<Address, Core, 4>(app, cpu, esp, result, x, y, width, height, static_cast<const uint32_t*>(colours));
+}
 
 reg32 corner(reg32 i) { return kCorners + i * kCornerBytes; }
 
@@ -902,14 +980,14 @@ Result drawTileQuad(App* app, CPU& cpu, reg32 esp)
     reg32 r;
     if (byteAt(app, kDriverFlags) & 2)
     {
-        if (!callGame(app, cpu, frame, kSetRenderState, {0x2bf, 2})
+        if (!plainAt<0x431900, graphics::sendState>(app, cpu, frame, nullptr, 0x2bf, 2)
             || !guest::driverFrom<thrash::kThrashDrawQuad, &driver::drawQuad>(app, cpu, frame, corner(0), corner(1),
                                                                               corner(2), corner(3))
-            || !callGame(app, cpu, frame, kSetRenderState, {0x2bf, 0}, {}, r))
+            || !plainAt<kSetRenderState, graphics::stateAnswer>(app, cpu, frame, &r, 0x2bf, 0))
             return {};
         return int32_t(r);
     }
-    if (!callGame(app, cpu, frame, kClipQuad, {corner(0), corner(1), corner(2), corner(3)}, {}, r))
+    if (!coreAt<kClipQuad, vertices::quadClippedAt, 0>(app, cpu, frame, &r, corner(0), corner(1), corner(2), corner(3)))
         return {};
     return int32_t(r);
 }
@@ -930,8 +1008,8 @@ Result artTexturesOf(App* app, CPU& cpu, reg32 esp, reg32 shape, int32_t again, 
     const reg32 palette = dwordAt(app, kArtPalette);
     const reg32 tilesBefore = dwordAt(app, kArtTileCount);
     reg32 pixels, cut;
-    if (!callGame(app, cpu, frame, kAllocate, {kShapeBufferTag, 0x12c014, 0x10, ecx}, {}, pixels)
-        || !callGame(app, cpu, frame, kAllocate, {kShapeBufferTag, 0x40000, 0x10, 0}, {}, cut))
+    if (!plainAt<0x4e1620, ea::reserved>(app, cpu, frame, &pixels, kShapeBufferTag, 0x12c014, 0x10)
+        || !plainAt<0x4e1620, ea::reserved>(app, cpu, frame, &cut, kShapeBufferTag, 0x40000, 0x10))
         return {};
     reg32 format = 0;
     const reg32 kind = reg32(byteAt(app, shape)) - 0x78;
@@ -943,9 +1021,9 @@ Result artTexturesOf(App* app, CPU& cpu, reg32 esp, reg32 shape, int32_t again, 
     case 0x7b - 0x78:
     {
         reg32 own;
-        if (!callGame(app, cpu, frame, kShapePalette, {shape, 0x40000, 0x10, 0}, {}, own))
+        if (!plainAt<kShapePalette, frontend::watb::shapeClut>(app, cpu, frame, &own, shape))
             return {};
-        if (own == 0 && !callGame(app, cpu, frame, kError, {0, 0, 0x10, 0}, {kNoPalette}))
+        if (own == 0 && !plainAt<kError, ea::error>(app, cpu, frame, nullptr, kNoPalette, guest::Words({})))
             return {};
         format = 3;
         putDword(app, kArtPalette, own + 0x10);
@@ -959,7 +1037,7 @@ Result artTexturesOf(App* app, CPU& cpu, reg32 esp, reg32 shape, int32_t again, 
         format = 3;
         break;
     default:
-        if (!callGame(app, cpu, frame, kError, {kind, 0x40000, 0x10, 0}, {kBadShapeFormat}))
+        if (!plainAt<kError, ea::error>(app, cpu, frame, nullptr, kBadShapeFormat, guest::Words({})))
             return {};
         break;
     }
@@ -1009,7 +1087,6 @@ Result artTexturesOf(App* app, CPU& cpu, reg32 esp, reg32 shape, int32_t again, 
             if (again == 0)
             {
                 const reg32 kept = dwordAt(app, formatAt);
-                cpu.eax = reg32(size);
                 const std::optional<reg32> texture = guest::driverFrom<thrash::kThrashTAlloc, &driver::tAlloc>(
                     app, cpu, frame, reg32(size), reg32(size), kept, 0, 0);
                 if (!texture)
@@ -1027,10 +1104,10 @@ Result artTexturesOf(App* app, CPU& cpu, reg32 esp, reg32 shape, int32_t again, 
                 ++tile;
                 continue;
             }
-            if (!callGame(app, cpu, frame, kError, {reg32(tile), reg32(tile), texture, cut}, {kTooManyTiles}))
+            if (!plainAt<kError, ea::error>(app, cpu, frame, nullptr, kTooManyTiles, guest::Words({})))
                 return {};
             putDword(app, kArtTileCount, tilesBefore);
-            if (!callGame(app, cpu, frame, kFree, {cut}) || !callGame(app, cpu, frame, kFree, {pixels}))
+            if (!plainAt<0x4e1890, ea::purgeBlock>(app, cpu, frame, nullptr, cut) || !plainAt<0x4e1890, ea::purgeBlock>(app, cpu, frame, nullptr, pixels))
                 return {};
             return 0;
         }
@@ -1038,7 +1115,7 @@ Result artTexturesOf(App* app, CPU& cpu, reg32 esp, reg32 shape, int32_t again, 
     if (again == 0)
         putDword(app, kArtTileCount, reg32(tile));
     putDword(app, kArtPalette, palette);
-    if (!callGame(app, cpu, frame, kFree, {cut}) || !callGame(app, cpu, frame, kFree, {pixels}))
+    if (!plainAt<0x4e1890, ea::purgeBlock>(app, cpu, frame, nullptr, cut) || !plainAt<0x4e1890, ea::purgeBlock>(app, cpu, frame, nullptr, pixels))
         return {};
     return index;
 }
@@ -1055,14 +1132,12 @@ Result textureOf(App* app, CPU& cpu, reg32 esp, reg32 out, reg32 shape, int32_t 
     // port: a shape of 512 a side or more at 512 (port_thrash.h)
     size = driver::texture512Side(size, sword(app, shape + kShapeWidth));
     reg32 pixels;
-    if (!callGame(app, cpu, frame, kAllocate, {kShapeBufferTag, reg32(times(size, size)) * 4 + 0x14, 0x10, reg32(size)},
-                  {}, pixels))
+    if (!plainAt<0x4e1620, ea::reserved>(app, cpu, frame, &pixels, kShapeBufferTag, reg32(times(size, size)) * 4 + 0x14, 0x10))
         return {};
     if (!shapeToPixelsOf(app, cpu, frame - 8, pixels, shape, flagAt, size, formatAt))
         return {};
     const reg32 kept = dwordAt(app, formatAt);
     const reg32 width = reg32(sword(app, pixels + kShapeWidth)), height = reg32(sword(app, pixels + kShapeHeight));
-    cpu.eax = width;
     const std::optional<reg32> texture =
         guest::driverFrom<thrash::kThrashTAlloc, &driver::tAlloc>(app, cpu, frame, width, height, kept, 0, 0);
     if (!texture)
@@ -1072,7 +1147,7 @@ Result textureOf(App* app, CPU& cpu, reg32 esp, reg32 out, reg32 shape, int32_t 
         && !guest::driverFrom<thrash::kThrashTUpdate, &driver::tUpdate>(app, cpu, frame, *texture,
                                                                         pixels + kShapePixels, 0))
         return {};
-    if (!callGame(app, cpu, frame, kFree, {pixels}))
+    if (!plainAt<0x4e1890, ea::purgeBlock>(app, cpu, frame, nullptr, pixels))
         return {};
     return int32_t(dwordAt(app, formatAt));
 }
@@ -1089,9 +1164,6 @@ Result texturesLetGo(App* app, CPU& cpu, reg32 esp)
     putDword(app, kArtTexturesUsed, 0);
     return 0x30;
 }
-
-namespace
-{
 
 /* 0x4d66f0: record `record`'s width and height into the words at
  * `widthAt` and `heightAt` -- 0 for one outside the 100.  What the code
@@ -1111,8 +1183,6 @@ reg32 shapeSizeOf(App* app, int32_t record, reg32 widthAt, reg32 heightAt)
     return (reg32(record) * 5 & 0xffff0000) | height;
 }
 
-}  // namespace
-
 /* 0x4d37a0: what the driver takes (THRASH_about's record: its sizes at +0x10
  * on, its formats at +0x30, its texture memory at +0x70; without one, sizes
  * of 2 to 256 in a record of the code's own on its stack, the rest of it as
@@ -1129,7 +1199,6 @@ Result shapeToPixelsOf(App* app, CPU& cpu, reg32 esp, reg32 target, reg32 shape,
 {
     const reg32 frame = esp - 0xc - 0x9c;
     const reg32 base = esp - 0xc - 0x7e;  // ebp as the code has it: its locals about it
-    cpu.eax = target;
     const std::optional<reg32> described = guest::driverFrom<thrash::kThrashAbout, &driver::about>(app, cpu, frame);
     if (!described)
         return {};
@@ -1267,14 +1336,14 @@ Result shapeNamed(App* app, CPU& cpu, reg32 esp, reg32 name)
     for (int32_t i = 0; i < int32_t(dwordAt(app, kArtShapeCount)); ++i)
     {
         reg32 different;
-        if (!callGame(app, cpu, frame, kStrncmp, {kArtShapes + reg32(i) * 0x14 + 0x10, name, 4, name}, {}, different))
+        if (!plainAt<0x4eb390, watcom::clib::strncmp>(app, cpu, frame, &different, kArtShapes + reg32(i) * 0x14 + 0x10, name, 4))
             return {};
         if (different == 0)
             return i;
     }
     reg32 shape;
-    if (!callGame(app, cpu, frame, kTickWait, {cpu.eax, cpu.edx, cpu.ebx, name})
-        || !callGame(app, cpu, frame, kLocateShape, {dwordAt(app, kMenuArt), name, cpu.ebx, name}, {}, shape))
+    if (!coreAt<kTickWait, descriptionServed, 0>(app, cpu, frame, nullptr)
+        || !plainAt<kLocateShape, ea::shapeLocated>(app, cpu, frame, &shape, dwordAt(app, kMenuArt), name))
         return {};
     if (shape == 0)
         return 0;
@@ -1282,7 +1351,7 @@ Result shapeNamed(App* app, CPU& cpu, reg32 esp, reg32 name)
     if (!record)
         return {};
     if (*record != 0
-        && !callGame(app, cpu, frame, kStrncpy, {kArtShapes + reg32(*record) * 0x14 + 0x10, name, 4, name}))
+        && !plainAt<0x4e0e30, watcom::clib::strncpy>(app, cpu, frame, nullptr, kArtShapes + reg32(*record) * 0x14 + 0x10, name, 4))
         return {};
     return record;
 }
@@ -1300,10 +1369,10 @@ Result drawArt(App* app, CPU& cpu, reg32 esp, int32_t record, int32_t x, int32_t
     int32_t tile = sword(app, at + 0xc);
     if (tile == -1)
     {
-        if (!callGame(app, cpu, frame, kTrace, {reg32(record) * 0x14, reg32(tile), 0, colour}, {kNoArtTiles, reg32(record)}))
+        if (!keepAt<0x42d500, raceload::noHook>(app, cpu, frame, nullptr, reg32(record) * 0x14))
             return {};
         reg32 r;
-        if (!callGame(app, cpu, frame, kInkey, {cpu.eax, cpu.edx, cpu.ebx, cpu.ecx}, {}, r))
+        if (!plainAt<kInkey, ea::waitKey>(app, cpu, frame, &r))
             return {};
         return int32_t(r);
     }
@@ -1337,7 +1406,6 @@ Result drawArt(App* app, CPU& cpu, reg32 esp, int32_t record, int32_t x, int32_t
         {
             if (!unfiltered)
                 return end;
-            cpu.eax = reg32(end);
             const std::optional<reg32> r =
                 guest::driverFrom<thrash::kThrashSetState, &driver::setState>(app, cpu, frame, kStateTextureFilter, 1);
             if (!r)
@@ -1362,7 +1430,7 @@ Result drawArt(App* app, CPU& cpu, reg32 esp, int32_t record, int32_t x, int32_t
         putFloat(app, corner(0) + 4, float(topAgain));
         putFloat(app, corner(3) + 4, float(bottom));
         putFloat(app, corner(2) + 4, float(bottom));
-        if (!callGame(app, cpu, frame, kSetRenderState, {1, texture}))
+        if (!plainAt<0x431900, graphics::sendState>(app, cpu, frame, nullptr, 1, texture))
             return {};
         for (reg32 c = 0; c < 4; ++c)
             clipCode(app, corner(c));
@@ -1371,144 +1439,149 @@ Result drawArt(App* app, CPU& cpu, reg32 esp, int32_t record, int32_t x, int32_t
     }
 }
 
-/* The game's entries: each its adapter (the game's registers and stack in,
+/* The game's entries: each its thunk (the game's registers and stack in,
  * the result in eax out) around what it does. */
 
 namespace
 {
 
 /* A scan's entry: the pixels at eax, edx and ebx their counts. */
-void scanEntry(App* app, CPU& cpu, int32_t (*scan)(App*, reg32, int32_t, int32_t))
+reg32 scanEntry(App* app, CPU& cpu, x86::Args& args, int32_t (*scan)(App*, reg32, int32_t, int32_t))
 {
-    const Entry e(cpu);
-    e.back(cpu, reg32(scan(app, e.eax, int32_t(e.edx), int32_t(e.ebx))));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, reg32(scan(app, e.eax, int32_t(e.edx), int32_t(e.ebx))));
 }
 
 /* A converter's entry (stdcall 0xc): the texture's pixels at eax, the
  * shape's at edx, ebx by ecx of them, the texture's size and the flag's word
  * on the stack.  What the code leaves in eax no caller reads. */
-void convertEntry(App* app, CPU& cpu, Converter convert)
+reg32 convertEntry(App* app, CPU& cpu, x86::Args& args, Converter convert)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     convert(app, cpu, e.eax, e.edx, int32_t(e.ebx), int32_t(e.ecx), int32_t(e.arg(app, 0)), int32_t(e.arg(app, 1)),
             e.arg(app, 2));
-    e.back(cpu, e.eax, 0xc);
+    return e.back(cpu, args, e.eax, 0xc);
 }
 
 }  // namespace
 
 // 0x4d18e0 .. 0x4d1ad0: the alpha scans.
-void scan4444(App* app, CPU& cpu) { scanEntry(app, cpu, alphaOf4444); }
-void scan8888(App* app, CPU& cpu) { scanEntry(app, cpu, alphaOf8888); }
-void scanNibbles(App* app, CPU& cpu) { scanEntry(app, cpu, alphaOfNibbles); }
-void scanPaletted(App* app, CPU& cpu) { scanEntry(app, cpu, alphaOfPaletted); }
-void scan1555(App* app, CPU& cpu) { scanEntry(app, cpu, alphaOf1555); }
-void scan565(App* app, CPU& cpu) { scanEntry(app, cpu, alphaOf565); }
+x86::reg32 scan4444(App* app, CPU& cpu, x86::Args& args) { return scanEntry(app, cpu, args, alphaOf4444); }
+x86::reg32 scan8888(App* app, CPU& cpu, x86::Args& args) { return scanEntry(app, cpu, args, alphaOf8888); }
+x86::reg32 scanNibbles(App* app, CPU& cpu, x86::Args& args) { return scanEntry(app, cpu, args, alphaOfNibbles); }
+x86::reg32 scanPaletted(App* app, CPU& cpu, x86::Args& args) { return scanEntry(app, cpu, args, alphaOfPaletted); }
+x86::reg32 scan1555(App* app, CPU& cpu, x86::Args& args) { return scanEntry(app, cpu, args, alphaOf1555); }
+x86::reg32 scan565(App* app, CPU& cpu, x86::Args& args) { return scanEntry(app, cpu, args, alphaOf565); }
 
 // 0x4d1b20 .. 0x4d3230: the converters.
-void convert4444(App* app, CPU& cpu) { convertEntry(app, cpu, same4444); }
-void convert8888(App* app, CPU& cpu) { convertEntry(app, cpu, same8888); }
-void convert8(App* app, CPU& cpu) { convertEntry(app, cpu, same8); }
-void convert565(App* app, CPU& cpu) { convertEntry(app, cpu, same565); }
-void convert1555(App* app, CPU& cpu) { convertEntry(app, cpu, same1555); }
-void nibblesTo1555(App* app, CPU& cpu) { convertEntry(app, cpu, nibbles1555); }
-void nibblesTo565(App* app, CPU& cpu) { convertEntry(app, cpu, nibbles565); }
-void nibblesTo4444(App* app, CPU& cpu) { convertEntry(app, cpu, nibbles4444); }
-void nibblesTo8888(App* app, CPU& cpu) { convertEntry(app, cpu, nibbles8888); }
-void paletteTo1555(App* app, CPU& cpu) { convertEntry(app, cpu, palette1555); }
-void paletteTo565(App* app, CPU& cpu) { convertEntry(app, cpu, palette565); }
-void paletteTo4444(App* app, CPU& cpu) { convertEntry(app, cpu, palette4444); }
-void paletteTo8888(App* app, CPU& cpu) { convertEntry(app, cpu, palette8888); }
-void argb8888To4444(App* app, CPU& cpu) { convertEntry(app, cpu, argb4444); }
-void argb8888To565(App* app, CPU& cpu) { convertEntry(app, cpu, argb565); }
-void argb8888To1555(App* app, CPU& cpu) { convertEntry(app, cpu, argb1555); }
-void rgb565To1555(App* app, CPU& cpu) { convertEntry(app, cpu, rgb1555); }
-void rgb565To4444(App* app, CPU& cpu) { convertEntry(app, cpu, rgb4444); }
-void rgb565To8888(App* app, CPU& cpu) { convertEntry(app, cpu, rgb8888); }
-void argb1555To565(App* app, CPU& cpu) { convertEntry(app, cpu, argb1555To565); }
-void argb1555To4444(App* app, CPU& cpu) { convertEntry(app, cpu, argb1555To4444); }
-void argb1555To8888(App* app, CPU& cpu) { convertEntry(app, cpu, argb1555To8888); }
+x86::reg32 convert4444(App* app, CPU& cpu, x86::Args& args) { return convertEntry(app, cpu, args, same4444); }
+x86::reg32 convert8888(App* app, CPU& cpu, x86::Args& args) { return convertEntry(app, cpu, args, same8888); }
+x86::reg32 convert8(App* app, CPU& cpu, x86::Args& args) { return convertEntry(app, cpu, args, same8); }
+void pixelsConverted8(App* app, CPU& cpu, reg32 to, reg32 from, int32_t width, int32_t height, int32_t a, int32_t b,
+                      reg32 c)
+{
+    same8(app, cpu, to, from, width, height, a, b, c);
+}
+x86::reg32 convert565(App* app, CPU& cpu, x86::Args& args) { return convertEntry(app, cpu, args, same565); }
+x86::reg32 convert1555(App* app, CPU& cpu, x86::Args& args) { return convertEntry(app, cpu, args, same1555); }
+x86::reg32 nibblesTo1555(App* app, CPU& cpu, x86::Args& args) { return convertEntry(app, cpu, args, nibbles1555); }
+x86::reg32 nibblesTo565(App* app, CPU& cpu, x86::Args& args) { return convertEntry(app, cpu, args, nibbles565); }
+x86::reg32 nibblesTo4444(App* app, CPU& cpu, x86::Args& args) { return convertEntry(app, cpu, args, nibbles4444); }
+x86::reg32 nibblesTo8888(App* app, CPU& cpu, x86::Args& args) { return convertEntry(app, cpu, args, nibbles8888); }
+x86::reg32 paletteTo1555(App* app, CPU& cpu, x86::Args& args) { return convertEntry(app, cpu, args, palette1555); }
+x86::reg32 paletteTo565(App* app, CPU& cpu, x86::Args& args) { return convertEntry(app, cpu, args, palette565); }
+x86::reg32 paletteTo4444(App* app, CPU& cpu, x86::Args& args) { return convertEntry(app, cpu, args, palette4444); }
+x86::reg32 paletteTo8888(App* app, CPU& cpu, x86::Args& args) { return convertEntry(app, cpu, args, palette8888); }
+x86::reg32 argb8888To4444(App* app, CPU& cpu, x86::Args& args) { return convertEntry(app, cpu, args, argb4444); }
+x86::reg32 argb8888To565(App* app, CPU& cpu, x86::Args& args) { return convertEntry(app, cpu, args, argb565); }
+x86::reg32 argb8888To1555(App* app, CPU& cpu, x86::Args& args) { return convertEntry(app, cpu, args, argb1555); }
+x86::reg32 rgb565To1555(App* app, CPU& cpu, x86::Args& args) { return convertEntry(app, cpu, args, rgb1555); }
+x86::reg32 rgb565To4444(App* app, CPU& cpu, x86::Args& args) { return convertEntry(app, cpu, args, rgb4444); }
+x86::reg32 rgb565To8888(App* app, CPU& cpu, x86::Args& args) { return convertEntry(app, cpu, args, rgb8888); }
+x86::reg32 argb1555To565(App* app, CPU& cpu, x86::Args& args) { return convertEntry(app, cpu, args, argb1555To565); }
+x86::reg32 argb1555To4444(App* app, CPU& cpu, x86::Args& args) { return convertEntry(app, cpu, args, argb1555To4444); }
+x86::reg32 argb1555To8888(App* app, CPU& cpu, x86::Args& args) { return convertEntry(app, cpu, args, argb1555To8888); }
 
 /* 0x4d37a0 (stdcall 4): shape edx into pixels at eax + 0x10, ebx the flag's
  * word, ecx the most a side, the format's word on the stack. */
-void shapeToPixels(App* app, CPU& cpu)
+x86::reg32 shapeToPixels(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, shapeToPixelsOf(app, cpu, e.esp, e.eax, e.edx, e.ebx, int32_t(e.ecx), e.arg(app, 0)), 4);
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, shapeToPixelsOf(app, cpu, e.esp, e.eax, e.edx, e.ebx, int32_t(e.ecx), e.arg(app, 0)), 4);
 }
 
 /* 0x4d5c40: the textures let go of. */
-void resetTextures(App* app, CPU& cpu)
+x86::reg32 resetTextures(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, texturesLetGo(app, cpu, e.esp));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, texturesLetGo(app, cpu, e.esp));
 }
 
 /* 0x4d5db0: the menus' shape named at eax. */
-void shapeByName(App* app, CPU& cpu)
+x86::reg32 shapeByName(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, shapeNamed(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, shapeNamed(app, cpu, e.esp, e.eax));
 }
 
 /* 0x4d6070: shape edx a texture into [eax], ebx the most a side, ecx the
  * format asked for. */
-void shapeTexture(App* app, CPU& cpu)
+x86::reg32 shapeTexture(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, textureOf(app, cpu, e.esp, e.eax, e.edx, int32_t(e.ebx), e.ecx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, textureOf(app, cpu, e.esp, e.eax, e.edx, int32_t(e.ebx), e.ecx));
 }
 
 /* 0x4d6110 (stdcall 4): the tile of ebx pixels at (ecx, the stack's word)
  * of shape eax into edx. */
-void cutTile(App* app, CPU& cpu)
+x86::reg32 cutTile(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, reg32(cutTileOf(app, e.eax, e.edx, int32_t(e.ebx), int32_t(e.ecx), int32_t(e.arg(app, 0)))), 4);
+    const Entry e(cpu, args);
+    return e.back(cpu, args, reg32(cutTileOf(app, e.eax, e.edx, int32_t(e.ebx), int32_t(e.ecx), int32_t(e.arg(app, 0)))), 4);
 }
 
 /* 0x4d6190: shape eax made 1555; eax as it was. */
-void shape565To1555(App* app, CPU& cpu)
+x86::reg32 shape565To1555(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     shape565To1555Of(app, e.eax);
-    e.back(cpu, e.eax);
+    return e.back(cpu, args, e.eax);
 }
 
 /* 0x4d6210: the tiles' room at column eax, row edx; ebx not 0 to start it. */
-void tileRoom(App* app, CPU& cpu)
+x86::reg32 tileRoom(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, reg32(tileRoomOf(app, int32_t(e.eax), int32_t(e.edx), e.ebx != 0)));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, reg32(tileRoomOf(app, int32_t(e.eax), int32_t(e.edx), e.ebx != 0)));
 }
 
 /* 0x4d6390: the art shape eax made textures, edx the record to fill again
  * (0 a new one). */
-void artShapeTextures(App* app, CPU& cpu)
+x86::reg32 artShapeTextures(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, artTexturesOf(app, cpu, e.esp, e.eax, int32_t(e.edx), e.ecx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, artTexturesOf(app, cpu, e.esp, e.eax, int32_t(e.edx), e.ecx));
 }
 
 /* 0x4d66f0: record eax's size into the words at edx and ebx. */
-void shapeSize(App* app, CPU& cpu)
+x86::reg32 shapeSize(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, shapeSizeOf(app, int32_t(e.eax), e.edx, e.ebx));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, shapeSizeOf(app, int32_t(e.eax), e.edx, e.ebx));
 }
 
 /* 0x4d70f0: the tiles' quad drawn. */
-void drawShapeQuad(App* app, CPU& cpu)
+x86::reg32 drawShapeQuad(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, drawTileQuad(app, cpu, e.esp));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, drawTileQuad(app, cpu, e.esp));
 }
 
 /* 0x4d7160: art record eax drawn at edx, ebx in colour ecx. */
-void drawArtShape(App* app, CPU& cpu)
+x86::reg32 drawArtShape(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, drawArt(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx), int32_t(e.ebx), e.ecx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, drawArt(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx), int32_t(e.ebx), e.ecx));
 }
 
 /* 0x4d7990's: art record `record` drawn at x, y, opaque -- 0x4d7160's with
@@ -1519,10 +1592,10 @@ Result drawShapeOf(App* app, CPU& cpu, reg32 esp, int32_t record, int32_t x, int
 }
 
 /* 0x4d7990: art record eax drawn at edx, ebx, opaque. */
-void drawShape(App* app, CPU& cpu)
+x86::reg32 drawShape(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, drawShapeOf(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx), int32_t(e.ebx)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, drawShapeOf(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx), int32_t(e.ebx)));
 }
 
 }  // namespace shapes

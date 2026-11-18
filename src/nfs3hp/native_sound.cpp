@@ -13,8 +13,8 @@
  * all the mixing -- the samples, the engine, the music stream, volume, pan and
  * pitch -- and the DLL only feeds what it mixes to DirectSound.  Its exports go
  * to the game through GetProcAddress (iSNDloaddll, pointers at 0x9ef61c..), and
- * of them only four do anything here -- this file's, which disassemble_nfs3hp.py
- * binds to the exports of those names, eacsnd having no generated code:
+ * of them only four do anything here -- this file's, bound
+ * to the exports of those names, eacsnd having no game's code:
  *
  * - iSNDdirectcaps: the formats the card plays.  Ours plays stereo 16-bit at
  *   every rate, no 3D buffers: 0x3e08, as eacsnd worked out from our
@@ -64,14 +64,6 @@ constexpr x86::reg32 kMixFrames = 0x4000;      // the most mixed at once: 0.37 s
 x86::reg32 get(win32::WinApplication* app, x86::reg32 address)
 {
     return app->getMemory<x86::reg32>(address);
-}
-
-/* A stdcall export's return: the result in eax, the return address and the
- * arguments off the stack. */
-void returned(x86::CPU& cpu, x86::reg32 result, x86::reg32 argumentBytes)
-{
-    cpu.eax = result;
-    cpu.esp += 4 + argumentBytes;
 }
 
 struct Sound
@@ -379,28 +371,39 @@ std::optional<reg32> serve(App* app, CPU& cpu)
 }  // namespace eacsnd
 }  // namespace port
 
-/* eacsnd's exports of these names (disassemble_nfs3hp.py): each a thin
+/* eacsnd's exports of these names: each a thin
  * wrapper of its typed function, the words off the stack and popped; the
- * registers as the typed function leaves them. */
-void iSNDdirectcaps(win32::WinApplication* app, x86::CPU& cpu)
+ * registers as the typed function leaves them; the result in eax, the return address and the arguments off the
+ * stack. */
+x86::reg32 iSNDdirectcaps(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    returned(cpu, port::eacsnd::caps(app, cpu, get(app, cpu.esp + 4)), 4);
+    args.eax = port::eacsnd::caps(app, cpu, get(app, cpu.esp + 4));
+    cpu.esp += 4 + 4;
+    return args.eax;
 }
 
-void iSNDdirectstart(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 iSNDdirectstart(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    returned(cpu, port::eacsnd::start(app, cpu, get(app, cpu.esp + 4), get(app, cpu.esp + 8)), 8);
+    args.eax = port::eacsnd::start(app, cpu, get(app, cpu.esp + 4), get(app, cpu.esp + 8));
+    cpu.esp += 4 + 8;
+    return args.eax;
 }
 
-void iSNDdirectstop(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 iSNDdirectstop(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    returned(cpu, port::eacsnd::stop(app, cpu), 0);
+    args.eax = port::eacsnd::stop(app, cpu);
+    cpu.esp += 4;
+    return args.eax;
 }
 
-void iSNDdirectserve(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 iSNDdirectserve(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     if (const std::optional<x86::reg32> result = port::eacsnd::serve(app, cpu))
-        returned(cpu, *result, 0);
+    {
+        args.eax = *result;
+        cpu.esp += 4;
+    }
+    return args.eax;
 }
 
 }

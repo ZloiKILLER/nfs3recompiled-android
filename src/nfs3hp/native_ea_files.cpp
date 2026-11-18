@@ -1,5 +1,6 @@
 #include "native_ea_files.h"
 #include "native_ea_memory.h"
+#include "native_ea_support.h"
 #include "native_ea_threads.h"
 #include "native_game.h"
 #include "native_guest.h"
@@ -20,9 +21,7 @@
  * taken as one -- read, written and sought a block at a time under the lock
  * of the drive each is on, their errors reported; the drives, paths and
  * directories they are on; and the memory pages EA's library takes from
- * Windows (win\touchmem.c).  disassemble_nfs3hp.py binds each address to the
- * function of that name here (EA_FILES_NATIVES), and the generated code calls
- * it by name.  tools/game_checks holds each against its generated code.
+ * Windows (win\touchmem.c).  The game's code calls each function here by name.
  *
  * The handles are a table (its address at 0x5645a0, [0x56459c] of them, 0x40
  * unless the game asks for more) of 0x20 bytes each: +0 in use, +1 its
@@ -41,24 +40,22 @@
  * level and the game's way of reporting ([0x56789c]) say; a file not opened
  * while [0x56440c] is set ends the game (Error).
  *
- * Each is a typed function under a name of its own, with an adapter under
- * the game's name for the callers still on registers and the dispatch: it
+ * Each is a typed function under a name of its own, with a thunk under
+ * the game's name for the callers still on registers and for the calls by address: it
  * leaves eax, and the registers the game's code keeps, as that code leaves
  * them.  The registers a function is handed its arguments in are its own
- * (Watcom's convention: the callers count on none of them after), and the
- * checks compare them only where the code keeps them (ea_files.inc).  Other
+ * (Watcom's convention: the callers count on none of them after).  Other
  * files' typed functions -- the main thread asked, a surface locked, the
  * machine's memory, a copy, a sleep, a lock made and freed -- are called as
  * C++ (guest::direct, their headers), a lock made with eax as the code has it
- * at the call, which the checks' stand-in for it now and then leaves.  Every
+ * at the call.  Every
  * other function of the game's is called by address, its arguments in
  * registers and on the guest's stack as the code hands them (call, error);
  * Windows' functions through their imports' slots (windows) -- openHandle
  * (0x4e28d0) and virtualAllocPages (0x501110) too where this file's own code
- * calls them by address, as the checks stand in for them for other files'
- * natives.  A frame whose address a callee is handed -- a buffer, a count
+ * calls them by address.  A frame whose address a callee is handed -- a buffer, a count
  * read or written, a disk's numbers -- or under which Error or fileReport is
- * called (the checks see their va_list's and buffer's addresses) stays on the
+ * called stays on the
  * guest's stack at the original's depth (GuestFrame, asCalled). */
 namespace nfs3hp
 {
@@ -148,12 +145,12 @@ constexpr reg32 kMemCommitReserve = 0x3000, kPageReadWrite = 4, kMemRelease = 0x
 constexpr reg32 kCaseSensitive = 2, kUnicodeOnDisk = 4, kFoundName = 0x2c, kNotFound = 0xffffffff;
 // The game's functions, by address.
 constexpr reg32 kMessage = 0x4df6c0;
-constexpr reg32 kFillZero = 0x4e070c, kTrace = 0x4e08f0, kFflush = 0x4f7d70;
+constexpr reg32 kFillZero = 0x4e070c, kFflush = 0x4f7d70;
 // The longest path copied as it is.
 constexpr reg32 kMaxPath = 0x104;
 
 /* The frame of a core whose callees see where it is -- handed its locals' addresses, or Error
- * and fileReport, whose va_list's and buffer's addresses the checks see -- kept on the guest's
+ * and fileReport -- kept on the guest's
  * stack at the original's depth: `pushed` bytes of registers below the return address's slot,
  * then `bytes` of locals.  frame - n is n bytes below the registers pushed. */
 class GuestFrame
@@ -188,31 +185,18 @@ auto asCalled(CPU& cpu, Core core, reg32 handed = 0)
 /* A call by address: eax, edx, ebx and ecx from `registers`, as many as given, the rest left as
  * they are; `words` pushed (cdecl or stdcall: esp back where it was after).  What it leaves in eax
  * back; nullopt when the game stopped.  Where that is used, eax is given as the code has it before
- * the call: the checks' stand-in of a function that answers nothing of its own (a lock made)
- * now and then leaves it as it was. */
+ * the call. */
 Answer call(App* app, CPU& cpu, reg32 target, std::initializer_list<reg32> registers,
             std::initializer_list<reg32> words = {})
 {
-    reg32* const slots[] = {&cpu.eax, &cpu.edx, &cpu.ebx, &cpu.ecx};
-    std::size_t i = 0;
-    for (const reg32 value : registers)
-        *slots[i++] = value;
-    if (!guest::call(app, cpu, target, words))
-        return std::nullopt;
-    return cpu.eax;
+    return guest::pointerCall(app, cpu, target, registers, words);
 }
 
-/* `Core`, the game's `Address`, called as C++ (guest::direct), handed `arguments`: eax, edx, ebx
- * and ecx first loaded from `registers` as the call by address loads them (its callee keeps them,
- * so the code after finds them as it did), its result left in eax.  Its eax; nullopt when the game
- * stopped in it. */
+/* `Core`, the game's `Address`, called as C++ (guest::direct), handed `arguments`.  Its result (the
+ * eax of the call by address); nullopt when the game stopped in it. */
 template <reg32 Address, auto Core, typename... Args>
-Answer typed(App* app, CPU& cpu, std::initializer_list<reg32> registers, Args... arguments)
+Answer typed(App* app, CPU& cpu, Args... arguments)
 {
-    reg32* const slots[] = {&cpu.eax, &cpu.edx, &cpu.ebx, &cpu.ecx};
-    std::size_t i = 0;
-    for (const reg32 value : registers)
-        *slots[i++] = value;
     const auto result = guest::direct<Address, Core>(app, cpu, arguments...);
     if (cpu.terminate)
         return std::nullopt;
@@ -220,11 +204,10 @@ Answer typed(App* app, CPU& cpu, std::initializer_list<reg32> registers, Args...
     {
         if (!result)
             return std::nullopt;
-        cpu.eax = *result;
+        return *result;
     }
     else
-        cpu.eax = reg32(result);
-    return cpu.eax;
+        return reg32(result);
 }
 
 /* Error (0x401010, cdecl) as C++, its format the first of `words` and the rest after it.  What it
@@ -234,10 +217,9 @@ Answer errorWith(App* app, CPU& cpu, std::initializer_list<reg32> words)
     guest::Words more({});
     for (const reg32* word = words.begin() + 1; word < words.end(); ++word)
         more.word[more.count++] = *word;
-    guest::direct<0x401010, ea::error>(app, cpu, *words.begin(), more);
-    if (cpu.terminate)
-        return std::nullopt;
-    return cpu.eax;
+    // What Error leaves in eax when it returns (the game ends in it otherwise); the eax the caller has at the
+    // call is not known here: 0.
+    return guest::direct<0x401010, ea::errorLeaves>(app, cpu, 0, *words.begin(), more);
 }
 
 /* A Windows function, its words handed: the port's own, called as C++ (native_windows.h); in the
@@ -325,38 +307,33 @@ reg32 copiedLength(App* app, reg32 path)
 }
 
 /* The registers the game's code keeps for its caller -- all but eax and
- * esp -- put back when the adapter is done. */
+ * esp -- put back in the thunk's args when the thunk is done. */
 class Kept
 {
 public:
-    explicit Kept(CPU& cpu)
-        : cpu_(cpu), ebx_(cpu.ebx), ecx_(cpu.ecx), edx_(cpu.edx), esi_(cpu.esi), edi_(cpu.edi), ebp_(cpu.ebp)
+    Kept(CPU&, x86::Args& args)
+        : args_(args), ebx_(args.ebx), ecx_(args.ecx), edx_(args.edx), esi_(args.esi), edi_(args.edi), ebp_(args.ebp)
     {
     }
     ~Kept()
     {
-        cpu_.ebx = ebx_;
-        cpu_.ecx = ecx_;
-        cpu_.edx = edx_;
-        cpu_.esi = esi_;
-        cpu_.edi = edi_;
-        cpu_.ebp = ebp_;
+        args_.ebx = ebx_, args_.ecx = ecx_, args_.edx = edx_, args_.esi = esi_, args_.edi = edi_, args_.ebp = ebp_;
     }
     Kept(const Kept&) = delete;
     Kept& operator=(const Kept&) = delete;
 
 private:
-    CPU& cpu_;
-    const reg32 ebx_, ecx_, edx_, esi_, edi_, ebp_;
+    x86::Args& args_;
+    reg32 ebx_, ecx_, edx_, esi_, edi_, ebp_;
 };
 
-/* An adapter's way out: eax the core's result, the return address popped
+/* A thunk's way out: eax the core's result, the return address popped
  * and `handed` bytes of stack arguments; nothing when the game stopped. */
-void returns(CPU& cpu, const Answer& result, reg32 handed = 0)
+void returns(CPU& cpu, x86::Args& args, const Answer& result, reg32 handed = 0)
 {
     if (!result)
         return;
-    cpu.eax = *result;
+    args.eax = *result;
     cpu.esp += 4 + handed;
 }
 
@@ -374,22 +351,27 @@ Answer report(App* app, CPU& cpu, reg32 threshold, reg32 level, reg32 format, re
     if (threshold != 0 && sreg32(level) > sreg32(at(app, threshold)))
         return threshold;
     put(app, list, arguments);
-    if (!typed<0x4df674, watcom::clib::vsprintf>(app, cpu, {text, format, list, 0}, text, format, list))
+    if (!typed<0x4df674, watcom::clib::vsprintf>(app, cpu, text, format, list))
         return std::nullopt;
     const reg32 way = at(app, kReportOutput);
     if (way == kToDebugger)
     {
-        cpu.eax = text;  // as the code has it before the call; OutputDebugString leaves it
-        return windows<kOutputDebugStringA, &host::debugString>(app, cpu, text);
+        // OutputDebugString leaves eax as the code has it before the call: the text.
+        if (!windows<kOutputDebugStringA, &host::debugString>(app, cpu, text))
+            return std::nullopt;
+        return text;
     }
     if (way == kToStdout)
     {
-        if (!call(app, cpu, kMessage, {text}, {text}))
+        if (!guest::direct<0x4df6c0, ea::messageOf>(app, cpu, text))
             return std::nullopt;
-        return call(app, cpu, kFflush, {kStdout});
+        const reg32 flushed = guest::direct<0x4f7d70, watcom::clib::fflush>(app, cpu, kStdout);
+        if (cpu.terminate)
+            return std::nullopt;
+        return flushed;
     }
     if (way == kToLog)
-        return call(app, cpu, kTrace, {text}, {text});
+        return guest::direct<0x4e08f0, ea::monoPrinted>(app, cpu, text, text, guest::Words({}));
     return way;
 }
 
@@ -435,8 +417,6 @@ Answer surfaceUnlocked(App* app, CPU& cpu, reg32 name)
         return std::nullopt;
     if (!locked)
         return 1;
-    cpu.eax = reg32(locked);  // eax and edx as the code hands them over
-    cpu.edx = 0;
     if (!errorWith(app, cpu, {kSurfaceLocked, name}))
         return std::nullopt;
     return 0;
@@ -516,7 +496,7 @@ Answer allocatePages(App* app, CPU& cpu, reg32 bytes)
         put(app, kPageSize, at(app, info + 4));
     }
     const reg32 page = at(app, kPageSize);
-    // cdq; idiv: worked in 64 bits, as the generated code does.
+    // cdq; idiv: worked in 64 bits, as the game's code does.
     const std::int64_t dividend = sreg32(at(app, bytes) + page - 1);
     const reg32 rounded = reg32(dividend / std::int64_t(sreg32(page))) * page;
     put(app, bytes, rounded);
@@ -575,7 +555,7 @@ std::optional<Touched> touchPages(App* app, CPU& cpu, reg32 start, reg32 bytes)
     if (sreg32(bytes) >= sreg32(page))
     {
         end = (start + page - 1) & ~(page - 1);
-        // cdq; idiv: worked in 64 bits, as the generated code does.
+        // cdq; idiv: worked in 64 bits, as the game's code does.
         const std::int64_t dividend = sreg32(bytes - (end - start) + (page - 1));
         const reg32 pages = reg32(dividend / std::int64_t(sreg32(page)));
         bytes = reg32(dividend % std::int64_t(sreg32(page)));
@@ -724,7 +704,7 @@ Answer driveOf(App* app, CPU& cpu, reg32 path, reg32 root)
     put(app, bytes, 0x1000);
     if (!windows<kSetLastError, &host::setLastError>(app, cpu, 0))
         return std::nullopt;
-    Answer buffer = typed<0x501110, ea::allocatePages>(app, cpu, {bytes}, bytes);
+    Answer buffer = typed<0x501110, ea::allocatePages>(app, cpu, bytes);
     if (!buffer)
         return std::nullopt;
     const Answer full = asCalled(cpu, [&] { return fullPath(app, cpu, path, *buffer, 0xfff); });
@@ -742,13 +722,12 @@ Answer driveOf(App* app, CPU& cpu, reg32 path, reg32 root)
         if (!freePages(app, cpu, *buffer))
             return std::nullopt;
         put(app, bytes, *needed + 1);
-        buffer = typed<0x501110, ea::allocatePages>(app, cpu, {bytes}, bytes);
+        buffer = typed<0x501110, ea::allocatePages>(app, cpu, bytes);
         if (!buffer)
             return std::nullopt;
     }
     if (!windows<kGetLogicalDriveStringsA, &host::logicalDriveStrings>(app, cpu, *needed, *buffer))
         return std::nullopt;
-    cpu.eax = 0;  // as the code has it before the call
     const Answer drives = windows<kGetLogicalDrives, &host::logicalDrives>(app, cpu);
     if (!drives)
         return std::nullopt;
@@ -760,7 +739,7 @@ Answer driveOf(App* app, CPU& cpu, reg32 path, reg32 root)
         {
             if ((*drives & (1u << (index & 0x1f))) != 0)
             {
-                const Answer differs = typed<0x4e9ec0, watcom::clib::stricmp>(app, cpu, {name, root}, name, root);
+                const Answer differs = typed<0x4e9ec0, watcom::clib::stricmp>(app, cpu, name, root);
                 if (!differs)
                     return std::nullopt;
                 if (*differs == 0)
@@ -904,13 +883,13 @@ bool closeTable(App* app, CPU& cpu)
  * pages taken for it under the lock (virtualAllocPages, by address, the
  * frame's word their size), it and the drives' locks cleared.  What
  * LeaveCriticalSection leaves in eax back. */
-Answer makeTable(App* app, CPU& cpu, reg32 count)
+Answer makeTable(App* app, CPU& cpu, reg32 count, reg32 eaxIn)
 {
     const GuestFrame frame(cpu, 0x14, 4);
     const reg32 bytes = frame - 4;
+    reg32 eax = eaxIn;  // what the code has in eax on entry
     if (at(app, kHandlesLock) == 0)
     {
-        cpu.eax = count;  // as the code has it at the call
         const Answer lock = guest::direct<0x4eb2e0, ea::newLock>(app, cpu);
         if (!lock)
             return std::nullopt;
@@ -923,18 +902,23 @@ Answer makeTable(App* app, CPU& cpu, reg32 count)
     if (count == 0)
         count = kDefaultHandles;
     put(app, bytes, count << kSlotShift);
-    const Answer table = typed<0x501110, ea::allocatePages>(app, cpu, {bytes}, bytes);
+    const Answer table = typed<0x501110, ea::allocatePages>(app, cpu, bytes);
     if (!table)
         return std::nullopt;
     put(app, kHandles, *table);
     put(app, kHandleCount, count);
     if (*table != 0)
     {
-        if (!call(app, cpu, kFillZero, {*table, at(app, bytes)})
-            || !call(app, cpu, kFillZero, {kDriveLocks, kDriveLocksBytes}))
+        guest::direct<kFillZero, ea::clearBytes>(app, cpu, *table, at(app, bytes));
+        guest::direct<kFillZero, ea::clearBytes>(app, cpu, kDriveLocks, kDriveLocksBytes);
+        if (cpu.terminate)
             return std::nullopt;
+        eax = kDriveLocks + kDriveLocksBytes;  // past what the fill cleared, where it leaves eax
     }
-    return windows<kLeaveCriticalSection, &host::leaveLock>(app, cpu, at(app, kHandlesLock));
+    // LeaveCriticalSection leaves eax as it is: the count the code is called with, or where the fill stopped.
+    if (!windows<kLeaveCriticalSection, &host::leaveLock>(app, cpu, at(app, kHandlesLock)))
+        return std::nullopt;
+    return eax;
 }
 
 /* takeHandleSlot (0x4e3570): a slot of the table taken, under its lock (the
@@ -943,7 +927,7 @@ Answer makeTable(App* app, CPU& cpu, reg32 count)
 Answer takeSlot(App* app, CPU& cpu)
 {
     const GuestFrame frame(cpu, 0x14, 0);
-    if (at(app, kHandles) == 0 && !asCalled(cpu, [&] { return makeTable(app, cpu, 0); }))
+    if (at(app, kHandles) == 0 && !asCalled(cpu, [&] { return makeTable(app, cpu, 0, 0); }))
         return std::nullopt;
     if (!windows<kEnterCriticalSection, &host::enterLock>(app, cpu, at(app, kHandlesLock)))
         return std::nullopt;
@@ -962,7 +946,8 @@ Answer takeSlot(App* app, CPU& cpu)
     }
     if (sreg32(index) < sreg32(at(app, kHandleCount)))
     {
-        if (!call(app, cpu, kFillZero, {slotAt(app, index), kSlotBytes}))
+        guest::direct<kFillZero, ea::clearBytes>(app, cpu, slotAt(app, index), kSlotBytes);
+        if (cpu.terminate)
             return std::nullopt;
         putByte(app, slotAt(app, index) + kInUse, 1);
     }
@@ -1031,7 +1016,6 @@ Answer openFile(App* app, CPU& cpu, reg32 name, reg32 flags, reg32 block, reg32 
     putByte(app, slotAt(app, index) + kDrive, reg8(*drive));
     if (driveLock(app, *drive) == 0)
     {
-        cpu.eax = 0;  // as the code has it at the call
         const Answer lock = guest::direct<0x4eb2e0, ea::newLock>(app, cpu);
         if (!lock)
             return std::nullopt;
@@ -1382,7 +1366,6 @@ Answer openMemory(App* app, CPU& cpu, reg32 memory, reg32 length, reg32 drive, r
         return 0;
     if (driveLock(app, drive) == 0)
     {
-        cpu.eax = index;  // as the code has it at the call
         const Answer lock = guest::direct<0x4eb2e0, ea::newLock>(app, cpu);
         if (!lock)
             return std::nullopt;
@@ -1544,7 +1527,7 @@ Answer openErrorsAs(App* app, CPU& cpu, reg32 name, reg32 handleOut, reg32 start
     const GuestFrame frame(cpu, 8, 0);
     const reg32 saved = at(app, kErrorsFatal);
     put(app, kErrorsFatal, errorsAs);
-    const Answer opened = typed<0x4e28d0, ea::openToRead>(app, cpu, {name, handleOut, startOut, lengthOut}, name,
+    const Answer opened = typed<0x4e28d0, ea::openToRead>(app, cpu, name,
                                                            handleOut, startOut, lengthOut);
     if (!opened)
         return std::nullopt;
@@ -1756,49 +1739,55 @@ Answer seekBlocks(App* app, CPU& cpu, reg32 handle, reg32 to)
 
 /* 0x4e28c0: initHandles with 0 (a jump): the table of the default 0x40.  No
  * caller in the game. */
-void initHandlesDefault(App* app, CPU& cpu)
+x86::reg32 initHandlesDefault(App* app, CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    returns(cpu, makeTable(app, cpu, 0));
+    const Kept kept(cpu, args);
+    returns(cpu, args, makeTable(app, cpu, 0, args.eax));
+    return args.eax;
 }
 
 /* 0x4e28d0, EA's openhandle: openToRead of the name eax, [edx] the handle,
  * [ebx] where it starts, [ecx] its length. */
-void openHandle(App* app, CPU& cpu)
+x86::reg32 openHandle(App* app, CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    returns(cpu, openToRead(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx));
+    const Kept kept(cpu, args);
+    returns(cpu, args, openToRead(app, cpu, args.eax, args.edx, args.ebx, args.ecx));
+    return args.eax;
 }
 
 /* 0x4e2ab0: openErrorsAs of openHandle's registers and the stack's word;
  * the word taken off. */
-void openHandleErrorsAs(App* app, CPU& cpu)
+x86::reg32 openHandleErrorsAs(App* app, CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    returns(cpu, openErrorsAs(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx, at(app, cpu.esp + 4)), 4);
+    const Kept kept(cpu, args);
+    returns(cpu, args, openErrorsAs(app, cpu, args.eax, args.edx, args.ebx, args.ecx, at(app, cpu.esp + 4)), 4);
+    return args.eax;
 }
 
 /* 0x4e2ae0, EA's openhandlew: openToWrite of the name eax, [edx] the
  * handle, [ebx] where it starts, [ecx] its length. */
-void openHandleToWrite(App* app, CPU& cpu)
+x86::reg32 openHandleToWrite(App* app, CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    returns(cpu, openToWrite(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx));
+    const Kept kept(cpu, args);
+    returns(cpu, args, openToWrite(app, cpu, args.eax, args.edx, args.ebx, args.ecx));
+    return args.eax;
 }
 
 /* 0x4e2ba0, EA's openmaphandle: openMapped of the name eax, [edx] the
  * handle, [ebx] where it starts, [ecx] its length.  No caller in the game. */
-void openMapHandle(App* app, CPU& cpu)
+x86::reg32 openMapHandle(App* app, CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    returns(cpu, openMapped(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx));
+    const Kept kept(cpu, args);
+    returns(cpu, args, openMapped(app, cpu, args.eax, args.edx, args.ebx, args.ecx));
+    return args.eax;
 }
 
 /* 0x4e2da0, EA's closehandle: closeChecked of handle eax. */
-void closeHandle(App* app, CPU& cpu)
+x86::reg32 closeHandle(App* app, CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    returns(cpu, closeChecked(app, cpu, cpu.eax));
+    const Kept kept(cpu, args);
+    returns(cpu, args, closeChecked(app, cpu, args.eax));
+    return args.eax;
 }
 
 /* readHandle's core (0x4e2de0): transferChecked of readBytes, as
@@ -1817,49 +1806,55 @@ Answer writeChecked(App* app, CPU& cpu, reg32 handle, reg32 buffer, reg32 count)
 
 /* 0x4e2de0, EA's readhandle: ebx bytes of handle eax read to edx
  * (readHandleBytes); how many back. */
-void readHandle(App* app, CPU& cpu)
+x86::reg32 readHandle(App* app, CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    returns(cpu, transferChecked(app, cpu, cpu.eax, cpu.edx, cpu.ebx, kReadHandleName, 0x1d4, readBytes));
+    const Kept kept(cpu, args);
+    returns(cpu, args, transferChecked(app, cpu, args.eax, args.edx, args.ebx, kReadHandleName, 0x1d4, readBytes));
+    return args.eax;
 }
 
 /* 0x4e2e20, EA's writehandle: ebx bytes at edx written to handle eax
  * (writeHandleBytes); how many back. */
-void writeHandle(App* app, CPU& cpu)
+x86::reg32 writeHandle(App* app, CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    returns(cpu, transferChecked(app, cpu, cpu.eax, cpu.edx, cpu.ebx, kWriteHandleName, 0x1dd, writeBytes));
+    const Kept kept(cpu, args);
+    returns(cpu, args, transferChecked(app, cpu, args.eax, args.edx, args.ebx, kWriteHandleName, 0x1dd, writeBytes));
+    return args.eax;
 }
 
 /* 0x4e2e60, EA's seekhandle: seekChecked of handle eax to edx. */
-void seekHandle(App* app, CPU& cpu)
+x86::reg32 seekHandle(App* app, CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    returns(cpu, seekChecked(app, cpu, cpu.eax, cpu.edx));
+    const Kept kept(cpu, args);
+    returns(cpu, args, seekChecked(app, cpu, args.eax, args.edx));
+    return args.eax;
 }
 
 /* 0x4e2eb0: 1 if al is a slash, \ or /, else 0. */
-void isSlash(App*, CPU& cpu)
+x86::reg32 isSlash(App*, CPU& cpu, x86::Args& args)
 {
-    cpu.eax = isSlashChar(cpu.al) ? 1 : 0;
+    args.eax = isSlashChar(x86::reg8(args.eax)) ? 1 : 0;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4e2ebe: isSlash's way out with 0 -- an entry of its own, as handlesReady
  * jumps to it: eax 0. */
-void notSlash(App*, CPU& cpu)
+x86::reg32 notSlash(App*, CPU& cpu, x86::Args& args)
 {
-    cpu.eax = 0;
+    args.eax = 0;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4e2ed0: rootOf of path eax to edx; what it leaves in eax nobody reads
  * (ea_files.inc). */
-void volumeRoot(App* app, CPU& cpu)
+x86::reg32 volumeRoot(App* app, CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    if (rootOf(app, cpu, cpu.eax, cpu.edx))
+    const Kept kept(cpu, args);
+    if (rootOf(app, cpu, args.eax, args.edx))
         cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4e2fd0: fullPath of path eax to edx, ebx bytes there.  ecx, esi, edi
@@ -1867,293 +1862,432 @@ void volumeRoot(App* app, CPU& cpu)
  * from there: a root of 0x104 bytes and more, with no slash, is cut past the
  * frame's locals (volumeRoot), at the 0 of the file's part's address, and
  * its ending put in the low byte of the ebp kept there. */
-void fullPathName(App* app, CPU& cpu)
+x86::reg32 fullPathName(App* app, CPU& cpu, x86::Args& args)
 {
     const reg32 pushed = cpu.esp - 0x10;
-    put(app, pushed + 0xc, cpu.ecx);
-    put(app, pushed + 8, cpu.esi);
-    put(app, pushed + 4, cpu.edi);
-    put(app, pushed, cpu.ebp);
+    put(app, pushed + 0xc, args.ecx);
+    put(app, pushed + 8, args.esi);
+    put(app, pushed + 4, args.edi);
+    put(app, pushed, args.ebp);
     Answer found;
     {
-        const Kept kept(cpu);
-        found = fullPath(app, cpu, cpu.eax, cpu.edx, cpu.ebx);
+        const Kept kept(cpu, args);
+        found = fullPath(app, cpu, args.eax, args.edx, args.ebx);
     }
     if (!found)
-        return;
-    cpu.ebp = at(app, pushed);
-    cpu.edi = at(app, pushed + 4);
-    cpu.esi = at(app, pushed + 8);
-    cpu.ecx = at(app, pushed + 0xc);
-    returns(cpu, found);
+        return args.eax;
+    args.ebp = at(app, pushed);
+    args.edi = at(app, pushed + 4);
+    args.esi = at(app, pushed + 8);
+    args.ecx = at(app, pushed + 0xc);
+    returns(cpu, args, found);
+    return args.eax;
 }
 
 /* 0x4e3110: GetLogicalDrives' bits.  No caller in the game. */
-void logicalDrives(App* app, CPU& cpu)
+x86::reg32 logicalDrives(App* app, CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    returns(cpu, windows<kGetLogicalDrives, &host::logicalDrives>(app, cpu));
+    const Kept kept(cpu, args);
+    returns(cpu, args, windows<kGetLogicalDrives, &host::logicalDrives>(app, cpu));
+    return args.eax;
 }
 
 /* 0x4e3120: driveOf of path eax, its root to edx.  No caller in the game. */
-void driveOfPath(App* app, CPU& cpu)
+x86::reg32 driveOfPath(App* app, CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    returns(cpu, driveOf(app, cpu, cpu.eax, cpu.edx));
+    const Kept kept(cpu, args);
+    returns(cpu, args, driveOf(app, cpu, args.eax, args.edx));
+    return args.eax;
 }
 
 /* 0x4e3250: letterOf of path eax. */
-void driveLetter(App* app, CPU& cpu)
+x86::reg32 driveLetter(App* app, CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    returns(cpu, letterOf(app, cpu, cpu.eax));
+    const Kept kept(cpu, args);
+    returns(cpu, args, letterOf(app, cpu, args.eax));
+    return args.eax;
 }
 
 /* 0x4e32e0: bytesFree of the root eax.  No caller in the game. */
-void diskFreeBytes(App* app, CPU& cpu)
+x86::reg32 diskFreeBytes(App* app, CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    returns(cpu, bytesFree(app, cpu, cpu.eax));
+    const Kept kept(cpu, args);
+    returns(cpu, args, bytesFree(app, cpu, args.eax));
+    return args.eax;
 }
 
 /* 0x4e3330: numberOf of path eax. */
-void driveNumber(App* app, CPU& cpu)
+x86::reg32 driveNumber(App* app, CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    returns(cpu, numberOf(app, cpu, cpu.eax));
+    const Kept kept(cpu, args);
+    returns(cpu, args, numberOf(app, cpu, args.eax));
+    return args.eax;
 }
 
 /* 0x4e3340, EA's setdirectory: changeDirectory to path eax. */
-void setDirectory(App* app, CPU& cpu)
+x86::reg32 setDirectory(App* app, CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    returns(cpu, changeDirectory(app, cpu, cpu.eax));
+    const Kept kept(cpu, args);
+    returns(cpu, args, changeDirectory(app, cpu, args.eax));
+    return args.eax;
 }
 
 /* 0x4e33a0, EA's getdirectory: currentDirectory to eax. */
-void getDirectory(App* app, CPU& cpu)
+x86::reg32 getDirectory(App* app, CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    returns(cpu, currentDirectory(app, cpu, cpu.eax));
+    const Kept kept(cpu, args);
+    returns(cpu, args, currentDirectory(app, cpu, args.eax));
+    return args.eax;
 }
 
 /* 0x4e3410: 1 if the handles' table is made, else 0 (notSlash's way out).
  * No caller in the game. */
-void handlesReady(App* app, CPU& cpu)
+x86::reg32 handlesReady(App* app, CPU& cpu, x86::Args& args)
 {
-    cpu.eax = at(app, kHandles) != 0 ? 1 : 0;
+    args.eax = at(app, kHandles) != 0 ? 1 : 0;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4e3430: makeTable for eax handles. */
-void initHandles(App* app, CPU& cpu)
+x86::reg32 initHandles(App* app, CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    returns(cpu, makeTable(app, cpu, cpu.eax));
+    const Kept kept(cpu, args);
+    returns(cpu, args, makeTable(app, cpu, args.eax, args.eax));
+    return args.eax;
 }
 
 /* 0x4e34c0: closeTable; what it leaves in eax nobody reads
  * (ea_files.inc). */
-void closeAllHandles(App* app, CPU& cpu)
+x86::reg32 closeAllHandles(App* app, CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
+    const Kept kept(cpu, args);
     if (closeTable(app, cpu))
         cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4e3570: takeSlot; the slot's index back. */
-void takeHandleSlot(App* app, CPU& cpu)
+x86::reg32 takeHandleSlot(App* app, CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    returns(cpu, takeSlot(app, cpu));
+    const Kept kept(cpu, args);
+    returns(cpu, args, takeSlot(app, cpu));
+    return args.eax;
 }
 
 /* 0x4e3600: removeFile of the name eax. */
-void deleteFile(App* app, CPU& cpu)
+x86::reg32 deleteFile(App* app, CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    returns(cpu, removeFile(app, cpu, cpu.eax));
+    const Kept kept(cpu, args);
+    returns(cpu, args, removeFile(app, cpu, args.eax));
+    return args.eax;
 }
 
 /* 0x4e3620: openFile of the name eax as the flags edx, block ebx, [ecx] the
  * handle. */
-void openFileHandle(App* app, CPU& cpu)
+x86::reg32 openFileHandle(App* app, CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    returns(cpu, openFile(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx));
+    const Kept kept(cpu, args);
+    returns(cpu, args, openFile(app, cpu, args.eax, args.edx, args.ebx, args.ecx));
+    return args.eax;
 }
 
 /* 0x4e3980: infoOf of handle eax, to [edx], [ebx], [ecx] and the stack's
  * word; the word taken off. */
-void handleInfo(App* app, CPU& cpu)
+x86::reg32 handleInfo(App* app, CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    returns(cpu, infoOf(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx, at(app, cpu.esp + 4)), 4);
+    const Kept kept(cpu, args);
+    returns(cpu, args, infoOf(app, cpu, args.eax, args.edx, args.ebx, args.ecx, at(app, cpu.esp + 4)), 4);
+    return args.eax;
 }
 
 /* 0x4e3ae0: readBytes, ebx bytes of handle eax to edx. */
-void readHandleBytes(App* app, CPU& cpu)
+x86::reg32 readHandleBytes(App* app, CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    returns(cpu, readBytes(app, cpu, cpu.eax, cpu.edx, cpu.ebx));
+    const Kept kept(cpu, args);
+    returns(cpu, args, readBytes(app, cpu, args.eax, args.edx, args.ebx));
+    return args.eax;
 }
 
 /* 0x4e3cc0: writeBytes, ebx bytes at edx to handle eax. */
-void writeHandleBytes(App* app, CPU& cpu)
+x86::reg32 writeHandleBytes(App* app, CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    returns(cpu, writeBytes(app, cpu, cpu.eax, cpu.edx, cpu.ebx));
+    const Kept kept(cpu, args);
+    returns(cpu, args, writeBytes(app, cpu, args.eax, args.edx, args.ebx));
+    return args.eax;
 }
 
 /* 0x4e3e60: seekTo, handle eax to edx. */
-void seekHandleTo(App* app, CPU& cpu)
+x86::reg32 seekHandleTo(App* app, CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    returns(cpu, seekTo(app, cpu, cpu.eax, cpu.edx));
+    const Kept kept(cpu, args);
+    returns(cpu, args, seekTo(app, cpu, args.eax, args.edx));
+    return args.eax;
 }
 
 /* 0x4e3f30: placeOf handle eax. */
-void handlePosition(App* app, CPU& cpu)
+x86::reg32 handlePosition(App* app, CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    returns(cpu, placeOf(app, cpu, cpu.eax));
+    const Kept kept(cpu, args);
+    returns(cpu, args, placeOf(app, cpu, args.eax));
+    return args.eax;
 }
 
 /* 0x4e3fe0: closeSlot of handle eax. */
-void closeHandleSlot(App* app, CPU& cpu)
+x86::reg32 closeHandleSlot(App* app, CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    returns(cpu, closeSlot(app, cpu, cpu.eax));
+    const Kept kept(cpu, args);
+    returns(cpu, args, closeSlot(app, cpu, args.eax));
+    return args.eax;
 }
 
 /* 0x4e40a0: handle eax's drive's lock entered; 1, or 0 if it is not
  * open. */
-void lockHandleDrive(App* app, CPU& cpu)
+x86::reg32 lockHandleDrive(App* app, CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    returns(cpu, lockDriveOf(app, cpu, cpu.eax, kEnterCriticalSection));
+    const Kept kept(cpu, args);
+    returns(cpu, args, lockDriveOf(app, cpu, args.eax, kEnterCriticalSection));
+    return args.eax;
 }
 
 /* 0x4e40f0: handle eax's drive's lock left; 1, or 0 if it is not open. */
-void unlockHandleDrive(App* app, CPU& cpu)
+x86::reg32 unlockHandleDrive(App* app, CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    returns(cpu, lockDriveOf(app, cpu, cpu.eax, kLeaveCriticalSection));
+    const Kept kept(cpu, args);
+    returns(cpu, args, lockDriveOf(app, cpu, args.eax, kLeaveCriticalSection));
+    return args.eax;
 }
 
 /* 0x4e4140: openMemory of edx bytes at eax, drive ebx, block ecx, the
  * handle to the stack's word; the word taken off. */
-void openMemoryHandle(App* app, CPU& cpu)
+x86::reg32 openMemoryHandle(App* app, CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    returns(cpu, openMemory(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx, at(app, cpu.esp + 4)), 4);
+    const Kept kept(cpu, args);
+    returns(cpu, args, openMemory(app, cpu, args.eax, args.edx, args.ebx, args.ecx, at(app, cpu.esp + 4)), 4);
+    return args.eax;
+}
+
+std::optional<reg32> handleDriveLocked(App* app, CPU& cpu, reg32 handle)
+{
+    return lockDriveOf(app, cpu, handle, kEnterCriticalSection);
+}
+
+std::optional<reg32> handleDriveUnlocked(App* app, CPU& cpu, reg32 handle)
+{
+    return lockDriveOf(app, cpu, handle, kLeaveCriticalSection);
+}
+
+std::optional<reg32> memoryOpened(App* app, CPU& cpu, reg32 memory, reg32 length, reg32 drive, reg32 block,
+                                  reg32 handleOut)
+{
+    return openMemory(app, cpu, memory, length, drive, block, handleOut);
 }
 
 /* 0x4e41f0: memoryOf handle eax. */
-void handleMemory(App* app, CPU& cpu)
+x86::reg32 handleMemory(App* app, CPU& cpu, x86::Args& args)
 {
-    cpu.eax = memoryOf(app, cpu.eax);
+    args.eax = memoryOf(app, args.eax);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x501010: surfaceUnlocked for the function named eax. */
-void checkSurfaceUnlocked(App* app, CPU& cpu)
+x86::reg32 checkSurfaceUnlocked(App* app, CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    returns(cpu, surfaceUnlocked(app, cpu, cpu.eax));
+    const Kept kept(cpu, args);
+    returns(cpu, args, surfaceUnlocked(app, cpu, args.eax));
+    return args.eax;
 }
 
 /* 0x501050, cdecl (threshold's address, level, format, ...): report. */
-void fileReport(App* app, CPU& cpu)
+x86::reg32 fileReport(App* app, CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
+    const Kept kept(cpu, args);
     const reg32 words = cpu.esp + 4;
-    returns(cpu, report(app, cpu, at(app, words), at(app, words + 4), at(app, words + 8), words + 0xc));
+    returns(cpu, args, report(app, cpu, at(app, words), at(app, words + 4), at(app, words + 8), words + 0xc));
+    return args.eax;
 }
 
 /* 0x501110: allocatePages for the bytes [eax]. */
-void virtualAllocPages(App* app, CPU& cpu)
+x86::reg32 virtualAllocPages(App* app, CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    returns(cpu, allocatePages(app, cpu, cpu.eax));
+    const Kept kept(cpu, args);
+    returns(cpu, args, allocatePages(app, cpu, args.eax));
+    return args.eax;
 }
 
 /* 0x501180: freePages at eax. */
-void virtualFreePages(App* app, CPU& cpu)
+x86::reg32 virtualFreePages(App* app, CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    returns(cpu, freePages(app, cpu, cpu.eax));
+    const Kept kept(cpu, args);
+    returns(cpu, args, freePages(app, cpu, args.eax));
+    return args.eax;
 }
 
 /* 0x5011a0, EA's touchmempages: touchPages of edx bytes from eax; ebx and
  * edx left as its loops leave them. */
-void touchMemoryPages(App* app, CPU& cpu)
+x86::reg32 touchMemoryPages(App* app, CPU& cpu, x86::Args& args)
 {
-    const reg32 start = cpu.eax, bytes = cpu.edx;
+    const reg32 start = args.eax, bytes = args.edx;
     std::optional<Touched> touched;
     {
-        const Kept kept(cpu);
+        const Kept kept(cpu, args);
         touched = touchPages(app, cpu, start, bytes);
     }
     if (!touched)
-        return;
-    cpu.eax = touched->result;
-    cpu.ebx = touched->end;
-    cpu.edx = touched->left;
+        return args.eax;
+    args.eax = touched->result;
+    args.ebx = touched->end;
+    args.edx = touched->left;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x501270, EA's openblockhandle: openBlocks of the name eax, [edx] the
  * handle, [ebx] where it starts, [ecx] its length, the block to the stack's
  * word; the word taken off. */
-void openBlockHandle(App* app, CPU& cpu)
+x86::reg32 openBlockHandle(App* app, CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    returns(cpu, openBlocks(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx, at(app, cpu.esp + 4)), 4);
+    const Kept kept(cpu, args);
+    returns(cpu, args, openBlocks(app, cpu, args.eax, args.edx, args.ebx, args.ecx, at(app, cpu.esp + 4)), 4);
+    return args.eax;
 }
 
 /* 0x501360, EA's blockhandlefile: noBlockFile.  No caller in the game. */
-void blockHandleFile(App* app, CPU& cpu)
+x86::reg32 blockHandleFile(App* app, CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    returns(cpu, noBlockFile(app, cpu));
+    const Kept kept(cpu, args);
+    returns(cpu, args, noBlockFile(app, cpu));
+    return args.eax;
 }
 
 /* 0x5013a0, EA's closeblockhandle: closeHandleSlot, jumped to. */
-void closeBlockHandle(App* app, CPU& cpu)
+x86::reg32 closeBlockHandle(App* app, CPU& cpu, x86::Args& args)
 {
-    closeHandleSlot(app, cpu);
+    return closeHandleSlot(app, cpu, args);
 }
 
 /* 0x5013b0, EA's readblockhandle: readBlocks, ebx blocks of handle eax to
  * edx. */
-void readBlockHandle(App* app, CPU& cpu)
+x86::reg32 readBlockHandle(App* app, CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    returns(cpu, readBlocks(app, cpu, cpu.eax, cpu.edx, cpu.ebx));
+    const Kept kept(cpu, args);
+    returns(cpu, args, readBlocks(app, cpu, args.eax, args.edx, args.ebx));
+    return args.eax;
 }
 
 /* 0x501450, EA's seekblockhandle: seekBlocks of handle eax to edx.  No
  * caller in the game. */
-void seekBlockHandle(App* app, CPU& cpu)
+x86::reg32 seekBlockHandle(App* app, CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    returns(cpu, seekBlocks(app, cpu, cpu.eax, cpu.edx));
+    const Kept kept(cpu, args);
+    returns(cpu, args, seekBlocks(app, cpu, args.eax, args.edx));
+    return args.eax;
 }
 
-/* 0x501180's and 0x501050's typed cores (native_ea_files.h): as their adapters run them -- the
- * report's words pushed below esp as its caller pushes them, its adapter run on them. */
+/* 0x501180's and 0x501050's typed cores (native_ea_files.h): as their thunks run them -- the
+ * report's words pushed below esp as its caller pushes them, its thunk run on them. */
 std::optional<reg32> pagesFreed(App* app, CPU& cpu, reg32 pages)
 {
-    const Kept kept(cpu);
     return freePages(app, cpu, pages);
+}
+
+std::optional<reg32> driveNumberOf(App* app, CPU& cpu, reg32 path)
+{
+    return numberOf(app, cpu, path);
 }
 
 std::optional<reg32> reportedAt(App* app, CPU& cpu, reg32 threshold, reg32 level, reg32 format, guest::Words words)
 {
-    if (!guest::call(app, cpu, &fileReport, {threshold, level, format}, words))
+    // The words pushed as the caller pushes them, the report's own frame below.
+    const reg32 top = cpu.esp, base = top - 4 * (3 + words.count);
+    put(app, base, threshold);
+    put(app, base + 4, level);
+    put(app, base + 8, format);
+    for (unsigned i = 0; i < words.count; ++i)
+        put(app, base + 0xc + 4 * i, words.word[i]);
+    cpu.esp = base;
+    const Answer result = asCalled(cpu, [&] { return report(app, cpu, threshold, level, format, base + 0xc); });
+    cpu.esp = top;
+    return result;
+}
+
+/* 0x5011a0's, 0x501270's, 0x4e3fe0's (0x5013a0 jumps to it), 0x5013b0's and 0x501450's typed cores
+ * (native_ea_files.h): as their thunks run them. */
+std::optional<reg32> errorsAsOpened(App* app, CPU& cpu, reg32 name, reg32 handleOut, reg32 startOut,
+                                    reg32 lengthOut, reg32 errorsAs)
+{
+    return openErrorsAs(app, cpu, name, handleOut, startOut, lengthOut, errorsAs);
+}
+
+std::optional<reg32> fileHandleOpened(App* app, CPU& cpu, reg32 name, reg32 flags, reg32 block, reg32 handleOut)
+{
+    return openFile(app, cpu, name, flags, block, handleOut);
+}
+
+std::optional<reg32> handleSought(App* app, CPU& cpu, reg32 handle, reg32 to)
+{
+    return seekTo(app, cpu, handle, to);
+}
+
+std::optional<reg32> bytesRead(App* app, CPU& cpu, reg32 handle, reg32 buffer, reg32 count)
+{
+    return readBytes(app, cpu, handle, buffer, count);
+}
+
+std::optional<reg32> bytesWritten(App* app, CPU& cpu, reg32 handle, reg32 buffer, reg32 count)
+{
+    return writeBytes(app, cpu, handle, buffer, count);
+}
+
+std::optional<reg32> handleInfoOf(App* app, CPU& cpu, reg32 handle, reg32 howOut, reg32 blockOut, reg32 lengthOut,
+                                  reg32 freeOut)
+{
+    return infoOf(app, cpu, handle, howOut, blockOut, lengthOut, freeOut);
+}
+
+reg32 handleMemoryOf(App* app, reg32 handle)
+{
+    return memoryOf(app, handle);
+}
+
+std::optional<reg32> fileRemoved(App* app, CPU& cpu, reg32 name)
+{
+    return removeFile(app, cpu, name);
+}
+
+std::optional<reg32> handlesMade(App* app, CPU& cpu, reg32 count)
+{
+    return makeTable(app, cpu, count, count);
+}
+
+std::optional<reg32> memoryTouched(App* app, CPU& cpu, reg32 start, reg32 bytes)
+{
+    const auto touched = touchPages(app, cpu, start, bytes);
+    if (!touched)
         return std::nullopt;
-    return cpu.eax;
+    return touched->result;
+}
+
+std::optional<reg32> blockOpened(App* app, CPU& cpu, reg32 name, reg32 handleOut, reg32 startOut, reg32 lengthOut,
+                                 reg32 blockOut)
+{
+    return openBlocks(app, cpu, name, handleOut, startOut, lengthOut, blockOut);
+}
+
+std::optional<reg32> slotClosed(App* app, CPU& cpu, reg32 handle)
+{
+    return closeSlot(app, cpu, handle);
+}
+
+std::optional<reg32> blocksRead(App* app, CPU& cpu, reg32 handle, reg32 buffer, reg32 blocks)
+{
+    return readBlocks(app, cpu, handle, buffer, blocks);
+}
+
+std::optional<reg32> blocksSought(App* app, CPU& cpu, reg32 handle, reg32 to)
+{
+    return seekBlocks(app, cpu, handle, to);
 }
 
 }  // namespace ea

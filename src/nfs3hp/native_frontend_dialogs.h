@@ -6,9 +6,9 @@
 
 /* native_frontend_dialogs.cpp's typed functions (a question, a message and a line to type in
  * opened, their layout, the pointer on a button), which other files call as C++ (guest::direct),
- * and how the game's code calls each by address (ByAddress, for the checks' stand-ins).  Each calls
+ * and how the game's code calls each by address.  Each calls
  * the game's other functions by address on `cpu` and throws fe::Terminated when the game stopped in
- * one, as Guest::call does; its result is what the game's function leaves in eax. */
+ * one, as a call by address does; its result is what the game's function leaves in eax. */
 namespace nfs3hp
 {
 namespace frontend
@@ -50,136 +50,6 @@ reg32 fadedIn(App* app, CPU& cpu);
 
 namespace guest
 {
-
-template <>
-struct ByAddress<frontend::dialogs::focusedButton>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({}));
-    }
-};
-
-// The count in eax, the lines in edx, a row of buttons below in ebx, a field in ecx; the rect on the stack.
-template <>
-struct ByAddress<frontend::dialogs::linesBox>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 count, x86::reg32 lines,
-                           x86::reg32 rowBelow, x86::reg32 fieldBelow, x86::reg32 rect)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({ count, lines, rowBelow, fieldBelow }, { rect }));
-    }
-};
-
-// The count in eax, the buttons in edx, the rect in ebx.
-template <>
-struct ByAddress<frontend::dialogs::buttonRowBox>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 count, x86::reg32 buttons,
-                           x86::reg32 rect)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({ count, buttons, rect }));
-    }
-};
-
-// The count in eax, the buttons in edx, a column in ebx, the rect in ecx.
-template <>
-struct ByAddress<frontend::dialogs::placeButtons>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 count, x86::reg32 buttons,
-                           x86::reg32 column, x86::reg32 rect)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({ count, buttons, column, rect }));
-    }
-};
-
-// The button in eax.
-template <>
-struct ByAddress<frontend::dialogs::pointAtButton>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 index)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({ index }));
-    }
-};
-
-// The lines' count and lines in eax and edx, the buttons' in ebx and ecx; the rest on the stack.
-template <>
-struct ByAddress<frontend::dialogs::openQuestion>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 lineCount, x86::reg32 lines,
-                           x86::reg32 buttonCount, x86::reg32 buttons, x86::reg32 buttonHelp, x86::reg32 focus,
-                           x86::reg32 column, x86::reg32 callback)
-    {
-        return fe::callByAddress(app, cpu, Address,
-                                 fe::args({ lineCount, lines, buttonCount, buttons },
-                                          { buttonHelp, focus, column, callback }));
-    }
-};
-
-// The count, the lines, the time, the keys (cl) in eax, edx, ebx, ecx; the callback on the stack.
-template <>
-struct ByAddress<frontend::dialogs::openMessage>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 lineCount, x86::reg32 lines,
-                           x86::reg32 time, x86::reg32 keys, x86::reg32 callback)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({ lineCount, lines, time, keys }, { callback }));
-    }
-};
-
-// The text's number in eax.
-template <>
-struct ByAddress<frontend::dialogs::messageById>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 id)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({ id }));
-    }
-};
-
-template <>
-struct ByAddress<frontend::dialogs::editText>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({}));
-    }
-};
-
-// The lines' count and lines in eax and edx, the buttons' in ebx and ecx; the rest on the stack.
-template <>
-struct ByAddress<frontend::dialogs::openEdit>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 lineCount, x86::reg32 lines,
-                           x86::reg32 buttonCount, x86::reg32 buttons, x86::reg32 focus, x86::reg32 source,
-                           x86::reg32 maxLength, x86::reg32 mode, x86::reg32 callback)
-    {
-        return fe::callByAddress(app, cpu, Address,
-                                 fe::args({ lineCount, lines, buttonCount, buttons },
-                                          { focus, source, maxLength, mode, callback }));
-    }
-};
-
-template <>
-struct ByAddress<frontend::dialogs::fadedIn>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({}));
-    }
-};
 
 }  // namespace guest
 }  // namespace nfs3hp

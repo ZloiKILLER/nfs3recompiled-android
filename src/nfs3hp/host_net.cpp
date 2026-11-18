@@ -103,7 +103,7 @@ public:
     Unlocked(WinApplication* app, x86::CPU& cpu)
         :   m_app(app)
         ,   m_cpu(cpu)
-        ,   m_held(static_cast<win32::Mutex*>(app->getMemory<win32::Mutex*>(cpu.efs + 8)) != nullptr)
+        ,   m_held(static_cast<win32::Mutex*>(app->getMemory<win32::Mutex*>(cpu.threadBlock + 8)) != nullptr)
     {
         if (m_held)
             m_app->unlockContext(m_cpu);

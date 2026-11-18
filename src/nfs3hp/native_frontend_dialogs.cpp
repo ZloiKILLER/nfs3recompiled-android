@@ -2,14 +2,15 @@
 #include "native_watcom.h"
 #include "game_settings.h"
 #include "native_frontend.h"
+#include "native_frontend_fx.h"
+#include "native_frontend_screen.h"
 #include "native_frontend_text.h"
 #include "port_text.h"
 #include <algorithm>
 #include <iterator>
 
 /* What the dialogs (port::dialogs, src/nfs3hp/port_dialogs.cpp) leave to the
- * menus' code: native whole, with no generated code behind them
- * (disassemble_nfs3hp.py's MENU_NATIVES), a question, a message and a line to
+ * menus' code: native whole, a question, a message and a line to
  * type in as the main menu opens them, their layout -- the box round the
  * lines, the one round the buttons, the buttons placed -- and the pointer put
  * on a button.
@@ -19,12 +20,12 @@
  * out as the dialog opens, in floats on the 640x480 screen: a box round the
  * lines, one round the buttons, put together and centred (kRect: top, left,
  * bottom, right), the buttons placed below the lines in a row or one above the
- * other (kButtonBoxes).  The arithmetic is the x87's (fe::X87): in a race's
+ * other (kButtonBoxes).  The arithmetic is the x87's (fe::Arith): in a race's
  * pause screens it rounds to a float's precision, and the dialog lands where
  * the game puts it.
  *
  * Plan step 5: each function a typed core in frontend::dialogs (native_frontend_dialogs.h), in a
- * frame of its own where the game's function has one (fe::Frame), and an adapter under the game's
+ * frame of its own where the game's function has one (fe::Frame), and a thunk under the game's
  * name for the calls by address.  A core of this file calls another as C++ (guest::direct) but
  * where its caller goes on with the registers the call leaves: sub_443d20's (the dialogs' callers
  * read them) and sub_443a90's from sub_444a80 (the screens that open a message go on with them).
@@ -35,14 +36,13 @@ namespace nfs3hp
 
 namespace watcom
 {
-void CHP(win32::WinApplication* app, x86::CPU& cpu);  // __CHP, native_watcom.cpp
 }
 
 namespace
 {
 
 using fe::Guest;
-using fe::X87;
+using fx::Arith;
 using x86::Float;
 
 // The dialog up.
@@ -183,7 +183,7 @@ Box box(const Guest& guest, x86::reg32 boxes, std::int32_t index)
  * ------------------------------------------------------------------------- */
 
 /* The dialog's box, kRect, round its middle. */
-void setDialogRect(Guest& guest, X87& x87, const Float& middleX, const Float& middleY, const Float& halfWidth,
+void setDialogRect(Guest& guest, Arith& x87, const Float& middleX, const Float& middleY, const Float& halfWidth,
                    const Float& halfHeight)
 {
     guest.setFloat(kRect + kTop, float(x87.sub(middleY, halfHeight)));
@@ -220,16 +220,15 @@ x86::reg32 pointAt(Guest& guest, x86::reg32 boxes, std::int32_t count, std::int3
     const Box b = box(guest, boxes, index);
     guest.setDword(kMouseX, reg(b.x + b.width - 2));
     guest.setDword(kMouseY, reg(b.y + b.height - 2));
-    // By address: its eax is the result here, and it leaves edx as placePointer leaves it -- the
-    // core (frontend::screen::setPointer) hands neither back.
-    return guest.call(kSetMousePosition, fe::args({ guest.dword(kMouseX), guest.dword(kMouseY) }));
+    return fe::direct<kSetMousePosition, frontend::screen::setPointer>(guest.app(), guest.cpu(), guest.dword(kMouseX),
+                                                                       guest.dword(kMouseY));
 }
 
 /* ---------------------------------------------------------------------------
  * The dialog up, whatever its kind
  * ------------------------------------------------------------------------- */
 
-// A stand-in's stack argument, counted from the first.
+// A thunk's stack argument, counted from the first.
 x86::reg32 stackArgument(win32::WinApplication* app, const x86::CPU& cpu, x86::reg32 index)
 {
     return app->getMemory<x86::reg32>(cpu.esp + 4 + 4 * index);
@@ -261,7 +260,7 @@ x86::reg32 frontend::dialogs::fadedIn(App* app, CPU& cpu)
 {
     Guest guest(app, cpu);
     guest.setDword(kFade, 255);
-    return guest.eax();
+    return 0;  // eax is left as it came: the thunk's
 }
 
 /* ---------------------------------------------------------------------------
@@ -282,9 +281,9 @@ x86::reg32 frontend::dialogs::linesBox(App* app, CPU& cpu, reg32 count, reg32 li
     std::int32_t width = 0;
     for (std::int32_t i = 0; i < std::int32_t(count); ++i)
         width = std::max(width, textWidth(guest, guest.dword(lines + 4 * x86::reg32(i))));
-    X87 x87(guest);
+    Arith x87(guest);
     if (inRace(guest))
-        width = x87.truncated(x87.add(X87::integer(width), Float(63.5)));
+        width = x87.truncated(x87.add(Arith::integer(width), Float(63.5)));
     else
         width += 51;
     width += 30;
@@ -300,19 +299,13 @@ x86::reg32 frontend::dialogs::linesBox(App* app, CPU& cpu, reg32 count, reg32 li
     if (!inRace(guest) && width < 190)
         width = 190;
     const std::int32_t x = 320 - width / 2, y = 240 - height / 2;
-    guest.setFloat(rect + kTop, float(X87::integer(y)));
-    guest.setFloat(rect + kLeft, float(X87::integer(x)));
-    guest.setFloat(rect + kRight, float(X87::integer(x + width)));
-    guest.setFloat(rect + kBottom, float(X87::integer(y + height)));
+    guest.setFloat(rect + kTop, float(Arith::integer(y)));
+    guest.setFloat(rect + kLeft, float(Arith::integer(x)));
+    guest.setFloat(rect + kRight, float(Arith::integer(x + width)));
+    guest.setFloat(rect + kBottom, float(Arith::integer(y + height)));
     guest.setDword(kFade, 0);
     if ((guest.byte(kDisplayFlags) & kNoTranslucency) != 0)
         guest::direct<0x445f00, fadedIn>(app, cpu);
-    // The registers as the generated function leaves them: a message hands
-    // them on (sub_444a80), and the screens that open one go on with them --
-    // some return its eax as their own result.
-    guest.leaveEbx(rect);
-    guest.leaveEcx(0);
-    guest.leaveEdx(height < 0 ? ~0u : 0);
     return (x86::reg32(y + height) & ~0xff00u) | (x86::reg32(guest.byte(kDisplayFlags)) << 8);
 }
 
@@ -337,15 +330,12 @@ x86::reg32 frontend::dialogs::buttonRowBox(App* app, CPU& cpu, reg32 count, reg3
     if (!inRace(guest) && width < 190)
         width = 190;
     const std::int32_t x = 320 - width / 2, y = 240 - height / 2;
-    guest.setFloat(rect + kLeft, float(X87::integer(x)));
-    guest.setFloat(rect + kRight, float(X87::integer(x + width)));
-    guest.setFloat(rect + kTop, float(X87::integer(y)));
-    guest.setFloat(rect + kBottom, float(X87::integer(y + height)));
+    guest.setFloat(rect + kLeft, float(Arith::integer(x)));
+    guest.setFloat(rect + kRight, float(Arith::integer(x + width)));
+    guest.setFloat(rect + kTop, float(Arith::integer(y)));
+    guest.setFloat(rect + kBottom, float(Arith::integer(y + height)));
     guest.setDword(kFade, (guest.byte(kDisplayFlags) & kNoTranslucency) != 0 ? 255 : 0);
-    // The registers as the generated function leaves them: the box's right
-    // edge in ebx, its bottom in eax with the display's flags in ah.
-    guest.leaveEbx(reg(x + width));
-    guest.leaveEdx(0);
+    // Its eax: the box's bottom with the display's flags in ah.
     return (reg(y + height) & ~0xff00u) | (x86::reg32(guest.byte(kDisplayFlags)) << 8);
 }
 
@@ -368,20 +358,9 @@ x86::reg32 frontend::dialogs::placeButtons(App* app, CPU& cpu, reg32 count, reg3
     using x86::sreg32;
     auto at = [](win32::WinApplication* app, reg32 address) { return app->getMemory<reg32>(address); };
     auto put = [](win32::WinApplication* app, reg32 address, reg32 value) { app->getMemory<reg32>(address) = value; };
-    auto push = [&](reg32 value) {
-        cpu.esp -= 4;
-        put(app, cpu.esp, value);
-    };
-    auto pop = [&] {
-        const reg32 value = at(app, cpu.esp);
-        cpu.esp += 4;
-        return value;
-    };
     auto chop = [&](Float value) {
-        const reg32 eax = cpu.eax;  // __CHP keeps every register
-        const double chopped = fe::direct<0x4dfd56, watcom::clib::chop>(app, cpu, double(value));
-        cpu.eax = eax;
-        return chopped;
+        // __CHP keeps every register: nothing to keep here.
+        return fe::direct<0x4dfd56, watcom::clib::chop>(app, cpu, double(value));
     };
     auto setWord = [&](reg32 address, reg32 value) { app->getMemory<x86::reg16>(address) = x86::reg16(value); };
     auto high = [&](reg32 address) { return reg32(sreg32(at(app, address)) >> 16); };  // mov, sar 0x10
@@ -389,130 +368,122 @@ x86::reg32 frontend::dialogs::placeButtons(App* app, CPU& cpu, reg32 count, reg3
     auto fistp = [&](reg32 address, double value) { put(app, address, reg32(fp::toInteger<sreg32>(value))); };
     auto half = [](reg32 value) { return reg32((sreg32(value) - (sreg32(value) >> 31)) >> 1); };  // cdq, sub, sar 1
 
-    cpu.eax = count;
-    cpu.edx = buttons;
-    cpu.ebx = column;
-    cpu.ecx = rect;
-    push(cpu.esi);
-    push(cpu.edi);
-    push(cpu.ebp);
-    cpu.ebp = cpu.esp;
-    const reg32 ebp = cpu.ebp;
+    reg32 eax = count, edx = buttons, ebx = column, ecx = rect, esi = 0, edi = 0;
+    // esi, edi and ebp pushed by the code: the frame (ebp is its base), not their values.
+    cpu.esp -= 4 * 3;
+    const reg32 ebp = cpu.esp;
     cpu.esp -= 0x14;
-    cpu.esi = cpu.eax;
-    put(app, ebp - 4, cpu.edx);
-    cpu.edx = cpu.ebx;
-    cpu.ebx = cpu.ecx;
+    esi = eax;
+    put(app, ebp - 4, edx);
+    edx = ebx;
+    ebx = ecx;
     fe::direct<0x452100, port::text::selectFontOf>(app, cpu, kFont);
-    cpu.eax = at(app, kButtonsX);
-    put(app, ebp - 0x10, cpu.eax);
-    if (cpu.edx != 0)
+    eax = at(app, kButtonsX);
+    put(app, ebp - 0x10, eax);
+    if (edx != 0)
     {
         // A column, up from the box's bottom.
-        Float bottom = loadFloat(cpu.ecx + kBottom);
-        cpu.edi = 0x280;
+        Float bottom = loadFloat(ecx + kBottom);
+        edi = 0x280;
         bottom = fp::add(bottom, loadFloat(kMinus15));
-        cpu.ecx = cpu.esi - 1;
+        ecx = esi - 1;
         fistp(ebp - 8, chop(bottom));
-        for (; sreg32(cpu.ecx) >= 0; --cpu.ecx)
+        for (; sreg32(ecx) >= 0; --ecx)
         {
-            if (sreg32(cpu.esi) >= kMaxButtons)
+            if (sreg32(esi) >= kMaxButtons)
                 continue;
-            cpu.edx = at(app, ebp - 4);
-            cpu.eax = at(app, cpu.ecx * 4 + cpu.edx);
-            if (cpu.eax == 0)
+            edx = at(app, ebp - 4);
+            eax = at(app, ecx * 4 + edx);
+            if (eax == 0)
                 continue;
-            cpu.ebx = at(app, ebp - 8);
-            cpu.edx = kFont;
-            cpu.ebx -= 0x1e;
-            cpu.eax = reg32(*fe::direct<0x452020, port::text::menuTextWidth>(app, cpu, cpu.esp - 4, cpu.eax, cpu.edx));
-            put(app, ebp - 8, cpu.ebx);
-            cpu.ebx = cpu.eax + 5;
-            cpu.edx = reg32(sreg32(cpu.ebx) >> 31);
-            cpu.eax = half(cpu.ebx);
-            cpu.edx = at(app, ebp - 0x10) - cpu.eax + 8;
-            setWord(cpu.ecx * 8 + kButtonBoxes + kBoxX, cpu.edx);
-            cpu.eax = high(cpu.ecx * 8 + kButtonBoxes);
-            if (sreg32(cpu.eax) < sreg32(cpu.edi))
-                cpu.edi = cpu.eax;
-            cpu.eax = cpu.ecx * 8;
-            cpu.edx = at(app, kInRace);
-            setWord(cpu.eax + kButtonBoxes + kBoxWidth, cpu.ebx);
-            setWord(cpu.eax + kButtonBoxes + kBoxHeight, cpu.edx != 0 ? 0x1e : 0x11);
-            cpu.eax = at(app, ebp - 8);
-            setWord(cpu.ecx * 8 + kButtonBoxes + kBoxY, cpu.eax);
+            ebx = at(app, ebp - 8);
+            edx = kFont;
+            ebx -= 0x1e;
+            eax = reg32(*fe::direct<0x452020, port::text::menuTextWidth>(app, cpu, cpu.esp - 4, eax, edx));
+            put(app, ebp - 8, ebx);
+            ebx = eax + 5;
+            edx = reg32(sreg32(ebx) >> 31);
+            eax = half(ebx);
+            edx = at(app, ebp - 0x10) - eax + 8;
+            setWord(ecx * 8 + kButtonBoxes + kBoxX, edx);
+            eax = high(ecx * 8 + kButtonBoxes);
+            if (sreg32(eax) < sreg32(edi))
+                edi = eax;
+            eax = ecx * 8;
+            edx = at(app, kInRace);
+            setWord(eax + kButtonBoxes + kBoxWidth, ebx);
+            setWord(eax + kButtonBoxes + kBoxHeight, edx != 0 ? 0x1e : 0x11);
+            eax = at(app, ebp - 8);
+            setWord(ecx * 8 + kButtonBoxes + kBoxY, eax);
         }
         // Lined up on the leftmost.
-        for (cpu.ecx = cpu.esi - 1; sreg32(cpu.ecx) >= 0; --cpu.ecx)
+        for (ecx = esi - 1; sreg32(ecx) >= 0; --ecx)
         {
-            if (sreg32(cpu.esi) >= kMaxButtons)
+            if (sreg32(esi) >= kMaxButtons)
                 continue;
-            cpu.ebx = at(app, ebp - 4);
-            cpu.eax = at(app, cpu.ecx * 4 + cpu.ebx);
-            if (cpu.eax != 0)
-                setWord(cpu.ecx * 8 + kButtonBoxes + kBoxX, cpu.edi);
+            ebx = at(app, ebp - 4);
+            eax = at(app, ecx * 4 + ebx);
+            if (eax != 0)
+                setWord(ecx * 8 + kButtonBoxes + kBoxX, edi);
         }
     }
     else
     {
         // A row, spread evenly across the box.
-        fistp(ebp - 0x14, chop(fp::sub(loadFloat(cpu.ebx + kRight), loadFloat(cpu.ecx + kLeft))));
-        cpu.eax = at(app, ebp - 0x14);
-        Float bottom = loadFloat(cpu.ecx + kBottom);
-        cpu.edx = reg32(sreg32(cpu.eax) >> 31);
-        cpu.ecx = cpu.esi + 1;
+        fistp(ebp - 0x14, chop(fp::sub(loadFloat(ebx + kRight), loadFloat(ecx + kLeft))));
+        eax = at(app, ebp - 0x14);
+        Float bottom = loadFloat(ecx + kBottom);
+        edx = reg32(sreg32(eax) >> 31);
+        ecx = esi + 1;
         {
-            const sreg32 dividend = sreg32(cpu.eax), divisor = sreg32(cpu.ecx);  // idiv ecx
-            cpu.eax = reg32(dividend / divisor);
-            cpu.edx = reg32(dividend % divisor);
+            const sreg32 dividend = sreg32(eax), divisor = sreg32(ecx);  // idiv ecx
+            eax = reg32(dividend / divisor);
+            edx = reg32(dividend % divisor);
         }
         bottom = fp::add(bottom, loadFloat(kMinus15));
         bottom = fp::add(bottom, loadFloat(kMinus30));
         fistp(ebp - 8, chop(bottom));
-        put(app, ebp - 0xc, cpu.eax);
-        for (cpu.ecx = 0; sreg32(cpu.ecx) < sreg32(cpu.esi); ++cpu.ecx)
+        put(app, ebp - 0xc, eax);
+        for (ecx = 0; sreg32(ecx) < sreg32(esi); ++ecx)
         {
-            if (sreg32(cpu.esi) >= kMaxButtons)
+            if (sreg32(esi) >= kMaxButtons)
                 continue;
-            cpu.edi = at(app, ebp - 4);
-            cpu.eax = at(app, cpu.ecx * 4 + cpu.edi);
-            if (cpu.eax == 0)
+            edi = at(app, ebp - 4);
+            eax = at(app, ecx * 4 + edi);
+            if (eax == 0)
                 continue;
-            cpu.edx = kFont;
-            cpu.eax = reg32(*fe::direct<0x452020, port::text::menuTextWidth>(app, cpu, cpu.esp - 4, cpu.eax, cpu.edx));
-            setWord(cpu.ecx * 8 + kButtonBoxes + kBoxWidth, cpu.eax);
-            cpu.edx = at(app, ebp - 0xc);
-            fistp(ebp - 0x14, chop(loadFloat(cpu.ebx + kLeft)));
-            put(app, ebp - 0x14, at(app, ebp - 0x14) + cpu.edx);
-            cpu.eax = cpu.edx * cpu.ecx;  // imul: its low 32 bits
-            put(app, ebp - 0x14, at(app, ebp - 0x14) + cpu.eax);
-            cpu.edx = high(cpu.ecx * 8 + kButtonBoxes + kBoxX);
-            cpu.eax = half(cpu.edx);
-            cpu.edx = reg32(sreg32(cpu.edx) >> 31);
-            cpu.edx = at(app, ebp - 0x14) - cpu.eax;
-            cpu.edi = 0x1e;
-            setWord(cpu.ecx * 8 + kButtonBoxes + kBoxHeight, cpu.edi);
-            cpu.eax = cpu.edx + 8;
-            setWord(cpu.ecx * 8 + kButtonBoxes + kBoxX, cpu.eax);
-            cpu.eax = at(app, ebp - 8);
-            setWord(cpu.ecx * 8 + kButtonBoxes + kBoxY, cpu.eax);
+            edx = kFont;
+            eax = reg32(*fe::direct<0x452020, port::text::menuTextWidth>(app, cpu, cpu.esp - 4, eax, edx));
+            setWord(ecx * 8 + kButtonBoxes + kBoxWidth, eax);
+            edx = at(app, ebp - 0xc);
+            fistp(ebp - 0x14, chop(loadFloat(ebx + kLeft)));
+            put(app, ebp - 0x14, at(app, ebp - 0x14) + edx);
+            eax = edx * ecx;  // imul: its low 32 bits
+            put(app, ebp - 0x14, at(app, ebp - 0x14) + eax);
+            edx = high(ecx * 8 + kButtonBoxes + kBoxX);
+            eax = half(edx);
+            edx = reg32(sreg32(edx) >> 31);
+            edx = at(app, ebp - 0x14) - eax;
+            edi = 0x1e;
+            setWord(ecx * 8 + kButtonBoxes + kBoxHeight, edi);
+            eax = edx + 8;
+            setWord(ecx * 8 + kButtonBoxes + kBoxX, eax);
+            eax = at(app, ebp - 8);
+            setWord(ecx * 8 + kButtonBoxes + kBoxY, eax);
         }
-        if (gameSettings(app).language == 3 && cpu.esi == 2)
+        if (gameSettings(app).language == 3 && esi == 2)
         {
             // Two buttons five pixels further apart each.
-            cpu.dx = app->getMemory<x86::reg16>(kButtonBoxes + kBoxSize + kBoxX);
-            cpu.ax = app->getMemory<x86::reg16>(kButtonBoxes + kBoxX);
-            cpu.edx += 5;
-            cpu.eax -= 5;
-            setWord(kButtonBoxes + kBoxSize + kBoxX, cpu.edx);
-            setWord(kButtonBoxes + kBoxX, cpu.eax);
+            edx = (edx & 0xffff0000u) | app->getMemory<x86::reg16>(kButtonBoxes + kBoxSize + kBoxX);
+            eax = (eax & 0xffff0000u) | app->getMemory<x86::reg16>(kButtonBoxes + kBoxX);
+            edx += 5;
+            eax -= 5;
+            setWord(kButtonBoxes + kBoxSize + kBoxX, edx);
+            setWord(kButtonBoxes + kBoxX, eax);
         }
     }
-    cpu.esp = cpu.ebp;
-    cpu.ebp = pop();
-    cpu.edi = pop();
-    cpu.esi = pop();
-    return cpu.eax;
+    cpu.esp = ebp + 4 * 3;
+    return eax;
 }
 
 /* ---------------------------------------------------------------------------
@@ -567,7 +538,7 @@ x86::reg32 frontend::dialogs::openQuestion(App* app, CPU& cpu, reg32 lineCount, 
     }
 
     // The two boxes put together round the lines' middle, as wide as the wider.
-    X87 x87(guest);
+    Arith x87(guest);
     const Float linesWidth = x87.sub(x87.load(linesRect + kRight), x87.load(linesRect + kLeft));
     const Float linesHeight = x87.sub(x87.load(linesRect + kBottom), x87.load(linesRect + kTop));
     const float linesWidthF = float(linesWidth), linesHeightF = float(linesHeight);
@@ -594,10 +565,9 @@ x86::reg32 frontend::dialogs::openQuestion(App* app, CPU& cpu, reg32 lineCount, 
     setDialogRect(guest, x87, Float(middleXF), Float(middleYF), x87.mul(Float(0.5), Float(width)),
                   x87.mul(Float(height), Float(0.5)));
 
-    guest.call(kPlaceButtons, fe::args({ guest.dword(kButtonCount), guest.dword(kButtons), column, kRect }));
+    guest::direct<0x443d20, placeButtons>(app, cpu, guest.dword(kButtonCount), guest.dword(kButtons), column, kRect);
     guest::direct<0x444570, pointAtButton>(app, cpu, guest.dword(kFocus));
     guest.setDword(kCallback, callback);
-    guest.leaveEdx(callback);  // as the generated function leaves it
     return 0;
 }
 
@@ -625,10 +595,9 @@ x86::reg32 frontend::dialogs::openMessage(App* app, CPU& cpu, reg32 lineCount, r
         time = 0 - time;
     guest.setDword(kMessageTime, time);
     guest.setByte(kMessageKeys, std::int32_t(time) > 0 ? std::uint8_t(keys) : 1);
-    // By address: the registers sub_443a90 leaves go on to the message's openers.
-    const x86::reg32 result = guest.call(kLinesBox, fe::args({ guest.dword(kLineCount), guest.dword(kLines), 0, 0 }, { kRect }));
+    const x86::reg32 result =
+        guest::direct<0x443a90, linesBox>(app, cpu, guest.dword(kLineCount), guest.dword(kLines), 0, 0, kRect);
     guest.setDword(kCallback, callback);
-    guest.leaveEdx(0);  // as the generated function leaves it (see sub_443a90)
     return result;
 }
 
@@ -638,9 +607,8 @@ x86::reg32 frontend::dialogs::messageById(App* app, CPU& cpu, reg32 id)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 16);
-    // edx as the game's code hands it on, to a name past the lines.
     guest.setDword(kMessageLine,
-                   reg32(*fe::direct<0x4d1850, port::text::lineText>(app, cpu, cpu.esp - 4, std::int32_t(id), cpu.edx)));
+                   reg32(*fe::direct<0x4d1850, port::text::lineText>(app, cpu, cpu.esp - 4, std::int32_t(id), 0)));
     return guest::direct<0x444a80, openMessage>(app, cpu, 1, kMessageLine, kMessageTicks, 1, 0);
 }
 
@@ -679,7 +647,7 @@ x86::reg32 frontend::dialogs::openEdit(App* app, CPU& cpu, reg32 lineCount, reg3
     guest::direct<0x443a90, linesBox>(app, cpu, guest.dword(kLineCount), guest.dword(kLines), 1, 1, linesRect);
     guest::direct<0x443c00, buttonRowBox>(app, cpu, guest.dword(kButtonCount), guest.dword(kButtons), buttonsRect);
 
-    X87 x87(guest);
+    Arith x87(guest);
     const Float linesWidth = x87.sub(x87.load(linesRect + kRight), x87.load(linesRect + kLeft));
     const float linesWidthF = float(linesWidth);
     const Float halfLinesWidth = x87.mul(linesWidth, Float(0.5));
@@ -712,9 +680,9 @@ x86::reg32 frontend::dialogs::openEdit(App* app, CPU& cpu, reg32 lineCount, reg3
 
     // The field: the most characters, the widest of them, and the cursor.
     setFont(guest, cpu);
-    const float textWidthF = float(x87.mul(X87::integer(textWidth(guest, kWidest.address)),
-                                           X87::integer(sdword(guest, kEditMax))));
-    const Float room = x87.add(x87.add(X87::integer(textWidth(guest, kCursor.address)), Float(textWidthF)), Float(5.0));
+    const float textWidthF = float(x87.mul(Arith::integer(textWidth(guest, kWidest.address)),
+                                           Arith::integer(sdword(guest, kEditMax))));
+    const Float room = x87.add(x87.add(Arith::integer(textWidth(guest, kCursor.address)), Float(textWidthF)), Float(5.0));
     const Float field = x87.above(room, Float(240.0)) ? Float(240.0) : Float(float(room));
     guest.setDword(kEditWidth, reg(x87.truncated(field)));
     const Float withMargin = x87.add(field, Float(30.0));
@@ -725,19 +693,19 @@ x86::reg32 frontend::dialogs::openEdit(App* app, CPU& cpu, reg32 lineCount, reg3
         float boxWidth = float(withMargin);
         if (!x87.below(Float(boxWidth), Float(640.0)))
             boxWidth = 639.0f;
-        if (!x87.below(Float(boxWidth), X87::integer(480)))
-            boxWidth = float(x87.add(X87::integer(480), Float(-1.0)));
+        if (!x87.below(Float(boxWidth), Arith::integer(480)))
+            boxWidth = float(x87.add(Arith::integer(480), Float(-1.0)));
         const Float halfWidth = x87.mul(Float(boxWidth), Float(0.5));
         guest.setFloat(kRect + kLeft, float(x87.sub(Float(middleXF), halfWidth)));
         guest.setFloat(kRect + kRight, float(x87.add(halfWidth, Float(middleXF))));
     }
 
     guest.setDword(kCallback, callback);
-    guest.call(kPlaceButtons, fe::args({ guest.dword(kButtonCount), guest.dword(kButtons), 0, kRect }));
+    guest::direct<0x443d20, placeButtons>(app, cpu, guest.dword(kButtonCount), guest.dword(kButtons), 0, kRect);
     return guest::direct<0x444570, pointAtButton>(app, cpu, guest.dword(kFocus));
 }
 
-/* Each stand-in: the generated function, what its ret pops, its frame (the
+/* Each thunk: the game's function, what its ret pops, its frame (the
  * registers it pushes, its locals), the strings it hands to the game, and the
  * registers it restores. */
 using fe::kRestoreEbx;
@@ -747,107 +715,108 @@ using fe::kRestoreEsi;
 using fe::kRestoreEdi;
 constexpr std::uint8_t kRestoreNone = 0;
 
-/* Native whole, no generated code behind them (disassemble_nfs3hp.py's
- * MENU_NATIVES): a question, a message, a line to type in as the main menu
+/* Native whole: a question, a message, a line to type in as the main menu
  * opens them, and what they open with. */
 namespace frontend
 {
 
 /* The button highlighted, native whole: the main menu's question asks it. */
-void dialogFocusedButton(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 dialogFocusedButton(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4446c0", 0, 0, nullptr, 0, kRestoreNone };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return dialogs::focusedButton(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return dialogs::focusedButton(app, cpu); });
 }
 
-void dialogLinesBox(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 dialogLinesBox(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_443a90", 4, 0, nullptr, 0, kRestoreEsi | kRestoreEdi };
-    const x86::reg32 count = cpu.eax, lines = cpu.edx, rowBelow = cpu.ebx, fieldBelow = cpu.ecx;
+    const x86::reg32 count = args.eax, lines = args.edx, rowBelow = args.ebx, fieldBelow = args.ecx;
     const x86::reg32 rect = stackArgument(app, cpu, 0);
-    fe::runWhole(app, cpu, site,
+    return fe::runThunk(app, cpu, args, site,
                  [&](Guest&) { return dialogs::linesBox(app, cpu, count, lines, rowBelow, fieldBelow, rect); });
 }
 
-void dialogButtonRowBox(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 dialogButtonRowBox(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_443c00", 0, 0, nullptr, 0, kRestoreEcx | kRestoreEsi | kRestoreEdi };
-    const x86::reg32 count = cpu.eax, buttons = cpu.edx, rect = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return dialogs::buttonRowBox(app, cpu, count, buttons, rect); });
+    const x86::reg32 count = args.eax, buttons = args.edx, rect = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return dialogs::buttonRowBox(app, cpu, count, buttons, rect); });
 }
 
 /* sub_443d20 as its code is (dialogs::placeButtons): its ret pops the return address. */
-void dialogPlaceButtons(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 dialogPlaceButtons(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     try
     {
-        dialogs::placeButtons(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx);
+        args.eax = dialogs::placeButtons(app, cpu, args.eax, args.edx, args.ebx, args.ecx);
         cpu.esp += 4;
     }
     catch (const fe::Terminated&)
     {
     }
+    return args.eax;
 }
 
-void dialogPointAtButton(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 dialogPointAtButton(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_444570", 0, 0, nullptr, 0, kRestoreEcx | kRestoreEdx };
-    const x86::reg32 index = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return dialogs::pointAtButton(app, cpu, index); });
+    const x86::reg32 index = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return dialogs::pointAtButton(app, cpu, index); });
 }
 
-void dialogOpenQuestion(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 dialogOpenQuestion(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4446d0", 0x10, 0, nullptr, 0, kRestoreEsi | kRestoreEdi };
-    const x86::reg32 lineCount = cpu.eax, lines = cpu.edx, buttonCount = cpu.ebx, buttons = cpu.ecx;
+    const x86::reg32 lineCount = args.eax, lines = args.edx, buttonCount = args.ebx, buttons = args.ecx;
     const x86::reg32 buttonHelp = stackArgument(app, cpu, 0), column = stackArgument(app, cpu, 2);
     const x86::reg32 focus = stackArgument(app, cpu, 1);
     const x86::reg32 callback = stackArgument(app, cpu, 3);
-    fe::runWhole(app, cpu, site, [&](Guest&) {
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
         return dialogs::openQuestion(app, cpu, lineCount, lines, buttonCount, buttons, buttonHelp, focus, column,
                                      callback);
     });
 }
 
-void dialogOpenMessage(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 dialogOpenMessage(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_444a80", 4, 0, nullptr, 0, kRestoreEsi | kRestoreEdi };
-    const x86::reg32 lineCount = cpu.eax, lines = cpu.edx, time = cpu.ebx, keys = cpu.ecx;
+    const x86::reg32 lineCount = args.eax, lines = args.edx, time = args.ebx, keys = args.ecx;
     const x86::reg32 callback = stackArgument(app, cpu, 0);
-    fe::runWhole(app, cpu, site,
+    return fe::runThunk(app, cpu, args, site,
                  [&](Guest&) { return dialogs::openMessage(app, cpu, lineCount, lines, time, keys, callback); });
 }
 
-void dialogMessageById(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 dialogMessageById(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_444be0", 0, 0, nullptr, 0, kRestoreEbx | kRestoreEcx | kRestoreEdx };
-    const x86::reg32 id = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return dialogs::messageById(app, cpu, id); });
+    const x86::reg32 id = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return dialogs::messageById(app, cpu, id); });
 }
 
-void dialogEditText(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 dialogEditText(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_444c10", 0, 0, nullptr, 0, kRestoreNone };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return dialogs::editText(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return dialogs::editText(app, cpu); });
 }
 
-void dialogOpenEdit(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 dialogOpenEdit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_444c20", 0x14, 0, kEditStrings, std::size(kEditStrings), kRestoreEsi | kRestoreEdi };
-    const x86::reg32 lineCount = cpu.eax, lines = cpu.edx, buttonCount = cpu.ebx, buttons = cpu.ecx;
+    const x86::reg32 lineCount = args.eax, lines = args.edx, buttonCount = args.ebx, buttons = args.ecx;
     const x86::reg32 focus = stackArgument(app, cpu, 0);
     const x86::reg32 source = stackArgument(app, cpu, 1), maxLength = stackArgument(app, cpu, 2);
     const x86::reg32 mode = stackArgument(app, cpu, 3), callback = stackArgument(app, cpu, 4);
-    fe::runWhole(app, cpu, site, [&](Guest&) {
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
         return dialogs::openEdit(app, cpu, lineCount, lines, buttonCount, buttons, focus, source, maxLength, mode,
                                  callback);
     });
 }
 
-void dialogFadedIn(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 dialogFadedIn(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_445f00", 0, 0, nullptr, 0, kRestoreNone };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return dialogs::fadedIn(app, cpu); });
+    const x86::reg32 eax = args.eax;  // left as it came
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return dialogs::fadedIn(app, cpu), eax; });
 }
 
 }  // namespace frontend

@@ -47,8 +47,7 @@ namespace x86
 
 /* Implemented in src/lib/x86.cpp: logs through SDL_Log so it lands wherever
  * the rest of the port's logging goes (logcat on Android, console on
- * desktop) without pulling <SDL3/SDL.h> into every one of the ~85 MB of
- * generated disassembly translation units that include this header. */
+ * desktop) without pulling <SDL3/SDL.h> into every translation unit that includes this header. */
 void assertLog(const char* file, int line, const char* expr);
 
 typedef uint8_t reg8;

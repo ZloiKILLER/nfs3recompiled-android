@@ -11,10 +11,7 @@
 
 /* The race's queue of inputs: each player's four bytes by frame, handed to
  * the cars and to the other machines in a network race, and the edges of the
- * keys and actions the race's screens ask about.  disassemble_nfs3hp.py binds
- * each address to the function of that name here (CONTROLS_QUEUE_NATIVES),
- * and the generated code calls it by name.  tools/game_checks holds each
- * against its generated code.
+ * keys and actions the race's screens ask about.
  *
  * The queue is a ring of 128 frames for each of 8 players: a player's four
  * bytes (native_controls_pipeline.cpp's: the steering, the throttle, the
@@ -30,8 +27,8 @@
  * ahead of what is taken in one player's race, more over the network.  The
  * frames the race may run, 0x560104, counted up as frames are queued.
  *
- * Each is a typed function under a name of its own, with an adapter under the
- * game's name for the callers still on registers and the dispatch: it leaves
+ * Each is a typed function under a name of its own, with a thunk under the
+ * game's name for the callers still on registers and the calls through a pointer: it leaves
  * eax -- and for some edx or ebx, which the code leaves otherwise and no
  * caller reads -- as the game's code does, every other register as the caller
  * had it.  A dword is copied as the code copies it (movsd, then movsb for
@@ -39,7 +36,7 @@
  * hold (0x4c6514, 0x4c6a2c, 0x4c6acc).  The network's packets sent and a
  * machine's player found are native_ea_net.h's, called as C++
  * (guest::direct); the critical section's Windows functions are called by
- * address, their registers kept (KeptRegisters), under the network's lock as
+ * address, their registers kept (EspKept), under the network's lock as
  * the code takes it. */
 namespace nfs3hp
 {
@@ -111,30 +108,6 @@ reg16 half(App* app, reg32 address)
     return app->getMemory<reg16>(address);
 }
 
-/* What a function's frame keeps of its caller's across a call: every register but eax. */
-class KeptRegisters
-{
-public:
-    explicit KeptRegisters(CPU& cpu)
-        : cpu_(cpu), ebx_(cpu.ebx), ecx_(cpu.ecx), edx_(cpu.edx), esi_(cpu.esi), edi_(cpu.edi), ebp_(cpu.ebp), esp_(cpu.esp)
-    {
-    }
-    ~KeptRegisters()
-    {
-        cpu_.ebx = ebx_;
-        cpu_.ecx = ecx_;
-        cpu_.edx = edx_;
-        cpu_.esi = esi_;
-        cpu_.edi = edi_;
-        cpu_.ebp = ebp_;
-        cpu_.esp = esp_;
-    }
-
-private:
-    CPU& cpu_;
-    reg32 ebx_, ecx_, edx_, esi_, edi_, ebp_, esp_;
-};
-
 /* A frame whose address a callee is handed, on the guest's stack at the
  * code's depth: `pushed` bytes of registers pushed, then `bytes` of locals. */
 class GuestFrame
@@ -155,18 +128,16 @@ private:
 
 /* EnterCriticalSection or LeaveCriticalSection (`Function`) on `lock`, with
  * eax and edx as the code has them as it calls: a Windows function may leave
- * them or not.  The port's own, called as C++ (native_windows.h); in the check
- * through the game's pointer to it, its import's slot `Slot`.  eax and edx as
+ * them or not.  The port's own, called as C++ (native_windows.h).  eax and edx as
  * it leaves them; nullopt when the game stopped. */
 template <reg32 Slot, auto Function>
 std::optional<Answered> lockCall(App* app, CPU& cpu, reg32 lock, reg32 eaxBefore, reg32 edxBefore)
 {
-    const KeptRegisters kept(cpu);
-    cpu.eax = eaxBefore;
-    cpu.edx = edxBefore;
+    const reg32 esp = cpu.esp;
     if (!guest::windows<Slot, Function>(app, cpu, lock))
         return std::nullopt;
-    return Answered{cpu.eax, cpu.edx};
+    cpu.esp = esp;
+    return Answered{eaxBefore, edxBefore};  // the lock functions leave eax and edx as they were
 }
 
 /* `count` bytes from `from` to `to`, as rep movsd and rep movsb copy them: a
@@ -777,225 +748,306 @@ std::optional<Received> receivePacket(App* app, CPU& cpu, reg32 machine, reg32 p
     return Received{queued.answer, controls, queued.edxLeft};
 }
 
-/* The adapters' end: eax the core's answer, ret. */
-void answer(CPU& cpu, reg32 result)
-{
-    cpu.eax = result;
-    cpu.esp += 4;
-}
-
-/* actionPressed and functionKeyPressed: ringBitPressed of bit al, an edge
- * for edx nonzero; edx left the bit's mask, and-ed with the ring's slot for
- * an edge, as the code leaves it. */
-void ringBitAdapter(App* app, CPU& cpu, reg32 ring)
-{
-    const reg32 bit = cpu.eax;
-    const bool edge = cpu.edx != 0;
-    cpu.edx = edge ? maskOf(bit) & ringNow(app, ring) : maskOf(bit);
-    answer(cpu, ringBitPressed(app, ring, bit, edge) ? 1 : 0);
-}
-
 }  // namespace
 
-void takeCarControls(App* app, CPU& cpu);
-void stepMenuChoice(App* app, CPU& cpu);
-void stepMenuChoiceOfThree(App* app, CPU& cpu);
-void actionPressed(App* app, CPU& cpu);
-void functionKeyPressed(App* app, CPU& cpu);
-void pressFunctionKey(App* app, CPU& cpu);
-void functionKeyRepeats(App* app, CPU& cpu);
-void keyPressed(App* app, CPU& cpu);
-void firstFunctionKeyHeld(App* app, CPU& cpu);
-void appendToPacket(App* app, CPU& cpu);
-void sendOwnInput(App* app, CPU& cpu);
-void receiveInput(App* app, CPU& cpu);
-void queueInput(App* app, CPU& cpu);
-void queueRemoteInput(App* app, CPU& cpu);
-void takeQueuedFrame(App* app, CPU& cpu);
-void takenControls(App* app, CPU& cpu);
-void repeatMissingInputs(App* app, CPU& cpu);
-void syncFrame(App* app, CPU& cpu);
-void framesTaken(App* app, CPU& cpu);
-void framesQueued(App* app, CPU& cpu);
-void queueLead(App* app, CPU& cpu);
-void noteLag(App* app, CPU& cpu);
-void setQueueDelays(App* app, CPU& cpu);
-void queueFull(App* app, CPU& cpu);
+x86::reg32 takeCarControls(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 stepMenuChoice(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 stepMenuChoiceOfThree(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 actionPressed(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 functionKeyPressed(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 pressFunctionKey(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 functionKeyRepeats(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 keyPressed(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 firstFunctionKeyHeld(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 appendToPacket(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 sendOwnInput(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 receiveInput(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 queueInput(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 queueRemoteInput(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 takeQueuedFrame(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 takenControls(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 repeatMissingInputs(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 syncFrame(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 framesTaken(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 framesQueued(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 queueLead(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 noteLag(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 setQueueDelays(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 queueFull(App* app, CPU& cpu, x86::Args& args);
 
 /* 0x48f6a0: takeCarFrame for player eax. */
-void takeCarControls(App* app, CPU& cpu)
+x86::reg32 takeCarControls(App* app, CPU& cpu, x86::Args& args)
 {
-    answer(cpu, takeCarFrame(app, cpu.eax));
+    args.eax = takeCarFrame(app, args.eax);
+    cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x48f6e0: stepChoice of choice al of edx; the code leaves the buttons in
  * ah, and edx less one when it steps up. */
-void stepMenuChoice(App* app, CPU& cpu)
+x86::reg32 stepMenuChoice(App* app, CPU& cpu, x86::Args& args)
 {
     const reg8 buttons = byte(app, kCarButtons);
-    cpu.al = stepChoice(app, cpu.al, cpu.edx);
-    cpu.ah = buttons;
+    args.eax = (args.eax & 0xffff0000) | (reg32(buttons) << 8) | stepChoice(app, reg8(args.eax), args.edx);
     if (buttons & kMenuUp)
-        --cpu.edx;
+        --args.edx;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x48f710: stepChoiceOfThree of choice al; the buttons left in ah. */
-void stepMenuChoiceOfThree(App* app, CPU& cpu)
+x86::reg32 stepMenuChoiceOfThree(App* app, CPU& cpu, x86::Args& args)
 {
     const reg8 buttons = byte(app, kCarButtons);
-    cpu.al = stepChoiceOfThree(app, cpu.al);
-    cpu.ah = buttons;
+    args.eax = (args.eax & 0xffff0000) | (reg32(buttons) << 8) | stepChoiceOfThree(app, reg8(args.eax));
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x48f740: whether action al (a bit of the actions' ring, 0x79c238) is held
  * at the screens' frame (edx 0), or was pressed in it (edx nonzero). */
-void actionPressed(App* app, CPU& cpu)
+x86::reg32 actionPressed(App* app, CPU& cpu, x86::Args& args)
 {
-    ringBitAdapter(app, cpu, kActionRing);
+    const reg32 bit = args.eax;
+    const bool edge = args.edx != 0;
+    args.edx = edge ? maskOf(bit) & ringNow(app, kActionRing) : maskOf(bit);
+    args.eax = ringBitPressed(app, kActionRing, bit, edge) ? 1 : 0;
+    cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x48f7b0: whether function key al (a bit of their ring, 0x79c2b8) is held
  * at the screens' frame (edx 0), or was pressed in it (edx nonzero). */
-void functionKeyPressed(App* app, CPU& cpu)
+x86::reg32 functionKeyPressed(App* app, CPU& cpu, x86::Args& args)
 {
-    ringBitAdapter(app, cpu, kFunctionKeyRing);
+    const reg32 bit = args.eax;
+    const bool edge = args.edx != 0;
+    args.edx = edge ? maskOf(bit) & ringNow(app, kFunctionKeyRing) : maskOf(bit);
+    args.eax = ringBitPressed(app, kFunctionKeyRing, bit, edge) ? 1 : 0;
+    cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x48f820: holdFunctionKey of bit al. */
-void pressFunctionKey(App* app, CPU& cpu)
+x86::reg32 pressFunctionKey(App* app, CPU& cpu, x86::Args& args)
 {
-    answer(cpu, holdFunctionKey(app, cpu.eax));
+    args.eax = holdFunctionKey(app, args.eax);
+    cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x48f860: functionKeyRepeat of bit al past edx frames. */
-void functionKeyRepeats(App* app, CPU& cpu)
+x86::reg32 functionKeyRepeats(App* app, CPU& cpu, x86::Args& args)
 {
-    answer(cpu, functionKeyRepeat(app, cpu.eax, cpu.edx) ? 1 : 0);
+    args.eax = functionKeyRepeat(app, args.eax, args.edx) ? 1 : 0;
+    cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x48f8d0: keyDownOrPressed of key eax, an edge for edx nonzero. */
-void keyPressed(App* app, CPU& cpu)
+x86::reg32 keyPressed(App* app, CPU& cpu, x86::Args& args)
 {
-    answer(cpu, keyDownOrPressed(app, cpu.eax, cpu.edx != 0) ? 1 : 0);
+    args.eax = keyDownOrPressed(app, args.eax, args.edx != 0) ? 1 : 0;
+    cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x48f920: firstFunctionKey. */
-void firstFunctionKeyHeld(App* app, CPU& cpu)
+x86::reg32 firstFunctionKeyHeld(App* app, CPU& cpu, x86::Args& args)
 {
-    answer(cpu, firstFunctionKey(app));
+    args.eax = firstFunctionKey(app);
+    cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4c6080: appendPacket of edx, ebx long; eax and edx left the bytes
  * appended, ebx the packet's start, as the code leaves them. */
-void appendToPacket(App* app, CPU& cpu)
+x86::reg32 appendToPacket(App* app, CPU& cpu, x86::Args& args)
 {
     const reg32 start = at(app, kPacketStart);
-    const reg32 bytes = appendPacket(app, cpu.edx, cpu.ebx);
-    cpu.edx = bytes;
-    cpu.ebx = start;
-    answer(cpu, bytes);
+    const reg32 bytes = appendPacket(app, args.edx, args.ebx);
+    args.edx = bytes;
+    args.ebx = start;
+    args.eax = bytes;
+    cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4c60c0: sendInput of the four bytes at eax. */
-void sendOwnInput(App* app, CPU& cpu)
+x86::reg32 sendOwnInput(App* app, CPU& cpu, x86::Args& args)
 {
-    if (const auto sent = sendInput(app, cpu, cpu.eax))
-        answer(cpu, *sent);
+    if (const auto sent = sendInput(app, cpu, args.eax))
+    {
+        args.eax = *sent;
+        cpu.esp += 4;
+    }
+    return args.eax;
 }
 
 /* 0x4c61e0: receivePacket of the packet at edx from machine eax; ebx and edx
  * as it leaves them. */
-void receiveInput(App* app, CPU& cpu)
+x86::reg32 receiveInput(App* app, CPU& cpu, x86::Args& args)
 {
-    const auto received = receivePacket(app, cpu, cpu.eax, cpu.edx, {cpu.eax, cpu.ebx, cpu.edx});
+    const auto received = receivePacket(app, cpu, args.eax, args.edx, {args.eax, args.ebx, args.edx});
     if (!received)
-        return;
-    cpu.ebx = received->ebxLeft;
-    cpu.edx = received->edxLeft;
-    answer(cpu, received->answer);
+        return args.eax;
+    args.ebx = received->ebxLeft;
+    args.edx = received->edxLeft;
+    args.eax = received->answer;
+    cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4c6530: queuePlayerInput of player eax's four bytes at edx; edx as it
  * leaves it. */
-void queueInput(App* app, CPU& cpu)
+x86::reg32 queueInput(App* app, CPU& cpu, x86::Args& args)
 {
-    const Answered queued = queuePlayerInput(app, cpu.eax, cpu.edx);
-    cpu.edx = queued.edxLeft;
-    answer(cpu, queued.answer);
+    const Answered queued = queuePlayerInput(app, args.eax, args.edx);
+    args.edx = queued.edxLeft;
+    args.eax = queued.answer;
+    cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4c66a0: queueRemote of player eax's four bytes at edx; edx as it leaves
  * it. */
-void queueRemoteInput(App* app, CPU& cpu)
+x86::reg32 queueRemoteInput(App* app, CPU& cpu, x86::Args& args)
 {
-    const Answered queued = queueRemote(app, cpu.eax, cpu.edx);
-    cpu.edx = queued.edxLeft;
-    answer(cpu, queued.answer);
+    const Answered queued = queueRemote(app, args.eax, args.edx);
+    args.edx = queued.edxLeft;
+    args.eax = queued.answer;
+    cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4c67a0: takeFrame of frame eax. */
-void takeQueuedFrame(App* app, CPU& cpu)
+x86::reg32 takeQueuedFrame(App* app, CPU& cpu, x86::Args& args)
 {
-    answer(cpu, takeFrame(app, cpu.eax, cpu.eax));
+    args.eax = takeFrame(app, args.eax, args.eax);
+    cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4c6840: copyTaken of player eax to edx; eax left the bytes copied. */
-void takenControls(App* app, CPU& cpu)
+x86::reg32 takenControls(App* app, CPU& cpu, x86::Args& args)
 {
-    copyTaken(app, cpu.eax, cpu.edx);
-    answer(cpu, kControlsBytes);
+    copyTaken(app, args.eax, args.edx);
+    args.eax = kControlsBytes;
+    cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4c6870: repeatMissing to the records at eax. */
-void repeatMissingInputs(App* app, CPU& cpu)
+x86::reg32 repeatMissingInputs(App* app, CPU& cpu, x86::Args& args)
 {
-    answer(cpu, repeatMissing(app, cpu.eax, cpu.eax));
+    args.eax = repeatMissing(app, args.eax, args.eax);
+    cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4c6970: meetingFrame. */
-void syncFrame(App* app, CPU& cpu)
+x86::reg32 syncFrame(App* app, CPU& cpu, x86::Args& args)
 {
-    answer(cpu, meetingFrame(app));
+    args.eax = meetingFrame(app);
+    cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4c69a0: the frames taken from the queue. */
-void framesTaken(App* app, CPU& cpu)
+x86::reg32 framesTaken(App* app, CPU& cpu, x86::Args& args)
 {
-    answer(cpu, at(app, kFramesTaken));
+    args.eax = at(app, kFramesTaken);
+    cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4c69b0: player 0's frames queued. */
-void framesQueued(App* app, CPU& cpu)
+x86::reg32 framesQueued(App* app, CPU& cpu, x86::Args& args)
 {
-    answer(cpu, at(app, kFramesQueued));
+    args.eax = at(app, kFramesQueued);
+    cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4c69c0: queueLeadByte in al; the rest of eax 0 on two machines, else as
  * it was, as the code leaves it. */
-void queueLead(App* app, CPU& cpu)
+x86::reg32 queueLead(App* app, CPU& cpu, x86::Args& args)
 {
     const reg32 lead = queueLeadByte(app);
-    answer(cpu, at(app, kNetworkKind) == kTwoMachines ? lead : (cpu.eax & 0xffffff00) | lead);
+    args.eax = at(app, kNetworkKind) == kTwoMachines ? lead : (args.eax & 0xffffff00) | lead;
+    cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4c6a10: noteMachineLag of eax. */
-void noteLag(App* app, CPU& cpu)
+x86::reg32 noteLag(App* app, CPU& cpu, x86::Args& args)
 {
-    answer(cpu, noteMachineLag(app, cpu.eax));
+    args.eax = noteMachineLag(app, args.eax);
+    cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4c6a40: setDelays. */
-void setQueueDelays(App* app, CPU& cpu)
+x86::reg32 setQueueDelays(App* app, CPU& cpu, x86::Args& args)
 {
-    answer(cpu, setDelays(app));
+    args.eax = setDelays(app);
+    cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4c6ae0: queueAhead for player eax. */
-void queueFull(App* app, CPU& cpu)
+x86::reg32 queueFull(App* app, CPU& cpu, x86::Args& args)
 {
-    answer(cpu, queueAhead(app, cpu.eax));
+    args.eax = queueAhead(app, args.eax);
+    cpu.esp += 4;
+    return args.eax;
+}
+
+/* The typed cores of the thunks above, for callers that call them as C++ (native_controls_queue.h). */
+reg32 carControlsTaken(App* app, reg32 player)
+{
+    return takeCarFrame(app, player);
+}
+
+reg32 functionKeyHeld(App* app, reg32 key, reg32 edge)
+{
+    return ringBitPressed(app, kFunctionKeyRing, key, edge != 0) ? 1 : 0;
+}
+
+reg32 functionKeyHeldDown(App* app, reg32 key)
+{
+    return holdFunctionKey(app, key);
+}
+
+reg32 keyDownNow(App* app, reg32 key, reg32 edge)
+{
+    return keyDownOrPressed(app, key, edge != 0) ? 1 : 0;
+}
+
+reg32 queuedFrameTaken(App* app, reg32 frame)
+{
+    return takeFrame(app, frame, frame);
+}
+
+reg32 controlsCopied(App* app, reg32 player, reg32 to)
+{
+    copyTaken(app, player, to);
+    return kControlsBytes;
+}
+
+reg32 framesMet(App* app)
+{
+    return meetingFrame(app);
+}
+
+reg32 framesTakenCount(App* app)
+{
+    return at(app, kFramesTaken);
+}
+
+reg32 queueDelaysSet(App* app)
+{
+    return setDelays(app);
 }
 
 }  // namespace controls

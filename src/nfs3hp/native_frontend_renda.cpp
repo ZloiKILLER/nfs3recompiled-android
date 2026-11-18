@@ -2,12 +2,14 @@
 #include "game_settings.h"
 #include "native_carstate.h"
 #include "native_frontend.h"
+#include "native_watcom.h"
 #include "native_frontend_rendc.h"
 #include "native_frontend_rendd.h"
 #include "native_frontend_simc.h"
 #include "native_frontend_simd.h"
 #include "native_graphics.h"
 #include "native_vertices.h"
+#include "port_text.h"
 #include <nfs3hp.h>
 #include <cstring>
 
@@ -33,7 +35,7 @@
  * x87's arithmetic goes through fp:: in the original's order.
  *
  * Plan step 5: each function a typed core in frontend::renda (native_frontend_renda.h), in a
- * frame of its own (fe::Frame: what it calls runs at the stack addresses it did), and an adapter
+ * frame of its own (fe::Frame: what it calls runs at the stack addresses it did), and a thunk
  * under the game's name for the calls by address.  A core of this file calls another as C++
  * (guest::direct), and the typed cores of other files too (fe::direct); the rest of the game
  * still by address. */
@@ -51,19 +53,58 @@ namespace
 
 using fe::args;
 using fe::Guest;
-using fe::X87;
 using x86::Float;
 using x86::reg32;
 using x86::sreg32;
 
+/* Guest::call as a call through guest::pointerCall: `arguments`' registers in eax, edx, ebx and ecx, `esi` in esi,
+ * its stack words pushed in order, esp back after; Terminated when the game stopped in it.  `floatResult`, when given,
+ * takes the float the callee gives back. */
+inline reg32 callAt(Guest& guest, reg32 function, const fe::Arguments& arguments = fe::Arguments(), reg32 esi = 0,
+                    double* floatResult = nullptr)
+{
+    x86::CPU& cpu = guest.cpu();
+    x86::Args registers;
+    reg32* const into[4] = { &registers.eax, &registers.edx, &registers.ebx, &registers.ecx };
+    for (std::size_t i = 0; i < arguments.registerCount; ++i)
+        *into[i] = arguments.registers[i];
+    registers.esi = esi;
+    const reg32 esp = cpu.esp;
+    for (std::size_t i = arguments.stackCount; i-- > 0;)
+    {
+        cpu.esp -= 4;
+        guest.setDword(cpu.esp, arguments.stack[i]);
+    }
+    const std::optional<reg32> result = guest::pointerCall(guest.app(), cpu, function, registers);
+    if (!result)
+        throw fe::Terminated();
+    cpu.esp = esp;
+    if (floatResult)
+        *floatResult = registers.floatResult;  // what the callee leaves on the x87's top, as a float result
+    return *result;
+}
+
+/* fild, fld and sub_4dfd56 with fistp (fe::FloatMath's) as plain values: no x87 behind them. */
+class FloatMath
+{
+public:
+    explicit FloatMath(Guest& guest) : m_guest(guest) {}
+    static Float integer(std::int32_t value) { return Float(sreg32(value)); }
+    Float load(reg32 address) const { return Float(m_guest.floatAt(address)); }
+    std::int32_t truncated(const Float& value)
+    {
+        const double chopped = guest::direct<0x4dfd56, watcom::clib::chop>(m_guest.app(), m_guest.cpu(), double(value));
+        return fp::toInteger<sreg32>(chopped);  // fistp
+    }
+
+private:
+    Guest& m_guest;
+};
+
 // The game's functions, by address.
-constexpr reg32 kViewport = 0x4beb80;          // eax, edx, ebx, ecx where its x, y, width and height go
-constexpr reg32 kAddVectors = 0x4dffb0;        // eax how many, edx and ebx them, ecx the sums
-constexpr reg32 kSubtractVectors = 0x4e0000;   // likewise, edx less ebx
 constexpr reg32 kRandom = 0x4e0d88;
 constexpr reg32 kObjectVertices = 0x4bf4c0;    // eax how many, edx them, ebx the matrix, ecx the shift; the stack where
 constexpr reg32 kThunder = 0x414e10;           // eax and edx its x and z, 16.16
-constexpr reg32 kSetRenderState = 0x431900;    // eax the state, edx its value
 
 // The render states.
 constexpr reg32 kStateRaceFogColour = 3;
@@ -152,7 +193,7 @@ void copyDwords(Guest& guest, reg32 to, reg32 from, reg32 count)
         guest.setDword(to + 4 * i, guest.dword(from + 4 * i));
 }
 
-/* A generated function's stack argument, by its place, as its adapter reads it. */
+/* A game function's stack argument, by its place, as its thunk reads it. */
 reg32 stackWord(win32::WinApplication* app, const x86::CPU& cpu, reg32 place)
 {
     return app->getMemory<reg32>(cpu.esp + 4 + 4 * place);
@@ -327,10 +368,10 @@ x86::reg32 renda::fogAmount(App* app, CPU& cpu)
     return guest.dword(kFogAmountKept);
 }
 
-void rendFogAmount(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 rendFogAmount(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_470a60", 0, 0, nullptr, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return renda::fogAmount(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return renda::fogAmount(app, cpu); });
 }
 
 /* sub_470aa0: state 0xf, eax, kept, on a driver with a depth bias. */
@@ -341,16 +382,14 @@ x86::reg32 renda::fogColour(App* app, CPU& cpu, reg32 colour)
     if (guest.dword(kDepthBias) == 0)
         return colour;
     guest.setDword(kFogColourKept, colour);
-    // sendState leaves the state's answer in eax.
-    fe::direct<0x431900, graphics::sendState>(app, cpu, kStateFogColour, colour);
-    return guest.eax();
+    return *fe::direct<0x431900, graphics::stateAnswer>(app, cpu, kStateFogColour, colour);
 }
 
-void rendFogColour(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 rendFogColour(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_470aa0", 0, 0, nullptr, 0 };
-    const reg32 colour = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return renda::fogColour(app, cpu, colour); });
+    const reg32 colour = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return renda::fogColour(app, cpu, colour); });
 }
 
 /* sub_470ad0: the fog's amount, eax, kept, on a driver with a depth bias: state 0xe,
@@ -363,15 +402,14 @@ x86::reg32 renda::fogDensity(App* app, CPU& cpu, reg32 amount)
         return amount;
     guest.setDword(kFogAmountKept, amount);
     const reg32 share = amount != 0 ? fogShare(amount) : 0;
-    fe::direct<0x431900, graphics::sendState>(app, cpu, kStateFogDensity, share * 5);
-    return guest.eax();
+    return *fe::direct<0x431900, graphics::stateAnswer>(app, cpu, kStateFogDensity, share * 5);
 }
 
-void rendFogDensity(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 rendFogDensity(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_470ad0", 0, 0, nullptr, 0 };
-    const reg32 amount = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return renda::fogDensity(app, cpu, amount); });
+    const reg32 amount = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return renda::fogDensity(app, cpu, amount); });
 }
 
 /* sub_470b20: state 0xe likewise, times edx, the amount not kept. */
@@ -381,16 +419,15 @@ x86::reg32 renda::fogDensityTimes(App* app, CPU& cpu, reg32 amount, reg32 times)
     const fe::Frame frame(guest, cpu, 8);
     if (guest.dword(kDepthBias) == 0)
         return amount;
-    // By address: what the render state leaves in edx is what this function leaves, which it does not save.
-    return guest.call(kSetRenderState, args({ kStateFogDensity, fogShare(amount) * 5 * times }));
+    return *fe::direct<0x431900, graphics::stateAnswer>(app, cpu, kStateFogDensity, fogShare(amount) * 5 * times);
 }
 
-void rendFogDensityTimes(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 rendFogDensityTimes(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_470b20", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 amount = cpu.eax;
-    const reg32 times = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return renda::fogDensityTimes(app, cpu, amount, times); });
+    const reg32 amount = args.eax;
+    const reg32 times = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return renda::fogDensityTimes(app, cpu, amount, times); });
 }
 
 /* sub_470b70: both: eax the colour, edx the amount. */
@@ -402,12 +439,12 @@ x86::reg32 renda::fogBoth(App* app, CPU& cpu, reg32 colour, reg32 amount)
     return guest::direct<0x470aa0, fogColour>(app, cpu, colour);
 }
 
-void rendFogBoth(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 rendFogBoth(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_470b70", 0, 0, nullptr, 0 };
-    const reg32 colour = cpu.eax;
-    const reg32 amount = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return renda::fogBoth(app, cpu, colour, amount); });
+    const reg32 colour = args.eax;
+    const reg32 amount = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return renda::fogBoth(app, cpu, colour, amount); });
 }
 
 /* sub_470b90: as a race starts: the amount unknown, the colour none, state 0xe 0. */
@@ -417,14 +454,13 @@ x86::reg32 renda::fogReset(App* app, CPU& cpu)
     const fe::Frame frame(guest, cpu, 0xc);
     guest.setDword(kFogAmountKept, 0xffffffff);
     guest.setDword(kFogColourKept, 0);
-    fe::direct<0x431900, graphics::sendState>(app, cpu, kStateFogDensity, 0);
-    return guest.eax();
+    return *fe::direct<0x431900, graphics::stateAnswer>(app, cpu, kStateFogDensity, 0);
 }
 
-void rendFogReset(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 rendFogReset(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_470b90", 0, 0, nullptr, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return renda::fogReset(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return renda::fogReset(app, cpu); });
 }
 
 /* ---------------------------------------------------------------------------
@@ -440,7 +476,7 @@ x86::reg32 renda::stringWidth(App* app, CPU& cpu, reg32 text)
     constexpr reg32 kFontFirst = 0, kFontCount = 1, kFontWidths = 0x14;
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 0x18);
-    X87 x87(guest);
+    FloatMath math(guest);
     std::int32_t width = 0;
     for (reg32 at = text; guest.byte(at) != 0; ++at)
     {
@@ -450,16 +486,16 @@ x86::reg32 renda::stringWidth(App* app, CPU& cpu, reg32 text)
         const bool has = character >= first && sreg32(character) < sreg32(first + guest.byte(font + kFontCount));
         const reg32 widthAt = has ? (character << 5) + font + kFontWidths : kWidthOfNone;
         const Float scaled = fp::mul(fld(guest, kScale), fld(guest, widthAt));
-        width = x87.truncated(fp::add(scaled, X87::integer(width)));
+        width = math.truncated(fp::add(scaled, FloatMath::integer(width)));
     }
     return reg32(width);
 }
 
-void rendStringWidth(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 rendStringWidth(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_476fb0", 0, 0, nullptr, 0 };
-    const reg32 text = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return renda::stringWidth(app, cpu, text); });
+    const reg32 text = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return renda::stringWidth(app, cpu, text); });
 }
 
 /* ---------------------------------------------------------------------------
@@ -527,10 +563,10 @@ x86::reg32 renda::sparksOnScreen(App* app, CPU& cpu)
     return left;
 }
 
-void rendSparksOnScreen(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 rendSparksOnScreen(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4774b0", 0, 0, nullptr, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return renda::sparksOnScreen(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return renda::sparksOnScreen(app, cpu); });
 }
 
 /* ---------------------------------------------------------------------------
@@ -568,11 +604,11 @@ x86::reg32 renda::quadRecord(App* app, CPU& cpu, reg32 polygon)
     return first;
 }
 
-void rendMakeQuad(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 rendMakeQuad(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_478cb0", kQuadStackBytes, 0, nullptr, 0 };
-    const reg32 polygon = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return renda::quadRecord(app, cpu, polygon); });
+    const reg32 polygon = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return renda::quadRecord(app, cpu, polygon); });
 }
 
 /* sub_478dc0: the view's rectangle at 0x6fdc40, its right and bottom for its sizes. */
@@ -581,7 +617,7 @@ x86::reg32 renda::viewRectangle(App* app, CPU& cpu)
     constexpr reg32 kRight = 0x6fdc40, kLeft = 0x6fdc44, kTop = 0x6fdc48, kBottom = 0x6fdc4c;
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 0x10);
-    guest.call(kViewport, args({ kLeft, kTop, kRight, kBottom }));
+    fe::direct<0x4beb80, port::text::viewportOf>(guest.app(), guest.cpu(), kLeft, kTop, kRight, kBottom);
     const reg32 left = guest.dword(kLeft);
     const reg32 right = guest.dword(kRight) + left;
     const reg32 bottom = guest.dword(kBottom) + guest.dword(kTop);
@@ -590,10 +626,10 @@ x86::reg32 renda::viewRectangle(App* app, CPU& cpu)
     return left;
 }
 
-void rendViewRectangle(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 rendViewRectangle(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_478dc0", 0, 0, nullptr, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return renda::viewRectangle(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return renda::viewRectangle(app, cpu); });
 }
 
 /* sub_479080: the polygons' list started, with a mark first. */
@@ -611,10 +647,10 @@ x86::reg32 renda::skyListStart(App* app, CPU& cpu)
     return record;
 }
 
-void rendSkyListStart(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 rendSkyListStart(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_479080", 0, 0, nullptr, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return renda::skyListStart(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return renda::skyListStart(app, cpu); });
 }
 
 /* sub_4790d0: the list ended and kept for the pass eax, a new one started. */
@@ -630,11 +666,11 @@ x86::reg32 renda::skyListKeep(App* app, CPU& cpu, reg32 pass)
     return drawn;
 }
 
-void rendSkyListKeep(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 rendSkyListKeep(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4790d0", 0, 0, nullptr, 0 };
-    const reg32 pass = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return renda::skyListKeep(app, cpu, pass); });
+    const reg32 pass = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return renda::skyListKeep(app, cpu, pass); });
 }
 
 /* sub_479100: the list ended with a mark that hands back the driver's [0x7a3a60], its
@@ -651,16 +687,15 @@ x86::reg32 renda::skyListEnd(App* app, CPU& cpu, reg32 out)
         fillListMark(guest, guest.dword(slot), guest.dword(kDriverOnCard));
     fe::direct<0x4bbfc0, frontend::rendd::openListClose>(app, cpu, ends);
     copyDwords(guest, out, ends, 2);
-    guest.setEsi(ends + 8);
     return out;
 }
 
-void rendSkyListEnd(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 rendSkyListEnd(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_479100", 0, 0, nullptr, 0,
                           fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx | fe::kRestoreEdi };
-    const reg32 out = cpu.esi;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return renda::skyListEnd(app, cpu, out); });
+    const reg32 out = args.esi;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return renda::skyListEnd(app, cpu, out); });
 }
 
 /* ---------------------------------------------------------------------------
@@ -704,15 +739,15 @@ x86::reg32 renda::bandPoints(App* app, CPU& cpu, reg32 view, reg32 riseBits, reg
     return reg32(1);
 }
 
-void rendBandPoints(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 rendBandPoints(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_479160", 0x10, 0, nullptr, 0 };
-    const reg32 view = cpu.eax;
+    const reg32 view = args.eax;
     const reg32 rise = stackWord(app, cpu, 0);
     const reg32 upperLength = stackWord(app, cpu, 1);
     const reg32 points = stackWord(app, cpu, 2);
     const reg32 turn = stackWord(app, cpu, 3);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return renda::bandPoints(app, cpu, view, rise, upperLength, points, turn); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return renda::bandPoints(app, cpu, view, rise, upperLength, points, turn); });
 }
 
 /* sub_4792e0: eax points to ebx, on from the two at edx and as far apart. */
@@ -723,22 +758,22 @@ x86::reg32 renda::curvePoints(App* app, CPU& cpu, reg32 howMany, reg32 in, reg32
     const sreg32 count = sreg32(howMany);
     const reg32 step = guest.frame();
     // By address: what the vectors' functions leave in ebx and edx is what this one leaves.
-    guest.call(kSubtractVectors, args({ 1, in + kPointBytes, in, step }));
+    fe::direct<0x4e0000, vertices::offsetVectorList<false>>(app, cpu, 1, in + kPointBytes, in, step);
     copyDwords(guest, out, in, 3);
     copyDwords(guest, out + kPointBytes, in + kPointBytes, 3);
     reg32 left = in;
     for (sreg32 i = 2; i < count; ++i)
-        left = guest.call(kAddVectors, args({ 1, out + reg32(i - 1) * kPointBytes, step, out + reg32(i) * kPointBytes }));
+        left = fe::direct<0x4dffb0, vertices::offsetVectorsEax<true>>(app, cpu, 1, out + reg32(i - 1) * kPointBytes, step, out + reg32(i) * kPointBytes);
     return left;
 }
 
-void rendCurvePoints(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 rendCurvePoints(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4792e0", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 count = cpu.eax;
-    const reg32 in = cpu.edx;
-    const reg32 out = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return renda::curvePoints(app, cpu, count, in, out); });
+    const reg32 count = args.eax;
+    const reg32 in = args.edx;
+    const reg32 out = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return renda::curvePoints(app, cpu, count, in, out); });
 }
 
 /* sub_479370: eax points at ebx as vertices at ecx, by the view edx's camera matrix,
@@ -767,27 +802,24 @@ x86::reg32 renda::bandVertices(App* app, CPU& cpu, reg32 count, reg32 view, reg3
         guest.setByte(vertex + kVertexClip, std::uint8_t(clip.code));
         guest.setDword(codes, guest.byte(vertex + kVertexClip));
         guest.setDword(vertex + kVertexColour, colour);
-        guest.leaveEbx(clip.code);
-        guest.leaveEcx(clip.bound);
         vertex += kVertexBytes;
         result = vertex;
         points += kPointBytes;
         codes += 4;
     }
-    guest.leaveEdx(0xffffffff);
     return result;
 }
 
-void rendBandVertices(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 rendBandVertices(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_479370", 8, 0, nullptr, 0, fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 count = cpu.eax;
-    const reg32 view = cpu.edx;
-    const reg32 points = cpu.ebx;
-    const reg32 vertices = cpu.ecx;
+    const reg32 count = args.eax;
+    const reg32 view = args.edx;
+    const reg32 points = args.ebx;
+    const reg32 vertices = args.ecx;
     const reg32 codes = stackWord(app, cpu, 0);
     const reg32 colour = stackWord(app, cpu, 1);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return renda::bandVertices(app, cpu, count, view, points, vertices, codes, colour); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return renda::bandVertices(app, cpu, count, view, points, vertices, codes, colour); });
 }
 
 /* sub_479500: a ring's two curves of nine points, from the view eax: the band's points
@@ -802,7 +834,7 @@ x86::reg32 renda::ringPoints(App* app, CPU& cpu, reg32 view, reg32 height, reg32
     constexpr reg32 kFourBits = 0x40800000;
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, kFrame);
-    X87 x87(guest);
+    FloatMath math(guest);
     const reg32 ebp = guest.frame() + kEbp;
     const reg32 band = ebp - 0x5c, upper = ebp - 0x50, side = ebp - 0x44;
     const reg32 curve = ebp - 0x38, across = ebp - 0x20, moved = ebp - 0x14;
@@ -817,8 +849,8 @@ x86::reg32 renda::ringPoints(App* app, CPU& cpu, reg32 view, reg32 height, reg32
     subtractOne(guest, cpu, side, moved, side);
     const Float sixteenths = fp::mul(fld(guest, turn), fld(guest, kSixteen));
     const float exact = float(sixteenths);
-    const std::int32_t step = x87.truncated(sixteenths);
-    const float part = float(fp::sub(Float(exact), X87::integer(step)));
+    const std::int32_t step = math.truncated(sixteenths);
+    const float part = float(fp::sub(Float(exact), FloatMath::integer(step)));
     scaleOne(guest, cpu, across, bitsOf(part), moved);
     subtractOne(guest, cpu, band, moved, band);
     subtractOne(guest, cpu, upper, moved, upper);
@@ -833,16 +865,16 @@ x86::reg32 renda::ringPoints(App* app, CPU& cpu, reg32 view, reg32 height, reg32
     return reg32(1);
 }
 
-void rendRingPoints(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 rendRingPoints(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_479500", 0x14, 0, nullptr, 0 };
-    const reg32 view = cpu.eax;
+    const reg32 view = args.eax;
     const reg32 height = stackWord(app, cpu, 0);
     const reg32 upperLength = stackWord(app, cpu, 1);
     const reg32 turn = stackWord(app, cpu, 2);
     const reg32 upperCurve = stackWord(app, cpu, 3);
     const reg32 lowerCurve = stackWord(app, cpu, 4);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return renda::ringPoints(app, cpu, view, height, upperLength, turn, upperCurve, lowerCurve); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return renda::ringPoints(app, cpu, view, height, upperLength, turn, upperCurve, lowerCurve); });
 }
 
 /* sub_479680: the ring of the sky's gradient from the view eax, the gradient at the horizon
@@ -853,7 +885,7 @@ x86::reg32 renda::skyGradientRing(App* app, CPU& cpu, reg32 view)
     constexpr reg32 kSixteen = 0x53b2d8;
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 0x384);
-    X87 x87(guest);
+    FloatMath math(guest);
     const reg32 ebp = guest.frame() + kEbp;
     const reg32 turn = ebp + 0x76, slot = ebp + 0x7a;
     const reg32 upperCurve = ebp - 0xaa, lowerCurve = ebp - 0x3e;
@@ -862,7 +894,7 @@ x86::reg32 renda::skyGradientRing(App* app, CPU& cpu, reg32 view)
     const float height = float(fp::add(fld(guest, kSkyBottom), fld(guest, kSkySpread)));
     if (guest::direct<0x479500, ringPoints>(app, cpu, view, bitsOf(height), bitsOf(length), turn, upperCurve, lowerCurve) == 0)
         return reg32(0);
-    const std::int32_t start = x87.truncated(fp::mul(fld(guest, turn), fld(guest, kSixteen)));
+    const std::int32_t start = math.truncated(fp::mul(fld(guest, turn), fld(guest, kSixteen)));
     guest::direct<0x479370, bandVertices>(app, cpu, kRingPointCount, view, lowerCurve, lower, ebp + 0x52, 0xffffffff);
     guest::direct<0x479370, bandVertices>(app, cpu, kRingPointCount, view, upperCurve, upper, ebp + 0x2e, 0xffffffff);
     reg32 left = 0;  // what eax is left with: the last record made, or the list's 0
@@ -887,11 +919,11 @@ x86::reg32 renda::skyGradientRing(App* app, CPU& cpu, reg32 view)
     return left;
 }
 
-void rendSkyGradientRing(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 rendSkyGradientRing(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_479680", 0, 0, nullptr, 0 };
-    const reg32 view = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return renda::skyGradientRing(app, cpu, view); });
+    const reg32 view = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return renda::skyGradientRing(app, cpu, view); });
 }
 
 /* sub_479860: the colour eax with the fog's share at 0x55d268 of the colour at 0x55d26c, on
@@ -917,11 +949,11 @@ x86::reg32 renda::foggedColour(App* app, CPU& cpu, reg32 colour)
     return kOpaque | (red << 16) | (green << 8) | blue;
 }
 
-void rendFoggedColour(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 rendFoggedColour(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_479860", 0, 0, nullptr, 0 };
-    const reg32 colour = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return renda::foggedColour(app, cpu, colour); });
+    const reg32 colour = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return renda::foggedColour(app, cpu, colour); });
 }
 
 /* sub_4799d0: the ring of the fog's haze from the view eax, in the two fogged colours at
@@ -932,7 +964,7 @@ x86::reg32 renda::skyHazeRing(App* app, CPU& cpu, reg32 view)
     constexpr reg32 kSixteen = 0x53b2e8, kHazeLow = 0x55d1c4, kHazeHigh = 0x55d1c0;
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 0x38c);
-    X87 x87(guest);
+    FloatMath math(guest);
     const reg32 ebp = guest.frame() + kEbp;
     const reg32 turn = ebp + 0x72, slot = ebp + 0x6e;
     const reg32 upperCurve = ebp - 0xb2, lowerCurve = ebp - 0x46;
@@ -940,7 +972,7 @@ x86::reg32 renda::skyHazeRing(App* app, CPU& cpu, reg32 view)
     if (guest::direct<0x479500, ringPoints>(app, cpu, view, guest.dword(kSkyBottom), guest.dword(kSkySpread), turn,
                                             upperCurve, lowerCurve) == 0)
         return reg32(0);
-    const std::int32_t start = x87.truncated(fp::mul(fld(guest, turn), fld(guest, kSixteen)));
+    const std::int32_t start = math.truncated(fp::mul(fld(guest, turn), fld(guest, kSixteen)));
     const reg32 low = guest::direct<0x479860, foggedColour>(app, cpu, guest.dword(kHazeLow));
     const reg32 high = guest::direct<0x479860, foggedColour>(app, cpu, guest.dword(kHazeHigh));
     guest::direct<0x479370, bandVertices>(app, cpu, kRingPointCount, view, lowerCurve, lower, ebp + 0x4a, 0xffffffff);
@@ -965,11 +997,11 @@ x86::reg32 renda::skyHazeRing(App* app, CPU& cpu, reg32 view)
     return left;
 }
 
-void rendSkyHazeRing(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 rendSkyHazeRing(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4799d0", 0, 0, nullptr, 0 };
-    const reg32 view = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return renda::skyHazeRing(app, cpu, view); });
+    const reg32 view = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return renda::skyHazeRing(app, cpu, view); });
 }
 
 /* sub_479b90: the ring of the clouds from the view eax: three rows of nine points, the
@@ -984,7 +1016,7 @@ x86::reg32 renda::skyCloudRing(App* app, CPU& cpu, reg32 view)
     constexpr reg32 kHundredth = 0x3c23d70a;
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 0x5d0);
-    X87 x87(guest);
+    FloatMath math(guest);
     const reg32 ebp = guest.frame() + kEbp;
     const reg32 colour = guest.dword(kWhiteInTheCode);
     const reg32 turn = ebp + 0x66, slot = ebp + 0x5e;
@@ -996,7 +1028,7 @@ x86::reg32 renda::skyCloudRing(App* app, CPU& cpu, reg32 view)
     const float height = float(fp::add(fld(guest, kSkyTopSpread), fld(guest, kSkyBottom)));
     if (guest::direct<0x479500, ringPoints>(app, cpu, view, bitsOf(height), bitsOf(length), turn, bottom, top) == 0)
         return reg32(0);
-    const reg32 start = reg32(x87.truncated(fp::mul(fld(guest, turn), fld(guest, kSixteen))));
+    const reg32 start = reg32(math.truncated(fp::mul(fld(guest, turn), fld(guest, kSixteen))));
     for (reg32 i = 0; i < kRingSegments; ++i)
     {
         const reg32 segment = ringSegment(start, i);
@@ -1050,11 +1082,11 @@ x86::reg32 renda::skyCloudRing(App* app, CPU& cpu, reg32 view)
     return left;
 }
 
-void rendSkyCloudRing(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 rendSkyCloudRing(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_479b90", 0, 0, nullptr, 0 };
-    const reg32 view = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return renda::skyCloudRing(app, cpu, view); });
+    const reg32 view = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return renda::skyCloudRing(app, cpu, view); });
 }
 
 /* ---------------------------------------------------------------------------
@@ -1138,11 +1170,11 @@ x86::reg32 renda::sun(App* app, CPU& cpu, reg32 view)
     return first + 3 * kVertexBytes;
 }
 
-void rendSun(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 rendSun(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_479ed0", 0, 0, nullptr, 0 };
-    const reg32 view = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return renda::sun(app, cpu, view); });
+    const reg32 view = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return renda::sun(app, cpu, view); });
 }
 
 /* ---------------------------------------------------------------------------
@@ -1176,7 +1208,7 @@ x86::reg32 renda::skyFlat(App* app, CPU& cpu, reg32 car)
         {
             const reg32 leftAt = ebp + 0x66, topAt = ebp + 0x6a, widthAt = ebp + 0x6e, heightAt = ebp + 0x72;
             const reg32 corner0 = ebp + 2, corner1 = ebp + 0x42, corner2 = ebp + 0x22, corner3 = ebp - 0x1e;
-            guest.call(kViewport, args({ leftAt, topAt, widthAt, heightAt }));
+            fe::direct<0x4beb80, port::text::viewportOf>(guest.app(), guest.cpu(), leftAt, topAt, widthAt, heightAt);
             const reg32 corners[4] = { corner0, corner1, corner2, corner3 };
             for (const reg32 corner : corners)
             {
@@ -1212,11 +1244,11 @@ x86::reg32 renda::skyFlat(App* app, CPU& cpu, reg32 car)
     return flat;
 }
 
-void rendSkyFlat(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 rendSkyFlat(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_47a4c0", 0, 0, nullptr, 0 };
-    const reg32 car = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return renda::skyFlat(app, cpu, car); });
+    const reg32 car = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return renda::skyFlat(app, cpu, car); });
 }
 
 /* ---------------------------------------------------------------------------
@@ -1243,11 +1275,11 @@ x86::reg32 renda::pointHeight(App* app, CPU& cpu, reg32 point)
     return flat;
 }
 
-void rendPointHeight(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 rendPointHeight(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_47adc0", 0, 0, nullptr, 0 };
-    const reg32 point = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return renda::pointHeight(app, cpu, point); });
+    const reg32 point = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return renda::pointHeight(app, cpu, point); });
 }
 
 /* sub_47ae10: the dome's grid made as the track loads: each point's place and height, its
@@ -1262,7 +1294,7 @@ x86::reg32 renda::cloudGrid(App* app, CPU& cpu)
     constexpr sreg32 kReach = 2;
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 0x318);
-    X87 x87(guest);
+    FloatMath math(guest);
     const reg32 grid = guest.frame();
     const auto cell = [&](reg32 row, reg32 column) { return grid + (row * kGrid + column) * 4; };
     const auto gridAxis = [](reg32 i) { return Float(sreg32(((i * 225) << 17) - 0xbb80000)); };
@@ -1283,7 +1315,7 @@ x86::reg32 renda::cloudGrid(App* app, CPU& cpu)
             reg32 brightness;
             if (guest.dword(kCloudNoise) != 0)
             {
-                const reg32 random = guest.call(kRandom);
+                const reg32 random = callAt(guest, kRandom);
                 brightness = guest.dword(kCloudBrightest) - random % guest.dword(kCloudNoise);
             }
             else
@@ -1367,7 +1399,7 @@ x86::reg32 renda::cloudGrid(App* app, CPU& cpu)
             const Float depth = fp::mul(fp::mul(fld(guest, kSkyCurveScale), doubleAt(guest, kHalfDouble)),
                                         Float(sreg32(guest.dword(kCloudDepth))));
             const Float drop = fp::mul(share, depth);
-            const std::int32_t whole = x87.truncated(value);
+            const std::int32_t whole = math.truncated(value);
             const reg32 level = reg32(whole) & 0xff;
             const std::uint16_t flags = guest.word(kDriverFlags);
             guest.setFloat(point + 4, float(fp::sub(fld(guest, point + 4), drop)));
@@ -1381,10 +1413,10 @@ x86::reg32 renda::cloudGrid(App* app, CPU& cpu)
     return left;
 }
 
-void rendCloudGrid(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 rendCloudGrid(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_47ae10", 0, 0, nullptr, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return renda::cloudGrid(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return renda::cloudGrid(app, cpu); });
 }
 
 /* ---------------------------------------------------------------------------
@@ -1404,10 +1436,10 @@ x86::reg32 renda::flashesReset(App* app, CPU& cpu)
     return result;
 }
 
-void rendFlashesReset(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 rendFlashesReset(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_47b350", 0, 0, nullptr, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return renda::flashesReset(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return renda::flashesReset(app, cpu); });
 }
 
 /* sub_47b390: the same, for another caller. */
@@ -1418,10 +1450,10 @@ x86::reg32 renda::flashesResetAgain(App* app, CPU& cpu)
     return guest::direct<0x47b350, flashesReset>(app, cpu);
 }
 
-void rendFlashesResetAgain(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 rendFlashesResetAgain(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_47b390", 0, 0, nullptr, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return renda::flashesResetAgain(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return renda::flashesResetAgain(app, cpu); });
 }
 
 /* sub_47b3a0: the flash on the grid at 0x6fdc50: the three by three about its cell, each
@@ -1433,7 +1465,7 @@ x86::reg32 renda::flashOnGrid(App* app, CPU& cpu)
     constexpr reg32 kDomeKind = 0x55d1f4;
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 0x30);
-    X87 x87(guest);
+    FloatMath math(guest);
     sreg32 distance = -1;
     sreg32 row = sreg32(guest.dword(kFlashCellX) - 1);
     for (;;)
@@ -1451,7 +1483,7 @@ x86::reg32 renda::flashOnGrid(App* app, CPU& cpu)
             const Float falloff = fp::mul(Float(sreg32(away)), doubleAt(guest, kFalloff));
             const Float kept = fp::sub(Float(1.0), falloff);
             const Float brightness = Float(sreg32(guest.byte(kFlashBrightness)));
-            const std::uint8_t lit = std::uint8_t(x87.truncated(fp::mul(kept, brightness)));
+            const std::uint8_t lit = std::uint8_t(math.truncated(fp::mul(kept, brightness)));
             if (lit <= now)
                 continue;
             const reg32 level = lit;
@@ -1463,10 +1495,10 @@ x86::reg32 renda::flashOnGrid(App* app, CPU& cpu)
     }
 }
 
-void rendFlashOnGrid(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 rendFlashOnGrid(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_47b3a0", 0, 0, nullptr, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return renda::flashOnGrid(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return renda::flashOnGrid(app, cpu); });
 }
 
 /* sub_47b4f0: edx points at ebx as vertices at the first of the stack's arguments, by the
@@ -1487,7 +1519,7 @@ x86::reg32 renda::domeVertices(App* app, CPU& cpu, reg32 view, reg32 count, reg3
     const Float moveU = Float(floatOf(moveUBits)), moveV = Float(floatOf(moveVBits));
     // By address: the eax it leaves is this function's answer for no points, its core hands back none, and
     // the ebx it leaves this leaves too.
-    reg32 result = guest.call(kObjectVertices, args({ count, points, matrix, shift }, { vertex }));
+    reg32 result = callAt(guest, kObjectVertices, args({ count, points, matrix, shift }, { vertex }));
     while (--count != 0xffffffff)
     {
         guest.setDword(vertex + kVertexColour, guest.dword(corners + 8));
@@ -1495,25 +1527,23 @@ x86::reg32 renda::domeVertices(App* app, CPU& cpu, reg32 view, reg32 count, reg3
         guest.setFloat(vertex + kVertexV, float(fp::add(fld(guest, corners + 4), moveV)));
         corners += kPointBytes;
         points += kPointBytes;
-        guest.leaveEcx(vertex);
-        guest.leaveEdx(points);
         vertex += kVertexBytes;
         result = vertex;
     }
     return result;
 }
 
-void rendDomeVertices(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 rendDomeVertices(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_47b4f0", 0xc, 0, nullptr, 0, fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 view = cpu.eax;
-    const reg32 count = cpu.edx;
-    const reg32 points = cpu.ebx;
-    const reg32 corners = cpu.ecx;
+    const reg32 view = args.eax;
+    const reg32 count = args.edx;
+    const reg32 points = args.ebx;
+    const reg32 corners = args.ecx;
     const reg32 vertex = stackWord(app, cpu, 0);
     const reg32 moveU = stackWord(app, cpu, 1);
     const reg32 moveV = stackWord(app, cpu, 2);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return renda::domeVertices(app, cpu, view, count, points, corners, vertex, moveU, moveV); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return renda::domeVertices(app, cpu, view, count, points, corners, vertex, moveU, moveV); });
 }
 
 /* sub_47b5c0: the sky's weather up to the race's tick: every so many ticks a chance of a
@@ -1529,7 +1559,7 @@ x86::reg32 renda::skyWeather(App* app, CPU& cpu)
     constexpr reg32 kEbp = 0x48;
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 0x60);
-    X87 x87(guest);
+    FloatMath math(guest);
     const reg32 ebp = guest.frame() + kEbp;
     const reg32 place = ebp - 0x3c, unit = ebp - 0x30, flash = ebp - 0x48, brightness = ebp - 0x24;
     for (;;)
@@ -1540,10 +1570,10 @@ x86::reg32 renda::skyWeather(App* app, CPU& cpu)
         const reg32 every = guest.dword(kFlashEvery);
         if (guest.dword(kFlashChance) != 0 && every != 0)
         {
-            if (sreg32(tick) % sreg32(every) == 0 && guest.call(kRandom) % 100 < guest.dword(kFlashChance))
+            if (sreg32(tick) % sreg32(every) == 0 && callAt(guest, kRandom) % 100 < guest.dword(kFlashChance))
             {
-                const reg32 x = guest.call(kRandom) % kSpread - kHalfSpread;
-                const reg32 z = guest.call(kRandom) % kSpread - kHalfSpread;
+                const reg32 x = callAt(guest, kRandom) % kSpread - kHalfSpread;
+                const reg32 z = callAt(guest, kRandom) % kSpread - kHalfSpread;
                 guest.setFloat(place, float(Float(sreg32(x))));
                 guest.setDword(place + 4, 0);
                 guest.setFloat(place + 8, float(Float(sreg32(z))));
@@ -1553,7 +1583,7 @@ x86::reg32 renda::skyWeather(App* app, CPU& cpu)
                 guest::direct<0x47adc0, pointHeight>(app, cpu, place);
                 guest::direct<0x4945a0, frontend::rendc::boltStrike>(app, cpu, guest.dword(place), guest.dword(place + 4),
                                                                      guest.dword(place + 8), bitsOf(angle));
-                guest.call(kThunder, args({ x << 16, z << 16 }));
+                callAt(guest, kThunder, args({ x << 16, z << 16 }));
             }
             const reg32 lit = guest::direct<0x494390, frontend::rendc::boltGlow>(app, cpu, flash, brightness);
             guest.setDword(kFlashOn, lit);
@@ -1567,7 +1597,7 @@ x86::reg32 renda::skyWeather(App* app, CPU& cpu)
                 const float atX = float(fp::add(cellX, roundUp));
                 const float atZ = float(fp::add(roundUp, cellZ));
                 const auto inGrid = [&](float at) {
-                    const sreg32 cell = x87.truncated(Float(at));
+                    const sreg32 cell = math.truncated(Float(at));
                     if (cell >= kLastCell)
                         return reg32(kLastCell);
                     return reg32(cell > 0 ? cell : 0);
@@ -1588,10 +1618,10 @@ x86::reg32 renda::skyWeather(App* app, CPU& cpu)
     }
 }
 
-void rendSkyWeather(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 rendSkyWeather(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_47b5c0", 0, 0, nullptr, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return renda::skyWeather(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return renda::skyWeather(app, cpu); });
 }
 
 }

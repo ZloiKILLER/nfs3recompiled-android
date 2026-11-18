@@ -283,7 +283,7 @@ Result pickPcmFirstSetups(App* app, CPU& cpu, reg32 esp)
         fillSetups(app, 0, {0x5274b0, 0x5274d0, 0x527500, 0x527520, 0x527540, 0x527560, 0x527590, 0x5275b0});
     else
     {
-        if (!callGame(app, cpu, esp - 6 * 4, kPlainTables))
+        if (!pointerGame(app, cpu, esp - 6 * 4, kPlainTables))
             return {};
         fillSetups(app, 0, {0x5275d0, 0x5275f0, 0x527620, 0x527640, 0x527660, 0x527680, 0x5276b0, 0x5276d0});
     }
@@ -352,12 +352,12 @@ void pickLastSetups(App* app)
 Result startReverbTail(App* app, CPU& cpu, reg32 esp, reg32 eax)
 {
     kReverbIdle.set(app, 0x1f4);
-    if (!callGame(app, cpu, esp - 2 * 4, kClearFunction(app), {eax, 0x1f4}, {kReverbSendBuffer, 0x200}, eax))
+    if (!pointerGame(app, cpu, esp - 2 * 4, kClearFunction(app), {eax, 0x1f4}, {kReverbSendBuffer, 0x200}, eax))
         return {};
     return int32_t(eax);
 }
 
-/* The game's entries: each its adapter -- the game's registers and stack in,
+/* The game's entries: each its thunk -- the game's registers and stack in,
  * the result in eax out -- around what it does. */
 
 namespace
@@ -365,24 +365,24 @@ namespace
 
 /* The tables' entries for PCM once, looped and streamed, `frameBytes` a frame:
  * a set-up's registers and stack as the comment above says. */
-void pcmOnceEntry(App* app, CPU& cpu, int32_t frameBytes)
+x86::reg32 pcmOnceEntry(App* app, CPU& cpu, x86::Args& args, int32_t frameBytes)
 {
-    const Entry e(cpu);
-    e.back(cpu, setUpPcmOnce(app, e.edx, e.ebx, e.ecx, frameBytes, e.arg(app, 2), e.arg(app, 3)), 0x10);
+    const Entry e(cpu, args);
+    return e.back(cpu, args, setUpPcmOnce(app, e.edx, e.ebx, e.ecx, frameBytes, e.arg(app, 2), e.arg(app, 3)), 0x10);
 }
 
-void pcmLoopedEntry(App* app, CPU& cpu, int32_t frameBytes)
+x86::reg32 pcmLoopedEntry(App* app, CPU& cpu, x86::Args& args, int32_t frameBytes)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     setWord(app, e.arg(app, 3), 0);
-    e.back(cpu, setUpPcmLooped(app, e.edx, e.ebx, e.arg(app, 0), e.arg(app, 1), frameBytes, e.arg(app, 2)), 0x10);
+    return e.back(cpu, args, setUpPcmLooped(app, e.edx, e.ebx, e.arg(app, 0), e.arg(app, 1), frameBytes, e.arg(app, 2)), 0x10);
 }
 
-void pcmStreamedEntry(App* app, CPU& cpu, int32_t frameBytes)
+x86::reg32 pcmStreamedEntry(App* app, CPU& cpu, x86::Args& args, int32_t frameBytes)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     setWord(app, e.arg(app, 3), 0);
-    e.back(cpu, setUpPcmStreamed(app, e.edx, frameBytes, e.arg(app, 2)), 0x10);
+    return e.back(cpu, args, setUpPcmStreamed(app, e.edx, frameBytes, e.arg(app, 2)), 0x10);
 }
 
 }  // namespace
@@ -390,160 +390,161 @@ void pcmStreamedEntry(App* app, CPU& cpu, int32_t frameBytes)
 /* The decoder set-ups' tables' entries, MMX set: 16-bit PCM mono (1 byte a
  * frame, as the code counts), stereo (2) for 0x9f6a6c.., and for 0x9f6a8c..
  * stereo (2) and four bytes a frame (4). */
-void pcmOnceMono(App* app, CPU& cpu) { pcmOnceEntry(app, cpu, 1); }
-void pcmOnceStereo(App* app, CPU& cpu) { pcmOnceEntry(app, cpu, 2); }
-void pcmOnceStereo2(App* app, CPU& cpu) { pcmOnceEntry(app, cpu, 2); }
-void pcmOnceQuad(App* app, CPU& cpu) { pcmOnceEntry(app, cpu, 4); }
-void pcmLoopedMono(App* app, CPU& cpu) { pcmLoopedEntry(app, cpu, 1); }
-void pcmLoopedStereo(App* app, CPU& cpu) { pcmLoopedEntry(app, cpu, 2); }
-void pcmLoopedStereo2(App* app, CPU& cpu) { pcmLoopedEntry(app, cpu, 2); }
-void pcmLoopedQuad(App* app, CPU& cpu) { pcmLoopedEntry(app, cpu, 4); }
-void pcmStreamedMono(App* app, CPU& cpu) { pcmStreamedEntry(app, cpu, 1); }
-void pcmStreamedStereo(App* app, CPU& cpu) { pcmStreamedEntry(app, cpu, 2); }
-void pcmStreamedStereo2(App* app, CPU& cpu) { pcmStreamedEntry(app, cpu, 2); }
-void pcmStreamedQuad(App* app, CPU& cpu) { pcmStreamedEntry(app, cpu, 4); }
+x86::reg32 pcmOnceMono(App* app, CPU& cpu, x86::Args& args) { return pcmOnceEntry(app, cpu, args, 1); }
+x86::reg32 pcmOnceStereo(App* app, CPU& cpu, x86::Args& args) { return pcmOnceEntry(app, cpu, args, 2); }
+x86::reg32 pcmOnceStereo2(App* app, CPU& cpu, x86::Args& args) { return pcmOnceEntry(app, cpu, args, 2); }
+x86::reg32 pcmOnceQuad(App* app, CPU& cpu, x86::Args& args) { return pcmOnceEntry(app, cpu, args, 4); }
+x86::reg32 pcmLoopedMono(App* app, CPU& cpu, x86::Args& args) { return pcmLoopedEntry(app, cpu, args, 1); }
+x86::reg32 pcmLoopedStereo(App* app, CPU& cpu, x86::Args& args) { return pcmLoopedEntry(app, cpu, args, 2); }
+x86::reg32 pcmLoopedStereo2(App* app, CPU& cpu, x86::Args& args) { return pcmLoopedEntry(app, cpu, args, 2); }
+x86::reg32 pcmLoopedQuad(App* app, CPU& cpu, x86::Args& args) { return pcmLoopedEntry(app, cpu, args, 4); }
+x86::reg32 pcmStreamedMono(App* app, CPU& cpu, x86::Args& args) { return pcmStreamedEntry(app, cpu, args, 1); }
+x86::reg32 pcmStreamedStereo(App* app, CPU& cpu, x86::Args& args) { return pcmStreamedEntry(app, cpu, args, 2); }
+x86::reg32 pcmStreamedStereo2(App* app, CPU& cpu, x86::Args& args) { return pcmStreamedEntry(app, cpu, args, 2); }
+x86::reg32 pcmStreamedQuad(App* app, CPU& cpu, x86::Args& args) { return pcmStreamedEntry(app, cpu, args, 4); }
 
 /* The PCM set-ups themselves, as the entries call them: the registers and 2
  * words, 2 words, the registers. */
-void pcmOnceSetup(App* app, CPU& cpu)
+x86::reg32 pcmOnceSetup(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, setUpPcmOnce(app, e.eax, e.edx, e.ebx, int32_t(e.ecx), e.arg(app, 0), e.arg(app, 1)), 8);
+    const Entry e(cpu, args);
+    return e.back(cpu, args, setUpPcmOnce(app, e.eax, e.edx, e.ebx, int32_t(e.ecx), e.arg(app, 0), e.arg(app, 1)), 8);
 }
 
-void pcmLoopedSetup(App* app, CPU& cpu)
+x86::reg32 pcmLoopedSetup(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, setUpPcmLooped(app, e.eax, e.edx, e.ebx, e.ecx, int32_t(e.arg(app, 0)), e.arg(app, 1)), 8);
+    const Entry e(cpu, args);
+    return e.back(cpu, args, setUpPcmLooped(app, e.eax, e.edx, e.ebx, e.ecx, int32_t(e.arg(app, 0)), e.arg(app, 1)), 8);
 }
 
-void pcmStreamedSetup(App* app, CPU& cpu)
+x86::reg32 pcmStreamedSetup(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, setUpPcmStreamed(app, e.eax, int32_t(e.edx), e.ebx));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, setUpPcmStreamed(app, e.eax, int32_t(e.edx), e.ebx));
 }
 
-void xaOnceSetup(App* app, CPU& cpu)
+x86::reg32 xaOnceSetup(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, setUpXaOnce(app, e.edx, e.ebx, e.ecx, e.arg(app, 2), e.arg(app, 3)), 0x10);
+    const Entry e(cpu, args);
+    return e.back(cpu, args, setUpXaOnce(app, e.edx, e.ebx, e.ecx, e.arg(app, 2), e.arg(app, 3)), 0x10);
 }
 
-void xaIntroSetup(App* app, CPU& cpu)
+x86::reg32 xaIntroSetup(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu,
+    const Entry e(cpu, args);
+    return e.back(cpu, args,
            setUpXaIntro(app, e.edx, e.ebx, e.ecx, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2), e.arg(app, 3)),
            0x10);
+    return args.eax;
 }
 
-void xaStereoStreamSetup(App* app, CPU& cpu)
+x86::reg32 xaStereoStreamSetup(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, setUpXaStereoStream(app, e.edx, e.ecx, e.arg(app, 2), e.arg(app, 3)), 0x10);
+    const Entry e(cpu, args);
+    return e.back(cpu, args, setUpXaStereoStream(app, e.edx, e.ecx, e.arg(app, 2), e.arg(app, 3)), 0x10);
 }
 
-void packetPlayerOf(App* app, CPU& cpu)
+x86::reg32 packetPlayerOf(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, reg32(packetPlayerOfVoice(app, e.eax)));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, reg32(packetPlayerOfVoice(app, e.eax)));
 }
 
-void xaStereoFileSetup(App* app, CPU& cpu)
+x86::reg32 xaStereoFileSetup(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, setUpXaStereoFile(app, e.eax, e.edx, e.ecx, e.arg(app, 2), e.arg(app, 3)), 0x10);
+    const Entry e(cpu, args);
+    return e.back(cpu, args, setUpXaStereoFile(app, e.eax, e.edx, e.ecx, e.arg(app, 2), e.arg(app, 3)), 0x10);
 }
 
 /* The volume functions' and the resamplers' set-ups are cdecl: their
  * arguments on the stack, eax as it was (the volumes') or 0 (the resamplers'). */
-void volumeMonoSetup(App* app, CPU& cpu)
+x86::reg32 volumeMonoSetup(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     setUpMonoVolume(app, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2));
-    e.back(cpu, e.eax);
+    return e.back(cpu, args, e.eax);
 }
 
-void volumeStereoSetup(App* app, CPU& cpu)
+x86::reg32 volumeStereoSetup(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     setUpStereoVolume(app, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2));
-    e.back(cpu, e.eax);
+    return e.back(cpu, args, e.eax);
 }
 
-void resampleMonoSetup(App* app, CPU& cpu)
+x86::reg32 resampleMonoSetup(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     setUpMonoResampler(app, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2), e.arg(app, 3));
-    e.back(cpu, 0);
+    return e.back(cpu, args, 0);
 }
 
-void resampleStereoSetup(App* app, CPU& cpu)
+x86::reg32 resampleStereoSetup(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     setUpStereoResampler(app, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2), e.arg(app, 3));
-    e.back(cpu, 0);
+    return e.back(cpu, args, 0);
 }
 
-void resampleMonoStep(App* app, CPU& cpu)
+x86::reg32 resampleMonoStep(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     setMonoStep(app, e.arg(app, 0), e.arg(app, 1));
-    e.back(cpu, 0);
+    return e.back(cpu, args, 0);
 }
 
-void resampleStereoStep(App* app, CPU& cpu)
+x86::reg32 resampleStereoStep(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     setStereoStep(app, e.arg(app, 0), e.arg(app, 1));
-    e.back(cpu, 0);
+    return e.back(cpu, args, 0);
 }
 
-void pcmTablesFirst(App* app, CPU& cpu)
+x86::reg32 pcmTablesFirst(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, pickPcmFirstSetups(app, cpu, e.esp));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, pickPcmFirstSetups(app, cpu, e.esp));
 }
 
-void pcmTablesSecond(App* app, CPU& cpu)
+x86::reg32 pcmTablesSecond(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     pickPcmSecondSetups(app);
-    e.back(cpu, 0);
+    return e.back(cpu, args, 0);
 }
 
-void xaFloatTable(App* app, CPU& cpu)
+x86::reg32 xaFloatTable(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     fillXaFloatTable(app);
-    e.back(cpu, 0x340);
+    return e.back(cpu, args, 0x340);
 }
 
-void xaIntTable(App* app, CPU& cpu)
+x86::reg32 xaIntTable(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     fillXaIntegerTable(app);
-    e.back(cpu, 0x340);
+    return e.back(cpu, args, 0x340);
 }
 
-void xaTables(App* app, CPU& cpu)
+x86::reg32 xaTables(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     pickXaSetups(app);
-    e.back(cpu, 0);
+    return e.back(cpu, args, 0);
 }
 
-void lastTables(App* app, CPU& cpu)
+x86::reg32 lastTables(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     pickLastSetups(app);
-    e.back(cpu, 0);
+    return e.back(cpu, args, 0);
 }
 
-void reverbStart(App* app, CPU& cpu)
+x86::reg32 reverbStart(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, startReverbTail(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, startReverbTail(app, cpu, e.esp, e.eax));
 }
 
 }  // namespace port

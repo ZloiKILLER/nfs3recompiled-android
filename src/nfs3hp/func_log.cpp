@@ -346,7 +346,7 @@ void startFunctionLog()
     gEnd = lib.end;
     if (pipe2(gPipe, O_NONBLOCK | O_CLOEXEC) != 0)
         return;
-    x86::FPU::s_controlHook = onControl;
+    x86::FloatEnv::s_controlHook = onControl;
 
     struct sigaction sa = {};
     sa.sa_sigaction = onSample;

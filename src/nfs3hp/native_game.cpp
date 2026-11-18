@@ -1,6 +1,9 @@
 #include "native_game.h"
+#include "native_ea_support.h"
 #include "native_ea_threads.h"
 #include "native_watcom.h"
+#include "port_snd.h"
+#include "port_snd_mixer.h"
 #include "native_windows.h"
 #include "isnd_calls.h"
 #include "thrash_calls.h"
@@ -10,15 +13,19 @@
 #include <cstring>
 #include <iterator>
 
-/* nfs3.exe's own functions the port has natively, where their code was:
- * disassemble_nfs3hp.py binds each address to the function of that name here
- * (GAME_NATIVES), and the generated code calls it by name: the game's side
+namespace nfs3hp::port
+{
+// port_snd_voices.cpp's (port_snd.h): the sound's tick with the registers it reads as values.
+Result tickSoundFrom(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 esp, x86::reg32 eax, x86::reg32 edx,
+                     x86::reg32 ecx, x86::reg32 ebp);
+}
+
+/* nfs3.exe's own functions the port has natively, which
+ * the game's code calls by name: the game's side
  * of its two driver interfaces, THRASH and iSND, the logger they report
  * through, the functions of the game's that iSNDloaddll hands eacsnd, and the
  * fill the game's code clears and fills its memory with.  The names are EA's
  * where the game's own messages give them.
- * tools/game_checks generates the game's code for them afresh and holds each
- * one against it.
  *
  * Each keeps what its caller counts on: the game's own callers are Watcom
  * code, which counts on every register it handed no argument in (and the
@@ -26,30 +33,69 @@
  * calls the lambdas stdcall or cdecl, and counts on ebx, esi, edi and ebp.  They call what the
  * game's code called as it did -- the arguments where it pushed them, in the
  * registers it had them in, and the stack where it had it, which is where a
- * pointer into its frame points.  The game's own functions they call stay
- * where they are, generated, called through dynamic_call. */
+ * pointer into its frame points.  The game's own functions they call are
+ * called by address. */
 
 namespace nfs3hp
 {
 
 void commMessageTrace(win32::WinApplication* app, x86::CPU& cpu);  // native_vertices.cpp
 
-void Error(win32::WinApplication* app, x86::CPU& cpu);
-void Message(win32::WinApplication* app, x86::CPU& cpu);
-void AcquireWindow(win32::WinApplication* app, x86::CPU& cpu);
-void iSNDloaddll(win32::WinApplication* app, x86::CPU& cpu);
-void SNDcaps(win32::WinApplication* app, x86::CPU& cpu);
+x86::reg32 Error(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 Message(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 AcquireWindow(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 iSNDloaddll(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 SNDcaps(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
 
 namespace
 {
 
 using guest::at;
-using guest::call;
 using guest::put;
 using guest::windows;
 
+using guest::EspKept;
+
+typedef x86::reg32 (*Thunk)(win32::WinApplication*, x86::CPU&, x86::Args&);
+
+/* A call of one of this file's thunks as the game's code makes one (guest::through's layout): `arguments`
+ * pushed below esp, `more` after them, the return address's slot below them all, esp back where it was
+ * after it.  Its eax; nullopt when the game stopped. */
+std::optional<x86::reg32> thunkCall(win32::WinApplication* app, x86::CPU& cpu, Thunk target, x86::Args& registers,
+                                    std::initializer_list<x86::reg32> arguments, const guest::Words& more = guest::Words({}))
+{
+    const x86::reg32 esp = cpu.esp;
+    x86::reg32 slot = esp - 4 * x86::reg32(arguments.size() + more.count);
+    cpu.esp = slot - 4;
+    for (const x86::reg32 argument : arguments)
+    {
+        put(app, slot, argument);
+        slot += 4;
+    }
+    for (unsigned i = 0; i < more.count; ++i)
+    {
+        put(app, slot, more.word[i]);
+        slot += 4;
+    }
+    const x86::reg32 eax = target(app, cpu, registers);
+    if (cpu.terminate)
+        return std::nullopt;
+    cpu.esp = esp;
+    return eax;
+}
+
+/* The sound's export at Slot with `words`, every register but eax kept as the handlers keep them.  The
+ * eax soundFrom is given goes only to a function another than the port's the game put in the slot,
+ * which it never does (the callee's typed function takes only its words). */
+template <x86::reg32 Slot, auto Fn, typename... W>
+std::optional<x86::reg32> soundKept(win32::WinApplication* app, x86::CPU& cpu, W... words)
+{
+    const EspKept kept(cpu);
+    return guest::soundFrom<Slot, Fn>(app, cpu, cpu.esp, 0u, words...);
+}
+
 /* The game's imports (their slots), as its code calls them: the port's own Windows functions,
- * called as C++ (native_windows.h); in the checks through the slots. */
+ * called as C++ (native_windows.h). */
 constexpr x86::reg32 kDebugBreak = 0x5344a8;
 constexpr x86::reg32 kEnterCriticalSection = 0x5344b8;
 constexpr x86::reg32 kExitProcess = 0x5344c0;
@@ -77,11 +123,18 @@ constexpr x86::reg32 kWindow = 0x9f3d24;  // the game's window
 
 }  // namespace
 
-/* AcquireWindow (0x4eba70): the game's window. */
-void AcquireWindow(win32::WinApplication* app, x86::CPU& cpu)
+/* AcquireWindow's core (0x4eba70): the game's window. */
+x86::reg32 ea::acquireWindow(win32::WinApplication* app)
 {
-    cpu.eax = at(app, kWindow);
+    return at(app, kWindow);
+}
+
+/* AcquireWindow (0x4eba70): the game's window. */
+x86::reg32 AcquireWindow(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+{
+    args.eax = ea::acquireWindow(app);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* ---- The logger ---- */
@@ -132,24 +185,29 @@ bool addWhere(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 buffer, x86:
  * and the game ended -- by its own exit on its main thread, ExitProcess on any
  * other.  Only one at a time; the game may let one go (kErrorFilter), and
  * then the next is shown. */
-void Error(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 Error(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     commMessageTrace(app, cpu);
     const x86::reg32 esp = cpu.esp;
-    const x86::reg32 ebx = cpu.ebx, ecx = cpu.ecx, edx = cpu.edx, esi = cpu.esi, edi = cpu.edi, ebp = cpu.ebp;
+    const x86::reg32 ebx = args.ebx, ecx = args.ecx, edx = args.edx, esi = args.esi, edi = args.edi, ebp = args.ebp;
+    // A pointer's callee (the game's hooks) handed every register as Error has it now.
+    const auto viaPointer = [&](x86::reg32 target) {
+        x86::Args registers = args;
+        return guest::pointerCall(app, cpu, target, registers);
+    };
     const auto back = [&]() {
-        cpu.ebx = ebx;
-        cpu.ecx = ecx;
-        cpu.edx = edx;
-        cpu.esi = esi;
-        cpu.edi = edi;
-        cpu.ebp = ebp;
+        args.ebx = ebx;
+        args.ecx = ecx;
+        args.edx = edx;
+        args.esi = esi;
+        args.edi = edi;
+        args.ebp = ebp;
         cpu.esp = esp + 4;
     };
     if (at(app, kErrorUnderWay) != 0)
     {
         back();
-        return;
+        return args.eax;
     }
     put(app, kErrorUnderWay, 1);
     const x86::reg32 frame = esp - 0x18;     // below the six registers it keeps
@@ -161,12 +219,12 @@ void Error(win32::WinApplication* app, x86::CPU& cpu)
         const x86::reg32 arguments = frame - 8;  // its va_list
         put(app, arguments, esp + 8);
         // Its arguments in eax, edx and ebx, as the call by address loads them.
-        cpu.eax = kErrorText;
-        cpu.edx = format;
-        cpu.ebx = arguments;
+        args.eax = kErrorText;
+        args.edx = format;
+        args.ebx = arguments;
         guest::direct<0x4df674, watcom::clib::vsprintf>(app, cpu, kErrorText, format, arguments);
         if (cpu.terminate)
-            return;
+            return args.eax;
     }
     else
     {
@@ -175,85 +233,113 @@ void Error(win32::WinApplication* app, x86::CPU& cpu)
     if (at(app, kDebugOutput) != 0)
     {
         if (!windows<kOutputDebugStringA, &host::debugString>(app, cpu, kErrorText))
-            return;
+            return args.eax;
         if (at(app, kDebugStop) != 0 && !windows<kDebugBreak, &host::debugBreak>(app, cpu))
-            return;
+            return args.eax;
     }
     if (const x86::reg32 filter = at(app, kErrorFilter))
     {
-        cpu.eax = kErrorText;
-        if (!call(app, cpu, filter))
-            return;
-        if (cpu.eax == 0)
+        args.eax = kErrorText;
+        const std::optional<x86::reg32> filtered = viaPointer(filter);
+        if (!filtered)
+            return args.eax;
+        args.eax = *filtered;
+        if (args.eax == 0)
         {
             put(app, kErrorUnderWay, 0);
             back();
-            return;
+            return args.eax;
         }
     }
     if (at(app, kErrorWhere) != 0)
     {
         if (at(app, kWhere) != 0 && !addWhere(app, cpu, buffer, kWhere, kWhereFormat))
-            return;
+            return args.eax;
         if (at(app, kCalledFrom) != 0 && !addWhere(app, cpu, buffer, kCalledFrom, kCalledFromFormat))
-            return;
+            return args.eax;
     }
     x86::reg32 lock = 0;
     if (const x86::reg32 before = at(app, kErrorLock))
     {
-        if (!call(app, cpu, before))
-            return;
-        lock = cpu.eax;
+        const std::optional<x86::reg32> locked = viaPointer(before);
+        if (!locked)
+            return args.eax;
+        args.eax = lock = *locked;
     }
-    if (const x86::reg32 before = at(app, kErrorBefore); before != 0 && !call(app, cpu, before))
-        return;
-    if (!windows<kShowCursor, &host::showCursor>(app, cpu, 1))
-        return;
-    // MB_OKCANCEL | MB_ICONEXCLAMATION | MB_SYSTEMMODAL | MB_SETFOREGROUND
-    if (!windows<kMessageBoxA, &host::messageBox>(app, cpu, 0, kErrorText, kErrorCaption, 0x11031))
-        return;
-    if (cpu.eax == 1 && at(app, kErrorPrintOk) != 0 && at(app, kErrorOk) != 0)
+    if (const x86::reg32 before = at(app, kErrorBefore); before != 0)
     {
-        if (!call(app, cpu, Message, {kJustText, kErrorText}) || !call(app, cpu, at(app, kErrorOk)))
-            return;
+        const std::optional<x86::reg32> readied = viaPointer(before);
+        if (!readied)
+            return args.eax;
+        args.eax = *readied;
+    }
+    const auto cursor = windows<kShowCursor, &host::showCursor>(app, cpu, 1);
+    if (!cursor)
+        return args.eax;
+    args.eax = *cursor;
+    // MB_OKCANCEL | MB_ICONEXCLAMATION | MB_SYSTEMMODAL | MB_SETFOREGROUND
+    const auto boxed = windows<kMessageBoxA, &host::messageBox>(app, cpu, 0, kErrorText, kErrorCaption, 0x11031);
+    if (!boxed)
+        return args.eax;
+    args.eax = *boxed;
+    if (args.eax == 1 && at(app, kErrorPrintOk) != 0 && at(app, kErrorOk) != 0)
+    {
+        guest::direct<0x4df6c0, ea::message>(app, cpu, kJustText, guest::Words({kErrorText}));
+        if (cpu.terminate)
+            return args.eax;
+        const std::optional<x86::reg32> okayed = viaPointer(at(app, kErrorOk));
+        if (!okayed)
+            return args.eax;
+        args.eax = *okayed;
     }
     if (lock != 0 && !windows<kLeaveCriticalSection, &host::leaveLock>(app, cpu, lock))
-        return;
+        return args.eax;
     const std::optional<bool> onMainThread = guest::direct<0x4df930, ea::isThreadNow>(app, cpu, 0u);
     if (!onMainThread)
-        return;
-    cpu.eax = *onMainThread ? 1 : 0;
+        return args.eax;
+    args.eax = *onMainThread ? 1 : 0;
     if (*onMainThread)
     {
-        cpu.eax = 0;
+        args.eax = 0;
         guest::direct<0x4dfd04, watcom::clib::exit>(app, cpu, 0u);
         if (cpu.terminate)
-            return;
+            return args.eax;
     }
-    else if (!windows<kExitProcess, &host::exitProcess>(app, cpu, cpu.eax))
+    else if (!windows<kExitProcess, &host::exitProcess>(app, cpu, args.eax))
     {
-        return;
+        return args.eax;
     }
     back();
+    return args.eax;
 }
 
 /* Message (0x4df6c0): cdecl (format, ...), printf -- vfprintf to stdout;
  * keeps ebx and edx, which vfprintf does not. */
-void Message(win32::WinApplication* app, x86::CPU& cpu)
+void ea::message(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 format, guest::Words words)
+{
+    // Called as C++ (guest::direct), the return address's slot already under esp: the words pushed
+    // where the game's call pushes them, over that slot, so Message's frame lies where its code has it.
+    cpu.esp += 4;
+    x86::Args registers;
+    const bool returned = thunkCall(app, cpu, &Message, registers, {format}, words).has_value();
+    if (returned)
+        cpu.esp -= 4;
+}
+
+x86::reg32 Message(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     const x86::reg32 esp = cpu.esp;
-    const x86::reg32 ebx = cpu.ebx, edx = cpu.edx;
+    const x86::reg32 ebx = args.ebx, edx = args.edx;
     const x86::reg32 arguments = esp - 0xc;  // its va_list, below the two registers it keeps
     put(app, arguments, esp + 8);
-    cpu.eax = kStdout;
-    cpu.edx = at(app, esp + 4);
-    cpu.ebx = arguments;
     cpu.esp = arguments;
-    if (!call(app, cpu, kVfprintf))
-        return;
-    cpu.ebx = ebx;
-    cpu.edx = edx;
+    args.eax = guest::direct<0x4ff014, watcom::clib::vfprintf>(app, cpu, kStdout, at(app, esp + 4), arguments);
+    if (cpu.terminate)
+        return args.eax;
+    args.ebx = ebx;
+    args.edx = edx;
     cpu.esp = esp + 4;
+    return args.eax;
 }
 
 /* ---- iSND, the game's side: eacsnd loaded and called ---- */
@@ -310,7 +396,11 @@ bool soundError(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 function, 
     put(app, kWhere, kSoundSource);
     put(app, kWhere + 4, function);
     put(app, kWhere + 8, line);
-    return call(app, cpu, Error, arguments);
+    guest::Words rest({});
+    for (const x86::reg32* word = arguments.begin() + 1; word < arguments.end(); ++word)
+        rest.word[rest.count++] = *word;
+    guest::direct<0x401010, ea::error>(app, cpu, *arguments.begin(), rest);
+    return !cpu.terminate;
 }
 
 /* iSNDloaddll's work: false when the game stopped, else `result` 0, -1 for
@@ -318,40 +408,47 @@ bool soundError(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 function, 
 bool loadSound(win32::WinApplication* app, x86::CPU& cpu, x86::reg32& result)
 {
     result = 0xffffffff;
-    if (!windows<kLoadLibraryA, &host::loadLibrary>(app, cpu, kSoundDll))
+    const auto loaded = windows<kLoadLibraryA, &host::loadLibrary>(app, cpu, kSoundDll);
+    if (!loaded)
         return false;
-    const x86::reg32 module = cpu.eax;
+    const x86::reg32 module = *loaded;
     put(app, kSoundModule, module);
     if (module == 0)  // "COULDN'T LOAD/FIND EACSND.DLL..."
         return soundError(app, cpu, kLoadName, 0x153, {0x549c78});
-    if (!windows<kGetProcAddress, &host::procAddress>(app, cpu, module, kVersionName))
+    const auto versionFound = windows<kGetProcAddress, &host::procAddress>(app, cpu, module, kVersionName);
+    if (!versionFound)
         return false;
-    const x86::reg32 version = cpu.eax;
+    const x86::reg32 version = *versionFound;
     if (version == 0)  // "COULDN'T FIND iSNDdllversion."
         return soundError(app, cpu, kLoadName, 0x15f, {0x549cec});
-    if (!call(app, cpu, version))
+    x86::Args versionRegisters;
+    const std::optional<x86::reg32> found = guest::pointerCall(app, cpu, version, versionRegisters);
+    if (!found)
         return false;
-    if (cpu.eax != kSoundVersion)
+    if (*found != kSoundVersion)
     {
         // "EACSND.DLL VERSION MISMATCH. REQUIRED %i.%i, FOUND %i.%i."
         result = 0xfffffff5;
         return soundError(app, cpu, kLoadName, 0x169,
-                          {0x549d1c, 0x10, 3, x86::reg32(x86::sreg32(cpu.eax) >> 16), cpu.eax & 0xffff});
+                          {0x549d1c, 0x10, 3, x86::reg32(x86::sreg32(*found) >> 16), *found & 0xffff});
     }
-    if (!windows<kGetProcAddress, &host::procAddress>(app, cpu, at(app, kSoundModule), kSetFunctionsName))
+    const auto setFound = windows<kGetProcAddress, &host::procAddress>(app, cpu, at(app, kSoundModule), kSetFunctionsName);
+    if (!setFound)
         return false;
-    const x86::reg32 setFunctions = cpu.eax;
+    const x86::reg32 setFunctions = *setFound;
     if (setFunctions == 0)  // "COULDN'T FIND setfunctions."
         return soundError(app, cpu, kLoadName, 0x176, {0x549d84});
     const x86::reg32* l = kSoundLambdas;
-    if (!call(app, cpu, setFunctions, {l[0], l[1], l[2], l[3], l[4], l[5], l[6], l[7]}))
+    x86::Args setRegisters;
+    if (!guest::pointerCall(app, cpu, setFunctions, setRegisters, {l[0], l[1], l[2], l[3], l[4], l[5], l[6], l[7]}))
         return false;
     x86::reg32 slot = kSoundFunctions;
     for (const x86::reg32 name : kSoundFunctionNames)
     {
-        if (!windows<kGetProcAddress, &host::procAddress>(app, cpu, at(app, kSoundModule), name))
+        const auto found = windows<kGetProcAddress, &host::procAddress>(app, cpu, at(app, kSoundModule), name);
+        if (!found)
             return false;
-        put(app, slot, cpu.eax);
+        put(app, slot, *found);
         slot += 4;
     }
     for (slot = kSoundFunctions; slot < kSoundFunctions + 4 * std::size(kSoundFunctionNames); slot += 4)
@@ -366,124 +463,132 @@ bool loadSound(win32::WinApplication* app, x86::CPU& cpu, x86::reg32& result)
 /* iSNDloaddll (0x4e1dd4): eacsnd.dll loaded, its version checked, the game's
  * functions handed it and its own looked up; 0 if it was already, -1 or -11
  * after the Error.  Keeps every register but eax. */
-void iSNDloaddll(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 iSNDloaddll(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     const x86::reg32 esp = cpu.esp;
-    const x86::reg32 ebx = cpu.ebx, ecx = cpu.ecx, edx = cpu.edx, esi = cpu.esi, edi = cpu.edi, ebp = cpu.ebp;
+    const x86::reg32 ebx = args.ebx, ecx = args.ecx, edx = args.edx, esi = args.esi, edi = args.edi, ebp = args.ebp;
     x86::reg32 result = 0;
     if (at(app, kSoundModule) == 0)
     {
         cpu.esp = esp - 0x18;  // below the six registers it keeps
         if (!loadSound(app, cpu, result))
-            return;
+            return args.eax;
     }
-    cpu.eax = result;
-    cpu.ebx = ebx;
-    cpu.ecx = ecx;
-    cpu.edx = edx;
-    cpu.esi = esi;
-    cpu.edi = edi;
-    cpu.ebp = ebp;
+    args.eax = result;
+    args.ebx = ebx;
+    args.ecx = ecx;
+    args.edx = edx;
+    args.esi = esi;
+    args.edi = edi;
+    args.ebp = ebp;
     cpu.esp = esp + 4;
+    return args.eax;
 }
 
 /* SNDcaps (0x4e21b0): what the card can, as iSNDdirectcaps says for the
  * game's window, 0x10000 added if that is above 0; eacsnd loaded first, and
  * the tick the game's own unless it set another.  Keeps every register but
  * eax. */
-void SNDcaps(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 SNDcaps(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     const x86::reg32 esp = cpu.esp;
-    const x86::reg32 ecx = cpu.ecx, edx = cpu.edx;
+    const x86::reg32 ecx = args.ecx, edx = args.edx;
     if (at(app, kSoundTick) == 0)
         put(app, kSoundTick, kGameTick);
     cpu.esp = esp - 8;  // below the two registers it keeps
-    if (!call(app, cpu, iSNDloaddll) || !call(app, cpu, AcquireWindow))
-        return;
-    const x86::reg32 window = cpu.eax;
+    x86::Args loadRegisters = args;
+    if (!thunkCall(app, cpu, &iSNDloaddll, loadRegisters, {}))
+        return args.eax;
+    const x86::reg32 window = guest::direct<0x4eba70, ea::acquireWindow>(app, cpu);
+    args.eax = window;  // as the call leaves it: the sound's export is handed it
     if (window == 0)
     {
         cpu.esp = esp - 0x14;  // below ebx, esi and edi too, which it keeps around the call
         // "SNDcaps - MAIN WINDOW HANDLE IS INVALID."
         if (!soundError(app, cpu, kCapsName, 0x22d, {0x549f28}))
-            return;
+            return args.eax;
         cpu.esp = esp - 8;
     }
-    const std::optional<x86::reg32> caps = guest::sound<isnd::kDirectCaps, &port::eacsnd::caps>(app, cpu, window);
+    const std::optional<x86::reg32> caps = soundKept<isnd::kDirectCaps, &port::eacsnd::caps>(app, cpu, window);
     if (!caps)
-        return;
-    cpu.eax = x86::sreg32(*caps) > 0 ? *caps | 0x10000 : *caps;
-    cpu.ecx = ecx;
-    cpu.edx = edx;
+        return args.eax;
+    args.eax = x86::sreg32(*caps) > 0 ? *caps | 0x10000 : *caps;
+    args.ecx = ecx;
+    args.edx = edx;
     cpu.esp = esp + 4;
+    return args.eax;
 }
 
 /* Is3DSoundAvailable (0x40faf0): 1 if SNDcaps has 0x20000, else 0.  (It hands
  * SNDcaps -1 in eax, which SNDcaps never reads.) */
-void Is3DSoundAvailable(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 Is3DSoundAvailable(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     const x86::reg32 esp = cpu.esp;
     cpu.esp = esp - 4;  // below ebp, which it keeps
-    if (!call(app, cpu, SNDcaps))
-        return;
-    cpu.eax = (cpu.eax & 0x20000) != 0 ? 1 : 0;
+    x86::Args capsRegisters = args;
+    const std::optional<x86::reg32> caps = thunkCall(app, cpu, &SNDcaps, capsRegisters, {});
+    if (!caps)
+        return args.eax;
+    args.eax = (*caps & 0x20000) != 0 ? 1 : 0;
     cpu.esp = esp + 4;
+    return args.eax;
 }
 
 /* audiofocushandler (0x4e1d48): eax nonzero, the game has the focus and the
  * sound is started for its window with kSoundOptions; zero, it is stopped.
  * Under the sound's lock; keeps every register but eax. */
-void audiofocushandler(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 audiofocushandler(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     const x86::reg32 esp = cpu.esp;
-    const x86::reg32 ebx = cpu.ebx, ecx = cpu.ecx, edx = cpu.edx, ebp = cpu.ebp;
-    const x86::reg32 focus = cpu.eax;
+    const x86::reg32 ebx = args.ebx, ecx = args.ecx, edx = args.edx, ebp = args.ebp;
+    const x86::reg32 focus = args.eax;
     cpu.esp = esp - 0x10;  // below the four registers it keeps
     if (!windows<kEnterCriticalSection, &host::enterLock>(app, cpu, at(app, kSoundLock)))
-        return;
+        return args.eax;
     if (focus != 0)
     {
-        if (!call(app, cpu, AcquireWindow))
-            return;
-        const x86::reg32 window = cpu.eax;
+        const x86::reg32 window = guest::direct<0x4eba70, ea::acquireWindow>(app, cpu);
+        args.eax = window;  // as the call leaves it
         if (window == 0)
         {
             cpu.esp = esp - 0x18;  // below edi and esi too, which it keeps around the call
             // "audiofocushandler - MAIN WINDOW HANDLE IS INVALID."
             if (!soundError(app, cpu, kFocusName, 0x124, {0x549c2c}))
-                return;
+                return args.eax;
             cpu.esp = esp - 0x10;
         }
-        if (!guest::sound<isnd::kDirectStart, &port::eacsnd::start>(app, cpu, at(app, kSoundOptions), window))
-            return;
+        if (!soundKept<isnd::kDirectStart, &port::eacsnd::start>(app, cpu, at(app, kSoundOptions), window))
+            return args.eax;
     }
-    else if (!guest::sound<isnd::kDirectStop, &port::eacsnd::stop>(app, cpu))
+    else if (!soundKept<isnd::kDirectStop, &port::eacsnd::stop>(app, cpu))
     {
-        return;
+        return args.eax;
     }
     if (!windows<kLeaveCriticalSection, &host::leaveLock>(app, cpu, at(app, kSoundLock)))
-        return;
-    cpu.ebx = ebx;
-    cpu.ecx = ecx;
-    cpu.edx = edx;
-    cpu.ebp = ebp;
+        return args.eax;
+    args.ebx = ebx;
+    args.ecx = ecx;
+    args.edx = edx;
+    args.ebp = ebp;
     cpu.esp = esp + 4;
+    return args.eax;
 }
 
 /* SoundServeHandler (0x4e2234): iSNDdirectserve under the sound's lock;
  * keeps every register but eax. */
-void SoundServeHandler(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 SoundServeHandler(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     const x86::reg32 esp = cpu.esp;
-    const x86::reg32 ecx = cpu.ecx, edx = cpu.edx;
+    const x86::reg32 ecx = args.ecx, edx = args.edx;
     cpu.esp = esp - 8;  // below the two registers it keeps
     if (!windows<kEnterCriticalSection, &host::enterLock>(app, cpu, at(app, kSoundLock))
-        || !guest::sound<isnd::kDirectServe, &port::eacsnd::serve>(app, cpu)
+        || !soundKept<isnd::kDirectServe, &port::eacsnd::serve>(app, cpu)
         || !windows<kLeaveCriticalSection, &host::leaveLock>(app, cpu, at(app, kSoundLock)))
-        return;
-    cpu.ecx = ecx;
-    cpu.edx = edx;
+        return args.eax;
+    args.ecx = ecx;
+    args.edx = edx;
     cpu.esp = esp + 4;
+    return args.eax;
 }
 
 /* The lambdas iSNDloaddll hands eacsnd (kSoundLambdas), each to the game's
@@ -497,36 +602,41 @@ void SoundServeHandler(win32::WinApplication* app, x86::CPU& cpu)
 std::optional<x86::reg32> acquireSoundDataOf(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 buffer,
                                              x86::reg32 frames)
 {
-    cpu.eax = buffer;
-    cpu.edx = frames;
-    if (!call(app, cpu, kMix))
+    // 0x500864, the mix: every register but eax kept, as its entry keeps them.
+    const EspKept kept(cpu);
+    const x86::reg32 mixed = port::mixFrames(app, cpu, cpu.esp - 4, buffer, x86::sreg32(frames), buffer);
+    if (cpu.terminate)
         return std::nullopt;
-    return cpu.eax;
+    return mixed;
 }
 
-void AcquireSoundDataLambda(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 AcquireSoundDataLambda(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     const x86::reg32 esp = cpu.esp;
     if (!acquireSoundDataOf(app, cpu, at(app, esp + 4), at(app, esp + 8)))
-        return;
+        return args.eax;
     cpu.esp = esp + 4 + 8;
+    return args.eax;
 }
 
 /* StopSoundBufferLambda's (0x4e1a00): (buffer). */
 std::optional<x86::reg32> stopSoundBufferOf(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 buffer)
 {
-    cpu.eax = buffer;
-    if (!call(app, cpu, kStopBuffer))
+    // 0x4ffb64, iSNDfreechan: every register but eax kept, as its entry keeps them.
+    const EspKept kept(cpu);
+    const port::Result freed = port::freeVoice(app, cpu, cpu.esp - 4, x86::sreg32(buffer));
+    if (!freed || cpu.terminate)
         return std::nullopt;
-    return cpu.eax;
+    return x86::reg32(*freed);
 }
 
-void StopSoundBufferLambda(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 StopSoundBufferLambda(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     const x86::reg32 esp = cpu.esp;
     if (!stopSoundBufferOf(app, cpu, at(app, esp + 4)))
-        return;
+        return args.eax;
     cpu.esp = esp + 4 + 4;
+    return args.eax;
 }
 
 /* AcquireSoundBufferPositionLambda's (0x4e1a0c): (three words, the last
@@ -534,113 +644,119 @@ void StopSoundBufferLambda(win32::WinApplication* app, x86::CPU& cpu)
 std::optional<x86::reg32> acquireSoundBufferPositionOf(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 first,
                                                        x86::reg32 second, x86::reg32 position)
 {
-    const x86::reg32 esp = cpu.esp;
-    const x86::reg32 ebx = cpu.ebx;
-    cpu.eax = first;
-    cpu.edx = second;
-    cpu.ebx = position;
-    cpu.esp = esp - 4;  // below ebx
-    if (!call(app, cpu, kBufferPosition))
+    // 0x4ffce0: ebx kept, below it the call's return address's slot.
+    const EspKept kept(cpu);
+    const port::Result placed = port::bufferPositioned(app, cpu, cpu.esp - 8, first, second, position);
+    if (!placed || cpu.terminate)
         return std::nullopt;
-    cpu.ebx = ebx;
-    cpu.esp = esp;
-    return cpu.eax;
+    return x86::reg32(*placed);
 }
 
-void AcquireSoundBufferPositionLambda(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 AcquireSoundBufferPositionLambda(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     const x86::reg32 esp = cpu.esp;
     if (!acquireSoundBufferPositionOf(app, cpu, at(app, esp + 4), at(app, esp + 8), at(app, esp + 0xc)))
-        return;
+        return args.eax;
     cpu.esp = esp + 4 + 0xc;
+    return args.eax;
 }
 
 /* TickSoundLambda's (0x4e1adc): the game's 100 Hz tick (kSoundTick).  The
  * library's own, port::soundTick (0x500c80, kGameTick, which SNDcaps puts
  * there), as its C++, port::tickSound: its frame where the call's return
- * address would be, every register but eax kept as its adapter keeps them.
- * Another the game set, and in tools/game_checks and tools/frontend_checks
- * (which stand the tick in) any, through the pointer. */
-std::optional<x86::reg32> tickSoundOf(win32::WinApplication* app, x86::CPU& cpu)
+ * address would be, every register but eax kept as its thunk keeps them.
+ * Any other function the game set goes through the pointer. */
+std::optional<x86::reg32> tickSoundWith(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 eax, x86::reg32 edx,
+                                      x86::reg32 ecx, x86::reg32 ebp)
 {
     const x86::reg32 tick = at(app, kSoundTick);
 #ifndef NFS3HP_SOUND_THROUGH_SLOTS
-    if (app->methodAt(tick) == &port::soundTick)
+    if (tick == kGameTick)  // the library's own: port::soundTick is registered there
     {
-        const x86::reg32 ebx = cpu.ebx, ecx = cpu.ecx, edx = cpu.edx, esi = cpu.esi, edi = cpu.edi, ebp = cpu.ebp;
-        const x86::reg32 esp = cpu.esp;
-        const port::Result result = port::tickSound(app, cpu, esp - 4);
+        const EspKept kept(cpu);
+        const port::Result result = port::tickSoundFrom(app, cpu, cpu.esp - 4, eax, edx, ecx, ebp);
         if (!result)
             return std::nullopt;
-        cpu.eax = x86::reg32(*result);
-        cpu.ebx = ebx;
-        cpu.ecx = ecx;
-        cpu.edx = edx;
-        cpu.esi = esi;
-        cpu.edi = edi;
-        cpu.ebp = ebp;
-        cpu.esp = esp;
-        return cpu.eax;
+        return x86::reg32(*result);
     }
 #endif
-    if (!call(app, cpu, tick))
-        return std::nullopt;
-    return cpu.eax;
+    x86::Args registers;
+    registers.eax = eax;
+    registers.edx = edx;
+    registers.ecx = ecx;
+    registers.ebp = ebp;
+    return guest::pointerCall(app, cpu, tick, registers);
 }
 
-void TickSoundLambda(win32::WinApplication* app, x86::CPU& cpu)
+/* The tick as guest::sound calls it (native_sound.cpp): the registers it is handed as the caller left them. */
+std::optional<x86::reg32> tickSoundOf(win32::WinApplication* app, x86::CPU& cpu)
+{
+    return tickSoundWith(app, cpu, 0, 0, 0, 0);
+}
+
+x86::reg32 TickSoundLambda(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     const x86::reg32 esp = cpu.esp;
-    if (!tickSoundOf(app, cpu))
-        return;
+    const std::optional<x86::reg32> ticked = tickSoundWith(app, cpu, args.eax, args.edx, args.ecx, args.ebp);
+    if (!ticked)
+        return args.eax;
+    args.eax = *ticked;
     cpu.esp = esp + 4;
+    return args.eax;
 }
 
 /* PrintSoundLambda (0x4e1a34): cdecl (format, ...), to stdout, flushed --
  * Message handed the format and the address of a va_list of the rest, as if
  * it were the first of them. */
-void PrintSoundLambda(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 PrintSoundLambda(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     const x86::reg32 esp = cpu.esp;
     const x86::reg32 arguments = esp - 4;
     put(app, arguments, esp + 8);
     cpu.esp = arguments;
-    if (!call(app, cpu, Message, {at(app, esp + 4), arguments}))
-        return;
-    cpu.eax = kStdout;
-    if (!call(app, cpu, kFflush))
-        return;
+    guest::direct<0x4df6c0, ea::message>(app, cpu, at(app, esp + 4), guest::Words({arguments}));
+    if (cpu.terminate)
+        return args.eax;
+    args.eax = guest::direct<0x4f7d70, watcom::clib::fflush>(app, cpu, kStdout);
+    if (cpu.terminate)
+        return args.eax;
     cpu.esp = esp + 4;
+    return args.eax;
 }
 
 /* TraceSoundLambda (0x4e1a64): cdecl (format, ...), into the game's log as
  * PrintSoundLambda hands Message its arguments. */
-void TraceSoundLambda(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 TraceSoundLambda(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     const x86::reg32 esp = cpu.esp;
     const x86::reg32 arguments = esp - 4;
     put(app, arguments, esp + 8);
     cpu.esp = arguments;
-    if (!call(app, cpu, kTrace, {at(app, esp + 4), arguments}))
-        return;
+    const std::optional<x86::reg32> traced =
+        guest::direct<0x4e08f0, ea::monoPrinted>(app, cpu, args.eax, at(app, esp + 4), guest::Words({arguments}));
+    if (!traced || cpu.terminate)
+        return args.eax;
+    args.eax = *traced;
     cpu.esp = esp + 4;
+    return args.eax;
 }
 
 /* abortmessagewrapper (0x4e1a88): cdecl (text, ...), stdout flushed and the
  * text an Error from this function -- with the address of a va_list of the
  * rest as its one argument. */
-void abortmessagewrapper(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 abortmessagewrapper(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     const x86::reg32 esp = cpu.esp;
     const x86::reg32 arguments = esp - 0x10;  // its va_list, below ebx, esi and edi, which it keeps
     cpu.esp = arguments;
-    cpu.eax = kStdout;
-    if (!call(app, cpu, kFflush))
-        return;
+    args.eax = guest::direct<0x4f7d70, watcom::clib::fflush>(app, cpu, kStdout);
+    if (cpu.terminate)
+        return args.eax;
     put(app, arguments, esp + 8);
     if (!soundError(app, cpu, kAbortmessagewrapperName, 0x92, {at(app, esp + 4), arguments}))
-        return;
+        return args.eax;
     cpu.esp = esp + 4;
+    return args.eax;
 }
 
 /* iSNDconvertsample (0x4e1ae4): stdcall (source, its representation, its
@@ -652,7 +768,7 @@ void abortmessagewrapper(win32::WinApplication* app, x86::CPU& cpu)
  * and representation 0 are done, the rest is an Error.  The buffer freed is
  * where the frames started, first's frame when there is a last: the game's
  * own slip.  0. */
-void iSNDconvertsample(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 iSNDconvertsample(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     const x86::reg32 esp = cpu.esp;
     const auto argument = [&](x86::reg32 i) { return at(app, esp + 4 * i); };
@@ -662,19 +778,23 @@ void iSNDconvertsample(win32::WinApplication* app, x86::CPU& cpu)
     cpu.esp = frame;
     // "CAN'T CONVERT XA WITH %i CHANNELS."
     if (x86::sreg32(channels) > 2 && !soundError(app, cpu, kConvertName, 0xaa, {0x549b48, channels}))
-        return;
+        return args.eax;
     // "CAN'T HANDLE dstnumchan %i"
     if (argument(9) != 1 && !soundError(app, cpu, kConvertName, 0xb0, {0x549b80, argument(9)}))
-        return;
-    if (!windows<kVirtualAlloc, &host::virtualAlloc>(app, cpu, 0, frames * 8 + 0x4e20, 0x3000, 4))
-        return;
-    x86::reg32 buffer = cpu.eax;
+        return args.eax;
+    const auto allocated = windows<kVirtualAlloc, &host::virtualAlloc>(app, cpu, 0, frames * 8 + 0x4e20, 0x3000, 4);
+    if (!allocated)
+        return args.eax;
+    args.eax = *allocated;
+    x86::reg32 buffer = args.eax;
     switch (representation)
     {
     case 0:
     case 2:
-        if (!call(app, cpu, representation == 0 ? 0x5008a0 : 0x500b10, {frames * channels, source, buffer}))
-            return;
+        if (representation == 0)
+            guest::direct<0x5008a0, port::samples16Converted>(app, cpu, std::int32_t(frames * channels), source, buffer);
+        else
+            guest::direct<0x500b10, port::samples8Converted>(app, cpu, std::int32_t(frames * channels), source, buffer);
         break;
     case 3:
         // XA: a record in its frame -- the frames, zeros, the source and the
@@ -687,8 +807,7 @@ void iSNDconvertsample(win32::WinApplication* app, x86::CPU& cpu)
             put(app, record + 8, 0);
             put(app, record + 0xc, source);
             put(app, record + 0x10, buffer);
-            if (!call(app, cpu, 0x500b90, {record}))
-                return;
+            guest::direct<0x500b90, port::xaMonoConverted>(app, cpu, record);
         }
         else if (channels == 2)
         {
@@ -698,14 +817,13 @@ void iSNDconvertsample(win32::WinApplication* app, x86::CPU& cpu)
                 put(app, record + offset, 0);
             put(app, record + 0x14, source);
             put(app, record + 0x18, buffer);
-            if (!call(app, cpu, 0x500990, {record}))
-                return;
+            guest::direct<0x500990, port::xaStereoConverted>(app, cpu, record);
         }
         break;
     default:
         // "CAN'T HANDLE srcsamplerep %i"
         if (!soundError(app, cpu, kConvertName, 0xe0, {0x549bb0, representation}))
-            return;
+            return args.eax;
         break;
     }
     if (channels == 1)
@@ -730,16 +848,17 @@ void iSNDconvertsample(win32::WinApplication* app, x86::CPU& cpu)
     {
         // "CAN'T HANDLE dstsamplerep %i"
         if (!soundError(app, cpu, kConvertName, 0x101, {0x549be4, argument(8)}))
-            return;
+            return args.eax;
     }
-    else if (!call(app, cpu, 0x500910, {count, buffer, argument(7)}))
+    else
     {
-        return;
+        guest::direct<0x500910, port::floatsPacked>(app, cpu, count, buffer, argument(7));
     }
     if (!windows<kVirtualFree, &host::virtualFree>(app, cpu, buffer, 0, 0x8000))  // MEM_RELEASE
-        return;
-    cpu.eax = 0;
+        return args.eax;
+    args.eax = 0;
     cpu.esp = esp + 4 + 0x24;
+    return args.eax;
 }
 
 /* ---- THRASH, the game's side ---- */
@@ -771,22 +890,21 @@ constexpr struct
  * state 0x1f set to 104, and THRASH_about asked whether it is 3dfx's and of
  * version 104.  1 if it loaded and is (or will not say), else 0, after a
  * Message when it is not.  Keeps every register but eax. */
-void THRASH_opendll(win32::WinApplication* app, x86::CPU& cpu)
+std::optional<x86::reg32> ea::thrashOpened(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 name)
 {
     const x86::reg32 esp = cpu.esp;
-    const x86::reg32 ebx = cpu.ebx, ecx = cpu.ecx, edx = cpu.edx, esi = cpu.esi, ebp = cpu.ebp;
-    const x86::reg32 name = cpu.eax;
     const x86::reg32 path = esp - 0x14 - 0x200;  // below the five registers it keeps: its buffer
     cpu.esp = path;
-    if (!windows<kLoadLibraryA, &host::loadLibrary>(app, cpu, name))
-        return;
-    put(app, kRendererModule, cpu.eax);
-    if (cpu.eax == 0)
+    auto module = windows<kLoadLibraryA, &host::loadLibrary>(app, cpu, name);
+    if (!module)
+        return std::nullopt;
+    put(app, kRendererModule, *module);
+    if (*module == 0)
     {
         guest::direct<0x4df690, watcom::clib::sprintf>(app, cpu, path, 0x54d3a0u /* "%sa" */, guest::Words({name}));
-        if (cpu.terminate || !windows<kLoadLibraryA, &host::loadLibrary>(app, cpu, path))
-            return;
-        put(app, kRendererModule, cpu.eax);
+        if (cpu.terminate || !(module = windows<kLoadLibraryA, &host::loadLibrary>(app, cpu, path)))
+            return std::nullopt;
+        put(app, kRendererModule, *module);
     }
     x86::reg32 opened = 0;
     if (at(app, kRendererModule) != 0)
@@ -794,9 +912,10 @@ void THRASH_opendll(win32::WinApplication* app, x86::CPU& cpu)
         cpu.esp = path - 4;  // below edi, which it keeps while it looks
         for (const auto& function : kThrashFunctions)
         {
-            if (!windows<kGetProcAddress, &host::procAddress>(app, cpu, at(app, kRendererModule), function.name))
-                return;
-            put(app, function.slot, cpu.eax);
+            const auto found = windows<kGetProcAddress, &host::procAddress>(app, cpu, at(app, kRendererModule), function.name);
+            if (!found)
+                return std::nullopt;
+            put(app, function.slot, *found);
         }
         cpu.esp = path;
         opened = 1;
@@ -806,12 +925,12 @@ void THRASH_opendll(win32::WinApplication* app, x86::CPU& cpu)
     {
         if (at(app, thrash::kThrashSetState) != 0
             && !guest::driver<thrash::kThrashSetState, &port::driver::setState>(app, cpu, 0x1f, kThrashVersion))
-            return;
+            return std::nullopt;
         if (at(app, thrash::kThrashAbout) != 0)
         {
             const std::optional<x86::reg32> about = guest::driver<thrash::kThrashAbout, &port::driver::about>(app, cpu);
             if (!about)
-                return;
+                return std::nullopt;
             if (const x86::reg32 record = *about)
             {
                 if (at(app, record) == 0x33444658)  // "XFD3"
@@ -820,20 +939,33 @@ void THRASH_opendll(win32::WinApplication* app, x86::CPU& cpu)
                 if (version != kThrashVersion)
                 {
                     // "THRASH_opendll - DRIVER VERSION MISMATCH. LIBRARY WANTS 104. YOUR MODULE IS %d..."
-                    if (!call(app, cpu, Message, {0x54d67c, version}))
-                        return;
+                    x86::Args registers;
+                    if (!thunkCall(app, cpu, &Message, registers, {0x54d67c, version}))
+                        return std::nullopt;
                     opened = 0;
                 }
             }
         }
     }
-    cpu.eax = opened;
-    cpu.ebx = ebx;
-    cpu.ecx = ecx;
-    cpu.edx = edx;
-    cpu.esi = esi;
-    cpu.ebp = ebp;
+    cpu.esp = esp;
+    return opened;
+}
+
+x86::reg32 THRASH_opendll(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+{
+    const x86::reg32 esp = cpu.esp;
+    const x86::reg32 ebx = args.ebx, ecx = args.ecx, edx = args.edx, esi = args.esi, ebp = args.ebp;
+    const auto opened = ea::thrashOpened(app, cpu, args.eax);
+    if (!opened)
+        return args.eax;
+    args.eax = *opened;
+    args.ebx = ebx;
+    args.ecx = ecx;
+    args.edx = edx;
+    args.esi = esi;
+    args.ebp = ebp;
     cpu.esp = esp + 4;
+    return args.eax;
 }
 
 /* The game's fill (0x4e0721; 0x4e0716 spreads bl over ebx first, 0x4e070c
@@ -867,23 +999,22 @@ struct IntegerFlags
         zf = !result;
         sf = result >> 31;
     }
-    void store(x86::CPU& cpu) const
-    {
-        cpu.flags.cf = cf;
-        cpu.flags.of = of;
-        cpu.flags.zf = zf;
-        cpu.flags.sf = sf;
-    }
 };
 
-void fillCore(win32::WinApplication* app, x86::CPU& cpu)
+/* What fillCore leaves: eax, edx and the flags. */
+struct FillResult
 {
-    x86::reg32 at = cpu.eax;
-    x86::sreg32 left = x86::sreg32(cpu.edx);
-    const x86::reg32 pattern = cpu.ebx;
-    x86::reg8* memory = &app->getMemory<x86::reg8>(0);
+    x86::reg32 at;
+    x86::reg32 left;
+    IntegerFlags flags;
+};
+
+/* The fill itself; `write` false only works out where it would end (the eax). */
+FillResult fillRun(x86::reg8* memory, x86::reg32 at, x86::sreg32 left, x86::reg32 pattern, bool write)
+{
     auto put = [&](x86::reg32 bytes) {
-        std::memcpy(memory + at, &pattern, bytes);
+        if (write)
+            std::memcpy(memory + at, &pattern, bytes);
         at += bytes;
     };
     IntegerFlags flags;
@@ -931,7 +1062,7 @@ void fillCore(win32::WinApplication* app, x86::CPU& cpu)
             // one fill for the whole run of 32-byte blocks
             const x86::reg32 blocks = x86::reg32(left) / 0x20 + 1;
             x86::reg8* to = memory + at;
-            for (x86::reg32 i = 0; i < blocks * 4; ++i)
+            for (x86::reg32 i = 0; write && i < blocks * 4; ++i)
                 std::memcpy(to + i * 8, unit, 8);
             at += blocks * 0x20;
             left -= x86::sreg32(blocks * 0x20);
@@ -939,7 +1070,8 @@ void fillCore(win32::WinApplication* app, x86::CPU& cpu)
         left += 0x18;
         while (left >= 0)
         {
-            std::memcpy(memory + at, unit, 8);
+            if (write)
+                std::memcpy(memory + at, unit, 8);
             at += 8;
             left -= 8;
         }
@@ -958,42 +1090,60 @@ void fillCore(win32::WinApplication* app, x86::CPU& cpu)
             if (left & 2)
                 put(2);
             if (left & 1)
-                memory[at] = x86::reg8(pattern);  // the last byte: eax not moved past it
+            {
+                if (write)
+                    memory[at] = x86::reg8(pattern);  // the last byte: eax not moved past it
+            }
             flags.logic(x86::reg32(left) & 1);  // test edx, 1
         }
     }
-    flags.store(cpu);
-    cpu.eax = at;
-    cpu.edx = x86::reg32(left);
+    return {at, x86::reg32(left), flags};
+}
+
+x86::reg32 fillCore(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+{
+    const FillResult r = fillRun(&app->getMemory<x86::reg8>(0), args.eax, x86::sreg32(args.edx), args.ebx, true);
+    args.eax = r.at;
+    args.edx = r.left;
+    return args.eax;
 }
 
 }  // namespace
 
-/* 0x4e0721: edx bytes at eax of the pattern in ebx. */
-void fillWord(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x4e0721's core: `count` bytes at `at` of the pattern; the eax it leaves (where the fill stopped). */
+x86::reg32 ea::fillPattern(win32::WinApplication* app, x86::reg32 at, x86::reg32 count, x86::reg32 pattern)
 {
-    fillCore(app, cpu);
+    return fillRun(&app->getMemory<x86::reg8>(0), at, x86::sreg32(count), pattern, true).at;
+}
+
+/* 0x4e0721: edx bytes at eax of the pattern in ebx. */
+x86::reg32 fillWord(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+{
+    fillCore(app, cpu, args);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4e0716: edx bytes at eax of bl. */
-void fillByte(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 fillByte(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    x86::reg32 ebx = (cpu.ebx & 0xffff0000) | (cpu.ebx & 0xff) << 8 | (cpu.ebx & 0xff);
+    x86::reg32 ebx = (args.ebx & 0xffff0000) | (args.ebx & 0xff) << 8 | (args.ebx & 0xff);
     ebx |= ebx << 16;
-    cpu.ebx = ebx;
-    fillCore(app, cpu);
+    args.ebx = ebx;
+    fillCore(app, cpu, args);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4e070c: edx bytes at eax cleared. */
-void fillZero(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 fillZero(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const x86::reg32 ebx = cpu.ebx;
-    cpu.ebx = 0;
-    fillCore(app, cpu);
-    cpu.ebx = ebx;
+    const x86::reg32 ebx = args.ebx;
+    args.ebx = 0;
+    fillCore(app, cpu, args);
+    args.ebx = ebx;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* fillCore's bytes when all four of the pattern are one value: each step, the
@@ -1001,10 +1151,11 @@ void fillZero(win32::WinApplication* app, x86::CPU& cpu)
  * the steps together cover the count exactly -- the x87's load and store change
  * no such double (a NaN would need 0xff, which takes the dwords' path).  A count
  * with its top bit set fills nothing, as fillCore's signed tests have it. */
-void ea::clearBytes(win32::WinApplication* app, x86::reg32 at, x86::reg32 count)
+x86::reg32 ea::clearBytes(win32::WinApplication* app, x86::reg32 at, x86::reg32 count)
 {
     if (x86::sreg32(count) > 0)
         std::memset(&app->getMemory<x86::reg8>(at), 0, count);
+    return fillRun(nullptr, at, x86::sreg32(count), 0, false).at;  // the eax the fill leaves
 }
 
 void ea::fillBytes(win32::WinApplication* app, x86::reg32 at, x86::reg32 count, x86::reg32 value)
@@ -1013,12 +1164,39 @@ void ea::fillBytes(win32::WinApplication* app, x86::reg32 at, x86::reg32 count, 
         std::memset(&app->getMemory<x86::reg8>(at), int(value & 0xff), count);
 }
 
+std::optional<x86::reg32> ea::messageOf(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 format)
+{
+    // As ea::error: the format pushed where the game's call pushes it, over the return address's slot.
+    cpu.esp += 4;
+    x86::Args registers;
+    const std::optional<x86::reg32> eax = thunkCall(app, cpu, &Message, registers, {}, guest::Words({format}));
+    if (!eax)
+        return std::nullopt;
+    cpu.esp -= 4;
+    return eax;
+}
+
+std::optional<x86::reg32> ea::errorLeaves(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 eax, x86::reg32 format,
+                                          guest::Words words)
+{
+    // As ea::error, with the eax the caller has at the call and what Error leaves there when it returns.
+    x86::Args registers;
+    registers.eax = eax;
+    cpu.esp += 4;
+    const std::optional<x86::reg32> left = thunkCall(app, cpu, &Error, registers, {format}, words);
+    if (!left)
+        return std::nullopt;
+    cpu.esp -= 4;
+    return left;
+}
+
 void ea::error(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 format, guest::Words words)
 {
     // Called as C++ (guest::direct), the return address's slot already under esp: the words pushed
     // where the game's call pushes them, over that slot, so Error's frame lies where its code has it.
     cpu.esp += 4;
-    const bool returned = guest::call(app, cpu, &Error, {format}, words);
+    x86::Args registers;
+    const bool returned = thunkCall(app, cpu, &Error, registers, {format}, words).has_value();
     if (returned)
         cpu.esp -= 4;
 }
@@ -1030,18 +1208,30 @@ void ea::error(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 format, gue
 namespace removed
 {
 
-void processorChecked(win32::WinApplication* app, x86::CPU& cpu)
+void checkProcessor(win32::WinApplication* app)
 {
     app->getMemory<x86::reg32>(0x5643b4) = 1;  // MMX's set of the mixing's routines
     app->getMemory<x86::reg32>(0x5643ac) = 1;
     app->getMemory<x86::reg32>(0x5643bc) = 0;  // no timestamp counter to read
-    cpu.esp += 4;
 }
 
-void processorSpeed(win32::WinApplication* app, x86::CPU& cpu)
+void timeProcessor(win32::WinApplication* app)
 {
     NFS2_USE(app);
+}
+
+x86::reg32 processorChecked(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+{
+    checkProcessor(app);
     cpu.esp += 4;
+    return args.eax;
+}
+
+x86::reg32 processorSpeed(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+{
+    timeProcessor(app);
+    cpu.esp += 4;
+    return args.eax;
 }
 
 }  // namespace removed

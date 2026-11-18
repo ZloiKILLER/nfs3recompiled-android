@@ -11,10 +11,34 @@
 #include "native_graphics.h"
 #include "port_hud.h"
 #include "port_text.h"
+#include "native_vertices.h"
+#include "native_render.h"
 #include <nfs3hp.h>
 #include <cstring>
 #include <initializer_list>
 #include <iterator>
+
+/* The thunks defined below under their qualified names. */
+namespace nfs3hp
+{
+namespace frontend
+{
+x86::reg32 hudDrawElement(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 hudRebuildElement(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 hudStepMapPanes(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 hudOrdinalLetters(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 hudFormatTime(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 hudDrawTime(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 hudDrawPercentAndCount(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 hudDrawLaps(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 hudDrawRatio(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 hudDrawPlaceAmong(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 hudDrawTriangle(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 hudDrawLine(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 hudFlushLines(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 hudPrepareLines(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+}
+}
 
 /* The race's HUD above the port's own drawing (port_hud.cpp), decompiled:
  *
@@ -34,7 +58,7 @@
  * what they do is called by address.
  *
  * Plan step 5: each function a typed core in frontend::hudr (native_frontend_hudr.h), in a frame of
- * its own where the game's function has one, and an adapter under the game's name for the calls by
+ * its own where the game's function has one, and a thunk under the game's name for the calls by
  * address.  A core of this file calls another, and those of the HUD's other files done so
  * (native_frontend_hudx.cpp, _hudz.cpp), as C++ (guest::direct), and the typed cores of other files
  * too (fe::direct); the rest of the game still by address. */
@@ -53,12 +77,55 @@ namespace
 using fe::args;
 using fe::Guest;
 using fe::GuestString;
-using fe::X87;
 using x86::Float;
 using x86::reg32;
 using x86::sreg32;
 
-/* A generated function's stack argument, by its place, before its frame. */
+/* Guest::call as a call through guest::pointerCall: `arguments`' registers in eax, edx, ebx and ecx, `esi` in esi,
+ * its stack words pushed in order, esp back after; Terminated when the game stopped in it.  `floatResult`, when given,
+ * takes the float the callee gives back. */
+inline reg32 callAt(Guest& guest, reg32 function, const fe::Arguments& arguments = fe::Arguments(), reg32 esi = 0,
+                    double* floatResult = nullptr)
+{
+    x86::CPU& cpu = guest.cpu();
+    x86::Args registers;
+    reg32* const into[4] = { &registers.eax, &registers.edx, &registers.ebx, &registers.ecx };
+    for (std::size_t i = 0; i < arguments.registerCount; ++i)
+        *into[i] = arguments.registers[i];
+    registers.esi = esi;
+    const reg32 esp = cpu.esp;
+    for (std::size_t i = arguments.stackCount; i-- > 0;)
+    {
+        cpu.esp -= 4;
+        guest.setDword(cpu.esp, arguments.stack[i]);
+    }
+    const std::optional<reg32> result = guest::pointerCall(guest.app(), cpu, function, registers);
+    if (!result)
+        throw fe::Terminated();
+    cpu.esp = esp;
+    if (floatResult)
+        *floatResult = registers.floatResult;  // what the callee leaves on the x87's top, as a float result
+    return *result;
+}
+
+/* fild, fld and sub_4dfd56 with fistp (fe::FloatMath's) as plain values: no x87 behind them. */
+class FloatMath
+{
+public:
+    explicit FloatMath(Guest& guest) : m_guest(guest) {}
+    static Float integer(std::int32_t value) { return Float(sreg32(value)); }
+    Float load(reg32 address) const { return Float(m_guest.floatAt(address)); }
+    std::int32_t truncated(const Float& value)
+    {
+        const double chopped = guest::direct<0x4dfd56, watcom::clib::chop>(m_guest.app(), m_guest.cpu(), double(value));
+        return fp::toInteger<sreg32>(chopped);  // fistp
+    }
+
+private:
+    Guest& m_guest;
+};
+
+/* A game function's stack argument, by its place, before its frame. */
 reg32 stackArgument(win32::WinApplication* app, const x86::CPU& cpu, reg32 place)
 {
     return app->getMemory<reg32>(cpu.esp + 4 + 4 * place);
@@ -80,12 +147,6 @@ constexpr std::uint8_t kKeepsEbxEcxEsiEdi = fe::kRestoreEbx | kKeepsEcxEsiEdi;
 
 // The game's functions, by address.
 constexpr reg32 kSprintf = 0x4df690;
-constexpr reg32 kCharacterHeight = 0x4d1540;   // eax a character
-constexpr reg32 kQueueQuad = 0x49bd30;         // eax a queue, edx, ebx, ecx and the stack its corners
-constexpr reg32 kUnqueueQuad = 0x49bdc0;       // likewise
-constexpr reg32 kFlushQueue = 0x49be40;        // eax a queue
-constexpr reg32 kFlushBand = 0x4800a0;         // eax a view
-constexpr reg32 kFlatRectangle = 0x459350;     // eax, edx, ebx, ecx its sides; the stack its colour
 
 // The numbers the elements show.
 constexpr reg32 kLapTime = 0x72522c;
@@ -147,15 +208,14 @@ reg32 cameraTarget(Guest& guest, x86::CPU& cpu, reg32 view)
 /* A render state set (sub_431900, as C++): its answer, which it leaves in eax. */
 reg32 renderState(Guest& guest, x86::CPU& cpu, reg32 state, reg32 value)
 {
-    fe::direct<0x431900, graphics::sendState>(guest.app(), cpu, state, value);
-    return cpu.eax;
+    return *fe::direct<0x431900, graphics::stateAnswer>(guest.app(), cpu, state, value);
 }
 
-/* Line `number` of the language's text (sub_4d1850, as C++; edx as it is, which only a name past
- * the lines reads). */
+/* Line `number` of the language's text (sub_4d1850, as C++; edx 0: only a name past
+ * the lines reads it). */
 reg32 languageLine(Guest& guest, x86::CPU& cpu, std::uint32_t number)
 {
-    return reg32(*fe::direct<0x4d1850, port::text::lineText>(guest.app(), cpu, cpu.esp - 4, std::int32_t(number), cpu.edx));
+    return reg32(*fe::direct<0x4d1850, port::text::lineText>(guest.app(), cpu, cpu.esp - 4, std::int32_t(number), 0));
 }
 
 /* Whether a car is a cop's, as 0 or 1: the form of the HUD its view has. */
@@ -164,15 +224,21 @@ reg32 formOf(const Guest& guest, reg32 car)
     return (guest.byte(car + kCarFlags) & kCarIsCop) != 0 ? 1 : 0;
 }
 
+/* The queue's quads drawn: what the code leaves in eax. */
+reg32 flushQueue(Guest& guest, reg32 queue)
+{
+    return reg32(*fe::direct<0x49be40, port::text::quadsFlushed>(guest.app(), guest.cpu(), guest.cpu().esp - 4, queue));
+}
+
 /* The queue's quad of the four corners from `first`. */
 reg32 queueQuad(Guest& guest, reg32 queue, reg32 first)
 {
-    return guest.call(kQueueQuad, args({ queue, first, first + 1, first + 2 }, { first + 3 }));
+    return reg32(*fe::direct<0x49bd30, port::text::quadQueued>(guest.app(), guest.cpu(), guest.cpu().esp - 8, queue, first, first + 1, first + 2, first + 3));
 }
 
 reg32 unqueueQuad(Guest& guest, reg32 queue, reg32 first)
 {
-    return guest.call(kUnqueueQuad, args({ queue, first, first + 1, first + 2 }, { first + 3 }));
+    return reg32(*fe::direct<0x49bdc0, port::text::quadUnqueued>(guest.app(), guest.cpu(), guest.cpu().esp - 8, queue, first, first + 1, first + 2, first + 3));
 }
 
 /* ---------------------------------------------------------------------------
@@ -181,12 +247,7 @@ reg32 unqueueQuad(Guest& guest, reg32 queue, reg32 first)
 
 constexpr reg32 kViewWidth = 0x7cdac8;
 constexpr reg32 kViewHeight = 0x7cdacc;
-constexpr reg32 kHudRect = 0x480910;           // eax a view, edx the element, ebx and ecx the view's size
-constexpr reg32 kBuildPicture = 0x480fc0;      // eax a view
-constexpr reg32 kBuildDial = 0x4812e0;         // eax a view
 constexpr reg32 kBuildMapViews = 0x48d110;     // eax a view, edx and ebx its size
-constexpr reg32 kBuildMapPanel = 0x481aa0;     // eax a view
-constexpr reg32 kBuildTable = 0x481c50;        // eax a view
 
 /* The start lights stand in one place on both players' screens: the rectangle
  * just set, by seat 1 or seat 2, copied to the other's and made again there. */
@@ -198,7 +259,7 @@ void shareStartLights(Guest& guest, x86::CPU& cpu, reg32 seat, reg32 form, reg32
     const reg32 otherView = seat == 1 ? 1 : 0;
     const reg32 otherForm = formOf(guest, cameraTarget(guest, cpu, otherView));
     gameSettings(guest).hudOf(otherSeat, otherForm).rects[kStartLights] = gameSettings(guest).hudOf(seat, form).rects[kStartLights];
-    guest.call(kHudRect, args({ otherView, kStartLights, width, height }));
+    fe::direct<0x480910, render::hudRectPlaced>(guest.app(), cpu, otherView, kStartLights, width, height);
     guest::direct<0x480a00, frontend::hudz::setAlignments>(guest.app(), cpu, otherView);
 }
 
@@ -216,32 +277,30 @@ x86::reg32 frontend::hudr::rebuildElement(App* app, CPU& cpu, reg32 view, reg32 
     const reg32 form = formOf(guest, cameraTarget(guest, cpu, view));
     if (element == kStartLights)
         shareStartLights(guest, cpu, seat, form, width, height);
-    guest.call(kHudRect, args({ view, element, width, height }));
+    fe::direct<0x480910, render::hudRectPlaced>(app, cpu, view, element, width, height);
     const reg32 placed = guest::direct<0x480a00, hudz::setAlignments>(app, cpu, view);
     const reg32 seatBytes = seat * kRecordsPerSeat, formBytes = form * kRecordsPerForm;
     const reg32 recordBytes = seatBytes + formBytes;
     switch (element)
     {
     case kSpeedFigures:
-        return guest.call(kBuildPicture, args({ view }));
+        return *fe::direct<0x480fc0, render::hudPicturePlaced>(app, cpu, view);
     case kSpeedDial:
     {
-        guest.call(kBuildPicture, args({ view }));
+        fe::direct<0x480fc0, render::hudPicturePlaced>(app, cpu, view);
         const reg32 shown = gameSettings(guest).hudAt(recordBytes).speedometerForm;
-        guest.leaveEdx(seatBytes);
         if (shown == 4 || shown == 2)
-            return guest.call(kFlushBand, args({ view }));
+            return *fe::direct<0x4800a0, render::hudBandBuilt>(app, cpu, view);
         return recordBytes;
     }
     case kRevFigures:
-        return guest.call(kBuildDial, args({ view }));
+        return *fe::direct<0x4812e0, render::hudDialPlaced>(app, cpu, view);
     case kRevDial:
     {
-        guest.call(kBuildDial, args({ view }));
+        fe::direct<0x4812e0, render::hudDialPlaced>(app, cpu, view);
         const reg32 shown = gameSettings(guest).hudAt(recordBytes).tachometerForm;
-        guest.leaveEdx(formBytes);
         if (shown == 2 || shown == 3)
-            return guest.call(kFlushBand, args({ view }));
+            return *fe::direct<0x4800a0, render::hudBandBuilt>(app, cpu, view);
         return recordBytes;
     }
     case kGrid:
@@ -253,14 +312,14 @@ x86::reg32 frontend::hudr::rebuildElement(App* app, CPU& cpu, reg32 view, reg32 
         return fe::direct<0x47fd80, rendb::fitFrameToScreen>(app, cpu);
     case kStandings:
     case kLabelRows:
-        return guest.call(kBuildTable, args({ view }));
+        return *fe::direct<0x481c50, render::hudTablePlaced>(app, cpu, view);
     case kSegmentMeter:
         return guest::direct<0x481570, hudz::layNothing>(app, cpu, view);
     case kMap:
     case kCopMap:
         // By address: the function goes out with the edx sub_48d110 leaves.
-        guest.call(kBuildMapViews, args({ view, width, height }));
-        return guest.call(kBuildMapPanel, args({ view }));
+        callAt(guest, kBuildMapViews, args({ view, width, height }));
+        return *fe::direct<0x481aa0, render::hudPanelPlaced>(app, cpu, view);
     case kMarkers:
         return guest::direct<0x481290, hudz::layMarkersFrame>(app, cpu, view, width);
     case kPanel:
@@ -331,8 +390,6 @@ constexpr reg32 kLightsB = 0x749a44;
 constexpr reg32 kListWidths = 0x724780;        // by view
 
 // The port's functions the elements end in.
-constexpr reg32 kDrawMeter = 0x48c0e0;
-constexpr reg32 kDrawLights = 0x48c7c0;
 
 /* What sub_45ab30 works out for every kind. */
 struct Element
@@ -389,8 +446,6 @@ reg32 drawGearRows(const Element& e, reg32 left, reg32 right, reg32 bottom)
         : reg32(*fe::direct<0x489b30, port::hud::listRowsOf>(guest.app(), e.cpu, e.cpu.esp - 4 - 4 * 7, gears, gear, 0u, scale,
                                                              e.colour, e.colour, e.colour, left, right, bottom));
     // edx and ebx as the call by address leaves them.
-    guest.leaveEdx(gear);
-    guest.leaveEbx(0);
     return drawn;
 }
 
@@ -410,14 +465,14 @@ reg32 drawSpeedFigures(const Element& e)
     const reg32 firstUnits = form == 1 || form == 2 ? 1 : 0;
     fe::direct<0x489d70, port::hud::percentTextOf>(guest.app(), e.cpu, e.cpu.esp - 4 - 4 * 6, kFullScaleSpeed, firstUnits,
                                                    guest.dword(kScaleLabel), e.colour, e.box(kBoxRight), e.top);
-    X87 x87(guest);
-    const Float left = X87::integer(std::int32_t(e.box(kBoxLeft)));
-    const Float right = X87::integer(std::int32_t(e.box(kBoxRight)));
+    FloatMath math(guest);
+    const Float left = FloatMath::integer(std::int32_t(e.box(kBoxLeft)));
+    const Float right = FloatMath::integer(std::int32_t(e.box(kBoxRight)));
     const float rightStored = float(right);
     const float rows = float(fp::mul(fp::sub(right, left), doubleAt(guest, kRowsShare)));
     const float rowsLeft = float(fp::sub(Float(rightStored), Float(rows)));
-    const reg32 rowsRight = reg32(x87.truncated(Float(rightStored)));
-    const reg32 rowsStart = reg32(x87.truncated(Float(rowsLeft)));
+    const reg32 rowsRight = reg32(math.truncated(Float(rightStored)));
+    const reg32 rowsStart = reg32(math.truncated(Float(rowsLeft)));
     return drawGearRows(e, rowsStart, rowsRight, e.box(kBoxBottom));
 }
 
@@ -437,7 +492,7 @@ reg32 drawSpeedDial(const Element& e)
     queueQuad(guest, kDialQueue, quads);
     queueQuad(guest, kDialQueue, quads + 4);
     drawGearRows(e, e.box(kBoxLeft), e.box(kBoxRight), e.box(kBoxBottom));
-    const reg32 flushed = guest.call(kFlushQueue, args({ kDialQueue }));
+    const reg32 flushed = flushQueue(guest, kDialQueue);
     if (!e.cardWithAlpha())
         return flushed;
     if (e.leftAlone())
@@ -481,8 +536,8 @@ reg32 drawRevDial(const Element& e)
     const Float one(1.0);
     const Float doubled(guest.floatAt(kDoubled));
     const Float extent(guest.floatAt(kArtExtent));
-    const Float artWidth = X87::integer(guest.word(kArtWidth));
-    const Float artHeight = X87::integer(guest.word(kArtHeight));
+    const Float artWidth = FloatMath::integer(guest.word(kArtWidth));
+    const Float artHeight = FloatMath::integer(guest.word(kArtHeight));
     const float halfU = float(fp::div(one, fp::mul(artWidth, doubled)));
     const float halfV = float(fp::div(one, fp::mul(doubled, artHeight)));
     const float endU = float(fp::sub(fp::div(extent, artWidth), Float(halfU)));
@@ -516,10 +571,7 @@ reg32 drawRevDial(const Element& e)
     const reg32 revs = guest.dword(e.car + kCarRevs);
     fe::direct<0x489e00, port::hud::indicatorQuadOf>(guest.app(), e.cpu, e.cpu.esp - 4, view, revs, limit, e.colour);
     // edx, ebx and ecx as the call by address leaves them.
-    guest.leaveEdx(revs);
-    guest.leaveEbx(limit);
-    guest.leaveEcx(e.colour);
-    guest.call(kFlushQueue, args({ kDialQueue }));
+    flushQueue(guest, kDialQueue);
     const reg32 unqueued = unqueueQuad(guest, kDialQueue, quad);
     if (!e.cardWithAlpha())
         return unqueued;
@@ -560,7 +612,6 @@ reg32 drawPlace(const Element& e)
     const reg32 drawn = reg32(*fe::direct<0x48a3a0, port::hud::rankTextOf>(guest.app(), e.cpu, e.cpu.esp - 4 - 4 * 7,
                                                                           guest.dword(kPosition), among, large, small, e.colour,
                                                                           left, right, e.top, e.alignment));
-    guest.leaveEdx(among);  // as the call by address leaves it
     return drawn;
 }
 
@@ -583,12 +634,12 @@ reg32 frameListPanel(const Element& e)
     if (e.leftAlone())
         return e.item;
     const reg32 corner = kBackVertices + ((guest.dword(kBackQuads) + e.view * 4) << 5);
-    X87 x87(guest);
-    const reg32 bottom = reg32(x87.truncated(x87.load(corner + kThirdY)));
-    const reg32 right = reg32(x87.truncated(x87.load(corner + kThirdX)));
-    const reg32 top = reg32(x87.truncated(x87.load(corner + kFirstY)));
-    const reg32 left = reg32(x87.truncated(x87.load(corner + kFirstX)));
-    return guest.call(kFlatRectangle, args({ left, top, right, bottom }, { e.colour & kColourNoAlpha }));
+    FloatMath math(guest);
+    const reg32 bottom = reg32(math.truncated(math.load(corner + kThirdY)));
+    const reg32 right = reg32(math.truncated(math.load(corner + kThirdX)));
+    const reg32 top = reg32(math.truncated(math.load(corner + kFirstY)));
+    const reg32 left = reg32(math.truncated(math.load(corner + kFirstX)));
+    return *fe::direct<0x459350, graphics::flatRectangle>(guest.app(), e.cpu, left, top, right, bottom, e.colour & kColourNoAlpha);
 }
 
 /* Kind 13: the standings: its rectangle's element made again first, as they grow. */
@@ -621,21 +672,20 @@ reg32 drawMap(const Element& e)
 {
     Guest& guest = e.guest;
     const reg32 view = e.view;
-    fe::direct<0x48d4c0, port::hud::mapPointsOf>(guest.app(), e.cpu, e.cpu.esp - 4, view, e.car, e.cpu.ebx, e.cpu.ecx);
-    guest.leaveEdx(e.car);  // as the call by address leaves it
+    fe::direct<0x48d4c0, port::hud::mapPointsOf>(guest.app(), e.cpu, e.cpu.esp - 4, view, e.car, 0, 0);
     fe::direct<0x47fbe0, frontend::rendb::queueEightQuads>(guest.app(), e.cpu, guest.dword(kMapGroup) + (view << 5));
     if (!e.cardWithAlpha())
     {
         const reg32 quad = guest.dword(kMapQuads) + view * 4;
         queueQuad(guest, kBackQueue, quad);
-        guest.call(kFlushQueue, args({ kBackQueue }));
+        flushQueue(guest, kBackQueue);
         unqueueQuad(guest, kBackQueue, quad);
     }
     guest::direct<0x48e770, frontend::hudr::flushLines>(guest.app(), e.cpu);
-    guest.call(kFlushQueue, args({ kDialQueue }));
+    flushQueue(guest, kDialQueue);
     if (e.cardWithAlpha())
         renderState(guest, e.cpu, kStateShape, 1);
-    const reg32 flushed = guest.call(kFlushQueue, args({ kOverQueue }));
+    const reg32 flushed = flushQueue(guest, kOverQueue);
     if (!e.cardWithAlpha())
         return flushed;
     return renderState(guest, e.cpu, kStateShape, 0);
@@ -651,12 +701,12 @@ reg32 drawLights(const Element& e)
         guest::direct<0x4808b0, frontend::hudz::unqueueViewQuads>(guest.app(), e.cpu, 1);
     guest.setDword(kLightsB, 0);
     guest.setDword(kLightsA, 0);
-    guest.call(kDrawLights, args({ 0xc, 5, 8, 3 }, { 0 }));
-    guest.call(kFlushQueue, args({ kDialQueue }));
-    const reg32 band = guest.call(kFlushBand, args({ 0 }));
+    fe::direct<0x48c7c0, render::startLightsDrawn>(guest.app(), e.cpu, 0xc, 5, 8, 3, 0);
+    flushQueue(guest, kDialQueue);
+    const reg32 band = *fe::direct<0x4800a0, render::hudBandBuilt>(guest.app(), e.cpu, 0);
     if (gameSettings(guest).playMode != 1)
         return band;
-    return guest.call(kFlushBand, args({ 1 }));
+    return *fe::direct<0x4800a0, render::hudBandBuilt>(guest.app(), e.cpu, 1);
 }
 
 /* Kind 6: the grid in the colour, or none when the editor's pointer is elsewhere,
@@ -758,8 +808,8 @@ x86::reg32 frontend::hudr::drawElement(App* app, CPU& cpu, reg32 item)
     {
         const reg32 meterColour = e.leftAlone() ? kMeterColour : colour;
         const reg32 left = e.box(kBoxLeft), meterTop = e.box(kBoxTop);
-        return guest.call(kDrawMeter, args({ view, left, meterTop, e.box(kBoxRight) - left },
-                                           { e.box(kBoxBottom) - meterTop, reg32(-1), meterColour }));
+        return *fe::direct<0x48c0e0, render::meterDrawn>(guest.app(), e.cpu, view, left, meterTop, e.box(kBoxRight) - left,
+                                                         e.box(kBoxBottom) - meterTop, reg32(-1), meterColour);
     }
     case kMap:
     case kCopMap:
@@ -769,9 +819,6 @@ x86::reg32 frontend::hudr::drawElement(App* app, CPU& cpu, reg32 item)
         const reg32 markerColour = e.leftAlone() ? kMarkersColour : colour;
         const reg32 set = reg32(*fe::direct<0x48b5f0, port::hud::markersOf>(app, cpu, cpu.esp - 4, view, car, car, markerColour));
         // edx, ebx and ecx as the call by address leaves them.
-        guest.leaveEdx(car);
-        guest.leaveEbx(car);
-        guest.leaveEcx(markerColour);
         return set;
     }
     case kRatioSecond:
@@ -781,7 +828,7 @@ x86::reg32 frontend::hudr::drawElement(App* app, CPU& cpu, reg32 item)
         return drawLabelRows(e);
     case kPanel:
         queueQuad(guest, kDialQueue, guest.dword(kPanelQuads) + view * 4);
-        return guest.call(kFlushQueue, args({ kDialQueue }));
+        return flushQueue(guest, kDialQueue);
     default:
         return kind;
     }
@@ -883,7 +930,6 @@ x86::reg32 frontend::hudr::formatTime(App* app, CPU& cpu, reg32 buffer, reg32 ti
     const std::int32_t hundredths = (magnitude % kTicksPerSecond) * 100 / kTicksPerSecond;
     const reg32 format = guest.dword(kTimeFormats + gameSettings(guest).language * 4);
     const reg32 written = fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), buffer, format, guest::Words{reg32(seconds / kSecondsPerMinute), reg32(seconds % kSecondsPerMinute), reg32(hundredths)});
-    guest.leaveEdx(0);
     return written;
 }
 
@@ -919,7 +965,6 @@ x86::reg32 frontend::hudr::drawTime(App* app, CPU& cpu, reg32 time, reg32 scale,
     const TextPlace place{ scale, colour, left, right, top, how };
     const reg32 buffer = guest.frame();
     guest::direct<0x489750, formatTime>(app, cpu, buffer, time);
-    guest.leaveEdx(0);  // as it leaves edx
     return drawPlaced(guest, buffer, place);
 }
 
@@ -956,9 +1001,8 @@ x86::reg32 frontend::hudr::drawPercentAndCount(App* app, CPU& cpu, reg32 percent
         fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), buffer, kCountFormat.address, guest::Words{count, many});
     }
     TextPlace below = place;
-    below.top = place.top + guest.call(kCharacterHeight, args({ kPercentSign }));
+    below.top = place.top + fe::direct<0x4d1540, port::text::characterHeight>(guest.app(), guest.cpu(), kPercentSign);
     const reg32 drawn = drawPlaced(guest, buffer, below);
-    guest.leaveEdx(place.how);
     return drawn;
 }
 
@@ -987,7 +1031,6 @@ x86::reg32 frontend::hudr::drawLaps(App* app, CPU& cpu, reg32 done, reg32 total,
     else
         fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), buffer, kLapsWordLast.address, guest::Words{done, total, line});
     const reg32 drawn = drawPlaced(guest, buffer, place);
-    guest.leaveEdx(place.left);
     return drawn;
 }
 
@@ -1010,7 +1053,6 @@ x86::reg32 frontend::hudr::drawRatio(App* app, CPU& cpu, reg32 done, reg32 total
     const reg32 line = languageLine(guest, cpu, kRatioLine);
     fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), buffer, kRatioFormat.address, guest::Words{ line, done, total });
     const reg32 drawn = drawPlaced(guest, buffer, place);
-    guest.leaveEdx(place.how);
     return drawn;
 }
 
@@ -1037,7 +1079,6 @@ x86::reg32 frontend::hudr::drawPlaceAmong(App* app, CPU& cpu, reg32 place, reg32
         : language == kLanguageOf ? kPlaceFormatOf.address : kPlaceFormat.address;
     fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), buffer, format, guest::Words{ place, among });
     const reg32 drawn = drawPlaced(guest, buffer, at);
-    guest.leaveEdx(at.left);
     return drawn;
 }
 
@@ -1062,8 +1103,6 @@ constexpr reg32 kVertexX = 0, kVertexY = 4, kVertexDepth = 0xc, kVertexColour = 
 constexpr reg32 kBlankVerticesBytes = 3 * kVertexBytes;
 constexpr reg32 kTriangleBlanks = 0x489630;    // what the triangle's three vertices start from
 constexpr reg32 kLineBlanks = 0x489690;        // the line's two, and an empty one
-constexpr reg32 kDrawSegment = 0x4c0b20;       // eax and edx two vertices
-constexpr reg32 kDrawTriangleClipped = 0x4c11b0;  // eax, edx and ebx three vertices
 constexpr reg32 kStateTexture = 1;              // set to none
 
 /* A vertex's clip code.  A negative number is past its low bound whatever the
@@ -1117,10 +1156,10 @@ x86::reg32 frontend::hudr::drawTriangle(App* app, CPU& cpu, reg32 x0, reg32 y0, 
     const reg32 first = guest.frame(), second = first + kVertexBytes, third = second + kVertexBytes;
     renderState(guest, cpu, kStateTexture, 0);
     if (filled != 0)
-        return guest.call(kDrawTriangleClipped, args({ first, second, third }));
-    guest.call(kDrawSegment, args({ first, second }));
-    guest.call(kDrawSegment, args({ second, third }));
-    return guest.call(kDrawSegment, args({ third, first }));
+        return fe::direct<0x4c11b0, vertices::triangleClipped>(guest.app(), guest.cpu(), first, second, third);
+    fe::direct<0x4c0b20, render::lineDrawn>(app, cpu, first, second);
+    fe::direct<0x4c0b20, render::lineDrawn>(app, cpu, second, third);
+    return *fe::direct<0x4c0b20, render::lineDrawn>(app, cpu, third, first);
 }
 
 /* sub_48b4a0: a line in a colour. */
@@ -1131,14 +1170,13 @@ x86::reg32 frontend::hudr::drawLine(App* app, CPU& cpu, reg32 x0, reg32 y0, reg3
     placeVertices(guest, kLineBlanks, { x0, y0, x1, y1 }, colour);
     const reg32 first = guest.frame();
     renderState(guest, cpu, kStateTexture, 0);
-    return guest.call(kDrawSegment, args({ first, first + kVertexBytes }));
+    return *fe::direct<0x4c0b20, render::lineDrawn>(app, cpu, first, first + kVertexBytes);
 }
 
 namespace
 {
 
 constexpr reg32 kLineMesh = 0x793108;
-constexpr reg32 kFlushMesh = 0x49bf60;
 
 }
 
@@ -1147,7 +1185,7 @@ x86::reg32 frontend::hudr::flushLines(App* app, CPU& cpu)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 4);
-    return guest.call(kFlushMesh, args({ kLineMesh }));
+    return *fe::direct<0x49bf60, graphics::lineMeshFlushed>(app, cpu, kLineMesh);
 }
 
 /* sub_48e780: the HUD's line mesh made ready. */
@@ -1162,118 +1200,118 @@ x86::reg32 frontend::hudr::prepareLines(App* app, CPU& cpu)
  * Under the game's addresses
  * ------------------------------------------------------------------------- */
 
-void frontend::hudDrawElement(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::hudDrawElement(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_45ab30", 0, 0, nullptr, 0 };
-    const reg32 item = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return hudr::drawElement(app, cpu, item); });
+    const reg32 item = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return hudr::drawElement(app, cpu, item); });
 }
 
-void frontend::hudRebuildElement(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::hudRebuildElement(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4853c0", 0, 0, nullptr, 0, kKeepsEbxEcxEsiEdi };
-    const reg32 view = cpu.eax, element = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return hudr::rebuildElement(app, cpu, view, element); });
+    const reg32 view = args.eax, element = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return hudr::rebuildElement(app, cpu, view, element); });
 }
 
-void frontend::hudStepMapPanes(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::hudStepMapPanes(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_48e920", 0, 0, nullptr, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return hudr::stepMapPanes(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return hudr::stepMapPanes(app, cpu); });
 }
 
-void frontend::hudOrdinalLetters(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::hudOrdinalLetters(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4896f0", 0, 0, kLettersStrings, std::size(kLettersStrings), kKeepsEcxEdx };
-    const reg32 place = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return hudr::ordinalLetters(app, cpu, place); });
+    const reg32 place = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return hudr::ordinalLetters(app, cpu, place); });
 }
 
-void frontend::hudFormatTime(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::hudFormatTime(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_489750", 0, 0, nullptr, 0, kKeepsEbxEcxEsiEdi };
-    const reg32 buffer = cpu.eax, time = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return hudr::formatTime(app, cpu, buffer, time); });
+    const reg32 buffer = args.eax, time = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return hudr::formatTime(app, cpu, buffer, time); });
 }
 
-void frontend::hudDrawTime(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::hudDrawTime(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4898b0", 0x18, 0, nullptr, 0 };
-    const reg32 time = cpu.eax;
+    const reg32 time = args.eax;
     const TextPlace p = textPlaceOf(app, cpu);
-    fe::runWhole(app, cpu, site, [&](Guest&) {
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
         return hudr::drawTime(app, cpu, time, p.scale, p.colour, p.left, p.right, p.top, p.how);
     });
 }
 
-void frontend::hudDrawPercentAndCount(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::hudDrawPercentAndCount(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_489900", 0x18, 0, kPercentStrings, std::size(kPercentStrings), kKeepsEbxEcxEsiEdi };
-    const reg32 percent = cpu.eax, count = cpu.edx;
+    const reg32 percent = args.eax, count = args.edx;
     const TextPlace p = textPlaceOf(app, cpu);
-    fe::runWhole(app, cpu, site, [&](Guest&) {
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
         return hudr::drawPercentAndCount(app, cpu, percent, count, p.scale, p.colour, p.left, p.right, p.top, p.how);
     });
 }
 
-void frontend::hudDrawLaps(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::hudDrawLaps(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4899d0", 0x18, 0, kLapsStrings, std::size(kLapsStrings), kKeepsEcxEsiEdi };
-    const reg32 done = cpu.eax, total = cpu.edx;
+    const reg32 done = args.eax, total = args.edx;
     const TextPlace p = textPlaceOf(app, cpu);
-    fe::runWhole(app, cpu, site, [&](Guest&) {
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
         return hudr::drawLaps(app, cpu, done, total, p.scale, p.colour, p.left, p.right, p.top, p.how);
     });
 }
 
-void frontend::hudDrawRatio(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::hudDrawRatio(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_489a50", 0x18, 0, kRatioStrings, std::size(kRatioStrings), kKeepsEbxEcxEsiEdi };
-    const reg32 done = cpu.eax, total = cpu.edx;
+    const reg32 done = args.eax, total = args.edx;
     const TextPlace p = textPlaceOf(app, cpu);
-    fe::runWhole(app, cpu, site, [&](Guest&) {
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
         return hudr::drawRatio(app, cpu, done, total, p.scale, p.colour, p.left, p.right, p.top, p.how);
     });
 }
 
-void frontend::hudDrawPlaceAmong(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::hudDrawPlaceAmong(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_48a320", 0x18, 0, kPlaceStrings, std::size(kPlaceStrings), kKeepsEcxEsiEdi };
-    const reg32 placeNumber = cpu.eax, among = cpu.edx;
+    const reg32 placeNumber = args.eax, among = args.edx;
     const TextPlace p = textPlaceOf(app, cpu);
-    fe::runWhole(app, cpu, site, [&](Guest&) {
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
         return hudr::drawPlaceAmong(app, cpu, placeNumber, among, p.scale, p.colour, p.left, p.right, p.top, p.how);
     });
 }
 
-void frontend::hudDrawTriangle(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::hudDrawTriangle(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_48b2a0", 0x20, 0, nullptr, 0 };
     const reg32 x0 = stackArgument(app, cpu, 0), y0 = stackArgument(app, cpu, 1), x1 = stackArgument(app, cpu, 2);
     const reg32 y1 = stackArgument(app, cpu, 3), x2 = stackArgument(app, cpu, 4), y2 = stackArgument(app, cpu, 5);
     const reg32 filled = stackArgument(app, cpu, 6), colour = stackArgument(app, cpu, 7);
-    fe::runWhole(app, cpu, site,
+    return fe::runThunk(app, cpu, args, site,
                  [&](Guest&) { return hudr::drawTriangle(app, cpu, x0, y0, x1, y1, x2, y2, filled, colour); });
 }
 
-void frontend::hudDrawLine(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::hudDrawLine(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_48b4a0", 0x14, 0, nullptr, 0 };
     const reg32 x0 = stackArgument(app, cpu, 0), y0 = stackArgument(app, cpu, 1), x1 = stackArgument(app, cpu, 2);
     const reg32 y1 = stackArgument(app, cpu, 3), colour = stackArgument(app, cpu, 4);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return hudr::drawLine(app, cpu, x0, y0, x1, y1, colour); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return hudr::drawLine(app, cpu, x0, y0, x1, y1, colour); });
 }
 
-void frontend::hudFlushLines(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::hudFlushLines(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_48e770", 0, 0, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return hudr::flushLines(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return hudr::flushLines(app, cpu); });
 }
 
-void frontend::hudPrepareLines(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::hudPrepareLines(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_48e780", 0, 0, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return hudr::prepareLines(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return hudr::prepareLines(app, cpu); });
 }
 
 }

@@ -3,17 +3,12 @@
 
 #include <cstdint>
 
-/* nfs3.exe's functions decompiled one at a time from their x86 code, each
- * where its generated code was: disassemble_nfs3hp.py binds the addresses of
- * decompiled.json to the functions of those names here (DECOMPILED_NATIVES),
- * and the generated code calls them by name.
+/* nfs3.exe's functions decompiled one at a time from their x86 code: the
+ * game's code calls them by name.
  *
- * tools/game_checks holds each against the game's code: on random registers,
- * a random stack and made-up values in every global it uses (decompiled.json
- * lists them), every register, every byte it touches and the stack come out
- * as the game's code leaves them.  These are the functions that use nothing
- * but registers, the stack and globals at fixed addresses, which that is
- * enough for.
+ * These are the functions that use nothing
+ * but registers, the stack and globals at fixed addresses (decompiled.json
+ * lists the globals).
  *
  * Written as their code is, as the other natives: each push and pop to the
  * guest's stack, the registers as the code leaves them, results in eax. */
@@ -70,28 +65,29 @@ constexpr reg32 kMouseX = 0x55e5e4, kMouseY = 0x55e5e8;
 
 /* 0x449a60: the help line cleared for a new screen: no item, no text, and
  * none until the pointer moves from where it is now. */
-void resetMenuHelp(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 resetMenuHelp(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.ecx = 0xffffffff;
-    cpu.edx = 1;
-    cpu.eax = at(app, kMouseX);
-    cpu.ebx = 0;
-    put(app, kHelpItem, cpu.ecx);
-    put(app, kHelpText, cpu.ebx);
-    put(app, kHelpLastX, cpu.eax);
-    cpu.eax = at(app, kMouseY);
-    put(app, kHelpNeedsMove, cpu.edx);
-    put(app, kHelpLastY, cpu.eax);
-    cpu.ebp = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
+    push(app, cpu, args.ebx);
+    push(app, cpu, args.ecx);
+    push(app, cpu, args.edx);
+    push(app, cpu, args.ebp);
+    args.ebp = cpu.esp;
+    args.ecx = 0xffffffff;
+    args.edx = 1;
+    args.eax = at(app, kMouseX);
+    args.ebx = 0;
+    put(app, kHelpItem, args.ecx);
+    put(app, kHelpText, args.ebx);
+    put(app, kHelpLastX, args.eax);
+    args.eax = at(app, kMouseY);
+    put(app, kHelpNeedsMove, args.edx);
+    put(app, kHelpLastY, args.eax);
+    args.ebp = pop(app, cpu);
+    args.edx = pop(app, cpu);
+    args.ecx = pop(app, cpu);
+    args.ebx = pop(app, cpu);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* The settings' effects and engine volumes, and a race's own, which its pause
@@ -103,35 +99,37 @@ constexpr reg32 kRaceVolumesToSettings = 0x552909;  // byte: the race's volumes 
  * the race: with kRaceVolumesToSettings set, the settings' are kept as the
  * race's and silenced (edx 0); with it clear, the race's go back into the
  * settings (dl 1).  The byte is left the other way round. */
-void swapRaceVolumes(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 swapRaceVolumes(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.dl = byte(app, kRaceVolumesToSettings);
-    if (cpu.dl != 0)
+    push(app, cpu, args.edx);
+    push(app, cpu, args.ebp);
+    args.ebp = cpu.esp;
+    std::uint8_t dl;  // edx's low byte, while it runs: edx is pushed and popped round it
+    dl = byte(app, kRaceVolumesToSettings);
+    if (dl != 0)
     {
-        cpu.eax = gameSettings(app).effectsVolume;
-        cpu.edx = 0;
-        put(app, kRaceEffectsVolume, cpu.eax);
-        cpu.eax = gameSettings(app).engineVolume;
-        gameSettings(app).effectsVolume = cpu.edx;
-        put(app, kRaceEngineVolume, cpu.eax);
-        gameSettings(app).engineVolume = cpu.edx;
-        cpu.dl = 0;
+        args.eax = gameSettings(app).effectsVolume;
+        args.edx = 0;
+        put(app, kRaceEffectsVolume, args.eax);
+        args.eax = gameSettings(app).engineVolume;
+        gameSettings(app).effectsVolume = args.edx;
+        put(app, kRaceEngineVolume, args.eax);
+        gameSettings(app).engineVolume = args.edx;
+        dl = 0;
     }
     else
     {
-        cpu.eax = at(app, kRaceEffectsVolume);
-        gameSettings(app).effectsVolume = cpu.eax;
-        cpu.eax = at(app, kRaceEngineVolume);
-        cpu.dl = 1;
-        gameSettings(app).engineVolume = cpu.eax;
+        args.eax = at(app, kRaceEffectsVolume);
+        gameSettings(app).effectsVolume = args.eax;
+        args.eax = at(app, kRaceEngineVolume);
+        dl = 1;
+        gameSettings(app).engineVolume = args.eax;
     }
-    putByte(app, kRaceVolumesToSettings, cpu.dl);
-    cpu.ebp = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
+    putByte(app, kRaceVolumesToSettings, dl);
+    args.ebp = pop(app, cpu);
+    args.edx = pop(app, cpu);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* Whether the driver draws on a 3D card: 0 for the software renderers, 1 for
@@ -154,54 +152,46 @@ constexpr reg32 kFloat9Half = 0x41180000, kFloat10 = 0x41200000;
 
 /* 0x4c7a60: the depth offsets for the driver (kDriverOnCard): on a card most
  * are 0, the far ones 10 and 6; in software, 9.5 nearly throughout. */
-void setDepthOffsets(win32::WinApplication* app, x86::CPU& cpu)
+void depthOffsetsSet(win32::WinApplication* app)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.edx = at(app, kDriverOnCard);
-    if (cpu.edx == 0)
+    if (at(app, kDriverOnCard) == 0)
     {
-        cpu.ebx = kFloat5Half;
-        cpu.esi = kFloat9Half;
-        cpu.ecx = kFloat4;
-        put(app, kDepthOffsets + 0x08, cpu.edx);
-        put(app, kDepthOffsets + 0x0c, cpu.edx);
-        put(app, kDepthOffsets + 0x10, cpu.ebx);
-        put(app, kDepthOffsets + 0x04, cpu.esi);
-        put(app, kDepthOffsets + 0x24, cpu.esi);
-        put(app, kDepthOffsets + 0x20, cpu.esi);
-        put(app, kDepthOffsets + 0x18, cpu.esi);
-        put(app, kDepthOffsets + 0x14, cpu.ebx);
-        put(app, kDepthOffsets + 0x00, cpu.esi);
-        put(app, kDepthOffsets + 0x1c, cpu.ecx);
+        put(app, kDepthOffsets + 0x08, 0);
+        put(app, kDepthOffsets + 0x0c, 0);
+        put(app, kDepthOffsets + 0x10, kFloat5Half);
+        put(app, kDepthOffsets + 0x04, kFloat9Half);
+        put(app, kDepthOffsets + 0x24, kFloat9Half);
+        put(app, kDepthOffsets + 0x20, kFloat9Half);
+        put(app, kDepthOffsets + 0x18, kFloat9Half);
+        put(app, kDepthOffsets + 0x14, kFloat5Half);
+        put(app, kDepthOffsets + 0x00, kFloat9Half);
+        put(app, kDepthOffsets + 0x1c, kFloat4);
     }
     else
     {
-        cpu.edx = kFloat6;
-        cpu.eax = kFloat4;
-        cpu.ecx = 0;
-        put(app, kDepthOffsets + 0x10, cpu.edx);
-        put(app, kDepthOffsets + 0x04, cpu.ecx);
-        put(app, kDepthOffsets + 0x24, cpu.ecx);
-        put(app, kDepthOffsets + 0x20, cpu.ecx);
-        put(app, kDepthOffsets + 0x0c, cpu.ecx);
-        put(app, kDepthOffsets + 0x08, cpu.ecx);
-        put(app, kDepthOffsets + 0x18, cpu.edx);
-        cpu.ecx = kFloat10;
-        put(app, kDepthOffsets + 0x1c, cpu.eax);
-        put(app, kDepthOffsets + 0x14, cpu.ecx);
-        put(app, kDepthOffsets + 0x00, cpu.ecx);
+        put(app, kDepthOffsets + 0x10, kFloat6);
+        put(app, kDepthOffsets + 0x04, 0);
+        put(app, kDepthOffsets + 0x24, 0);
+        put(app, kDepthOffsets + 0x20, 0);
+        put(app, kDepthOffsets + 0x0c, 0);
+        put(app, kDepthOffsets + 0x08, 0);
+        put(app, kDepthOffsets + 0x18, kFloat6);
+        put(app, kDepthOffsets + 0x1c, kFloat4);
+        put(app, kDepthOffsets + 0x14, kFloat10);
+        put(app, kDepthOffsets + 0x00, kFloat10);
     }
-    cpu.ebp = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
+}
+
+/* 0x4c7a60: depthOffsetsSet; every register but eax kept, which a software driver leaves 4.0's bits (the
+ * code pushed its registers below esp and popped them again: nothing written there now). */
+x86::reg32 setDepthOffsets(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+{
+    const bool cardBranch = at(app, kDriverOnCard) == 0;
+    depthOffsetsSet(app);
+    if (!cardBranch)
+        args.eax = kFloat4;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* How the sun lights a car's vertices (sub_49da30, native_vertices.cpp's
@@ -223,66 +213,64 @@ constexpr reg32 kSunAlphaMask = 0x55e6e8;       // sub_49d720's edx in the top b
 constexpr reg32 kSunMatrix = 0x55e6ec;          // three rows of three floats
 constexpr reg32 kFloatOne = 0x3f800000, kFloatMinusOne = 0xbf800000;
 
-/* 0x49d640: the sun's lighting back to the game's defaults: straight down,
+/* 0x49d640's work: the sun's lighting back to the game's defaults: straight down,
  * a mid grey sun (127) on no base colour, so caps and slopes of 255; the
  * plain colour grey, the flagged one white, alpha opaque; its matrix the
- * identity. */
-void resetSunLighting(win32::WinApplication* app, x86::CPU& cpu)
+ * identity.  The writes in the order the code makes them. */
+void sunLightingReset(win32::WinApplication* app)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.edx = 0x7f;
-    cpu.ecx = 0xffffffff;
-    cpu.ebx = 0xff000000;
-    cpu.edi = kFloatOne;
-    cpu.esi = 0;
-    cpu.eax = 0;
-    put(app, kSunGreen, cpu.edx);
-    put(app, kSunBlue, cpu.edx);
-    put(app, kSunRed, cpu.edx);
-    put(app, kSunBaseRed, cpu.esi);
-    put(app, kSunBaseGreen, cpu.esi);
-    put(app, kSunBaseBlue, cpu.esi);
-    put(app, kSunFlaggedColour, cpu.ecx);
-    put(app, kSunAlpha, cpu.ebx);
+    put(app, kSunGreen, 0x7f);
+    put(app, kSunBlue, 0x7f);
+    put(app, kSunRed, 0x7f);
+    put(app, kSunBaseRed, 0);
+    put(app, kSunBaseGreen, 0);
+    put(app, kSunBaseBlue, 0);
+    put(app, kSunFlaggedColour, 0xffffffff);
+    put(app, kSunAlpha, 0xff000000);
     // The matrix: the identity, row by row.
-    put(app, kSunMatrix, cpu.edi);
-    put(app, kSunMatrix + 0x04, cpu.eax);
-    put(app, kSunMatrix + 0x08, cpu.eax);
-    put(app, kSunMatrix + 0x0c, cpu.eax);
-    put(app, kSunMatrix + 0x10, cpu.edi);
-    put(app, kSunMatrix + 0x14, cpu.eax);
-    put(app, kSunMatrix + 0x18, cpu.eax);
-    put(app, kSunMatrix + 0x1c, cpu.eax);
-    put(app, kSunMatrix + 0x20, cpu.edi);
-    put(app, kSunShadingMode, cpu.eax);
-    put(app, kSunDirection, cpu.eax);
-    put(app, kSunDirection + 8, cpu.eax);
-    cpu.edx = 0xff;
-    cpu.esi = 0x7fffffff;
-    put(app, kSunCapRed, cpu.edx);
-    put(app, kSunCapGreen, cpu.edx);
-    put(app, kSunCapBlue, cpu.edx);
-    put(app, kSunSlopeRed, cpu.edx);
-    put(app, kSunSlopeGreen, cpu.edx);
-    put(app, kSunSlopeBlue, cpu.edx);
-    put(app, kSunAlphaMask, cpu.esi);
-    cpu.edx = 0x7f7f7f7f;
-    cpu.esi = kFloatMinusOne;
-    put(app, kSunPlainColour, cpu.edx);
-    put(app, kSunDirection + 4, cpu.esi);
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
+    put(app, kSunMatrix, kFloatOne);
+    put(app, kSunMatrix + 0x04, 0);
+    put(app, kSunMatrix + 0x08, 0);
+    put(app, kSunMatrix + 0x0c, 0);
+    put(app, kSunMatrix + 0x10, kFloatOne);
+    put(app, kSunMatrix + 0x14, 0);
+    put(app, kSunMatrix + 0x18, 0);
+    put(app, kSunMatrix + 0x1c, 0);
+    put(app, kSunMatrix + 0x20, kFloatOne);
+    put(app, kSunShadingMode, 0);
+    put(app, kSunDirection, 0);
+    put(app, kSunDirection + 8, 0);
+    put(app, kSunCapRed, 0xff);
+    put(app, kSunCapGreen, 0xff);
+    put(app, kSunCapBlue, 0xff);
+    put(app, kSunSlopeRed, 0xff);
+    put(app, kSunSlopeGreen, 0xff);
+    put(app, kSunSlopeBlue, 0xff);
+    put(app, kSunAlphaMask, 0x7fffffff);
+    put(app, kSunPlainColour, 0x7f7f7f7f);
+    put(app, kSunDirection + 4, kFloatMinusOne);
+}
+
+/* 0x49d640: sunLightingReset; the registers the code keeps (ebx, ecx, edx, esi, edi, ebp pushed and popped,
+ * their values on the stack below), eax 0. */
+x86::reg32 resetSunLighting(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+{
+    push(app, cpu, args.ebx);
+    push(app, cpu, args.ecx);
+    push(app, cpu, args.edx);
+    push(app, cpu, args.esi);
+    push(app, cpu, args.edi);
+    push(app, cpu, args.ebp);
+    sunLightingReset(app);
+    args.eax = 0;
+    args.ebp = pop(app, cpu);
+    args.edi = pop(app, cpu);
+    args.esi = pop(app, cpu);
+    args.edx = pop(app, cpu);
+    args.ecx = pop(app, cpu);
+    args.ebx = pop(app, cpu);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* The race's handling tunings, 0x5efda8 to 0x5efde8: dwords, floats but two,
@@ -308,56 +296,57 @@ void resetSunLighting(win32::WinApplication* app, x86::CPU& cpu)
 constexpr reg32 kHandlingTunings = 0x5efda8;
 
 /* 0x42c590: the race's handling tunings set to the game's own (above). */
-void resetHandlingTunings(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 resetHandlingTunings(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.edx = 0x3f99999a;
-    cpu.ecx = 0x40400000;
-    cpu.ebx = 0x3f800000;
-    cpu.esi = 0xbd23d70a;
-    cpu.edi = 0x3e19999a;
-    cpu.eax = 0xbb67ff58;
-    put(app, kHandlingTunings + 0x10, cpu.edx);
-    put(app, kHandlingTunings + 0x14, cpu.ecx);
-    put(app, kHandlingTunings + 0x00, cpu.ebx);
-    put(app, kHandlingTunings + 0x04, cpu.esi);
-    put(app, kHandlingTunings + 0x08, cpu.edi);
-    put(app, kHandlingTunings + 0x0c, cpu.eax);
-    cpu.edx = 0x2bc;
-    cpu.ecx = 0xaf;
-    cpu.esi = 5;
-    cpu.edi = 0x3fc00000;
-    cpu.eax = 0x3f7ae148;
-    cpu.ebx = 0;
-    put(app, kHandlingTunings + 0x18, cpu.edx);
-    put(app, kHandlingTunings + 0x1c, cpu.ecx);
-    put(app, kHandlingTunings + 0x20, cpu.ebx);
-    put(app, kHandlingTunings + 0x24, cpu.esi);
-    put(app, kHandlingTunings + 0x28, cpu.edi);
-    put(app, kHandlingTunings + 0x2c, cpu.eax);
-    cpu.edx = 0x3f5eb852;
-    cpu.ecx = 0x3f000000;
-    cpu.ebx = 0x41200000;
-    cpu.esi = 0x3b888889;
-    cpu.edi = 0x3bcccccd;
-    put(app, kHandlingTunings + 0x30, cpu.edx);
-    put(app, kHandlingTunings + 0x34, cpu.ecx);
-    put(app, kHandlingTunings + 0x40, cpu.ebx);
-    put(app, kHandlingTunings + 0x38, cpu.esi);
-    put(app, kHandlingTunings + 0x3c, cpu.edi);
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
+    push(app, cpu, args.ebx);
+    push(app, cpu, args.ecx);
+    push(app, cpu, args.edx);
+    push(app, cpu, args.esi);
+    push(app, cpu, args.edi);
+    push(app, cpu, args.ebp);
+    args.ebp = cpu.esp;
+    args.edx = 0x3f99999a;
+    args.ecx = 0x40400000;
+    args.ebx = 0x3f800000;
+    args.esi = 0xbd23d70a;
+    args.edi = 0x3e19999a;
+    args.eax = 0xbb67ff58;
+    put(app, kHandlingTunings + 0x10, args.edx);
+    put(app, kHandlingTunings + 0x14, args.ecx);
+    put(app, kHandlingTunings + 0x00, args.ebx);
+    put(app, kHandlingTunings + 0x04, args.esi);
+    put(app, kHandlingTunings + 0x08, args.edi);
+    put(app, kHandlingTunings + 0x0c, args.eax);
+    args.edx = 0x2bc;
+    args.ecx = 0xaf;
+    args.esi = 5;
+    args.edi = 0x3fc00000;
+    args.eax = 0x3f7ae148;
+    args.ebx = 0;
+    put(app, kHandlingTunings + 0x18, args.edx);
+    put(app, kHandlingTunings + 0x1c, args.ecx);
+    put(app, kHandlingTunings + 0x20, args.ebx);
+    put(app, kHandlingTunings + 0x24, args.esi);
+    put(app, kHandlingTunings + 0x28, args.edi);
+    put(app, kHandlingTunings + 0x2c, args.eax);
+    args.edx = 0x3f5eb852;
+    args.ecx = 0x3f000000;
+    args.ebx = 0x41200000;
+    args.esi = 0x3b888889;
+    args.edi = 0x3bcccccd;
+    put(app, kHandlingTunings + 0x30, args.edx);
+    put(app, kHandlingTunings + 0x34, args.ecx);
+    put(app, kHandlingTunings + 0x40, args.ebx);
+    put(app, kHandlingTunings + 0x38, args.esi);
+    put(app, kHandlingTunings + 0x3c, args.edi);
+    args.ebp = pop(app, cpu);
+    args.edi = pop(app, cpu);
+    args.esi = pop(app, cpu);
+    args.edx = pop(app, cpu);
+    args.ecx = pop(app, cpu);
+    args.ebx = pop(app, cpu);
     cpu.esp += 4;
+    return args.eax;
 }
 
 }  // namespace decompiled

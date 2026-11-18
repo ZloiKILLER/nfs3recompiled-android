@@ -5,7 +5,7 @@
 
 /* native_frontend_draw.cpp's typed functions (a slider's value and a two-axis slider's onto the
  * x87's stack, a .qfs loaded by its name), which other files call as C++ (guest::direct), and how
- * the game's code calls each by address (ByAddress, for the checks' stand-ins).
+ * the game's code calls each by address.
  *
  * They are written as their code is, register by register: each takes its arguments into the
  * registers the game's function takes them in, runs on `cpu` as the code does, and returns what
@@ -27,56 +27,14 @@ using reg32 = x86::reg32;
 double sliderStoredValue(App* app, CPU& cpu, reg32 slider);
 // The game's 0x46afd0: value `end` of the two-axis slider at `slider`, which its code leaves on the x87's stack.
 double twoAxisValue(App* app, CPU& cpu, reg32 slider, reg32 end);
-// The game's 0x4956f0: the .qfs file named at `fileName` loaded, the menus' extension put after a name without one.
-reg32 loadQfs(App* app, CPU& cpu, reg32 fileName);
+// The game's 0x4956f0: the .qfs file named at `fileName` loaded with the loader's flags (the game's code has them in edx), the menus' extension put after a name without one.
+reg32 loadQfsFlags(App* app, CPU& cpu, reg32 fileName, reg32 flags);
 
 }  // namespace draw
 }  // namespace frontend
 
 namespace guest
 {
-
-/* Each by address as the game's code calls it: its arguments in eax and edx, every other register
- * as the caller has it.  With cpu.terminate set when the game stopped in it.  A value the code
- * leaves on the x87's stack is taken off it. */
-template <>
-struct ByAddress<frontend::draw::sliderStoredValue>
-{
-    template <x86::reg32 Address>
-    static double call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 slider)
-    {
-        cpu.eax = slider;
-        if (!guest::call(app, cpu, Address))
-            return 0.0;
-        return double(cpu.fpu.take());
-    }
-};
-
-template <>
-struct ByAddress<frontend::draw::twoAxisValue>
-{
-    template <x86::reg32 Address>
-    static double call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 slider, x86::reg32 end)
-    {
-        cpu.eax = slider;
-        cpu.edx = end;
-        if (!guest::call(app, cpu, Address))
-            return 0.0;
-        return double(cpu.fpu.take());
-    }
-};
-
-template <>
-struct ByAddress<frontend::draw::loadQfs>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 fileName)
-    {
-        cpu.eax = fileName;
-        guest::call(app, cpu, Address);
-        return cpu.eax;
-    }
-};
 
 }  // namespace guest
 }  // namespace nfs3hp

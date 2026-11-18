@@ -7,11 +7,39 @@
 #include "native_graphics.h"
 #include "native_raceload.h"
 #include "port_loop.h"
+#include "port_text.h"
+#include "native_vertices.h"
+#include "native_render.h"
 #include <nfs3hp.h>
 #include <fpu.h>
 #include <cstdint>
 #include <cstring>
 #include <iterator>
+
+/* The thunks defined below under their qualified names. */
+namespace nfs3hp
+{
+namespace frontend
+{
+x86::reg32 hudEditElementFits(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 hudEditElementMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 hudUnqueueViewQuads(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 hudSetAlignments(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 hudPlaceDialArt(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 hudLayMarkersFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 hudLayPanel(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 hudLayNothing(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 hudLayReplayBar(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 hudLayGrid(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 hudMapPaneIsSmall(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 hudSetGridHighlight(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 hudDrawGridHighlight(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 hudDrawReplayBar(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 hudFlushFrameQueue(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 hudQueueStart(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 hudQueueTakeCorners(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+}
+}
 
 /* The race's HUD, the parts that lay it out, decompiled:
  *
@@ -36,7 +64,7 @@
  * after a `fnstsw ax`.
  *
  * Plan step 5: each function a typed core in frontend::hudz (native_frontend_hudz.h), in a frame of
- * its own where the game's function has one, and an adapter under the game's name for the calls by
+ * its own where the game's function has one, and a thunk under the game's name for the calls by
  * address.  A core of this file calls another, and those of the HUD's other files done so
  * (native_frontend_hudr.cpp, _hudx.cpp), as C++ (guest::direct), and the typed cores of other files
  * too (fe::direct); the rest of the game still by address. */
@@ -49,11 +77,13 @@
 namespace nfs3hp
 {
 
-/* The port's own (nfs3hp_main.cpp), from tools/apply_hud_editor.py: the layout as laid
+/* The port's own (nfs3hp_main.cpp), from the port's HUD editor change: the layout as laid
  * out, not as a wide screen draws it, and the layouts as measured drawn for the length
  * of the test whether an element fits, cpu holding the test's arguments. */
 void hudLayoutDesigned(win32::WinApplication* app, x86::reg32 rect, x86::reg32 element);
-void hudLayoutsDrawn(win32::WinApplication* app, x86::CPU& cpu, bool drawn);
+/* nfs3hp_main.cpp's: with `drawn`, the test's arguments in `registers` (eax the rectangle tried, edx the player, ebx the
+ * element, ecx the editor's mode); without, its answer in registers.eax.  (The overload that took them from cpu is gone.) */
+void hudLayoutsDrawn(win32::WinApplication* app, x86::CPU& cpu, bool drawn, x86::reg32 rect, x86::reg32 playerIn, x86::reg32 elementIn, x86::reg32 modeIn, x86::reg32 fits, x86::reg32 blockerAt);
 
 namespace
 {
@@ -103,13 +133,6 @@ void copyDwords(Guest& guest, reg32 to, reg32 from, reg32 count)
 // ---------------------------------------------------------------------------
 
 // The game's functions, by address.
-constexpr reg32 kBuildFrame = 0x47f650;        // eax the corners, ebx, edx, stack, ecx its inside
-constexpr reg32 kFlushBand = 0x4800a0;         // eax a view
-constexpr reg32 kDrawLights = 0x48c7c0;        // eax, edx, ebx, ecx quads of the bar, the stack the button
-constexpr reg32 kQueueQuad = 0x49bd30;         // eax a queue, edx, ebx, ecx and the stack its corners
-constexpr reg32 kUnqueueQuad = 0x49bdc0;       // likewise
-constexpr reg32 kFlushQueue = 0x49be40;        // eax a queue
-constexpr reg32 kClipQuad = 0x4c12e0;          // eax, edx, ebx, ecx its four vertices
 
 // The numbers of the screen.
 constexpr reg32 kViewWidth = 0x7cdac8, kViewHeight = 0x7cdacc;
@@ -204,12 +227,12 @@ constexpr reg32 boxOf(reg32 view, reg32 kind)
 
 reg32 queueQuad(Guest& guest, reg32 first)
 {
-    return guest.call(kQueueQuad, args({ kDialQueue, first, first + 1, first + 2 }, { first + 3 }));
+    return reg32(*fe::direct<0x49bd30, port::text::quadQueued>(guest.app(), guest.cpu(), guest.cpu().esp - 8, kDialQueue, first, first + 1, first + 2, first + 3));
 }
 
 reg32 unqueueQuad(Guest& guest, reg32 first)
 {
-    return guest.call(kUnqueueQuad, args({ kDialQueue, first, first + 1, first + 2 }, { first + 3 }));
+    return reg32(*fe::direct<0x49bdc0, port::text::quadUnqueued>(guest.app(), guest.cpu(), guest.cpu().esp - 8, kDialQueue, first, first + 1, first + 2, first + 3));
 }
 
 /* ---------------------------------------------------------------------------
@@ -305,39 +328,29 @@ x86::reg32 frontend::hudz::elementFits(App* app, CPU& cpu, reg32 tried, reg32 vi
 
     const reg32 players = gameSettings(guest).playMode;
     const reg32 onSplit = players == 1 ? players : 0;
-    guest.leaveEcx(players);
-    guest.leaveEbx(onSplit);
     const reg32 form = formOf(guest, fe::direct<0x422bd0, carstate::targetOfCamera>(app, cpu, view));
     const reg32 seat = onSplit + view;
-    reg32 leftInEcx = cpu.ecx;
-
-    const auto leave = [&](reg32 ebx, reg32 ecx, reg32 answer) {
-        guest.leaveEbx(ebx);
-        guest.leaveEcx(ecx);
-        guest.leaveEdx(answer);
-        return answer;
-    };
 
     // Wholly on the screen.  The upper limits are compared as the bits they are.
     const Fractions wanted = fractionsAt(guest, tried);
     if (isAbove(0.0, wanted.top) || isAbove(0.0, wanted.bottom) || isAbove(0.0, wanted.left) || isAbove(0.0, wanted.right))
-        return leave(seat, leftInEcx, 0);
+        return 0;
     const auto bitsAt = [&](reg32 edge) { return sreg32(guest.dword(tried + edge)); };
     if (bitsAt(kRectangleTop) > kOneBits || bitsAt(kRectangleBottom) > kOneBits || bitsAt(kRectangleLeft) > kOneBits
         || bitsAt(kRectangleRight) > kOneBits)
-        return leave(seat, leftInEcx, 0);
+        return 0;
 
     // In its half of a split screen, but for the replay bar.
     if (gameSettings(guest).playMode == 1)
     {
         const bool outside = seat == 1 ? bitsAt(kRectangleBottom) > kHalfBits : bitsAt(kRectangleTop) < kHalfBits;
         if (outside && moved != kReplayBar)
-            return leave(seat, leftInEcx, 0);
+            return 0;
     }
 
     // Nothing is in the way of the maps.
     if (moved == kMap || moved == kCopMap)
-        return leave(seat, leftInEcx, 1);
+        return 1;
 
     const reg32 layout = formOffset(seat, form);
     const auto fractionsOf = [&](reg32 kind) {
@@ -371,9 +384,6 @@ x86::reg32 frontend::hudz::elementFits(App* app, CPU& cpu, reg32 tried, reg32 vi
         staleBottom = second.bottom;
         staleRight = second.right;
 
-        // What ecx went on with: the rectangle's offset for the two, else the layout's.
-        leftInEcx = moved == kSpeedFigures || moved == kSpeedDial ? layout + other * kRectangleBytes : layout;
-
         if (!hasSize(shared) && !hasSize(second))
             continue;
 
@@ -384,16 +394,16 @@ x86::reg32 frontend::hudz::elementFits(App* app, CPU& cpu, reg32 tried, reg32 vi
         {
             const reg32 offset = reg32(number) * fe::item::kSize;
             if (guest.dword(fe::item::kTable + offset) == 0)
-                return leave(reg32(number), offset, 0);
+                return 0;
             const reg32 item = fe::item::kTable + offset;
             if (item != 0 && guest.dword(item) == kItemOfElement && guest.dword(item + kItemKind) == itsKind)
             {
                 guest.setDword(blockerOut, item);
-                return leave(reg32(number), item, 0);
+                return 0;
             }
         }
     }
-    return leave(seat, leftInEcx, 1);
+    return 1;
 }
 
 namespace
@@ -465,7 +475,7 @@ x86::reg32 frontend::hudz::elementMoved(App* app, CPU& cpu, reg32 item)
     hudLayoutDesigned(app, rectangle, element); /* port: the layout as laid out, not as drawn */
 
     guest::direct<0x4853c0, hudr::rebuildElement>(app, cpu, view, element);
-    guest.call(kFlushBand, args({ view }));
+    fe::direct<0x4800a0, render::hudBandBuilt>(app, cpu, view);
 
     if ((element == kMap || element == kCopMap)
         && isBelow(fp::sub(floatFrom(guest, place + kRectangleRight), floatFrom(guest, place + kRectangleLeft)), floatFrom(guest, kMostOfScreen))
@@ -480,14 +490,15 @@ x86::reg32 frontend::hudz::elementMoved(App* app, CPU& cpu, reg32 item)
     // when no item is: the original then goes on with what the stack held.
     const reg32 blockerAt = guest.frame();
     const reg32 mode = guest.dword(kEditModes + 4 * view);
-    cpu.eax = place;
-    cpu.edx = view;
-    cpu.ebx = element;
-    cpu.ecx = mode;
-    hudLayoutsDrawn(app, cpu, true); /* port: measured against what is drawn */
+    x86::Args handed;
+    handed.eax = place;
+    handed.edx = view;
+    handed.ebx = element;
+    handed.ecx = mode;
+    hudLayoutsDrawn(app, cpu, true, place, view, element, mode, 0, blockerAt); /* port: measured against what is drawn */
     const reg32 fits = guest::direct<0x459670, elementFits>(app, cpu, place, view, element, mode, blockerAt);
-    cpu.eax = fits;  // the answer in eax, as the call by address leaves it, for the port's trace
-    hudLayoutsDrawn(app, cpu, false);
+    handed.eax = fits;  // the answer in eax, as the call by address leaves it, for the port's trace
+    hudLayoutsDrawn(app, cpu, false, place, view, element, mode, fits, blockerAt);
 
     const reg32 blocker = guest.dword(item + elementItem::kBlocker);
     if (blocker != 0)
@@ -512,7 +523,7 @@ x86::reg32 frontend::hudz::elementMoved(App* app, CPU& cpu, reg32 item)
 /* eax the view.  The original gave each element whose kind is text (sub_47bc20) the edge
  * of the screen it stood nearest, unless another element stood between: 1 for the left, 2
  * for the right, 4 for neither.  The port has every one of them centred instead
- * (tools/apply_hud_editor.py: the text jumped the width of its margin as an element was
+ * (the port's HUD editor change: the text jumped the width of its margin as an element was
  * dragged), and what those comparisons came to is read nowhere else, so they are gone;
  * what stays of them is their asking sub_47bc20 about each of the others, twice.  The
  * standings' two layouts keep theirs, 8 or 16, both centred as sub_4897f0 reads them: 16
@@ -605,7 +616,6 @@ x86::reg32 frontend::hudz::placeDialArt(App* app, CPU& cpu, reg32 seat, reg32 fo
 
     const reg32 offset = formOffset(seat, form);
     const reg32 dialForm = gameSettings(guest).hudAt(offset).speedometerForm;
-    guest.leaveEdx(dialForm);
     const bool upper = dialForm == 1 || dialForm == 2;
     const reg32 top = upper ? kEdge : kSecondStart, bottom = upper ? kFirstEnd : kSecondEnd;
     const bool second = gameSettings(guest).night != 0;
@@ -631,7 +641,7 @@ x86::reg32 frontend::hudz::layMarkersFrame(App* app, CPU& cpu, reg32 view, reg32
     const reg32 box = boxOf(view, kMarkers);
     const reg32 left = guest.dword(box), top = guest.dword(box + 4), right = guest.dword(box + 8), bottom = guest.dword(box + 12);
     const reg32 quads = view * kFrameQuadsEach + guest.dword(kFrameQuads);
-    return guest.call(kBuildFrame, args({ quads, top, left, bottom }, { right }));
+    return *fe::direct<0x47f650, render::hudFrameBuilt>(app, cpu, quads, top, left, bottom, right);
 }
 
 
@@ -832,7 +842,6 @@ x86::reg32 frontend::hudz::setGridHighlight(App* app, CPU& cpu, reg32 part, reg3
         eax = unqueueQuad(guest, corners + (reg32(previous) + 1) * 4);
     }
     guest.setDword(highlight, part);
-    guest.leaveEdx(part);
     if (sreg32(part) >= 0)
     {
         const reg32 first = guest.dword(kGridCorners);
@@ -845,7 +854,6 @@ x86::reg32 frontend::hudz::setGridHighlight(App* app, CPU& cpu, reg32 part, reg3
             guest.setDword(whole + corner * kCornerBytes + kCornerColour, shown);
         for (reg32 corner = 0; corner < 4; ++corner)
             guest.setDword(itsQuad + corner * kCornerBytes + kCornerColour, shown);
-        guest.leaveEdx(itsQuad);
         eax = whole;
         if ((guest.byte(kDisplayFlags) & kCardWithAlpha) == 0)
         {
@@ -853,7 +861,6 @@ x86::reg32 frontend::hudz::setGridHighlight(App* app, CPU& cpu, reg32 part, reg3
             eax = queueQuad(guest, partCorners);
         }
     }
-    guest.leaveEbx(part);
     // The game's code hands it "speech set %d\n" (0x53b5c4) and the part on the stack and the eax it
     // goes out with, which it does not read: it does nothing, eax left as it is.
     fe::direct<0x42d500, raceload::noHook>(app, cpu);
@@ -906,8 +913,8 @@ x86::reg32 frontend::hudz::drawGridHighlight(App* app, CPU& cpu, reg32 view)
             const reg32 at = quad + corner * kCornerBytes;
             guest.setByte(at + kCornerClip, clipCodeOf(guest, at));
         }
-    guest.call(kClipQuad, args({ whole, whole + kCornerBytes, whole + 2 * kCornerBytes, whole + 3 * kCornerBytes }));
-    return guest.call(kClipQuad, args({ itsQuad, itsQuad + kCornerBytes, itsQuad + 2 * kCornerBytes, itsQuad + 3 * kCornerBytes }));
+    fe::direct<0x4c12e0, vertices::quadClipped>(guest.app(), guest.cpu(), whole, whole + kCornerBytes, whole + 2 * kCornerBytes, whole + 3 * kCornerBytes);
+    return fe::direct<0x4c12e0, vertices::quadClipped>(guest.app(), guest.cpu(), itsQuad, itsQuad + kCornerBytes, itsQuad + 2 * kCornerBytes, itsQuad + 3 * kCornerBytes);
 }
 
 
@@ -931,7 +938,7 @@ x86::reg32 frontend::hudz::drawReplayBar(App* app, CPU& cpu, reg32 eax, reg32 eb
     const reg32 playQuad = guest.dword(kPanelPaused) != 0 ? kPausedQuad : kPlayQuad;
     const reg32 speed = guest.dword(kPanelSpeed);
     const reg32 speedQuad = speed < kSpeedCount ? kFirstSpeedQuad + speed : ebx;
-    return guest.call(kDrawLights, args({ cameraQuad, playQuad, speedQuad, kFixedQuad }, { guest.dword(kPanelButton) }));
+    return *fe::direct<0x48c7c0, render::startLightsDrawn>(app, cpu, cameraQuad, playQuad, speedQuad, kFixedQuad, guest.dword(kPanelButton));
 }
 
 namespace
@@ -964,7 +971,6 @@ x86::reg32 frontend::hudz::queueStart(App* app, CPU& cpu, reg32 queue, reg32 tex
         guest.setDword(vertex + kVertexW, kFlatW);
         guest.setDword(vertex + kVertexFlags, 0);
     }
-    guest.leaveEdx(kVertices);
     return queue;
 }
 
@@ -979,7 +985,6 @@ x86::reg32 frontend::hudz::queueTakeCorners(App* app, CPU& cpu, reg32 queue, reg
     const reg32 offset = number * kCornerBytes;
     guest.setDword(cornersOut, queue + kQueueFirstVertex + offset);
     guest.setDword(queue + kQueueTaken, guest.dword(queue + kQueueTaken) + count);
-    guest.leaveEcx(offset);
     return queue;
 }
 
@@ -1003,7 +1008,7 @@ x86::reg32 frontend::hudz::unqueueViewQuads(App* app, CPU& cpu, reg32 view)
 namespace
 {
 
-/* A generated function's stack argument, by its place, before its frame. */
+/* A game function's stack argument, by its place, before its frame. */
 reg32 stackArgument(win32::WinApplication* app, const x86::CPU& cpu, reg32 place)
 {
     return app->getMemory<reg32>(cpu.esp + 4 + 4 * place);
@@ -1012,7 +1017,7 @@ reg32 stackArgument(win32::WinApplication* app, const x86::CPU& cpu, reg32 place
 }
 
 /* ---------------------------------------------------------------------------
- * The stand-ins
+ * The port's functions
  * ------------------------------------------------------------------------- */
 
 /* sub_481570: a form of the HUD's laying out with nothing to lay; the view left in eax. */
@@ -1026,128 +1031,128 @@ x86::reg32 frontend::hudz::flushFrameQueue(App* app, CPU& cpu)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 4);
-    return guest.call(kFlushQueue, args({ kFrameQueue }));
+    return reg32(*fe::direct<0x49be40, port::text::quadsFlushed>(app, cpu, cpu.esp - 4, kFrameQueue));
 }
 
-void frontend::hudEditElementFits(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::hudEditElementFits(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_459670", 4, 0, nullptr, 0, fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 tried = cpu.eax, view = cpu.edx, moved = cpu.ebx, mode = cpu.ecx;
+    const reg32 tried = args.eax, view = args.edx, moved = args.ebx, mode = args.ecx;
     const reg32 blockerOut = stackArgument(app, cpu, 0);
-    fe::runWhole(app, cpu, site, [&](Guest&) {
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
         return hudz::elementFits(app, cpu, tried, view, moved, mode, blockerOut);
     });
 }
 
-void frontend::hudEditElementMoved(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::hudEditElementMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_459db0", 0, 0, nullptr, 0 };
-    const reg32 item = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return hudz::elementMoved(app, cpu, item); });
+    const reg32 item = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return hudz::elementMoved(app, cpu, item); });
 }
 
-void frontend::hudUnqueueViewQuads(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::hudUnqueueViewQuads(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4808b0", 0, 0, nullptr, 0 };
-    const reg32 view = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return hudz::unqueueViewQuads(app, cpu, view); });
+    const reg32 view = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return hudz::unqueueViewQuads(app, cpu, view); });
 }
 
-void frontend::hudSetAlignments(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::hudSetAlignments(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_480a00", 0, 0, nullptr, 0 };
-    const reg32 view = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return hudz::setAlignments(app, cpu, view); });
+    const reg32 view = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return hudz::setAlignments(app, cpu, view); });
 }
 
-void frontend::hudPlaceDialArt(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::hudPlaceDialArt(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_481170", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 seat = cpu.eax, form = cpu.edx, corners = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return hudz::placeDialArt(app, cpu, seat, form, corners); });
+    const reg32 seat = args.eax, form = args.edx, corners = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return hudz::placeDialArt(app, cpu, seat, form, corners); });
 }
 
-void frontend::hudLayMarkersFrame(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::hudLayMarkersFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_481290", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi };
-    const reg32 view = cpu.eax, width = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return hudz::layMarkersFrame(app, cpu, view, width); });
+    const reg32 view = args.eax, width = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return hudz::layMarkersFrame(app, cpu, view, width); });
 }
 
-void frontend::hudLayPanel(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::hudLayPanel(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_481510", 0, 0, nullptr, 0 };
-    const reg32 view = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return hudz::layPanel(app, cpu, view); });
+    const reg32 view = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return hudz::layPanel(app, cpu, view); });
 }
 
-void frontend::hudLayNothing(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::hudLayNothing(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_481570", 0, 0, nullptr, 0 };
-    const reg32 view = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return hudz::layNothing(app, cpu, view); });
+    const reg32 view = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return hudz::layNothing(app, cpu, view); });
 }
 
-void frontend::hudLayReplayBar(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::hudLayReplayBar(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4815d0", 0, 0, nullptr, 0 };
-    const reg32 view = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return hudz::layReplayBar(app, cpu, view); });
+    const reg32 view = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return hudz::layReplayBar(app, cpu, view); });
 }
 
-void frontend::hudLayGrid(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::hudLayGrid(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4818b0", 0, 0, nullptr, 0 };
-    const reg32 view = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return hudz::layGrid(app, cpu, view); });
+    const reg32 view = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return hudz::layGrid(app, cpu, view); });
 }
 
-void frontend::hudMapPaneIsSmall(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::hudMapPaneIsSmall(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_481f90", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx };
-    const reg32 view = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return hudz::mapPaneIsSmall(app, cpu, view); });
+    const reg32 view = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return hudz::mapPaneIsSmall(app, cpu, view); });
 }
 
-void frontend::hudSetGridHighlight(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::hudSetGridHighlight(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_482030", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 part = cpu.eax, view = cpu.edx, colour = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return hudz::setGridHighlight(app, cpu, part, view, colour); });
+    const reg32 part = args.eax, view = args.edx, colour = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return hudz::setGridHighlight(app, cpu, part, view, colour); });
 }
 
-void frontend::hudDrawGridHighlight(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::hudDrawGridHighlight(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_482190", 0, 0, nullptr, 0 };
-    const reg32 view = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return hudz::drawGridHighlight(app, cpu, view); });
+    const reg32 view = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return hudz::drawGridHighlight(app, cpu, view); });
 }
 
-void frontend::hudDrawReplayBar(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::hudDrawReplayBar(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_482880", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx | fe::kRestoreEsi };
-    const reg32 eax = cpu.eax, ebx = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return hudz::drawReplayBar(app, cpu, eax, ebx); });
+    const reg32 eax = args.eax, ebx = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return hudz::drawReplayBar(app, cpu, eax, ebx); });
 }
 
-void frontend::hudFlushFrameQueue(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::hudFlushFrameQueue(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_484030", 0, 0, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return hudz::flushFrameQueue(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return hudz::flushFrameQueue(app, cpu); });
 }
 
-void frontend::hudQueueStart(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::hudQueueStart(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_49bc80", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 queue = cpu.eax, texture = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return hudz::queueStart(app, cpu, queue, texture); });
+    const reg32 queue = args.eax, texture = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return hudz::queueStart(app, cpu, queue, texture); });
 }
 
-void frontend::hudQueueTakeCorners(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::hudQueueTakeCorners(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_49bd10", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEdx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 queue = cpu.eax, count = cpu.edx, cornersOut = cpu.ebx, numberOut = cpu.ecx;
-    fe::runWhole(app, cpu, site, [&](Guest&) {
+    const reg32 queue = args.eax, count = args.edx, cornersOut = args.ebx, numberOut = args.ecx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
         return hudz::queueTakeCorners(app, cpu, queue, count, cornersOut, numberOut);
     });
 }

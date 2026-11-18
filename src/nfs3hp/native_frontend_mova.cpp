@@ -1,7 +1,41 @@
 #include "native_frontend_mova.h"
 #include "native_frontend.h"
+#include "port_sound_effects.h"
+
 #include <nfs3hp.h>
 #include <cstdint>
+#include "native_guest.h"
+
+namespace nfs3hp
+{
+namespace
+{
+
+/* A call through a pointer or to a function of the game's that has no typed core: Watcom's register
+ * arguments (eax, edx, ebx, ecx in turn) and the stack words as `arguments` have them, through
+ * guest::pointerCall; its eax, and Terminated when the game stopped in it. */
+x86::reg32 callAt(fe::Guest& guest, x86::reg32 target, const fe::Arguments& arguments = fe::Arguments())
+{
+    x86::CPU& cpu = guest.cpu();
+    x86::Args registers;
+    x86::reg32* const into[4] = { &registers.eax, &registers.edx, &registers.ebx, &registers.ecx };
+    for (std::size_t i = 0; i < arguments.registerCount; ++i)
+        *into[i] = arguments.registers[i];
+    const x86::reg32 esp = cpu.esp;
+    for (std::size_t i = arguments.stackCount; i-- > 0;)
+    {
+        cpu.esp -= 4;
+        guest.setDword(cpu.esp, arguments.stack[i]);
+    }
+    const std::optional<x86::reg32> result = guest::pointerCall(guest.app(), cpu, target, registers);
+    if (!result)
+        throw fe::Terminated();
+    cpu.esp = esp;
+    return *result;
+}
+
+}  // namespace
+}  // namespace nfs3hp
 
 /* What is left of the movies' display that the native player (native_movie.cpp) still
  * calls, and the integer projection that sat beside it in the address map, decompiled:
@@ -13,11 +47,11 @@
  *   the projection       the screen rectangle and the focal lengths of the game's older
  *                        integer projection (sub_4fd280, sub_4fd2b0, sub_4fd3f0).
  *
- * The player's generated body behind madPlay, the 16-bit surface path behind showFrame
- * and EA's stream and file libraries stay generated.
+ * The player's body behind madPlay, the 16-bit surface path behind showFrame
+ * and EA's stream and file libraries stay the game's code.
  *
  * Plan step 5: each function a typed core in frontend::mova (native_frontend_mova.h), in a frame
- * of its own where the game's function has one, and an adapter under the game's name for the calls
+ * of its own where the game's function has one, and a thunk under the game's name for the calls
  * by address.  A core of this file calls another as C++ (guest::direct); the rest of the game
  * still by address. */
 namespace nfs3hp
@@ -85,7 +119,7 @@ reg32 tableSine(const Guest& guest, reg32 angle)
     return negative ? reg32(0) - value : value;
 }
 
-/* idiv of a sign-extended dividend, as the generated code does it. */
+/* idiv of a sign-extended dividend, as the game's code does it. */
 struct Division
 {
     reg32 quotient;
@@ -142,7 +176,7 @@ x86::reg32 frontend::mova::displayClose(App* app, CPU& cpu)
     if (surface == 0)
         return device;
     const reg32 table = guest.dword(surface);
-    const reg32 result = guest.call(guest.dword(table + kRelease), args({}, { surface }));
+    const reg32 result = callAt(guest, guest.dword(table + kRelease), args({}, { surface }));
     guest.setDword(kDisplaySurface, 0);
     return result;
 }
@@ -166,9 +200,6 @@ x86::reg32 frontend::mova::displayOpen(App* app, CPU& cpu, reg32 x, reg32 y, reg
     guest.setDword(kDisplayDevice, 0);
     guest.setDword(kDisplayQuality, quality);
     guest.setDword(kDisplayMode, kModeSoftware);
-    guest.leaveEdx(kModeSoftware);
-    guest.leaveEbx(width);
-    guest.leaveEcx(software);
     if (software != 0)
         return quality;
 
@@ -178,7 +209,7 @@ x86::reg32 frontend::mova::displayOpen(App* app, CPU& cpu, reg32 x, reg32 y, reg
     guest.setDword(cardCaps, kCapsSize);
     guest.setDword(emulationCaps, kCapsSize);
     const reg32 table = guest.dword(directDraw);
-    const reg32 failed = guest.call(guest.dword(table + kGetCaps),
+    const reg32 failed = callAt(guest, guest.dword(table + kGetCaps),
                                     args({ directDraw, cardCaps, kCapsSize, table },
                                          { directDraw, cardCaps, emulationCaps }));
     if (failed != 0)
@@ -192,7 +223,6 @@ x86::reg32 frontend::mova::displayOpen(App* app, CPU& cpu, reg32 x, reg32 y, reg
         return capsInAh;
     }
     // And into dh, over what GetCaps left there.
-    guest.leaveEdx((guest.edx() & 0xffff00ffu) | capsInAh);
     if ((caps & kCapsOverlay) != 0 && (caps & kCapsOverlayCantClip) != 0)
     {
         guest.setDword(kDisplayMode, kModeOverlay);
@@ -212,7 +242,6 @@ x86::reg32 frontend::mova::projectionCentre(App* app, CPU& cpu, reg32 x, reg32 y
     guest.setDword(kCentreY, y);
     const reg32 edgeY = y + halfHeight;
     guest.setDword(kEdgeY, edgeY);
-    guest.leaveEdx(edgeY);
     return halfHeight;
 }
 
@@ -245,9 +274,6 @@ x86::reg32 frontend::mova::projectionView(App* app, CPU& cpu, reg32 angleX, reg3
         const reg32 sineY = tableSine(guest, angleY);
         const Division focalY = divide(scaledY, sineY);
         guest.setDword(kFocalY, focalY.quotient);
-        guest.leaveEbx(scaledY);
-        guest.leaveEcx(sineY);
-        guest.leaveEdx(focalY.remainder);
         return focalY.quotient;
     }
 
@@ -257,9 +283,7 @@ x86::reg32 frontend::mova::projectionView(App* app, CPU& cpu, reg32 angleX, reg3
     const reg32 focalY = (high << 16) + (low >> 16) + ((low >> 15) & 1);
     const reg32 negative = reg32(0) - focalY;
     guest.setDword(kFocalY, negative);
-    guest.leaveEbx(scaledX);
-    guest.leaveEcx(sineX);
-    const reg32 angle = guest.call(kAngleOf, args({ negative, halfHeight }));
+        const reg32 angle = guest::direct<kAngleOf, port::vectorAngle>(app, cpu, std::int32_t(negative), std::int32_t(halfHeight));
     guest.setDword(kAngleY, angle);
     return angle;
 }
@@ -282,60 +306,60 @@ x86::reg32 frontend::mova::projectionViewDegrees(App* app, CPU& cpu, reg32 degre
  * Under the game's addresses
  * ------------------------------------------------------------------------- */
 
-void frontend::movieScreenDevice(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::movieScreenDevice(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4eba80", 0, 0, nullptr, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return mova::screenDevice(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return mova::screenDevice(app, cpu); });
 }
 
-void frontend::movieDirectDraw(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::movieDirectDraw(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4eba90", 0, 0, nullptr, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return mova::directDraw(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return mova::directDraw(app, cpu); });
 }
 
-void frontend::movieDisplayMode(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::movieDisplayMode(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4df340", 0, 0, nullptr, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return mova::displayMode(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return mova::displayMode(app, cpu); });
 }
 
-void frontend::movieDisplayClose(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::movieDisplayClose(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4df310", 0, 0, nullptr, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return mova::displayClose(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return mova::displayClose(app, cpu); });
 }
 
-void frontend::movieDisplayOpen(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::movieDisplayOpen(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4df1f0", 8, 0, nullptr, 0, fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 x = cpu.eax, y = cpu.edx, width = cpu.ebx, height = cpu.ecx;
+    const reg32 x = args.eax, y = args.edx, width = args.ebx, height = args.ecx;
     const reg32 quality = app->getMemory<reg32>(cpu.esp + 4), software = app->getMemory<reg32>(cpu.esp + 8);
-    fe::runWhole(app, cpu, site,
+    return fe::runThunk(app, cpu, args, site,
                  [&](Guest&) { return mova::displayOpen(app, cpu, x, y, width, height, quality, software); });
 }
 
-void frontend::projectionCentre(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::projectionCentre(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4fd280", 0, 0, nullptr, 0,
                           fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 x = cpu.eax, y = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return mova::projectionCentre(app, cpu, x, y); });
+    const reg32 x = args.eax, y = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return mova::projectionCentre(app, cpu, x, y); });
 }
 
-void frontend::projectionView(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::projectionView(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4fd2b0", 0, 0, nullptr, 0, fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 angleX = cpu.eax, angleY = cpu.edx, width = cpu.ebx, height = cpu.ecx;
-    fe::runWhole(app, cpu, site,
+    const reg32 angleX = args.eax, angleY = args.edx, width = args.ebx, height = args.ecx;
+    return fe::runThunk(app, cpu, args, site,
                  [&](Guest&) { return mova::projectionView(app, cpu, angleX, angleY, width, height); });
 }
 
-void frontend::projectionViewDegrees(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::projectionViewDegrees(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4fd3f0", 0, 0, nullptr, 0, fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 degreesX = cpu.eax, degreesY = cpu.edx, width = cpu.ebx, height = cpu.ecx;
-    fe::runWhole(app, cpu, site,
+    const reg32 degreesX = args.eax, degreesY = args.edx, width = args.ebx, height = args.ecx;
+    return fe::runThunk(app, cpu, args, site,
                  [&](Guest&) { return mova::projectionViewDegrees(app, cpu, degreesX, degreesY, width, height); });
 }
 

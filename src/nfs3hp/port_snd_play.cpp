@@ -1,6 +1,8 @@
 #include "port_snd.h"
 #include "port_snd_play.h"
+#include "port_snd_calls.h"
 #include "isnd_calls.h"
+#include "native_ea_memory.h"
 
 #ifdef __ANDROID__
 #include <SDL3/SDL.h>
@@ -264,8 +266,8 @@ Result playTimbre(App* app, CPU& cpu, reg32 esp, Timbre& t, reg32 sample, const 
  * timbres read from its tags, each played whose ranges hold the play's key
  * and velocity; several voices made a group, ended by the last.  The last
  * handle, or what failed (each timbre played stopped again).  A timbre before
- * any sample plays from where the code never set it: ebp. */
-Result playPatch(App* app, CPU& cpu, reg32 esp, reg32 patch, const PlayOptions& options)
+ * any sample plays from where the code never set it: `ebp`, the caller's. */
+Result playPatchFrom(App* app, CPU& cpu, reg32 esp, reg32 patch, const PlayOptions& options, reg32 ebp)
 {
     const reg32 f = esp - 0x14 - 0x1a4;
     if (patch == 0)
@@ -286,7 +288,7 @@ Result playPatch(App* app, CPU& cpu, reg32 esp, reg32 patch, const PlayOptions& 
         return {};
     const uint8_t group = nextGroup(app);
     int32_t result = kNoVoices, count = 0, pitchOffset = 0;
-    reg32 sample = cpu.ebp;
+    reg32 sample = ebp;
     bool failed = false;
     const auto inRange = [&] {
         return velocity >= timbre.lowVelocity && velocity <= timbre.highVelocity && key >= timbre.lowKey
@@ -379,6 +381,14 @@ Result playPatch(App* app, CPU& cpu, reg32 esp, reg32 patch, const PlayOptions& 
     return result;
 }
 
+/* playPatchFrom for the rewrites that play a patch as C++ (playByOptions,
+ * port_snd_stream.cpp): the caller's ebp as cpu has it, until those pass
+ * their own. */
+Result playPatch(App* app, CPU& cpu, reg32 esp, reg32 patch, const PlayOptions& options)
+{
+    return playPatchFrom(app, cpu, esp, patch, options, heldEbp());
+}
+
 /* 0x5021ac's (iSNDresolvetaggedpatch): `patch`'s samples made addresses in the
  * bank at `base`, each 0xfd's tags through resolveSample; the patch marked
  * resolved.  The last one's result, -1 for none. */
@@ -407,13 +417,14 @@ Result resolvePatch(App* app, CPU& cpu, reg32 esp, reg32 patch, reg32 base)
 }
 
 /* 0x5022d0's: `patch`'s samples let go of -- eacsnd's 3D buffers among them
- * -- and the patch no longer resolved.  0. */
-Result unresolvePatch(App* app, CPU& cpu, reg32 esp, reg32 patch)
+ * -- and the patch no longer resolved.  0.  `esi` and `ebp` the caller's, for
+ * unresolveSample. */
+Result unresolvePatch(App* app, CPU& cpu, reg32 esp, reg32 patch, reg32 esi, reg32 ebp)
 {
     const reg32 f = esp - 0x10 - 0x10;
     Tag tag = readerAt(app, f, patchTags(app, patch));
     while (readTag(app, tag))
-        if (tag.tag == 0xfd && !unresolveSample(app, cpu, f - 4, tag.place))
+        if (tag.tag == 0xfd && !unresolveSample(app, cpu, f - 4, tag.place, esi, ebp))
             return {};
     app->getMemory<uint8_t>(patch + 3) &= 0xfe;
     return 0;
@@ -462,8 +473,8 @@ int32_t bankState(App* app, int32_t bank)
 }
 
 /* 0x5024a0's (iSNDbankremovepat): patch `index` of bank `bank` let go of and
- * gone from the bank.  0, -8 for none. */
-Result removePatch(App* app, CPU& cpu, reg32 esp, int32_t bank, int32_t index)
+ * gone from the bank.  0, -8 for none.  `esi` and `ebp` the caller's. */
+Result removePatch(App* app, CPU& cpu, reg32 esp, int32_t bank, int32_t index, reg32 esi, reg32 ebp)
 {
     const reg32 frame = esp - 0x10;
     const reg32 b = kBanks(app, bank).bank;
@@ -474,7 +485,7 @@ Result removePatch(App* app, CPU& cpu, reg32 esp, int32_t bank, int32_t index)
         return kNoSound;
     if (app->getMemory<uint16_t>(patch) != kPatchId && !fail(app, cpu, frame, kRemovePatError, 0x25, {0x54e934}))
         return {};
-    if (!unresolvePatch(app, cpu, frame - 4, patch))
+    if (!unresolvePatch(app, cpu, frame - 4, patch, esi, ebp))
         return {};
     app->getMemory<reg32>(patchSlot(app, b, index)) = 0;
     return 0;
@@ -583,8 +594,7 @@ Result resolveSample(App* app, CPU& cpu, reg32 esp, reg32 tags, reg32 base)
     else if (!fail(app, cpu, f, kPlatformResolveError, 0x6d, {0x551ac4, compression}))
         return {};
     const std::optional<reg32> made = guest::soundFrom<isnd::kDirectCreate3dBuf, &eacsnd::create3d>(
-        app, cpu, f, {length, rate, channels, format}, channels, format, rate, length, loopStart, loopEnd,
-        wordAt(app, samplePlace));
+        app, cpu, f, length, channels, format, rate, length, loopStart, loopEnd, wordAt(app, samplePlace));
     if (!made)
         return {};
     app->getMemory<reg32>(buffer) = *made;
@@ -595,11 +605,12 @@ Result resolveSample(App* app, CPU& cpu, reg32 esp, reg32 tags, reg32 base)
 
 /* 0x522d08's: a sample's tags at `tags`: its 3D buffer, if eacsnd made one,
  * let go of.  0, or eacsnd's answer.  With no such tags the code takes the
- * buffer and its place from where it never set them: esi and ebp. */
-Result unresolveSample(App* app, CPU& cpu, reg32 esp, reg32 tags)
+ * buffer and its place from where it never set them: esi and ebp, the
+ * caller's. */
+Result unresolveSample(App* app, CPU& cpu, reg32 esp, reg32 tags, reg32 esi, reg32 ebp)
 {
     const reg32 f = esp - 0x14 - 0x10;
-    reg32 buffer = cpu.esi, method = 0, place = cpu.ebp;
+    reg32 buffer = esi, method = 0, place = ebp;
     Tag tag = readerAt(app, f, tags);
     bool more;
     while ((more = readTag(app, tag)))
@@ -619,7 +630,7 @@ Result unresolveSample(App* app, CPU& cpu, reg32 esp, reg32 tags)
     app->getMemory<uint8_t>(place) = 2;
     // eax the reader's last answer, which eacsnd's answer is when it gives none.
     const std::optional<reg32> removed =
-        guest::soundFrom<isnd::kDirectRemoveBuf, &eacsnd::remove3d>(app, cpu, f, {more ? 1u : 0u}, wordAt(app, buffer));
+        guest::soundFrom<isnd::kDirectRemoveBuf, &eacsnd::remove3d>(app, cpu, f, more ? 1u : 0u, wordAt(app, buffer));
     if (!removed)
         return {};
     return int32_t(*removed);
@@ -631,15 +642,15 @@ Result unresolveSample(App* app, CPU& cpu, reg32 esp, reg32 tags)
  * `start` the rest.  Each of the channel's functions picked from the mixer's
  * tables for the format, its state set up.  0.  Past an error that came back,
  * the code takes the decoder and the resampler from where it never set them:
- * edi and ebp, and the volume functions from its stack. */
+ * `edi` and `ebp`, the caller's, and the volume functions from its stack. */
 Result startChannel(App* app, CPU& cpu, reg32 esp, int32_t index, reg32 format, reg32 compression, reg32 mode,
-                    ChannelStart& start)
+                    ChannelStart& start, reg32 edi, reg32 ebp)
 {
     const reg32 f = esp - 0xc - 8;
     const reg32 c = kChannels.address(index);
     const bool better = start.priority > 0x19;
     const Table<reg32>& resamplers = better ? kBetterResamplerInits : kResamplerInits;
-    reg32 decoder = cpu.edi, resampler = cpu.ebp, volumes = wordAt(app, f + 4);
+    reg32 decoder = edi, resampler = ebp, volumes = wordAt(app, f + 4);
     if (format & 4)
     {
         volumes = kVolumeInits(app, 2);
@@ -701,7 +712,7 @@ Result startChannel(App* app, CPU& cpu, reg32 esp, int32_t index, reg32 format, 
         if (!fail(app, cpu, f, kMixStartError, 0x178, {0x54e284}))
             return {};
     }
-    else if (!callGame(app, cpu, f, init, {reg32(index), c + kChannelDecoder, start.sample, reg32(start.length)},
+    else if (!pointerGame(app, cpu, f, init, {reg32(index), c + kChannelDecoder, start.sample, reg32(start.length)},
                        {reg32(start.loopStart), reg32(start.loopEnd), c + kChannelDa8, c + kChannelDac}))
         return {};
     if (volumes == 0)
@@ -709,20 +720,20 @@ Result startChannel(App* app, CPU& cpu, reg32 esp, int32_t index, reg32 format, 
         if (!fail(app, cpu, f, kMixStartError, 0x18a, {0x54e2a8}))
             return {};
     }
-    else if (!callGame(app, cpu, f, volumes, {}, {c + kChannelVolumes, c + kChannelDc0, c + kChannelSetVolume})
-             || !callGame(app, cpu, f, volumes, {}, {c + kChannelSend, c + kChannelDe0, c + kChannelSetSend}))
+    else if (!pointerGame(app, cpu, f, volumes, {}, {c + kChannelVolumes, c + kChannelDc0, c + kChannelSetVolume})
+             || !pointerGame(app, cpu, f, volumes, {}, {c + kChannelSend, c + kChannelDe0, c + kChannelSetSend}))
         return {};
     if (resampler == 0)
     {
         if (!fail(app, cpu, f, kMixStartError, 0x197, {0x54e2d4}))
             return {};
     }
-    else if (!callGame(app, cpu, f, resampler, {},
+    else if (!pointerGame(app, cpu, f, resampler, {},
                        {c + kChannelResampler, c + kChannelSetStep, c + kChannelDb4, c + kChannelDb8}))
         return {};
     if (start.step > 0x80000)
         start.step = 0x80000;
-    if (!callGame(app, cpu, f, wordAt(app, c + kChannelSetStep), {}, {c + kChannelResampler, start.step}))
+    if (!pointerGame(app, cpu, f, wordAt(app, c + kChannelSetStep), {}, {c + kChannelResampler, start.step}))
         return {};
     Channel& ch = kChannels(app, index);
     ch.left = int8_t(start.left);
@@ -731,7 +742,7 @@ Result startChannel(App* app, CPU& cpu, reg32 esp, int32_t index, reg32 format, 
     ch.rightTarget = int8_t(start.right);
     ch.sendLevel = int8_t(start.send);
     if (!sendVolume(app, cpu, f - 4, c)
-        || !callGame(app, cpu, f, wordAt(app, c + kChannelSetVolume), {},
+        || !pointerGame(app, cpu, f, wordAt(app, c + kChannelSetVolume), {},
                      {c + kChannelVolumes, reg32(start.left), reg32(start.right)}))
         return {};
     ch.playing = 1;
@@ -827,9 +838,10 @@ Result playSample(App* app, CPU& cpu, reg32 esp, reg32 tags, int32_t mode, int32
         const int64_t frames = chopped<int64_t>(cpu, scaled);
         // eax as the pitch's power leaves it: its size.
         const reg32 eax = reg32(play.pitch <= 0 ? imul(play.pitch, -1) : play.pitch);
-        const std::optional<reg32> played = guest::soundFrom<isnd::kDirectPlay3d, &eacsnd::play3d>(
-            app, cpu, f, {eax}, wordAt(app, bufferPlace), reg32(index), looped, reg32(frames), reg32(play.volume),
-            play.position, reg32(play.elevation));
+        // esi the code's: the sample's priority (tag 0x91).
+        const std::optional<reg32> played =
+            guest::soundPlay3d(app, cpu, f, eax, priority, wordAt(app, bufferPlace), reg32(index), looped,
+                               reg32(frames), reg32(play.volume), play.position, reg32(play.elevation));
         if (!played)
             return {};
         if (int32_t(*played) >= 0)
@@ -857,7 +869,9 @@ Result playSample(App* app, CPU& cpu, reg32 esp, reg32 tags, int32_t mode, int32
     p.method = uint8_t(method);
     ChannelStart start{wordAt(app, samplePlace), int32_t(length), int32_t(loopStart), int32_t(loopEnd), s.left,
                        s.right, uint32_t(step), level, play.send};
-    return startChannel(app, cpu, f - 0x24 - 4, index, frameBytes, compression, reg32(mode), start);
+    // edi and ebp the code's at the call: the sample's length and the sample.
+    return startChannel(app, cpu, f - 0x24 - 4, index, frameBytes, compression, reg32(mode), start, start.length,
+                        start.sample);
 }
 
 /* 0x523d94's (iSNDplatformpacketplay): channel `index` started on packets (a
@@ -914,7 +928,9 @@ Result playPackets(App* app, CPU& cpu, reg32 esp, int32_t index, int32_t pan, in
     priority = priority > 0x64 ? 0x64 : priority < 0 ? 0 : priority;
     p.method = 0;
     ChannelStart start{0, 0, -1, -1, s.left, s.right, uint32_t(step), priority, send};
-    return startChannel(app, cpu, f - 0x24 - 4, index, frameBytes, reg32(int32_t(int8_t(p.compression))), 0, start);
+    // edi and ebp the code's at the call: the priority and the frame's bytes.
+    return startChannel(app, cpu, f - 0x24 - 4, index, frameBytes, reg32(int32_t(int8_t(p.compression))), 0, start,
+                        reg32(priority), frameBytes);
 }
 
 /* 0x523f90's (iSNDcheckplayopts): a play's options checked: key, velocity,
@@ -948,20 +964,21 @@ Result checkPlayOptions(App* app, CPU& cpu, reg32 esp, reg32 at)
     return eax;
 }
 
-/* 0x4e8bd0's: the first `count` patches of bank `bank` let go of.  0. */
-Result removePatches(App* app, CPU& cpu, reg32 esp, int32_t bank, int32_t count)
+/* 0x4e8bd0's: the first `count` patches of bank `bank` let go of.  0.  `esi`
+ * and `ebp` the caller's. */
+Result removePatches(App* app, CPU& cpu, reg32 esp, int32_t bank, int32_t count, reg32 esi, reg32 ebp)
 {
     const reg32 f = esp - 0x10 - 0xc00;
     for (int32_t i = 0; i < count; ++i)
-        if (!removePatch(app, cpu, f - 4, bank, i))
+        if (!removePatch(app, cpu, f - 4, bank, i, esi, ebp))
             return {};
     return 0;
 }
 
 /* 0x4e8c28's (SNDbankremove): bank `bank` gone (every bank for -1): its sounds
  * stopped, its patches let go of, its handle free.  0, -8 for no such bank,
- * -10 before SNDinit. */
-Result removeBank(App* app, CPU& cpu, reg32 esp, int32_t bank)
+ * -10 before SNDinit.  `esi` and `ebp` the caller's. */
+Result removeBank(App* app, CPU& cpu, reg32 esp, int32_t bank, reg32 esi, reg32 ebp)
 {
     if (kInited(app) == 0)
         return kNotStarted;
@@ -969,7 +986,7 @@ Result removeBank(App* app, CPU& cpu, reg32 esp, int32_t bank)
     if (bank == -1)
     {
         for (int32_t i = 0; i < kBankCount; ++i)
-            if (!removeBank(app, cpu, frame - 4, i))
+            if (!removeBank(app, cpu, frame - 4, i, esi, ebp))
                 return {};
         return 0;
     }
@@ -982,7 +999,7 @@ Result removeBank(App* app, CPU& cpu, reg32 esp, int32_t bank)
         if (int32_t(int8_t(kVoices(app, i).bank)) == bank
             && !stopSound(app, cpu, frame - 4, reg32(kVoices(app, i).handle)))
             return {};
-    if (!removePatches(app, cpu, frame - 8, bank, record<BankHeader>(app, b).patches))
+    if (!removePatches(app, cpu, frame - 8, bank, record<BankHeader>(app, b).patches, esi, ebp))
         return {};
     kBanks(app, bank).bank = 0;
     kBanks(app, bank).loading = 0;
@@ -990,10 +1007,17 @@ Result removeBank(App* app, CPU& cpu, reg32 esp, int32_t bank)
 }
 
 /* 0x4e8c1c's: SNDbankremove of `bank` -- what SNDbankadd leaves SNDrestore to
- * call for the banks. */
+ * call for the banks; `esi` and `ebp` the caller's. */
+Result removeEveryBankFrom(App* app, CPU& cpu, reg32 esp, int32_t bank, reg32 esi, reg32 ebp)
+{
+    return removeBank(app, cpu, esp - 8, bank, esi, ebp);
+}
+
+/* removeEveryBankFrom for the rewrites that call it as C++ (port_sound_*.cpp):
+ * with the ebp the game's caller held (heldEbp), until the rewrites pass their own. */
 Result removeEveryBank(App* app, CPU& cpu, reg32 esp, int32_t bank)
 {
-    return removeBank(app, cpu, esp - 8, bank);
+    return removeEveryBankFrom(app, cpu, esp, bank, 0, heldEbp());
 }
 
 /* 0x4e8d20's (SNDbankadd): the bank at `bank` added: its handle into
@@ -1041,7 +1065,8 @@ Result copyBankHeader(App* app, CPU& cpu, reg32 esp, reg32 to, int32_t bank)
     if (!size || *size < 0)
         return size;
     // EA's memmove: eax from, edx to, ebx bytes.
-    if (!callGame(app, cpu, f - 4, kMoveMemory, {kBanks(app, bank).bank, to, reg32(*size), reg32(bank) * 12}))
+    cpu.esp = f - 4;
+    if (!guest::direct<kMoveMemory, ea::moveMemory>(app, cpu, to, kBanks(app, bank).bank, reg32(*size)))
         return {};
     const reg32 from = kBanks(app, bank).bank;
     for (int32_t i = 0; i < int32_t(record<BankHeader>(app, from).patches); ++i)
@@ -1077,8 +1102,9 @@ Result bankHasPatch(App* app, CPU& cpu, reg32 esp, int32_t bank, int32_t patch)
 }
 
 /* 0x4e73d0's (SNDmastervol): the master volume to `volume` (0..127), every
- * playing voice's set again.  0, -10 before SNDinit. */
-Result setMasterVolume(App* app, CPU& cpu, reg32 esp, int32_t volume)
+ * playing voice's set again (`ebp` the caller's, for iSNDvol).  0, -10 before
+ * SNDinit. */
+Result masterVolumeFrom(App* app, CPU& cpu, reg32 esp, int32_t volume, reg32 ebp)
 {
     if (kInited(app) == 0)
         return kNotStarted;
@@ -1094,7 +1120,7 @@ Result setMasterVolume(App* app, CPU& cpu, reg32 esp, int32_t volume)
         if (v.state != 1 || v.handle < 0)
             continue;
         refreshVolume(app, i);
-        if (!voiceVolume(app, cpu, frame - 4, i, v.mixLevel))
+        if (!voiceVolume(app, cpu, frame - 4, i, v.mixLevel, ebp))
             return {};
     }
     if (!leaveAudio(app, cpu, frame - 4))
@@ -1102,193 +1128,210 @@ Result setMasterVolume(App* app, CPU& cpu, reg32 esp, int32_t volume)
     return 0;
 }
 
-/* The game's entries: each its adapter -- the game's registers and stack in,
+/* masterVolumeFrom for the rewrites that call SNDmastervol as C++
+ * (port_sound_effects.cpp, guest::direct): the caller's ebp as cpu has it,
+ * until those pass their own. */
+Result setMasterVolume(App* app, CPU& cpu, reg32 esp, int32_t volume)
+{
+    return masterVolumeFrom(app, cpu, esp, volume, heldEbp());
+}
+
+/* 0x4e8d20's (SNDbankadd) as the game calls it: the handle into the word at
+ * `handleAt`, the bank at `bank`. */
+Result bankAdded(App* app, CPU& cpu, reg32 esp, reg32 handleAt, reg32 bank)
+{
+    reg32 handle = wordAt(app, handleAt);
+    const Result r = addBank(app, cpu, esp, bank, handle);
+    app->getMemory<reg32>(handleAt) = handle;
+    return r;
+}
+
+/* The game's entries: each its thunk -- the game's registers and stack in,
  * the result in eax out -- around what it does. */
 
-void timbreDefaults(App* app, CPU& cpu)
+x86::reg32 timbreDefaults(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     timbrePatchDefaults(record<Timbre>(app, e.eax));
-    e.back(cpu, e.eax);
+    return e.back(cpu, args, e.eax);
 }
 
 /* The timbre at eax, its places at edx; eax past the places. */
-void resetTimbre(App* app, CPU& cpu)
+x86::reg32 resetTimbre(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     clearTimbre(record<Timbre>(app, e.eax), record<Places>(app, e.edx));
-    e.back(cpu, e.edx + 0x98);
+    return e.back(cpu, args, e.edx + 0x98);
 }
 
-void addTimbreDeltas(App* app, CPU& cpu)
+x86::reg32 addTimbreDeltas(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     addDataPlaces(record<Timbre>(app, e.eax), record<Places>(app, e.edx));
-    e.back(cpu, e.eax);
+    return e.back(cpu, args, e.eax);
 }
 
 /* stdcall 0x10: the timbre at ecx, its sample's tags edx, the options at ebx;
  * on the stack its places, the key, the velocity and the pitch's offset. */
-void iSNDplaytaggedtimbre(App* app, CPU& cpu)
+x86::reg32 iSNDplaytaggedtimbre(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu,
+    const Entry e(cpu, args);
+    return e.finish(cpu, args,
              playTimbre(app, cpu, e.esp, record<Timbre>(app, e.ecx), e.edx, record<PlayOptions>(app, e.ebx),
                         record<Places>(app, e.arg(app, 0)), int32_t(e.arg(app, 1)), int32_t(e.arg(app, 2)),
                         int32_t(e.arg(app, 3))),
              0x10);
+    return args.eax;
 }
 
-void iSNDplaytaggedpatch(App* app, CPU& cpu)
+x86::reg32 iSNDplaytaggedpatch(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, playPatch(app, cpu, e.esp, e.eax, record<PlayOptions>(app, e.edx)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, playPatchFrom(app, cpu, e.esp, e.eax, record<PlayOptions>(app, e.edx), e.ebp));
 }
 
-void iSNDresolvetaggedpatch(App* app, CPU& cpu)
+x86::reg32 iSNDresolvetaggedpatch(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, resolvePatch(app, cpu, e.esp, e.eax, e.edx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, resolvePatch(app, cpu, e.esp, e.eax, e.edx));
 }
 
-void unresolveTaggedPatch(App* app, CPU& cpu)
+x86::reg32 unresolveTaggedPatch(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, unresolvePatch(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, unresolvePatch(app, cpu, e.esp, e.eax, e.esi, e.ebp));
 }
 
-void iSNDextracthdrinfo(App* app, CPU& cpu)
+x86::reg32 iSNDextracthdrinfo(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, sampleInfo(app, cpu, e.esp, e.eax, e.edx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, sampleInfo(app, cpu, e.esp, e.eax, e.edx));
 }
 
-void bankUsable(App* app, CPU& cpu)
+x86::reg32 bankUsable(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, reg32(bankState(app, int32_t(e.eax))));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, reg32(bankState(app, int32_t(e.eax))));
 }
 
-void iSNDbankremovepat(App* app, CPU& cpu)
+x86::reg32 iSNDbankremovepat(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, removePatch(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, removePatch(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx), e.esi, e.ebp));
 }
 
-void iSNDbankalloc(App* app, CPU& cpu)
+x86::reg32 iSNDbankalloc(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, freeBankHandle(app, cpu, e.esp));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, freeBankHandle(app, cpu, e.esp));
 }
 
-void iSNDdownloadbank(App* app, CPU& cpu)
+x86::reg32 iSNDdownloadbank(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, downloadBank(app, cpu, e.esp, e.eax, e.edx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, downloadBank(app, cpu, e.esp, e.eax, e.edx));
 }
 
-void iSNDplatformresolve(App* app, CPU& cpu)
+x86::reg32 iSNDplatformresolve(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, resolveSample(app, cpu, e.esp, e.eax, e.edx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, resolveSample(app, cpu, e.esp, e.eax, e.edx));
 }
 
-void platformUnresolve(App* app, CPU& cpu)
+x86::reg32 platformUnresolve(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, unresolveSample(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, unresolveSample(app, cpu, e.esp, e.eax, e.esi, e.ebp));
 }
 
 /* stdcall 0x24: the start's nine words on the stack, its step there kept to
  * 0x80000 as the code keeps it. */
-void iSNDmixstart(App* app, CPU& cpu)
+x86::reg32 iSNDmixstart(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     ChannelStart start = load<ChannelStart>(app, e.esp + 4);
-    const Result r = startChannel(app, cpu, e.esp, int32_t(e.eax), e.edx, e.ebx, e.ecx, start);
+    const Result r = startChannel(app, cpu, e.esp, int32_t(e.eax), e.edx, e.ebx, e.ecx, start, e.edi, e.ebp);
     store(app, e.esp + 4, start);
-    e.finish(cpu, r, 0x24);
+    return e.finish(cpu, args, r, 0x24);
 }
 
 /* stdcall 0x18: the tags at eax, the mode edx, the voice ebx, the pan ecx; the
  * play's six words on the stack, its position and elevation changed there as
  * the code changes them. */
-void iSNDplatformplay(App* app, CPU& cpu)
+x86::reg32 iSNDplatformplay(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     SamplePlay play = load<SamplePlay>(app, e.esp + 4);
     const Result r = playSample(app, cpu, e.esp, e.eax, int32_t(e.edx), int32_t(e.ebx), int32_t(e.ecx), play);
     store(app, e.esp + 4, play);
-    e.finish(cpu, r, 0x18);
+    return e.finish(cpu, args, r, 0x18);
 }
 
 /* stdcall 0x10: the voice edx, the pan ebx, the volume ecx; the pitch, the
  * send, the priority and the sample's description on the stack. */
-void iSNDplatformpacketplay(App* app, CPU& cpu)
+x86::reg32 iSNDplatformpacketplay(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu,
+    const Entry e(cpu, args);
+    return e.finish(cpu, args,
              playPackets(app, cpu, e.esp, int32_t(e.edx), int32_t(e.ebx), int32_t(e.ecx), int32_t(e.arg(app, 0)),
                          int32_t(e.arg(app, 1)), int32_t(e.arg(app, 2)), e.arg(app, 3)),
              0x10);
+    return args.eax;
 }
 
-void iSNDcheckplayopts(App* app, CPU& cpu)
+x86::reg32 iSNDcheckplayopts(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, checkPlayOptions(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, checkPlayOptions(app, cpu, e.esp, e.eax));
 }
 
-void removeBankPatches(App* app, CPU& cpu)
+x86::reg32 removeBankPatches(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, removePatches(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, removePatches(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx), e.esi, e.ebp));
 }
 
-void SNDbankremove(App* app, CPU& cpu)
+x86::reg32 SNDbankremove(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, removeBank(app, cpu, e.esp, int32_t(e.eax)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, removeBank(app, cpu, e.esp, int32_t(e.eax), e.esi, e.ebp));
 }
 
-void removeAllBanks(App* app, CPU& cpu)
+x86::reg32 removeAllBanks(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, removeEveryBank(app, cpu, e.esp, int32_t(e.eax)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, removeEveryBankFrom(app, cpu, e.esp, int32_t(e.eax), e.esi, e.ebp));
 }
 
 /* The handle into [eax], the bank at edx. */
-void SNDbankadd(App* app, CPU& cpu)
+x86::reg32 SNDbankadd(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    reg32 handle = app->getMemory<reg32>(e.eax);
-    const Result r = addBank(app, cpu, e.esp, e.edx, handle);
-    app->getMemory<reg32>(e.eax) = handle;
-    e.finish(cpu, r);
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, bankAdded(app, cpu, e.esp, e.eax, e.edx));
 }
 
-void SNDbankheadersize(App* app, CPU& cpu)
+x86::reg32 SNDbankheadersize(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, bankHeaderSize(app, cpu, e.esp, int32_t(e.eax)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, bankHeaderSize(app, cpu, e.esp, int32_t(e.eax)));
 }
 
-void SNDbankheadercopy(App* app, CPU& cpu)
+x86::reg32 SNDbankheadercopy(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, copyBankHeader(app, cpu, e.esp, e.eax, int32_t(e.edx)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, copyBankHeader(app, cpu, e.esp, e.eax, int32_t(e.edx)));
 }
 
-void SNDbankpatpresent(App* app, CPU& cpu)
+x86::reg32 SNDbankpatpresent(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, bankHasPatch(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, bankHasPatch(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx)));
 }
 
-void SNDmastervol(App* app, CPU& cpu)
+x86::reg32 SNDmastervol(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, setMasterVolume(app, cpu, e.esp, int32_t(e.eax)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, masterVolumeFrom(app, cpu, e.esp, int32_t(e.eax), e.ebp));
 }
 
 }  // namespace port

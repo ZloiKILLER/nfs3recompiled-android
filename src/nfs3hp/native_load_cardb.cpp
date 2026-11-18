@@ -6,9 +6,11 @@
 #include "native_guest.h"
 #include "native_load_cardb.h"
 #include "native_load_carmodels.h"
+#include "native_load_saves.h"
 #include "native_load_track.h"
 #include "native_watcom.h"
 #include "native_windows.h"
+#include "port_menus.h"
 #include "host_files.h"
 #include "host_system.h"
 
@@ -18,10 +20,7 @@
 #include <type_traits>
 
 /* The game's data: the cars' database, read from the carmodel folder (its
- * path at 0x7a28b4) a car's folder at a time.  disassemble_nfs3hp.py binds
- * each address to the function of that name here (LOAD_CARDB_NATIVES), and
- * the generated code calls it by name.  tools/game_checks holds each against
- * its generated code.
+ * path at 0x7a28b4) a car's folder at a time.  The game's code calls each by the name it has here.
  *
  * The cars are a list (its head at 0x554f70) of records of 0x3a4 bytes: +0
  * the next, +4 the .FEC's texts (their count, a word; +8 the fedata read in,
@@ -42,12 +41,12 @@
  * and files are walked with FindFirstFileA's handles at 0x554f78 (folders,
  * their data at 0x5f3ac0) and 0x554f7c (files, at 0x5f3980).
  *
- * Each is a typed function of its own, with an adapter under the game's name
+ * Each is a typed function of its own, with a thunk under the game's name
  * for the callers still on registers and the dispatch: it leaves eax, and the
  * registers the code does not keep, as the code does.  The code's frame stays
  * on the guest's stack, at its depth, where a callee is handed an address in
  * it (Frame); the rest of it is C++ locals.  The functions of this file that
- * tools/game_checks stands in for (the folders' and files' walkers) are
+ * walk the folders and files are
  * called by address, as is every other function of the game's without a
  * typed core and Windows' through its imports, their arguments in registers
  * as the code hands them -- but the typed ones the headers declare (this
@@ -136,13 +135,11 @@ constexpr reg32 kFindNextFileA = 0x5344d0;
 // other files' (native_load_carmodels.h, native_load_track.h,
 // native_ea_support.h, native_ea_memory.h, native_watcom.h, native_game.h,
 // native_frontend_loada.h), called as C++ (guest::direct, feCore).
-constexpr reg32 kAddSlash = 0x4529a0, kWriteWhole = 0x4eebb0;
-constexpr reg32 kRemove = 0x4ee2e0, kChmod = 0x4ee3c0, kRmdir = 0x4ee400, kFtell = 0x4ee420, kFwrite = 0x4eebd0;
-// This file's that tools/game_checks stands in for: the folders' and files'
-// walkers by address; carFolder, carIsPolice and the carmodels' natives'
+constexpr reg32 kWriteWhole = 0x4eebb0;
+constexpr reg32 kFwrite = 0x4eebd0;
+// This file's functions that walk the folders and files are called
+// by address; carFolder, carIsPolice and the carmodels' natives'
 // (carRecord, loadCarList) as C++ (typed).
-constexpr reg32 kFirstSubfolder = 0x4386b0, kNextSubfolder = 0x4387e0, kFirstFile = 0x438870;
-constexpr reg32 kNextFile = 0x438970;
 
 sreg32 s(reg32 value)
 {
@@ -163,21 +160,6 @@ void putWord16(App* app, reg32 address, reg16 value)
 reg32 widen(reg16 value)
 {
     return reg32(sreg32(std::int16_t(value)));
-}
-
-void push(App* app, CPU& cpu, reg32 value)
-{
-    cpu.esp -= 4;
-    put(app, cpu.esp, value);
-}
-
-/* A call as the code makes it: the return address's slot, and esp as the
- * callee leaves it.  False when the game stopped in it. */
-bool byAddress(App* app, CPU& cpu, reg32 target)
-{
-    cpu.esp -= 4;
-    app->dynamic_call(target, cpu);
-    return !cpu.terminate;
 }
 
 /* The code's frame on the guest's stack, where its callees see it: `pushed`
@@ -201,85 +183,12 @@ private:
     const reg32 base_;
 };
 
-// The registers a function's code saves (pushes and pops).
-constexpr reg32 kSaveEbx = 1, kSaveEcx = 2, kSaveEdx = 4, kSaveEsi = 8, kSaveEdi = 0x10, kSaveEbp = 0x20,
-                kSaveAll = 0x3f;
-
-/* The registers a function's code saves, as they were on entry whatever its
- * callees leave; the others as the callees and the arguments handed them
- * leave them, as the code's. */
-class Kept
-{
-public:
-    explicit Kept(CPU& cpu, reg32 saved = kSaveAll)
-        : cpu_(cpu), saved_(saved), ebx_(cpu.ebx), ecx_(cpu.ecx), edx_(cpu.edx), esi_(cpu.esi), edi_(cpu.edi),
-          ebp_(cpu.ebp)
-    {
-    }
-    ~Kept()
-    {
-        if (saved_ & kSaveEbx)
-            cpu_.ebx = ebx_;
-        if (saved_ & kSaveEcx)
-            cpu_.ecx = ecx_;
-        if (saved_ & kSaveEdx)
-            cpu_.edx = edx_;
-        if (saved_ & kSaveEsi)
-            cpu_.esi = esi_;
-        if (saved_ & kSaveEdi)
-            cpu_.edi = edi_;
-        if (saved_ & kSaveEbp)
-            cpu_.ebp = ebp_;
-    }
-
-private:
-    CPU& cpu_;
-    const reg32 saved_;
-    reg32 ebx_, ecx_, edx_, esi_, edi_, ebp_;
-};
-
-/* A function called by address, its arguments in eax, edx, ebx and ecx as the
- * code hands them: what it leaves in eax, or nullopt when the game stopped in
- * it. */
-std::optional<reg32> result(App* app, CPU& cpu, reg32 target)
-{
-    if (!byAddress(app, cpu, target))
-        return std::nullopt;
-    return cpu.eax;
-}
-
-std::optional<reg32> call(App* app, CPU& cpu, reg32 target, reg32 eax)
-{
-    cpu.eax = eax;
-    return result(app, cpu, target);
-}
-
-std::optional<reg32> call(App* app, CPU& cpu, reg32 target, reg32 eax, reg32 edx)
-{
-    cpu.edx = edx;
-    return call(app, cpu, target, eax);
-}
-
-std::optional<reg32> call(App* app, CPU& cpu, reg32 target, reg32 eax, reg32 edx, reg32 ebx)
-{
-    cpu.ebx = ebx;
-    return call(app, cpu, target, eax, edx);
-}
-
-std::optional<reg32> call(App* app, CPU& cpu, reg32 target, reg32 eax, reg32 edx, reg32 ebx, reg32 ecx)
-{
-    cpu.ecx = ecx;
-    return call(app, cpu, target, eax, edx, ebx);
-}
 
 /* `Core`, the game's `Address`, a typed function another file's header (or this one's) declares,
- * called as C++ (guest::direct): its arguments loaded into eax, edx, ebx and ecx first as the code
- * hands them, which the callee keeps, and its answer left in eax, as the call by address leaves
- * them.  Nullopt when the game stopped in it. */
+ * called as C++ (guest::direct).  Nullopt when the game stopped in it. */
 template <reg32 Address, auto Core, typename... Args>
 std::optional<reg32> typed(App* app, CPU& cpu, Args... args)
 {
-    guest::loadWatcomArguments(cpu, {reg32(args)...});
     const auto answer = guest::direct<Address, Core>(app, cpu, args...);
     if (cpu.terminate)
         return std::nullopt;
@@ -287,58 +196,35 @@ std::optional<reg32> typed(App* app, CPU& cpu, Args... args)
     {
         if (!answer)
             return std::nullopt;
-        cpu.eax = *answer;
+        return *answer;
     }
     else
-        cpu.eax = answer;
-    return cpu.eax;
+        return answer;
 }
 
 /* A native_frontend_* file's typed core called as C++ (guest::direct): nothing (false) when the
- * game stopped in it (its calls into the game throw fe::Terminated).  tools/game_checks does not
- * build those files: there it goes by address, through its ByAddress, as the game's code calls it,
- * every register but eax kept.  A reg32 result is the eax the function leaves: eax set to it (in the
- * game too); after any other, eax spoilt there, so that code still reading what the callee left in
- * eax differs there. */
+ * game stopped in it (its calls into the game throw fe::Terminated). */
 template <reg32 Address, auto Core, typename... Args>
 auto feCore(App* app, CPU& cpu, Args... args)
 {
-    const auto run = [&] {
-#ifdef NFS_GAME_CHECKS
-        const guest::KeptRegisters kept(cpu);
-        return guest::ByAddress<Core>::template call<Address>(app, cpu, args...);
-#else
-        return guest::direct<Address, Core>(app, cpu, args...);
-#endif
-    };
-    using Result = decltype(run());
-    const auto spoil = [&] {
-#ifdef NFS_GAME_CHECKS
-        cpu.eax = 0x5b0115edu;
-#endif
-    };
+    using Result = decltype(guest::direct<Address, Core>(app, cpu, args...));
     if constexpr (std::is_void_v<Result>)
     {
         try
         {
-            run();
+            guest::direct<Address, Core>(app, cpu, args...);
         }
         catch (const fe::Terminated&)
         {
             return false;
         }
-        spoil();
         return !cpu.terminate;
     }
     else
     {
         try
         {
-            const Result result = run();
-            if constexpr (std::is_same_v<Result, x86::reg32>)
-                cpu.eax = result;  // a menu core's result: the eax it leaves, as the call by address does
-            else
-                spoil();
+            const Result result = guest::direct<Address, Core>(app, cpu, args...);
             return cpu.terminate ? std::optional<Result>() : std::optional<Result>(result);
         }
         catch (const fe::Terminated&)
@@ -348,33 +234,25 @@ auto feCore(App* app, CPU& cpu, Args... args)
     }
 }
 
-/* feCore with its arguments loaded into eax, edx, ebx and ecx first as the code hands them, and
- * its answer left in eax, as the call by address leaves them. */
+/* feCore, its answer in the code's eax (a reg32): nothing when the game stopped. */
 template <reg32 Address, auto Core, typename... Args>
 std::optional<reg32> menuCall(App* app, CPU& cpu, Args... args)
 {
-    guest::loadWatcomArguments(cpu, {reg32(args)...});
-    const std::optional<reg32> answer = feCore<Address, Core>(app, cpu, args...);
-    if (answer)
-        cpu.eax = *answer;
-    return answer;
+    return feCore<Address, Core>(app, cpu, args...);
 }
 
-/* The runtime's sprintf (0x4df690): the buffer, the format, its arguments, pushed last to first
- * and taken off after (cdecl).  By address: watcom's core puts its arguments, and so the va_list it
- * hands vsprintf, a word lower on the guest's stack than the code's call (the check sees it). */
+/* The runtime's sprintf (0x4df690): the buffer, the format, its arguments (cdecl). */
 std::optional<reg32> printTo(App* app, CPU& cpu, std::initializer_list<reg32> words)
 {
-    for (auto word = words.end(); word != words.begin();)
-        push(app, cpu, *--word);
-    const auto left = result(app, cpu, 0x4df690);
-    if (left)
-        cpu.esp += reg32(4 * words.size());
-    return left;
+    const reg32* const word = words.begin();
+    guest::Words rest({});
+    for (std::size_t i = 2; i < words.size(); ++i)
+        rest.word[rest.count++] = word[i];
+    return typed<0x4df690, watcom::clib::sprintf>(app, cpu, word[0], word[1], rest);
 }
 
 /* A Windows function (`Function`), handed `words`: the port's own, called as
- * C++ (native_windows.h); in the check through its import's slot `Slot`. */
+ * C++ (native_windows.h). */
 template <reg32 Slot, auto Function, typename... Words>
 std::optional<reg32> windows(App* app, CPU& cpu, Words... words)
 {
@@ -419,7 +297,7 @@ std::optional<reg32> seekFile(App* app, CPU& cpu, reg32 file, reg32 offset, reg3
 
 std::optional<reg32> tellFile(App* app, CPU& cpu, reg32 file)
 {
-    return call(app, cpu, kFtell, file);
+    return typed<0x4ee420, watcom::clib::ftell>(app, cpu, file);
 }
 
 std::optional<reg32> readFile(App* app, CPU& cpu, reg32 to, reg32 size, reg32 count, reg32 file)
@@ -429,12 +307,12 @@ std::optional<reg32> readFile(App* app, CPU& cpu, reg32 to, reg32 size, reg32 co
 
 std::optional<reg32> writeFile(App* app, CPU& cpu, reg32 from, reg32 size, reg32 count, reg32 file)
 {
-    return call(app, cpu, kFwrite, from, size, count, file);
+    return typed<0x4eebd0, watcom::clib::fwrite>(app, cpu, from, size, count, file);
 }
 
 std::optional<reg32> removeFile(App* app, CPU& cpu, reg32 path)
 {
-    return call(app, cpu, kRemove, path);
+    return typed<0x4ee2e0, watcom::clib::remove>(app, cpu, path);
 }
 
 /* The game's memory handed out (0x4e1620, named ""), and given back. */
@@ -448,7 +326,7 @@ std::optional<reg32> release(App* app, CPU& cpu, reg32 block)
     return guest::direct<0x4e1890, ea::purgeBlock>(app, cpu, block);
 }
 
-// This file's the check stands in for, and the carmodels' carRecord, by their place in the list.
+// The carmodels' carRecord and this file's walkers, by their place in the list.
 std::optional<reg32> carRecordAt(App* app, CPU& cpu, reg32 place)
 {
     return typed<0x439a50, recordAt>(app, cpu, place);
@@ -542,7 +420,7 @@ namespace
 std::optional<reg32> endPath(App* app, CPU& cpu, reg32 path)
 {
     const Frame frame(cpu, 4 + 4, 0);
-    return call(app, cpu, kAddSlash, path);
+    return typed<0x4529a0, port::menus::backslashEnded>(app, cpu, path);
 }
 
 /* 0x438350's: whether the folder can be written to -- its exist.nam made
@@ -550,7 +428,6 @@ std::optional<reg32> endPath(App* app, CPU& cpu, reg32 path)
 std::optional<reg32> writable(App* app, CPU& cpu, reg32 folder)
 {
     const Frame frame(cpu, 4 + 0x14, 0x12c);
-    const Kept kept(cpu, kSaveEcx | kSaveEdx | kSaveEsi | kSaveEdi | kSaveEbp);
     const reg32 path = frame - 0x12c;
     copyString(app, path, folder);
     if (!endPath(app, cpu, path))
@@ -570,7 +447,6 @@ std::optional<reg32> writable(App* app, CPU& cpu, reg32 folder)
 bool freeFolderName(App* app, CPU& cpu, reg32 under, reg32 name, reg32 format)
 {
     const Frame frame(cpu, 4 + 0x14, 0x134);
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEsi | kSaveEdi | kSaveEbp);
     const reg32 path = frame - 0x134;
     for (reg32 count = 0;; ++count)
     {
@@ -595,7 +471,6 @@ bool freeFolderName(App* app, CPU& cpu, reg32 under, reg32 name, reg32 format)
 bool freePlayerFolder(App* app, CPU& cpu, reg32 name)
 {
     const Frame frame(cpu, 4 + 0x10, 0x12c);
-    const Kept kept(cpu, kSaveEdx | kSaveEsi | kSaveEdi | kSaveEbp);
     const reg32 path = frame - 0x12c;
     copyString(app, path, kCarmodelPath);
     return endPath(app, cpu, path) && freeFolderName(app, cpu, path, name, kPlayerFolder);
@@ -659,7 +534,6 @@ bool closeSearch(App* app, CPU& cpu, const Walk& walk)
 std::optional<reg32> firstFound(App* app, CPU& cpu, const Walk& walk, reg32 folder)
 {
     const Frame frame(cpu, 4 + 0x18, 0x12c);
-    const Kept kept(cpu);
     const reg32 path = frame - 0x12c;
     if (!searchPath(app, cpu, path, folder))
         return std::nullopt;
@@ -696,7 +570,6 @@ std::optional<reg32> firstFound(App* app, CPU& cpu, const Walk& walk, reg32 fold
 std::optional<reg32> nextFound(App* app, CPU& cpu, const Walk& walk)
 {
     const Frame frame(cpu, 4 + 0x14, 0);
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEdx | kSaveEsi | kSaveEbp);
     if (at(app, walk.handle) == 0)
         return 0;
     for (;;)
@@ -724,9 +597,9 @@ std::optional<reg32> nextFound(App* app, CPU& cpu, const Walk& walk)
 std::optional<reg32> removeAll(App* app, CPU& cpu, reg32 folder)
 {
     const Frame frame(cpu, 4 + 0x18, 0x12c);
-    const Kept kept(cpu);
     const reg32 path = frame - 0x12c;
-    for (auto name = call(app, cpu, kFirstFile, folder);; name = result(app, cpu, kNextFile))
+    for (auto name = guest::direct<0x438870, firstFileIn>(app, cpu, folder);;
+         name = guest::direct<0x438970, nextFileFound>(app, cpu))
     {
         if (!name)
             return std::nullopt;
@@ -736,97 +609,107 @@ std::optional<reg32> removeAll(App* app, CPU& cpu, reg32 folder)
         if (!endPath(app, cpu, path))
             return std::nullopt;
         appendString(app, path, *name);
-        if (!call(app, cpu, kChmod, path, kWritableMode) || !removeFile(app, cpu, path))
+        if (!typed<0x4ee3c0, watcom::clib::chmod>(app, cpu, path, kWritableMode) || !removeFile(app, cpu, path))
             return std::nullopt;
     }
-    if (!call(app, cpu, kChmod, folder, kWritableMode))
+    if (!typed<0x4ee3c0, watcom::clib::chmod>(app, cpu, folder, kWritableMode))
         return std::nullopt;
-    return call(app, cpu, kRmdir, folder);
+    return typed<0x4ee400, watcom::clib::rmdir>(app, cpu, folder);
 }
 
 }  // namespace
 
 /* 0x438340: endPath for the path eax. */
-void endWithSlash(App* app, CPU& cpu)
+x86::reg32 endWithSlash(App* app, CPU& cpu, x86::Args& args)
 {
     cpu.esp += 4;
-    endPath(app, cpu, cpu.eax);
+    endPath(app, cpu, args.eax);
+    return args.eax;
 }
 
 /* 0x438350: writable for the folder eax. */
-void folderWritable(App* app, CPU& cpu)
+x86::reg32 folderWritable(App* app, CPU& cpu, x86::Args& args)
 {
     cpu.esp += 4;
-    if (const auto answer = writable(app, cpu, cpu.eax))
-        cpu.eax = *answer;
+    if (const auto answer = writable(app, cpu, args.eax))
+        args.eax = *answer;
+    return args.eax;
 }
 
 /* 0x4383f0: the first "%04X" name, into edx, of a folder not there under the
  * path eax (a new car's folder, copyCarAsNew's); eax 0. */
-void firstFreeHexFolder(App* app, CPU& cpu)
+x86::reg32 firstFreeHexFolder(App* app, CPU& cpu, x86::Args& args)
 {
     cpu.esp += 4;
-    if (freeFolderName(app, cpu, cpu.eax, cpu.edx, kHexFolder))
-        cpu.eax = 0;
+    if (freeFolderName(app, cpu, args.eax, args.edx, kHexFolder))
+        args.eax = 0;
+    return args.eax;
 }
 
 /* 0x4384f0: the first "P%03d" name, into edx, of a folder not there under
  * the path eax; eax 0. */
-void firstFreePlayerFolder(App* app, CPU& cpu)
+x86::reg32 firstFreePlayerFolder(App* app, CPU& cpu, x86::Args& args)
 {
     cpu.esp += 4;
-    if (freeFolderName(app, cpu, cpu.eax, cpu.edx, kPlayerFolder))
-        cpu.eax = 0;
+    if (freeFolderName(app, cpu, args.eax, args.edx, kPlayerFolder))
+        args.eax = 0;
+    return args.eax;
 }
 
 /* 0x4385a0: freePlayerFolder into eax; eax 0.  No caller in the game. */
-void freePlayerCarFolder(App* app, CPU& cpu)
+x86::reg32 freePlayerCarFolder(App* app, CPU& cpu, x86::Args& args)
 {
     cpu.esp += 4;
-    if (freePlayerFolder(app, cpu, cpu.eax))
-        cpu.eax = 0;
+    if (freePlayerFolder(app, cpu, args.eax))
+        args.eax = 0;
+    return args.eax;
 }
 
 /* 0x4386b0: the first folder in the folder eax (the handle kept at
  * 0x554f78): its name (0x5f3aec), or 0. */
-void firstSubfolder(App* app, CPU& cpu)
+x86::reg32 firstSubfolder(App* app, CPU& cpu, x86::Args& args)
 {
     cpu.esp += 4;
-    if (const auto name = firstFound(app, cpu, kFolders, cpu.eax))
-        cpu.eax = *name;
+    if (const auto name = firstFound(app, cpu, kFolders, args.eax))
+        args.eax = *name;
+    return args.eax;
 }
 
 /* 0x4387e0: the next folder of firstSubfolder's search, or 0. */
-void nextSubfolder(App* app, CPU& cpu)
+x86::reg32 nextSubfolder(App* app, CPU& cpu, x86::Args& args)
 {
     cpu.esp += 4;
     if (const auto name = nextFound(app, cpu, kFolders))
-        cpu.eax = *name;
+        args.eax = *name;
+    return args.eax;
 }
 
 /* 0x438870: the first file (not a folder) in the folder eax (the handle kept
  * at 0x554f7c): its name (0x5f39ac), or 0. */
-void firstFile(App* app, CPU& cpu)
+x86::reg32 firstFile(App* app, CPU& cpu, x86::Args& args)
 {
     cpu.esp += 4;
-    if (const auto name = firstFound(app, cpu, kFiles, cpu.eax))
-        cpu.eax = *name;
+    if (const auto name = firstFound(app, cpu, kFiles, args.eax))
+        args.eax = *name;
+    return args.eax;
 }
 
 /* 0x438970: the next file of firstFile's search, or 0. */
-void nextFile(App* app, CPU& cpu)
+x86::reg32 nextFile(App* app, CPU& cpu, x86::Args& args)
 {
     cpu.esp += 4;
     if (const auto name = nextFound(app, cpu, kFiles))
-        cpu.eax = *name;
+        args.eax = *name;
+    return args.eax;
 }
 
 /* 0x4389d0: removeAll for the folder eax. */
-void removeFolder(App* app, CPU& cpu)
+x86::reg32 removeFolder(App* app, CPU& cpu, x86::Args& args)
 {
     cpu.esp += 4;
-    if (const auto answer = removeAll(app, cpu, cpu.eax))
-        cpu.eax = *answer;
+    if (const auto answer = removeAll(app, cpu, args.eax))
+        args.eax = *answer;
+    return args.eax;
 }
 
 namespace
@@ -859,7 +742,6 @@ reg32 nextCarAt(App* app, reg32 cursor)
 bool makeId(App* app, CPU& cpu, reg32 id, reg32 number)
 {
     const Frame frame(cpu, 4 + 0x10, 0);
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEsi | kSaveEbp);
     if (!fillBytes(app, cpu, id, 0, kIdBytes))
         return false;
     put(app, id, number);
@@ -943,7 +825,6 @@ reg32 unlink(App* app, reg32 record)
 std::optional<CarList> insertByName(App* app, CPU& cpu, CarList list, reg32 record)
 {
     const Frame frame(cpu, 0xc + 4 + 0x14, 8);
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEdx | kSaveEdi | kSaveEbp);
     put(app, record + kRecNext, 0);
     if (list.head == 0)
     {
@@ -1008,13 +889,12 @@ CarList chainOf(App* app, reg32 car, reg32 tail)
 
 /* The cars of the list that `taken` says taken out of it into a list of their
  * own, by name (insertByName): 0x438d60's (the police cars), 0x438dc0's (of
- * no class) and 0x438e30's (the ordinary).  `saved` and `keptSet` the
+ * no class) and 0x438e30's (the ordinary).  `saved` the bytes of
  * registers the code saves. */
 template <class Taken>
-std::optional<CarList> takeCars(App* app, CPU& cpu, reg32 saved, reg32 keptSet, Taken taken)
+std::optional<CarList> takeCars(App* app, CPU& cpu, reg32 saved, Taken taken)
 {
     const Frame frame(cpu, 4 + saved, 8);
-    const Kept kept(cpu, keptSet);
     CarList list;
     reg32 car = at(app, kCarList);
     while (car != 0)
@@ -1036,19 +916,19 @@ std::optional<CarList> takeCars(App* app, CPU& cpu, reg32 saved, reg32 keptSet, 
 
 std::optional<CarList> takePolice(App* app, CPU& cpu)
 {
-    return takeCars(app, cpu, 0x14, kSaveEbx | kSaveEcx | kSaveEdx | kSaveEdi | kSaveEbp,
+    return takeCars(app, cpu, 0x14,
                     [&](reg32 car) { return (byte(app, car + kRecFlags) & kPolice) != 0; });
 }
 
 std::optional<CarList> takeClassless(App* app, CPU& cpu)
 {
-    return takeCars(app, cpu, 0x10, kSaveEcx | kSaveEdx | kSaveEdi | kSaveEbp,
+    return takeCars(app, cpu, 0x10,
                     [&](reg32 car) { return at(app, car + kRecClass) == kNoClass; });
 }
 
 std::optional<CarList> takeOrdinary(App* app, CPU& cpu)
 {
-    return takeCars(app, cpu, 0x14, kSaveEbx | kSaveEcx | kSaveEdx | kSaveEdi | kSaveEbp, [&](reg32 car) {
+    return takeCars(app, cpu, 0x14, [&](reg32 car) {
         return at(app, car + kRecClass) != kNoClass && (byte(app, car + kRecFlags) & (kPolice | kAfterOthers)) == 0;
     });
 }
@@ -1057,7 +937,6 @@ std::optional<CarList> takeOrdinary(App* app, CPU& cpu)
 std::optional<reg32> clearCache(App* app, CPU& cpu)
 {
     const Frame frame(cpu, 4 + 0xc, 0);
-    const Kept kept(cpu, kSaveEbx | kSaveEdx | kSaveEbp);
     return fillBytes(app, cpu, kCache, 0, kCacheBytes);
 }
 
@@ -1068,7 +947,6 @@ std::optional<reg32> clearCache(App* app, CPU& cpu)
 std::optional<reg32> sortList(App* app, CPU& cpu)
 {
     const Frame frame(cpu, 4 + 0x18, 0x20);
-    const Kept kept(cpu);
     const auto cleared = clearCache(app, cpu);
     if (!cleared || at(app, kCarList) == 0)
         return cleared;
@@ -1111,7 +989,6 @@ std::optional<reg32> nameOf(App* app, CPU& cpu, reg32 car)
 std::optional<reg32> folderOf(App* app, CPU& cpu, reg32 car)
 {
     const Frame frame(cpu, 4 + 8, 0);
-    const Kept kept(cpu, kSaveEdx | kSaveEbp);
     const auto record = carRecordAt(app, cpu, car);
     if (!record)
         return std::nullopt;
@@ -1129,7 +1006,6 @@ std::optional<reg32> folderOf(App* app, CPU& cpu, reg32 car)
 std::optional<reg32> prefixOf(App* app, CPU& cpu, reg32 car)
 {
     const Frame frame(cpu, 4 + 8, 0);
-    const Kept kept(cpu, kSaveEdx | kSaveEbp);
     const auto record = carRecordAt(app, cpu, car);
     if (!record)
         return std::nullopt;
@@ -1260,7 +1136,6 @@ reg32 textAt(App* app, reg32 texts, reg32 index)
 std::optional<reg32> placeByName(App* app, CPU& cpu, reg32 name)
 {
     const Frame frame(cpu, 4 + 0x14, 4);
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEdx | kSaveEsi | kSaveEbp);
     reg32 place = 0;
     for (reg32 car = at(app, kCarList); car != 0; car = nextOf(app, car), ++place)
     {
@@ -1318,7 +1193,6 @@ reg32 lockedBonus(App* app, reg32 record)
 std::optional<reg32> checkDuplicates(App* app, CPU& cpu)
 {
     const Frame frame(cpu, 4 + 0x18, 8);
-    const Kept kept(cpu);
     const reg32 count = at(app, kCount);
     reg32 left = count;
     for (reg32 place = 0; s(place) < s(count); ++place)
@@ -1334,12 +1208,9 @@ std::optional<reg32> checkDuplicates(App* app, CPU& cpu)
                 return std::nullopt;
             if (alike(app, *id, *otherId, kIdBytes))
             {
-                // Error (0x401010) by address, its word pushed and taken off after (cdecl): ea's core
-                // hands vsprintf a va_list a word lower than the code's call (the check sees it).
-                push(app, cpu, kDuplicates);
-                if (!result(app, cpu, 0x401010))
+                guest::direct<0x401010, ea::error>(app, cpu, kDuplicates, guest::Words({}));
+                if (cpu.terminate)
                     return std::nullopt;
-                cpu.esp += 4;
             }
         }
     }
@@ -1349,245 +1220,266 @@ std::optional<reg32> checkDuplicates(App* app, CPU& cpu)
 }  // namespace
 
 /* 0x438a80: firstCarAt for the cursor eax. */
-void firstCar(App* app, CPU& cpu)
+x86::reg32 firstCar(App* app, CPU& cpu, x86::Args& args)
 {
-    cpu.eax = firstCarAt(app, cpu.eax);
+    args.eax = firstCarAt(app, args.eax);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x438aa0: nextCarAt for the cursor eax. */
-void nextCar(App* app, CPU& cpu)
+x86::reg32 nextCar(App* app, CPU& cpu, x86::Args& args)
 {
-    cpu.eax = nextCarAt(app, cpu.eax);
+    args.eax = nextCarAt(app, args.eax);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x438ad0: makeId of the number edx at eax. */
-void makeCarId(App* app, CPU& cpu)
+x86::reg32 makeCarId(App* app, CPU& cpu, x86::Args& args)
 {
     cpu.esp += 4;
-    makeId(app, cpu, cpu.eax, cpu.edx);
+    makeId(app, cpu, args.eax, args.edx);
+    return args.eax;
 }
 
 /* 0x438af0: firstListed. */
-void firstCarGlobal(App* app, CPU& cpu)
+x86::reg32 firstCarGlobal(App* app, CPU& cpu, x86::Args& args)
 {
-    cpu.eax = firstListed(app);
+    args.eax = firstListed(app);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x438b10: nextListed. */
-void nextCarGlobal(App* app, CPU& cpu)
+x86::reg32 nextCarGlobal(App* app, CPU& cpu, x86::Args& args)
 {
-    cpu.eax = nextListed(app);
+    args.eax = nextListed(app);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x438b90: appendRecord for the record eax; eax the walk's last 0. */
-void appendCar(App* app, CPU& cpu)
+x86::reg32 appendCar(App* app, CPU& cpu, x86::Args& args)
 {
-    appendRecord(app, cpu.eax);
-    cpu.eax = 0;
+    appendRecord(app, args.eax);
+    args.eax = 0;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x438bd0: the count of cars countCars kept. */
-void carCount(App* app, CPU& cpu)
+x86::reg32 carCount(App* app, CPU& cpu, x86::Args& args)
 {
-    cpu.eax = at(app, kCount);
+    args.eax = at(app, kCount);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x438be0: countList. */
-void countCars(App* app, CPU& cpu)
+x86::reg32 countCars(App* app, CPU& cpu, x86::Args& args)
 {
-    cpu.eax = countList(app);
+    args.eax = countList(app);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x438c10: unlink for the record eax. */
-void unlinkCar(App* app, CPU& cpu)
+x86::reg32 unlinkCar(App* app, CPU& cpu, x86::Args& args)
 {
-    cpu.eax = unlink(app, cpu.eax);
+    args.eax = unlink(app, args.eax);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x438c50: insertByName for the list of the stack's first two words (its
  * head, its tail) and the record of its third, the list to the pair at esi,
  * eax it; esi the code's frame's base, where its last movsd leaves it.
  * ret 0xc. */
-void insertCarByName(App* app, CPU& cpu)
+x86::reg32 insertCarByName(App* app, CPU& cpu, x86::Args& args)
 {
-    const reg32 entry = cpu.esp, pair = cpu.esi;
+    const reg32 entry = cpu.esp, pair = args.esi;
     const CarList list = listAt(app, entry + 4);
     const reg32 record = at(app, entry + 0xc);
     cpu.esp += 4 + 0xc;
     const auto inserted = insertByName(app, cpu, list, record);
     if (!inserted)
-        return;
+        return args.eax;
     // The code keeps the list in the words it was handed, and leaves it there.
     putList(app, entry + 4, *inserted);
     putList(app, pair, *inserted);
-    cpu.eax = pair;
-    cpu.esi = entry - 0x14;
+    args.eax = pair;
+    args.esi = entry - 0x14;
+    return args.eax;
 }
 
 /* 0x438cc0: joinLists of the stack's two pairs of head and tail, to the pair
  * at esi, eax it; esi the frame's base.  ret 0x10. */
-void joinCarLists(App* app, CPU& cpu)
+x86::reg32 joinCarLists(App* app, CPU& cpu, x86::Args& args)
 {
-    const reg32 entry = cpu.esp, pair = cpu.esi;
+    const reg32 entry = cpu.esp, pair = args.esi;
     const CarList first = listAt(app, entry + 4), second = listAt(app, entry + 0xc);
     const CarList joined = joinLists(app, first, second);
     // The code joins them in the words it was handed: the first's tail made the second's.
     if (first.head != 0 && second.head != 0)
         put(app, entry + 8, second.tail);
     putList(app, pair, joined);
-    cpu.eax = pair;
-    cpu.esi = entry - 0x10;
+    args.eax = pair;
+    args.esi = entry - 0x10;
     cpu.esp += 4 + 0x10;
+    return args.eax;
 }
 
 /* 0x438d20: chainOf the car eax to the pair at esi, eax it; esi the frame's
  * base.  An empty chain's tail is the frame's word the code never sets: what
  * the guest's stack holds there. */
-void carListOf(App* app, CPU& cpu)
+x86::reg32 carListOf(App* app, CPU& cpu, x86::Args& args)
 {
-    const reg32 entry = cpu.esp, pair = cpu.esi;
-    putList(app, pair, chainOf(app, cpu.eax, at(app, entry - 0x14)));
-    cpu.eax = pair;
-    cpu.esi = entry - 0x10;
+    const reg32 entry = cpu.esp, pair = args.esi;
+    putList(app, pair, chainOf(app, args.eax, at(app, entry - 0x14)));
+    args.eax = pair;
+    args.esi = entry - 0x10;
     cpu.esp += 4;
+    return args.eax;
 }
-
-namespace
-{
-
-/* The take-outs' adapters: the list to the pair at esi, eax it; esi the
- * frame's base (`saved` under the return address). */
-void tookCars(App* app, CPU& cpu, reg32 saved, std::optional<CarList> (*take)(App*, CPU&))
-{
-    const reg32 entry = cpu.esp, pair = cpu.esi;
-    cpu.esp += 4;
-    const auto list = take(app, cpu);
-    if (!list)
-        return;
-    putList(app, pair, *list);
-    cpu.eax = pair;
-    cpu.esi = entry - saved;
-}
-
-}  // namespace
 
 /* 0x438d60: takePolice. */
-void takePoliceCars(App* app, CPU& cpu)
+x86::reg32 takePoliceCars(App* app, CPU& cpu, x86::Args& args)
 {
-    tookCars(app, cpu, 0x14, takePolice);
+    const reg32 entry = cpu.esp, pair = args.esi;
+    cpu.esp += 4;
+    const auto list = takePolice(app, cpu);
+    if (!list)
+        return args.eax;
+    putList(app, pair, *list);
+    args.eax = pair;
+    args.esi = entry - 0x14;
+    return args.eax;
 }
 
 /* 0x438dc0: takeClassless. */
-void takeClasslessCars(App* app, CPU& cpu)
+x86::reg32 takeClasslessCars(App* app, CPU& cpu, x86::Args& args)
 {
-    tookCars(app, cpu, 0x10, takeClassless);
+    const reg32 entry = cpu.esp, pair = args.esi;
+    cpu.esp += 4;
+    const auto list = takeClassless(app, cpu);
+    if (!list)
+        return args.eax;
+    putList(app, pair, *list);
+    args.eax = pair;
+    args.esi = entry - 0x10;
+    return args.eax;
 }
 
 /* 0x438e30: takeOrdinary. */
-void takeOrdinaryCars(App* app, CPU& cpu)
+x86::reg32 takeOrdinaryCars(App* app, CPU& cpu, x86::Args& args)
 {
-    tookCars(app, cpu, 0x14, takeOrdinary);
+    const reg32 entry = cpu.esp, pair = args.esi;
+    cpu.esp += 4;
+    const auto list = takeOrdinary(app, cpu);
+    if (!list)
+        return args.eax;
+    putList(app, pair, *list);
+    args.eax = pair;
+    args.esi = entry - 0x14;
+    return args.eax;
 }
 
 /* 0x438eb0: sortList. */
-void sortCars(App* app, CPU& cpu)
+x86::reg32 sortCars(App* app, CPU& cpu, x86::Args& args)
 {
     cpu.esp += 4;
     if (const auto left = sortList(app, cpu))
-        cpu.eax = *left;
+        args.eax = *left;
+    return args.eax;
 }
 
 /* 0x439250: nameOf the car eax. */
-void carName(App* app, CPU& cpu)
+x86::reg32 carName(App* app, CPU& cpu, x86::Args& args)
 {
     cpu.esp += 4;
-    if (const auto name = nameOf(app, cpu, cpu.eax))
-        cpu.eax = *name;
+    if (const auto name = nameOf(app, cpu, args.eax))
+        args.eax = *name;
+    return args.eax;
 }
 
 /* 0x4392b0: folderOf the car eax. */
-void carFolder(App* app, CPU& cpu)
+x86::reg32 carFolder(App* app, CPU& cpu, x86::Args& args)
 {
     cpu.esp += 4;
-    if (const auto folder = folderOf(app, cpu, cpu.eax))
-        cpu.eax = *folder;
+    if (const auto folder = folderOf(app, cpu, args.eax))
+        args.eax = *folder;
+    return args.eax;
 }
 
 /* 0x439300: prefixOf the car eax. */
-void carFilePrefix(App* app, CPU& cpu)
+x86::reg32 carFilePrefix(App* app, CPU& cpu, x86::Args& args)
 {
     cpu.esp += 4;
-    if (const auto prefix = prefixOf(app, cpu, cpu.eax))
-        cpu.eax = *prefix;
+    if (const auto prefix = prefixOf(app, cpu, args.eax))
+        args.eax = *prefix;
+    return args.eax;
 }
 
 /* 0x439520: idOf the car eax. */
-void carId(App* app, CPU& cpu)
+x86::reg32 carId(App* app, CPU& cpu, x86::Args& args)
 {
     cpu.esp += 4;
-    if (const auto id = idOf(app, cpu, cpu.eax))
-        cpu.eax = *id;
+    if (const auto id = idOf(app, cpu, args.eax))
+        args.eax = *id;
+    return args.eax;
 }
-
-namespace
-{
-
-/* The flag tests' adapters: flagsOf the car eax by `mask`. */
-void carFlagTest(App* app, CPU& cpu, reg32 mask)
-{
-    cpu.esp += 4;
-    if (const auto flags = flagsOf(app, cpu, cpu.eax, mask))
-        cpu.eax = *flags;
-}
-
-}  // namespace
 
 /* 0x439570: the car eax's flag 0x40 (the fedata's word at +0x14). */
-void carFlag40(App* app, CPU& cpu)
+x86::reg32 carFlag40(App* app, CPU& cpu, x86::Args& args)
 {
-    carFlagTest(app, cpu, kFlag40);
+    cpu.esp += 4;
+    if (const auto flags = flagsOf(app, cpu, args.eax, kFlag40))
+        args.eax = *flags;
+    return args.eax;
 }
 
 /* 0x4395c0: the car eax's flag 4 (the fedata's word at +0xe). */
-void carFlag4(App* app, CPU& cpu)
+x86::reg32 carFlag4(App* app, CPU& cpu, x86::Args& args)
 {
-    carFlagTest(app, cpu, kFlag4);
+    cpu.esp += 4;
+    if (const auto flags = flagsOf(app, cpu, args.eax, kFlag4))
+        args.eax = *flags;
+    return args.eax;
 }
 
 /* 0x439610: hasNumericId for the car eax. */
-void carHasNumericId(App* app, CPU& cpu)
+x86::reg32 carHasNumericId(App* app, CPU& cpu, x86::Args& args)
 {
     cpu.esp += 4;
-    if (const auto numeric = hasNumericId(app, cpu, cpu.eax))
-        cpu.eax = *numeric;
+    if (const auto numeric = hasNumericId(app, cpu, args.eax))
+        args.eax = *numeric;
+    return args.eax;
 }
 
 /* 0x439620: isNumeric for the id at eax, 1 or 0. */
-void idIsNumeric(App* app, CPU& cpu)
+x86::reg32 idIsNumeric(App* app, CPU& cpu, x86::Args& args)
 {
-    cpu.eax = isNumeric(app, cpu.eax) ? 1 : 0;
+    args.eax = isNumeric(app, args.eax) ? 1 : 0;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x439660: numberOf the id at eax. */
-void numericId(App* app, CPU& cpu)
+x86::reg32 numericId(App* app, CPU& cpu, x86::Args& args)
 {
-    cpu.eax = numberOf(app, cpu.eax);
+    args.eax = numberOf(app, args.eax);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x439680: whether the car eax is a bonus car (flag 1). */
-void carIsBonus(App* app, CPU& cpu)
+x86::reg32 carIsBonus(App* app, CPU& cpu, x86::Args& args)
 {
-    carFlagTest(app, cpu, kBonus);
+    cpu.esp += 4;
+    if (const auto flags = flagsOf(app, cpu, args.eax, kBonus))
+        args.eax = *flags;
+    return args.eax;
 }
 
 /* 0x4396b0: whether the car eax is a police car (flag 0x10). */
@@ -1596,9 +1488,12 @@ std::optional<reg32> policeFlag(App* app, CPU& cpu, reg32 car)
     return flagsOf(app, cpu, car, kPolice);
 }
 
-void carIsPolice(App* app, CPU& cpu)
+x86::reg32 carIsPolice(App* app, CPU& cpu, x86::Args& args)
 {
-    carFlagTest(app, cpu, kPolice);
+    cpu.esp += 4;
+    if (const auto flags = flagsOf(app, cpu, args.eax, kPolice))
+        args.eax = *flags;
+    return args.eax;
 }
 
 /* 0x4396e0: whether the car eax is a Ferrari or a Mercedes (flag 0x20, the
@@ -1608,82 +1503,94 @@ std::optional<reg32> makerFlag(App* app, CPU& cpu, reg32 car)
     return flagsOf(app, cpu, car, kMaker);
 }
 
-void carIsFerrariOrMercedes(App* app, CPU& cpu)
+x86::reg32 carIsFerrariOrMercedes(App* app, CPU& cpu, x86::Args& args)
 {
-    carFlagTest(app, cpu, kMaker);
+    cpu.esp += 4;
+    if (const auto flags = flagsOf(app, cpu, args.eax, kMaker))
+        args.eax = *flags;
+    return args.eax;
 }
 
 /* 0x439730: classOf the car eax. */
-void carClass(App* app, CPU& cpu)
+x86::reg32 carClass(App* app, CPU& cpu, x86::Args& args)
 {
     cpu.esp += 4;
-    if (const auto cls = classOf(app, cpu, cpu.eax))
-        cpu.eax = *cls;
+    if (const auto cls = classOf(app, cpu, args.eax))
+        args.eax = *cls;
+    return args.eax;
 }
 
 /* 0x439990: placeById for the id at eax. */
-void findCarById(App* app, CPU& cpu)
+x86::reg32 findCarById(App* app, CPU& cpu, x86::Args& args)
 {
-    cpu.eax = placeById(app, cpu.eax);
+    args.eax = placeById(app, args.eax);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4399f0: clearCache. */
-void clearCarCache(App* app, CPU& cpu)
+x86::reg32 clearCarCache(App* app, CPU& cpu, x86::Args& args)
 {
     cpu.esp += 4;
     if (const auto left = clearCache(app, cpu))
-        cpu.eax = *left;
+        args.eax = *left;
+    return args.eax;
 }
 
 /* 0x439a50: recordAt the place eax. */
-void carRecord(App* app, CPU& cpu)
+x86::reg32 carRecord(App* app, CPU& cpu, x86::Args& args)
 {
-    cpu.eax = recordAt(app, cpu.eax);
+    args.eax = recordAt(app, args.eax);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x439af0: textAt the texts eax, the text edx; edx the offsets' address
  * where there is the text, as the code leaves it. */
-void fecText(App* app, CPU& cpu)
+x86::reg32 fecText(App* app, CPU& cpu, x86::Args& args)
 {
-    const reg32 texts = cpu.eax, index = cpu.edx;
-    cpu.eax = textAt(app, texts, index);
+    const reg32 texts = args.eax, index = args.edx;
+    args.eax = textAt(app, texts, index);
     if (hasText(app, texts, index))
-        cpu.edx = at(app, texts + 8);
+        args.edx = at(app, texts + 8);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x439b20: placeByName for the name at eax. */
-void findCarByName(App* app, CPU& cpu)
+x86::reg32 findCarByName(App* app, CPU& cpu, x86::Args& args)
 {
     cpu.esp += 4;
-    if (const auto place = placeByName(app, cpu, cpu.eax))
-        cpu.eax = *place;
+    if (const auto place = placeByName(app, cpu, args.eax))
+        args.eax = *place;
+    return args.eax;
 }
 
 /* 0x439bd0: attachTexts of the fedata edx to the record eax: 1, edx the
  * offsets' address. */
-void attachFecTexts(App* app, CPU& cpu)
+x86::reg32 attachFecTexts(App* app, CPU& cpu, x86::Args& args)
 {
-    cpu.edx = attachTexts(app, cpu.eax, cpu.edx);
-    cpu.eax = 1;
+    args.edx = attachTexts(app, args.eax, args.edx);
+    args.eax = 1;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x439c10: lockedBonus for the record eax. */
-void bonusCarLocked(App* app, CPU& cpu)
+x86::reg32 bonusCarLocked(App* app, CPU& cpu, x86::Args& args)
 {
-    cpu.eax = lockedBonus(app, cpu.eax);
+    args.eax = lockedBonus(app, args.eax);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x439d20: checkDuplicates. */
-void checkDuplicateCars(App* app, CPU& cpu)
+x86::reg32 checkDuplicateCars(App* app, CPU& cpu, x86::Args& args)
 {
     cpu.esp += 4;
     if (const auto left = checkDuplicates(app, cpu))
-        cpu.eax = *left;
+        args.eax = *left;
+    return args.eax;
 }
 
 namespace
@@ -1696,7 +1603,6 @@ namespace
 std::optional<reg32> selectable(App* app, CPU& cpu, reg32 car)
 {
     const Frame frame(cpu, 4 + 8, 0);
-    const Kept kept(cpu, kSaveEdx | kSaveEbp);
     if (gameSettings(app).raceType == 3)
     {
         const auto maker = flagsOf(app, cpu, car, kMaker);
@@ -1748,11 +1654,9 @@ std::optional<reg32> selectable(App* app, CPU& cpu, reg32 car)
 std::optional<reg32> buildClassLists(App* app, CPU& cpu)
 {
     const Frame frame(cpu, 4 + 0x14, 8);
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEdx | kSaveEdi | kSaveEbp);
     const reg32 listed = at(app, kCount) - at(app, kNotListed);
     for (const auto& clear : {std::pair<reg32, reg32>{kClassLists, 0x320}, {kClassCounts, 0x10}})
     {
-        guest::loadWatcomArguments(cpu, {clear.first, clear.second});  // as the code hands them
         guest::direct<0x4e070c, ea::clearBytes>(app, cpu, clear.first, clear.second);
         if (cpu.terminate)
             return std::nullopt;
@@ -1782,10 +1686,8 @@ std::optional<reg32> buildClassLists(App* app, CPU& cpu)
         put(app, kClassCounts, all);
     }
     for (reg32 list = 0; list < 4; ++list)
-        // By address: watcom's core sorts in a frame a word lower than the code's call puts qsort's,
-        // and the compare (0x43a4d0) is handed addresses in it (the check sees them).
-        if (!call(app, cpu, 0x4ee4f8, kClassLists + kClassListBytes * list, at(app, kClassCounts + 4 * list), 4,
-                  kClassCompare))
+        if (!typed<0x4ee4f8, watcom::clib::qsort>(app, cpu, kClassLists + kClassListBytes * list,
+                                                  at(app, kClassCounts + 4 * list), 4u, kClassCompare))
             return std::nullopt;
     return at(app, kClassCounts);
 }
@@ -1796,7 +1698,6 @@ std::optional<reg32> buildClassLists(App* app, CPU& cpu)
 std::optional<reg32> loadSpecs(App* app, CPU& cpu, reg32 car)
 {
     const Frame frame(cpu, 4 + 0x18, 0x134);
-    const Kept kept(cpu);
     const reg32 path = frame - 0x134, word = frame - 8;
     const auto record = carRecordAt(app, cpu, car);
     if (!record)
@@ -1826,7 +1727,6 @@ std::optional<reg32> loadSpecs(App* app, CPU& cpu, reg32 car)
 std::optional<reg32> writeFec(App* app, CPU& cpu, reg32 path, reg32 record)
 {
     const Frame frame(cpu, 4 + 0x14, 4);
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEsi | kSaveEdi | kSaveEbp);
     const reg32 version = frame - 4;
     put(app, version, 1);
     const auto file = openFile(app, cpu, path, kWriteBinary);
@@ -1851,7 +1751,6 @@ std::optional<reg32> writeFec(App* app, CPU& cpu, reg32 path, reg32 record)
 std::optional<reg32> readFecBody(App* app, CPU& cpu, reg32 file, reg32 record)
 {
     const Frame frame(cpu, 4 + 0x14, 0x18);
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEsi | kSaveEdi | kSaveEbp);
     const reg32 version = frame - 8, first = frame - 0x18, second = frame - 0x10;
     if (!seekFile(app, cpu, file, 0, kSeekStart))
         return std::nullopt;
@@ -1866,7 +1765,6 @@ std::optional<reg32> readFecBody(App* app, CPU& cpu, reg32 file, reg32 record)
     put(app, record + kRecFecFirst + 4, at(app, first + 4));
     put(app, record + kRecFecSecond, at(app, second));
     put(app, record + kRecFecSecond + 4, at(app, second + 4));
-    cpu.edx = record;  // as the code leaves it: readCarFec does not keep edx either
     return 0;
 }
 
@@ -1875,7 +1773,6 @@ std::optional<reg32> readFecBody(App* app, CPU& cpu, reg32 file, reg32 record)
 std::optional<reg32> readFec(App* app, CPU& cpu, reg32 file, reg32 record)
 {
     const Frame frame(cpu, 4 + 0x14, 4);
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEsi | kSaveEdi | kSaveEbp);
     const reg32 version = frame - 4;
     if (!seekFile(app, cpu, file, 0, kSeekStart))
         return std::nullopt;
@@ -1898,7 +1795,6 @@ std::optional<reg32> readFec(App* app, CPU& cpu, reg32 file, reg32 record)
 std::optional<reg32> fecPath(App* app, CPU& cpu, reg32 car, reg32 path)
 {
     const Frame frame(cpu, 4 + 0x14, 0);
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEsi | kSaveEdi | kSaveEbp);
     copyString(app, path, kCarmodelPath);
     if (!endPath(app, cpu, path))
         return std::nullopt;
@@ -1925,7 +1821,6 @@ std::optional<reg32> fecPath(App* app, CPU& cpu, reg32 car, reg32 path)
 std::optional<reg32> loadFec(App* app, CPU& cpu, reg32 car)
 {
     const Frame frame(cpu, 4 + 0x18, 0x130);
-    const Kept kept(cpu);
     const reg32 path = frame - 0x130, version = frame - 4;
     const auto record = carRecordAt(app, cpu, car);
     if (!record || !fecPath(app, cpu, car, path))
@@ -1994,7 +1889,6 @@ constexpr FlagWord kFlagWords[] = {{6, kBonus}, {8, 2}, {0xe, kFlag4}, {0x10, kP
 std::optional<reg32> loadCars(App* app, CPU& cpu)
 {
     const Frame frame(cpu, 4 + 0x18, 0x278);
-    const Kept kept(cpu);
     // The frame's words its callees are handed: the file open, the data's offset and length in it; the paths.
     const reg32 file = frame - 0x18, offset = frame - 0x1c, length = frame - 0x20;
     const reg32 path = frame - 0x14c, vivPath = frame - 0x278;
@@ -2002,7 +1896,8 @@ std::optional<reg32> loadCars(App* app, CPU& cpu)
         return std::nullopt;
     // The cars counted: the next one's place.
     reg32 count = countList(app);
-    for (auto folder = call(app, cpu, kFirstSubfolder, kCarmodelPath);; folder = result(app, cpu, kNextSubfolder))
+    for (auto folder = guest::direct<0x4386b0, firstSubfolderIn>(app, cpu, kCarmodelPath);;
+         folder = guest::direct<0x4387e0, nextSubfolderFound>(app, cpu))
     {
         if (!folder)
             return std::nullopt;
@@ -2225,7 +2120,6 @@ bool newVivPath(App* app, CPU& cpu, reg32 path, reg32 folder)
 std::optional<reg32> copyAsNew(App* app, CPU& cpu, reg32 name, reg32 car)
 {
     const Frame frame(cpu, 4 + 0x14, 0x604);
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEsi | kSaveEdi | kSaveEbp);
     // The frame's: the .viv's length and the id (handed to callees), the paths.
     const reg32 vivBytes = frame - 0x18, guid = frame - 0x28;
     const reg32 vivPath = frame - 0x154, carVivPath = frame - 0x280, folder = frame - 0x3ac;
@@ -2239,10 +2133,8 @@ std::optional<reg32> copyAsNew(App* app, CPU& cpu, reg32 name, reg32 car)
     if (!endPath(app, cpu, models))
         return std::nullopt;
     copyString(app, folder, models);
-    // The new folder's name after the carmodel folder's path; edx as the code hands it, left where mkdir
-    // fails.
-    cpu.edx = folder + stringLength(app, folder);
-    if (!freeFolderName(app, cpu, models, cpu.edx, kHexFolder))
+    // The new folder's name after the carmodel folder's path.
+    if (!freeFolderName(app, cpu, models, folder + stringLength(app, folder), kHexFolder))
         return std::nullopt;
     const auto made = typed<0x4eb1d0, watcom::clib::mkdir>(app, cpu, folder);
     if (!made)
@@ -2296,7 +2188,6 @@ std::optional<reg32> copyAsNew(App* app, CPU& cpu, reg32 name, reg32 car)
             return std::nullopt;
         put(app, *entry + 0x24, *block);
         put(app, *entry + 0x20, at(app, *entry + 0x20) + stringLength(app, name) + 1);
-        cpu.edx = *entry;  // as the code has it at the call, left where it fails
         const auto created = windows<kCoCreateGuid, &host::createGuid>(app, cpu, guid);
         if (!created)
             return std::nullopt;
@@ -2312,17 +2203,13 @@ std::optional<reg32> copyAsNew(App* app, CPU& cpu, reg32 name, reg32 car)
     // The .viv written over the copy, the list loaded again.
     if (!newVivPath(app, cpu, vivPath, folder))
         return std::nullopt;
-    cpu.edx = vivBytes;  // vivSave's second argument, set before remove's call as the code does
     if (!removeFile(app, cpu, vivPath))
         return std::nullopt;
     const auto saved = guest::direct<0x419460, packedCache>(app, cpu, viv, vivBytes);
     if (!saved)
         return std::nullopt;
-    cpu.edx = *saved;
-    // By address: the code leaves edx as the file's writing (0x4eebb0) leaves it, which its typed
-    // function (native_load_saves.h) does not give back.
     if (*saved != 0 && at(app, vivBytes) != 0
-        && !call(app, cpu, kWriteWhole, vivPath, *saved, at(app, vivBytes), *saved))
+        && !guest::direct<0x4eebb0, saveBlockQuietly>(app, cpu, vivPath, *saved, at(app, vivBytes)))
         return std::nullopt;
     if (!release(app, cpu, *saved))
         return std::nullopt;
@@ -2334,7 +2221,6 @@ std::optional<reg32> copyAsNew(App* app, CPU& cpu, reg32 name, reg32 car)
     const auto place = placeByName(app, cpu, name);
     if (!place)
         return std::nullopt;
-    cpu.edx = *place;
     return carRecordAt(app, cpu, *place);
 }
 
@@ -2353,7 +2239,6 @@ reg32 swapInPlace(App* app, reg32 word)
 std::optional<reg32> writeSwapped(App* app, CPU& cpu, reg32 file, reg32 value)
 {
     const Frame frame(cpu, 4 + 0xc, 4);
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEbp);
     const reg32 word = frame - 4;
     put(app, word, value);
     swapInPlace(app, word);
@@ -2369,7 +2254,6 @@ std::optional<reg32> writeSwapped(App* app, CPU& cpu, reg32 file, reg32 value)
 std::optional<reg32> appendCarp(App* app, CPU& cpu, reg32 vivPath)
 {
     const Frame frame(cpu, 4 + 0x18, 0x30c);
-    const Kept kept(cpu);
     const reg32 carpPath = frame - 0x10c, buffer = frame - 0x30c;
     copyString(app, carpPath, vivPath);
     const auto slash = lastOf(app, cpu, carpPath, kBackslash);
@@ -2415,129 +2299,141 @@ std::optional<reg32> nameLastCar(App* app, CPU& cpu, reg32 format)
     if (car == 0)
         return 0;
     const Frame frame(cpu, 4 + 8, 0);
-    // The registers the code saves (edx, then ebp), on the guest's stack: sprintf reads on past its
-    // arguments.
-    put(app, frame.base() + 4, cpu.edx);
-    put(app, frame.base(), cpu.ebp);
+    // The frame of the two registers the code saves (edx, then ebp): their values are not written.
     return printTo(app, cpu, {car + kRecName, format, 0x100});
 }
 
 /* 0x439d90: loadCars. */
-void loadCarList(App* app, CPU& cpu)
+x86::reg32 loadCarList(App* app, CPU& cpu, x86::Args& args)
 {
     cpu.esp += 4;
     if (const auto answer = loadCars(app, cpu))
-        cpu.eax = *answer;
+        args.eax = *answer;
+    return args.eax;
 }
 
 /* 0x43a4f0: selectable for the car eax. */
-void carSelectable(App* app, CPU& cpu)
+x86::reg32 carSelectable(App* app, CPU& cpu, x86::Args& args)
 {
     cpu.esp += 4;
-    if (const auto chosen = selectable(app, cpu, cpu.eax))
-        cpu.eax = *chosen;
+    if (const auto chosen = selectable(app, cpu, args.eax))
+        args.eax = *chosen;
+    return args.eax;
 }
 
 /* 0x43a580: buildClassLists. */
-void buildCarClassLists(App* app, CPU& cpu)
+x86::reg32 buildCarClassLists(App* app, CPU& cpu, x86::Args& args)
 {
     cpu.esp += 4;
     if (const auto count = buildClassLists(app, cpu))
-        cpu.eax = *count;
+        args.eax = *count;
+    return args.eax;
 }
 
 /* 0x43ae60: copyAsNew of the car edx named eax. */
-void copyCarAsNew(App* app, CPU& cpu)
+x86::reg32 copyCarAsNew(App* app, CPU& cpu, x86::Args& args)
 {
     cpu.esp += 4;
-    if (const auto record = copyAsNew(app, cpu, cpu.eax, cpu.edx))
-        cpu.eax = *record;
+    if (const auto record = copyAsNew(app, cpu, args.eax, args.edx))
+        args.eax = *record;
+    return args.eax;
 }
 
 /* 0x43b3f0: loadSpecs for the car eax. */
-void loadCarSpecs(App* app, CPU& cpu)
+x86::reg32 loadCarSpecs(App* app, CPU& cpu, x86::Args& args)
 {
     cpu.esp += 4;
-    if (const auto answer = loadSpecs(app, cpu, cpu.eax))
-        cpu.eax = *answer;
+    if (const auto answer = loadSpecs(app, cpu, args.eax))
+        args.eax = *answer;
+    return args.eax;
 }
 
 /* 0x43b4f0: writeFec of the record edx to the file eax; edx the answer too,
  * as the code leaves it. */
-void writeCarFec(App* app, CPU& cpu)
+x86::reg32 writeCarFec(App* app, CPU& cpu, x86::Args& args)
 {
     cpu.esp += 4;
-    if (const auto answer = writeFec(app, cpu, cpu.eax, cpu.edx))
-        cpu.eax = cpu.edx = *answer;
+    if (const auto answer = writeFec(app, cpu, args.eax, args.edx))
+        args.eax = args.edx = *answer;
+    return args.eax;
 }
 
 /* 0x43b570: readFecBody of the file eax into the record edx. */
-void readCarFecBody(App* app, CPU& cpu)
+x86::reg32 readCarFecBody(App* app, CPU& cpu, x86::Args& args)
 {
     cpu.esp += 4;
-    if (const auto answer = readFecBody(app, cpu, cpu.eax, cpu.edx))
-        cpu.eax = *answer;
+    if (const auto answer = readFecBody(app, cpu, args.eax, args.edx))
+        args.eax = *answer;
+    return args.eax;
 }
 
 /* 0x43b630: readFec of the file eax into the record edx. */
-void readCarFec(App* app, CPU& cpu)
+x86::reg32 readCarFec(App* app, CPU& cpu, x86::Args& args)
 {
     cpu.esp += 4;
-    if (const auto answer = readFec(app, cpu, cpu.eax, cpu.edx))
-        cpu.eax = *answer;
+    if (const auto answer = readFec(app, cpu, args.eax, args.edx))
+        args.eax = *answer;
+    return args.eax;
 }
 
 /* 0x43b680: fecPath of the car eax into the buffer edx. */
-void carFecPath(App* app, CPU& cpu)
+x86::reg32 carFecPath(App* app, CPU& cpu, x86::Args& args)
 {
     cpu.esp += 4;
-    if (const auto left = fecPath(app, cpu, cpu.eax, cpu.edx))
-        cpu.eax = *left;
+    if (const auto left = fecPath(app, cpu, args.eax, args.edx))
+        args.eax = *left;
+    return args.eax;
 }
 
 /* 0x43b740: loadFec for the car eax. */
-void loadCarFec(App* app, CPU& cpu)
+x86::reg32 loadCarFec(App* app, CPU& cpu, x86::Args& args)
 {
     cpu.esp += 4;
-    if (const auto answer = loadFec(app, cpu, cpu.eax))
-        cpu.eax = *answer;
+    if (const auto answer = loadFec(app, cpu, args.eax))
+        args.eax = *answer;
+    return args.eax;
 }
 
 /* 0x43ba20: the placeholder car's car.viv (".\fedata\plac\car.viv"). */
-void placeCarVivPath(App*, CPU& cpu)
+x86::reg32 placeCarVivPath(App*, CPU& cpu, x86::Args& args)
 {
-    cpu.eax = kPlaceViv;
+    args.eax = kPlaceViv;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x43ba30: swapInPlace for the dword at eax. */
-void swapBytes(App* app, CPU& cpu)
+x86::reg32 swapBytes(App* app, CPU& cpu, x86::Args& args)
 {
-    cpu.eax = swapInPlace(app, cpu.eax);
+    args.eax = swapInPlace(app, args.eax);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x43ba70: writeSwapped of edx to the file eax. */
-void writeBigEndian(App* app, CPU& cpu)
+x86::reg32 writeBigEndian(App* app, CPU& cpu, x86::Args& args)
 {
     cpu.esp += 4;
-    if (const auto answer = writeSwapped(app, cpu, cpu.eax, cpu.edx))
-        cpu.eax = *answer;
+    if (const auto answer = writeSwapped(app, cpu, args.eax, args.edx))
+        args.eax = *answer;
+    return args.eax;
 }
 
 /* 0x43baa0: appendCarp to the .viv at eax. */
-void appendCarpToViv(App* app, CPU& cpu)
+x86::reg32 appendCarpToViv(App* app, CPU& cpu, x86::Args& args)
 {
     cpu.esp += 4;
-    if (const auto answer = appendCarp(app, cpu, cpu.eax))
-        cpu.eax = *answer;
+    if (const auto answer = appendCarp(app, cpu, args.eax))
+        args.eax = *answer;
+    return args.eax;
 }
 
 /* 0x43bbf0: the record of the last car loaded (0x554f74). */
-void lastCarLoaded(App* app, CPU& cpu)
+x86::reg32 lastCarLoaded(App* app, CPU& cpu, x86::Args& args)
 {
-    cpu.eax = at(app, kLastCar);
+    args.eax = at(app, kLastCar);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x43bc00: the 16 bytes at `id` made the last car loaded's id; the count
@@ -2551,18 +2447,20 @@ reg32 setLastId(App* app, reg32 id)
 }
 
 /* setLastId of eax. */
-void setLastCarId(App* app, CPU& cpu)
+x86::reg32 setLastCarId(App* app, CPU& cpu, x86::Args& args)
 {
-    cpu.eax = setLastId(app, cpu.eax);
+    args.eax = setLastId(app, args.eax);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x43bc40: nameLastCar with the format eax. */
-void setLastCarName(App* app, CPU& cpu)
+x86::reg32 setLastCarName(App* app, CPU& cpu, x86::Args& args)
 {
     cpu.esp += 4;
-    if (const auto answer = nameLastCar(app, cpu, cpu.eax))
-        cpu.eax = *answer;
+    if (const auto answer = nameLastCar(app, cpu, args.eax))
+        args.eax = *answer;
+    return args.eax;
 }
 
 /* 0x43bc70: `flags` made the last car loaded's flags; the car. */
@@ -2575,10 +2473,11 @@ reg32 setLastFlags(App* app, reg32 flags)
 }
 
 /* setLastFlags of eax. */
-void setLastCarFlags(App* app, CPU& cpu)
+x86::reg32 setLastCarFlags(App* app, CPU& cpu, x86::Args& args)
 {
-    cpu.eax = setLastFlags(app, cpu.eax);
+    args.eax = setLastFlags(app, args.eax);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x43bc90: the last car loaded given flag 8 (put after the others by
@@ -2591,10 +2490,112 @@ reg32 markLastAfterOthers(App* app)
     return car;
 }
 
-void markLastCarFlag8(App* app, CPU& cpu)
+x86::reg32 markLastCarFlag8(App* app, CPU& cpu, x86::Args& args)
 {
-    cpu.eax = markLastAfterOthers(app);
+    args.eax = markLastAfterOthers(app);
     cpu.esp += 4;
+    return args.eax;
+}
+
+/* The typed cores of the thunks above, for callers that call them as C++ (native_load_cardb.h). */
+bool slashAdded(App* app, CPU& cpu, reg32 path)
+{
+    return endPath(app, cpu, path).has_value();
+}
+
+std::optional<reg32> folderRemoved(App* app, CPU& cpu, reg32 folder)
+{
+    return removeAll(app, cpu, folder);
+}
+
+std::optional<reg32> firstSubfolderIn(App* app, CPU& cpu, reg32 folder)
+{
+    return firstFound(app, cpu, kFolders, folder);
+}
+
+std::optional<reg32> nextSubfolderFound(App* app, CPU& cpu)
+{
+    return nextFound(app, cpu, kFolders);
+}
+
+std::optional<reg32> firstFileIn(App* app, CPU& cpu, reg32 folder)
+{
+    return firstFound(app, cpu, kFiles, folder);
+}
+
+std::optional<reg32> nextFileFound(App* app, CPU& cpu)
+{
+    return nextFound(app, cpu, kFiles);
+}
+
+reg32 firstListedCar(App* app)
+{
+    return firstListed(app);
+}
+
+reg32 nextListedCar(App* app)
+{
+    return nextListed(app);
+}
+
+reg32 carsListed(App* app)
+{
+    return at(app, kCount);
+}
+
+std::optional<reg32> classOfCar(App* app, CPU& cpu, reg32 car)
+{
+    return classOf(app, cpu, car);
+}
+
+std::optional<reg32> numericIdOf(App* app, CPU& cpu, reg32 car)
+{
+    return hasNumericId(app, cpu, car);
+}
+
+std::optional<reg32> flag40Of(App* app, CPU& cpu, reg32 car)
+{
+    return flagsOf(app, cpu, car, kFlag40);
+}
+
+std::optional<reg32> flag4Of(App* app, CPU& cpu, reg32 car)
+{
+    return flagsOf(app, cpu, car, kFlag4);
+}
+
+std::optional<reg32> bonusFlagOf(App* app, CPU& cpu, reg32 car)
+{
+    return flagsOf(app, cpu, car, kBonus);
+}
+
+std::optional<reg32> classListsBuilt(App* app, CPU& cpu)
+{
+    return buildClassLists(app, cpu);
+}
+
+reg32 bonusLocked(App* app, reg32 record)
+{
+    return lockedBonus(app, record);
+}
+
+reg32 fecTextOf(App* app, reg32 texts, reg32 index)
+{
+    return textAt(app, texts, index);
+}
+
+std::optional<reg32> fecPathOf(App* app, CPU& cpu, reg32 car, reg32 path)
+{
+    return fecPath(app, cpu, car, path);
+}
+
+std::optional<reg32> fecWritten(App* app, CPU& cpu, reg32 path, reg32 record)
+{
+    return writeFec(app, cpu, path, record);
+}
+
+reg32 placeholderViv(App*)
+{
+    return kPlaceViv;
 }
 
 }  // namespace load

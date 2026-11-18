@@ -1,10 +1,13 @@
 #include "native_frontend_sime.h"
+#include "port_snd.h"
 #include "native_game.h"
+#include "native_load_cardb.h"
 #include "game_settings.h"
 #include "native_carstate.h"
 #include "native_ea_memory.h"
 #include "native_ea_threads.h"
 #include "native_frontend.h"
+#include "native_frontend_fx.h"
 #include "native_frontend_hudx.h"
 #include "native_frontend_loada.h"
 #include "native_frontend_menuf.h"
@@ -14,7 +17,9 @@
 #include "native_frontend_simc.h"
 #include "native_frontend_simd.h"
 #include "native_graphics.h"
+#include "native_load_track.h"
 #include "native_vertices.h"
+#include "native_render.h"
 #include <nfs3hp.h>
 #include <fpu.h>
 #include <cstdint>
@@ -52,9 +57,9 @@
  *
  * These take the race's random numbers and are drawn on a replay, so every sum is the
  * x87's in the original's order: each fp:: call is an instruction's, its operands in the
- * order the generated code has them, a value that went through a float in memory goes
+ * order the game's code has them, a value that went through a float in memory goes
  * through a float here.  All the game's state stays in guest memory.  What is handed to
- * the game by address lives in the frame, where the generated function had it. */
+ * the game by address lives in the frame, where the game's function had it. */
 #if defined(__clang__)
 #pragma clang fp contract(off)
 #else
@@ -69,7 +74,7 @@ namespace
 
 using fe::args;
 using fe::Guest;
-using fe::X87;
+using fx::Arith;
 using x86::Float;
 using x86::reg16;
 using x86::reg32;
@@ -120,8 +125,7 @@ void copyDwords(Guest& guest, reg32 to, reg32 from, reg32 count)
 
 /* Words the game's code pushes for a callee that takes their address: put where those pushes put
  * them, below esp, and esp below them while this lives, so the callee's frame lies where the
- * game's does.  In tools/frontend_checks the call goes by address and pushes them itself, at the
- * same place: there esp stays. */
+ * game's does. */
 class PushedWords
 {
 public:
@@ -134,9 +138,7 @@ public:
             guest.setDword(at, word);
             at += 4;
         }
-#ifndef NFS_FRONTEND_CHECKS
         cpu.esp = m_address;
-#endif
     }
     ~PushedWords() { m_cpu.esp = m_esp; }
     PushedWords(const PushedWords&) = delete;
@@ -164,10 +166,6 @@ float absolute(float value)
 // The game's functions, by address
 // ---------------------------------------------------------------------------
 
-constexpr reg32 kFirstSubfolder = 0x4386b0;    // eax a folder: the name of the first one in it, or 0
-constexpr reg32 kNextSubfolder = 0x4387e0;     // the next, or 0
-constexpr reg32 kEndWithSlash = 0x438340;      // eax a path
-constexpr reg32 kRemoveFolder = 0x4389d0;      // eax a path
 constexpr reg32 kRandom = 0x4e0d88;
 constexpr reg32 kFillZero = 0x4e070c;          // eax where, edx the bytes
 constexpr reg32 kLoadTrackTextures = 0x41dbc0; // eax the track
@@ -297,17 +295,17 @@ x86::reg32 frontend::sime::removeNumberedFolders(App* app, CPU& cpu)
     Guest guest(app, cpu);
     const fe::Frame locals(guest, cpu, 20 + 0x12c);
     const reg32 path = guest.frame();
-    reg32 name = guest.call(kFirstSubfolder, args({ kCarsFolder }));
+    reg32 name = *fe::direct<0x4386b0, load::firstSubfolderIn>(app, cpu, kCarsFolder);
     while (name != 0)
     {
         if (guest.byte(name) == 'P' && isDigit(guest, name + 1) && isDigit(guest, name + 2) && isDigit(guest, name + 3))
         {
             guest.copyString(path, kCarsFolder);
-            guest.call(kEndWithSlash, args({ path }));
+            fe::direct<0x438340, load::slashAdded>(app, cpu, path);
             guest.copyString(path + guest.length(path), name);
-            guest.call(kRemoveFolder, args({ path }));
+            fe::direct<0x4389d0, load::folderRemoved>(app, cpu, path);
         }
-        name = guest.call(kNextSubfolder);
+        name = *fe::direct<0x4387e0, load::nextSubfolderFound>(app, cpu);
     }
     return name;
 }
@@ -341,7 +339,7 @@ constexpr reg32 opaque(reg32 red, reg32 green, reg32 blue)
 reg32 fogBetween(Guest& guest, reg32 zone, reg32 otherColour, reg32 otherDistance, const Float& share, reg32 colourOut,
                  reg32 distanceOut)
 {
-    X87 x87(guest);
+    Arith x87(guest);
     const float stored = float(share);
     const Float rest = fp::sub(1.0, share);
     const auto channel = [&](reg32 at) { return Float(sreg32(guest.byte(at))); };
@@ -357,7 +355,6 @@ reg32 fogBetween(Guest& guest, reg32 zone, reg32 otherColour, reg32 otherDistanc
     const reg32 colour = opaque(redNow, greenNow, blueNow);
     guest.setDword(colourOut, colour);
     guest.setDword(distanceOut, distanceNow);
-    guest.leaveEdx(colour);
     return distanceNow;
 }
 
@@ -372,8 +369,6 @@ x86::reg32 frontend::sime::fogAtCamera(App* app, CPU& cpu, reg32 view, reg32 col
     const fe::Frame locals(guest, cpu, 16 + 0x40);
     const reg32 zones = guest.dword(kFogZones);
     // Handed the zones and 0 in edx and ebx too, which it does not read: there as the code has them.
-    guest.leaveEdx(zones);
-    guest.leaveEbx(0);
     const sreg32 node = sreg32(fe::direct<0x4217e0, carstate::nodeOfCamera>(app, cpu, guest.dword(view + 4)));
     guest.setDword(colourOut, opaque(guest.byte(kFogRed), guest.byte(kFogGreen), guest.byte(kFogBlue)));
     guest.setDword(distanceOut, guest.dword(kFogDistance));
@@ -392,10 +387,8 @@ x86::reg32 frontend::sime::fogAtCamera(App* app, CPU& cpu, reg32 view, reg32 col
         if (node < middle && before != 0)
         {
             const sreg32 left = sreg32(reg32(middle) - reg32(node));
-            guest.leaveEbx(reg32(left));
             return fogBetween(guest, zone, kZoneStartColour, kZoneStartDistance, fp::div(Float(left), Float(before)), colourOut, distanceOut);
         }
-        guest.leaveEbx(reg32(middle));
         if (node > middle && after != 0)
         {
             const sreg32 past = sreg32(reg32(node) - reg32(middle));
@@ -406,11 +399,8 @@ x86::reg32 frontend::sime::fogAtCamera(App* app, CPU& cpu, reg32 view, reg32 col
         const reg32 distance = guest.dword(zone + kZoneMiddleDistance);
         guest.setDword(colourOut, colour);
         guest.setDword(distanceOut, distance);
-        guest.leaveEdx(colour);
         return distance;
     }
-    guest.leaveEbx(reg32(i));
-    guest.leaveEdx(zone);
     return reg32(node);
 }
 
@@ -488,8 +478,8 @@ x86::reg32 frontend::sime::effectsReset(App* app, CPU& cpu)
 {
     Guest guest(app, cpu);
     const fe::Frame locals(guest, cpu, 4);
-    guest.call(0x434ae0);
-    guest.call(0x421480);
+    // (sub_434ae0 is an empty function)
+    fx::callAt(guest, 0x421480);
     guest::direct<0x4c7130, skidStripsReset>(app, cpu);
     guest::direct<0x4dbbc0, wheelMarksReset>(app, cpu);
     fe::direct<0x4cb6f0, rende::clearParticles>(app, cpu);
@@ -503,11 +493,11 @@ x86::reg32 frontend::sime::effectsFree(App* app, CPU& cpu)
 {
     Guest guest(app, cpu);
     const fe::Frame locals(guest, cpu, 4);
-    guest.call(0x434af0);
+    // (sub_434af0 is an empty function)
     // What each leaves in eax goes on to the next, as the code has it there.
-    cpu.eax = guest::direct<0x4d5730, effectsEndNothing>(app, cpu);
-    cpu.eax = guest::direct<0x4c7150, skidStripsFree>(app, cpu);
-    cpu.eax = guest::direct<0x4dbbe0, wheelMarksEndEmpty>(app, cpu, cpu.eax);
+    guest::direct<0x4d5730, effectsEndNothing>(app, cpu);
+    const reg32 strips = guest::direct<0x4c7150, skidStripsFree>(app, cpu);
+    guest::direct<0x4dbbe0, wheelMarksEndEmpty>(app, cpu, strips);
     fe::direct<0x484220, hudx::clearRebuildFlag>(app, cpu);
     const reg32 cleared = fe::direct<0x4cb730, rende::clearParticleStates>(app, cpu);
     return guest::direct<0x4c7b20, effectsEndEmpty>(app, cpu, cleared);
@@ -530,15 +520,15 @@ x86::reg32 frontend::sime::loadTrackPieces(App* app, CPU& cpu, reg32 track)
         const PushedWords pushed(guest, cpu, { perCent });
         fe::direct<0x495230, graphics::loadingProgress>(app, cpu, pushed.address());
     };
-    guest.call(kLoadTrackTextures, args({ track }));
+    fe::direct<0x41dbc0, load::trackTexturesLoaded>(app, cpu);
     if (stopped())
         return 1;
     progress(kBar40);
-    guest.call(kLoadHorizon, args({ track }));
+    fe::direct<0x478340, load::horizonRead>(app, cpu, track);
     if (stopped())
         return 1;
     progress(kBar43);
-    guest.call(kRaceViews);
+    fe::direct<0x41d960, render::raceViewsSet>(app, cpu);
     if (stopped())
         return 1;
     progress(kBar58);
@@ -579,7 +569,6 @@ x86::reg32 frontend::sime::viewResize(App* app, CPU& cpu, reg32 view, reg32 chan
     const sreg32 across = sreg32(3u * reg32(change)) / 4;
     if (change == 0)
     {
-        guest.leaveEdx(0);
         return reg32(across);
     }
     const sreg32 extent = sreg32(guest.dword(kScreenExtent));
@@ -588,7 +577,6 @@ x86::reg32 frontend::sime::viewResize(App* app, CPU& cpu, reg32 view, reg32 chan
     const sreg32 farAcross = sreg32(guest.dword(view + kViewFarB) + reg32(across));
     if (farThen < half || farThen > extent || farAcross < 0)
     {
-        guest.leaveEdx(reg32(extent >> 31));
         return reg32(half);
     }
     const reg32 changeHalf = reg32(change / 2);
@@ -603,7 +591,6 @@ x86::reg32 frontend::sime::viewResize(App* app, CPU& cpu, reg32 view, reg32 chan
     const reg32 farAgainNow = guest.dword(view + kViewFarA2) + reg32(change);
     guest.setDword(view + kViewFarA2, farAgainNow);
     guest.setDword(view + kViewFarB, guest.dword(view + kViewFarB) + reg32(across));
-    guest.leaveEdx(farAgainNow);
     return farNow;
 }
 
@@ -703,7 +690,7 @@ x86::reg32 frontend::sime::skidStripsFree(App* app, CPU& cpu)
     const fe::Frame locals(guest, cpu, 12);
     const reg32 block = guest.dword(kSkidStrips);
     if (block == 0)
-        return guest.eax();
+        return 0;
     const reg32 result = *fe::direct<0x4e1890, ea::purgeBlock>(app, cpu, block);
     guest.setDword(kSkidStrips, 0);
     return result;
@@ -835,11 +822,9 @@ x86::reg32 frontend::sime::stripUnderWheels(App* app, CPU& cpu, reg32 car, reg32
         if (wheels != 0)
         {
             guest.setDword(out, i);
-            guest.leaveEdx(out);
             return wheels;
         }
     }
-    guest.leaveEdx(edx);
     return 0;
 }
 
@@ -912,8 +897,6 @@ x86::reg32 frontend::sime::spawnParticle(App* app, CPU& cpu, reg32 kind, reg32 o
     const fe::Frame locals(guest, cpu, 24 + 0x2c);
     constexpr reg32 kPosition = 0, kScale = 0xc, kAlong = 0x10, kUp = 0x1c, kBack = 0x28;
     constexpr reg32 kMinusHalf = 0x5403a8;  // a double
-    // Handed the kind in eax, which it does not read: there as the code has it.
-    cpu.eax = kind;
     const reg32 particle = guest::direct<0x4ca4b0, particleSlot>(app, cpu);
     const reg32 shape = kindAt(kind);
     const float spreadX = guest.floatAt(shape + kKindSpread);
@@ -1018,7 +1001,7 @@ x86::reg32 frontend::sime::particleChildren(App* app, CPU& cpu, reg32 parent)
     const reg32 none = guest.frame(), unit = guest.frame() + 0xc;
     copyDwords(guest, none, kNoVector, 3);
     if (isZero(guest.dword(velocity)) && isZero(guest.dword(velocity + 4)) && isZero(guest.dword(velocity + 8)))
-        return guest.eax();
+        return 0;
     guest::direct<0x497500, quickNormal>(app, cpu, velocity, unit);
     for (reg32 i = 0;; ++i)
     {
@@ -1092,9 +1075,9 @@ x86::reg32 frontend::sime::sparks(App* app, CPU& cpu, reg32 car, reg32 on)
         if (spark == 0)
             continue;
         const reg32 cut = reg32(sreg32(guest.dword(spark + kParticleLife)) >> 1);
-        const reg32 byChance = guest.call(kRandom) % cut;
+        const reg32 byChance = fe::direct<kRandom, port::nextRandom>(guest.app(), guest.cpu()) % cut;
         guest.setDword(spark + kParticleLife, guest.dword(spark + kParticleLife) - byChance);
-        const reg32 children = guest.call(kRandom);
+        const reg32 children = fe::direct<kRandom, port::nextRandom>(guest.app(), guest.cpu());
         guest.setByte(spark + kParticleSpawns, std::uint8_t(children % 3));
         result = children / 3;
     }
@@ -1108,7 +1091,7 @@ x86::reg32 frontend::sime::crashPuff(App* app, CPU& cpu, reg32 kind, reg32 on)
 {
     Guest guest(app, cpu);
     const fe::Frame locals(guest, cpu, 16 + 0x34);
-    const sreg32 way = (guest.call(kRandom) & 1) != 0 ? 1 : -1;
+    const sreg32 way = (fe::direct<kRandom, port::nextRandom>(guest.app(), guest.cpu()) & 1) != 0 ? 1 : -1;
     if (kind == kKindNone || (kind == kKindDrip && (guest.byte(kDriverFlags) & kSoftwareDrivers) != 0))
         return reg32(way);
     const Spawn spawn = { { guest.dword(on), guest.dword(on + 4), guest.dword(on + 8) }, 0x3f800000, { 0, 0, 0 }, { 0, 0, 0 }, { 0, 0, 0 } };
@@ -1136,12 +1119,12 @@ x86::reg32 frontend::sime::respawnSparkle(App* app, CPU& cpu, reg32 car, reg32 o
     const Spawn still = { { x, y, z }, 0x3f800000, { 0, 0, 0 }, { 0, 0, 0 }, { 0, 0, 0 } };
     spawnParticleOf(cpu, guest, kKindGlow, still);
     spawnParticleOf(cpu, guest, kKindRing, still);
-    if (sreg32(guest.dword(kClock)) % kPeriod < kSparksFor && (guest.call(kRandom) & 1) != 0)
+    if (sreg32(guest.dword(kClock)) % kPeriod < kSparksFor && (fe::direct<kRandom, port::nextRandom>(guest.app(), guest.cpu()) & 1) != 0)
     {
         const PushedWords pushed(guest, cpu, { x, y, z, kSparksSpeed });
         guest::direct<0x4cac20, sparks>(app, cpu, car, pushed.address());
     }
-    const reg32 chance = guest.call(kRandom);
+    const reg32 chance = fe::direct<kRandom, port::nextRandom>(guest.app(), guest.cpu());
     if ((chance & 7) == 0)
         return chance;
 
@@ -1174,7 +1157,6 @@ x86::reg32 frontend::sime::wheelParticles(App* app, CPU& cpu, reg32 car, reg32 w
     const reg32 kind = guest.dword(on + kKind);
     const reg32 shape = kindAt(kind);
     const reg32 count = guest.dword(shape + kKindCount);
-    guest.leaveEdx(kind);
     if (kind == kKindNone || (kind == kKindDrip && (guest.byte(kDriverFlags) & kSoftwareDrivers) != 0))
         return count;
 
@@ -1232,7 +1214,6 @@ x86::reg32 frontend::sime::wheelParticles(App* app, CPU& cpu, reg32 car, reg32 w
         if (result != 0)
             guest.setFloat(result + kParticleSpin, float(fp::mul(floatFrom(guest, result + kParticleSpin), Float(floatOf(turn)))));
     }
-    guest.leaveEdx(kind);
     return result;
 }
 
@@ -1324,7 +1305,7 @@ x86::reg32 frontend::sime::dropsOnView(App* app, CPU& cpu, reg32 player, reg32 o
             continue;
 
         const reg32 cut = reg32(sreg32(guest.dword(shape + kKindDropLife)) >> 1);
-        const reg32 byChance = guest.call(kRandom) % cut;
+        const reg32 byChance = fe::direct<kRandom, port::nextRandom>(guest.app(), guest.cpu()) % cut;
         guest.setDword(slot + kDropKind, kind);
         guest.setDword(slot + kDropLife, guest.dword(shape + kKindDropLife) - byChance);
 
@@ -1352,7 +1333,7 @@ x86::reg32 frontend::sime::dropsOnView(App* app, CPU& cpu, reg32 player, reg32 o
         guest.setDword(slot + kDropFlags, guest.dword(shape + kKindDropFlags));
         guest.setDword(slot + kDropTexture, kDropTextures + kind * kKindTextureBytes);
         if (kind == kKindWithJolt)
-            guest.call(kDropEffect, args({ player }));
+            fx::callAt(guest, kDropEffect, args({ player }));
     }
     return 1;
 }
@@ -1365,33 +1346,33 @@ constexpr std::uint8_t kKeepsNothing = 0;
 }  // namespace
 
 // ---------------------------------------------------------------------------
-// As the generated functions stood: their frames, what they restore
+// As the game's functions stood: their frames, what they restore
 // ---------------------------------------------------------------------------
 
-void frontend::carsRemoveNumberedFolders(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::carsRemoveNumberedFolders(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_43bcf0", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEdx | fe::kRestoreEsi | fe::kRestoreEdi };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return sime::removeNumberedFolders(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return sime::removeNumberedFolders(app, cpu); });
 }
 
-void frontend::effectsFogAtCamera(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::effectsFogAtCamera(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_478e10", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 view = cpu.eax, colourOut = cpu.edx, distanceOut = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return sime::fogAtCamera(app, cpu, view, colourOut, distanceOut); });
+    const reg32 view = args.eax, colourOut = args.edx, distanceOut = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return sime::fogAtCamera(app, cpu, view, colourOut, distanceOut); });
 }
 
-void frontend::mathMakeRootTable(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::mathMakeRootTable(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_496310", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return sime::makeRootTable(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return sime::makeRootTable(app, cpu); });
 }
 
-void frontend::mathQuickNormal(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::mathQuickNormal(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_497500", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi };
-    const reg32 vector = cpu.eax, out = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return sime::quickNormal(app, cpu, vector, out); });
+    const reg32 vector = args.eax, out = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return sime::quickNormal(app, cpu, vector, out); });
 }
 
 /* sub_497500: eax's vector scaled to length 1, to edx; eax the vector. */
@@ -1402,57 +1383,57 @@ x86::reg32 frontend::sime::quickNormal(App* app, CPU& cpu, reg32 vector, reg32 o
     return vector;
 }
 
-void frontend::raceEffectsReset(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::raceEffectsReset(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4bc8b0", 0, 0, nullptr, 0, kKeepsNothing };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return sime::effectsReset(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return sime::effectsReset(app, cpu); });
 }
 
-void frontend::raceEffectsFree(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::raceEffectsFree(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4bc950", 0, 0, nullptr, 0, kKeepsNothing };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return sime::effectsFree(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return sime::effectsFree(app, cpu); });
 }
 
-void frontend::raceViewsResize(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::raceViewsResize(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4be970", 0, 0, nullptr, 0 };
-    const reg32 direction = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return sime::viewsResize(app, cpu, direction); });
+    const reg32 direction = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return sime::viewsResize(app, cpu, direction); });
 }
 
-void frontend::raceViewResize(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::raceViewResize(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4bea40", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 view = cpu.eax, change = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return sime::viewResize(app, cpu, view, sreg32(change)); });
+    const reg32 view = args.eax, change = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return sime::viewResize(app, cpu, view, sreg32(change)); });
 }
 
-void frontend::effectsSkidSegmentPut(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::effectsSkidSegmentPut(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4c6c70", 8, 0, nullptr, 0, fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 corners = cpu.eax, alphas = cpu.edx, from = cpu.ebx, to = cpu.ecx;
+    const reg32 corners = args.eax, alphas = args.edx, from = args.ebx, to = args.ecx;
     const reg32 alphaFrom = guest::at(app, cpu.esp + 4), alphaTo = guest::at(app, cpu.esp + 8);
-    fe::runWhole(app, cpu, site,
+    return fe::runThunk(app, cpu, args, site,
                  [&](Guest&) { return sime::skidSegmentPut(app, cpu, corners, alphas, from, to, alphaFrom, alphaTo); });
 }
 
-void frontend::effectsSkidStripsTake(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::effectsSkidStripsTake(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4c70f0", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return sime::skidStripsTake(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return sime::skidStripsTake(app, cpu); });
 }
 
-void frontend::effectsSkidStripsReset(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::effectsSkidStripsReset(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4c7130", 0, 0, nullptr, 0, kKeepsNothing };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return sime::skidStripsReset(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return sime::skidStripsReset(app, cpu); });
 }
 
-void frontend::effectsSkidStripsFree(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::effectsSkidStripsFree(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4c7150", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return sime::skidStripsFree(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return sime::skidStripsFree(app, cpu); });
 }
 
 /* sub_4c7b20: a race's end has nothing for it to do. */
@@ -1461,84 +1442,85 @@ x86::reg32 frontend::sime::effectsEndEmpty(App*, CPU&, reg32 eax)
     return eax;
 }
 
-void frontend::raceEffectsEndEmpty(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::raceEffectsEndEmpty(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    cpu.eax = sime::effectsEndEmpty(app, cpu, cpu.eax);
+    args.eax = sime::effectsEndEmpty(app, cpu, args.eax);
     cpu.esp += 4;
+    return args.eax;
 }
 
-void frontend::raceStripUnderWheels(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::raceStripUnderWheels(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4ca160", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 car = cpu.eax, out = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return sime::stripUnderWheels(app, cpu, car, out); });
+    const reg32 car = args.eax, out = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return sime::stripUnderWheels(app, cpu, car, out); });
 }
 
-void frontend::effectsParticleSlot(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::effectsParticleSlot(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4ca4b0", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return sime::particleSlot(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return sime::particleSlot(app, cpu); });
 }
 
-void frontend::effectsDropsOnView(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::effectsDropsOnView(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4ca500", 16, 0, nullptr, 0 };
-    const reg32 player = cpu.eax;
+    const reg32 player = args.eax;
     const reg32 on = cpu.esp + 4;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return sime::dropsOnView(app, cpu, player, on); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return sime::dropsOnView(app, cpu, player, on); });
 }
 
-void frontend::effectsParticleSpawn(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::effectsParticleSpawn(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4ca850", 0x34, 0, nullptr, 0 };
-    const reg32 kind = cpu.eax;
+    const reg32 kind = args.eax;
     const reg32 on = cpu.esp + 4;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return sime::spawnParticle(app, cpu, kind, on); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return sime::spawnParticle(app, cpu, kind, on); });
 }
 
-void frontend::effectsParticleChildren(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::effectsParticleChildren(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4cab60", 0x80, 0, nullptr, 0 };
     const reg32 on = cpu.esp + 4;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return sime::particleChildren(app, cpu, on); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return sime::particleChildren(app, cpu, on); });
 }
 
-void frontend::effectsSparks(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::effectsSparks(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4cac20", 0x10, 0, nullptr, 0 };
-    const reg32 car = cpu.eax;
+    const reg32 car = args.eax;
     const reg32 on = cpu.esp + 4;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return sime::sparks(app, cpu, car, on); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return sime::sparks(app, cpu, car, on); });
 }
 
-void frontend::effectsCrashPuff(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::effectsCrashPuff(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4cae00", 0xc, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx };
-    const reg32 kind = cpu.eax;
+    const reg32 kind = args.eax;
     const reg32 on = cpu.esp + 4;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return sime::crashPuff(app, cpu, kind, on); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return sime::crashPuff(app, cpu, kind, on); });
 }
 
-void frontend::effectsRespawnSparkle(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::effectsRespawnSparkle(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4caea0", 0xc, 0, nullptr, 0 };
-    const reg32 car = cpu.eax;
+    const reg32 car = args.eax;
     const reg32 on = cpu.esp + 4;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return sime::respawnSparkle(app, cpu, car, on); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return sime::respawnSparkle(app, cpu, car, on); });
 }
 
-void frontend::effectsWheelParticles(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::effectsWheelParticles(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4cb010", 0x10, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 car = cpu.eax, wheel = cpu.edx;
+    const reg32 car = args.eax, wheel = args.edx;
     const reg32 on = cpu.esp + 4;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return sime::wheelParticles(app, cpu, car, wheel, on); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return sime::wheelParticles(app, cpu, car, wheel, on); });
 }
 
-void frontend::raceEffectsEndNothing(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::raceEffectsEndNothing(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4d5730", 0, 0, nullptr, 0, kKeepsNothing };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return sime::effectsEndNothing(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return sime::effectsEndNothing(app, cpu); });
 }
 
 /* sub_4d5730: a race's end (sub_4d56b0), every register handed on as it came. */
@@ -1549,17 +1531,17 @@ x86::reg32 frontend::sime::effectsEndNothing(App* app, CPU& cpu)
     return fe::direct<0x4d56b0, rende::nothing>(app, cpu);
 }
 
-void frontend::effectsWheelMarkCut(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::effectsWheelMarkCut(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4db860", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx };
-    const reg32 car = cpu.eax, wheel = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return sime::wheelMarkCut(app, cpu, car, wheel); });
+    const reg32 car = args.eax, wheel = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return sime::wheelMarkCut(app, cpu, car, wheel); });
 }
 
-void frontend::effectsWheelMarksResetAtLoad(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::effectsWheelMarksResetAtLoad(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4dbba0", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return sime::wheelMarksResetAtLoad(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return sime::wheelMarksResetAtLoad(app, cpu); });
 }
 
 /* sub_4dbba0: the wheels' marks cleared as the race loads, the loading kept going. */
@@ -1571,10 +1553,10 @@ x86::reg32 frontend::sime::wheelMarksResetAtLoad(App* app, CPU& cpu)
     return fe::direct<0x4a33d0, loada::stopCheck>(app, cpu);
 }
 
-void frontend::effectsWheelMarksReset(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::effectsWheelMarksReset(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4dbbc0", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return sime::wheelMarksReset(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return sime::wheelMarksReset(app, cpu); });
 }
 
 /* sub_4dbbc0: the wheels' marks cleared. */
@@ -1582,7 +1564,7 @@ x86::reg32 frontend::sime::wheelMarksReset(App* app, CPU& cpu)
 {
     Guest guest(app, cpu);
     const fe::Frame locals(guest, cpu, 8);
-    return guest.call(kFillZero, args({ kWheelMarks, kWheelMarksBytes }));
+    return fe::direct<kFillZero, ea::clearBytes>(guest.app(), guest.cpu(), kWheelMarks, kWheelMarksBytes);
 }
 
 /* sub_4dbbe0: a race's end has nothing for the marks either. */
@@ -1591,17 +1573,18 @@ x86::reg32 frontend::sime::wheelMarksEndEmpty(App*, CPU&, reg32 eax)
     return eax;
 }
 
-void frontend::effectsWheelMarksEndEmpty(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::effectsWheelMarksEndEmpty(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    cpu.eax = sime::wheelMarksEndEmpty(app, cpu, cpu.eax);
+    args.eax = sime::wheelMarksEndEmpty(app, cpu, args.eax);
     cpu.esp += 4;
+    return args.eax;
 }
 
-void frontend::raceLoadTrackPieces(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::raceLoadTrackPieces(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4dbbf0", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    const reg32 track = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return sime::loadTrackPieces(app, cpu, track); });
+    const reg32 track = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return sime::loadTrackPieces(app, cpu, track); });
 }
 
 }

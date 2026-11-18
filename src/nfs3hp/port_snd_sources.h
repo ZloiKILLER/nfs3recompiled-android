@@ -10,7 +10,8 @@
  * the cops' sounds start, tick and stop, and the knock of a car that the
  * noises by distance play.  Each is here as C++ with arguments and a result --
  * the cores the files call each other with -- and the game's entries
- * (adapters) are in the files themselves.
+ * (thunks) are in the files themselves; what they call of the effects
+ * (port_sound_effects.cpp) they call as C++.
  *
  * Every core that calls the game's code takes `esp`, the one its game's code
  * had on entry (at the return address), as port.h has it. */
@@ -20,41 +21,6 @@ namespace port
 {
 namespace sources
 {
-
-/* esi and edi as the game's code has them while a function runs: it sets them
- * for its own use, and the code it calls (SND, when a play fails) reads them
- * though nobody set them for it.  Set for the calls, as they were again when
- * the function is done. */
-class HeldEsiEdi
-{
-public:
-    explicit HeldEsiEdi(CPU& c) : cpu(c), esi(c.esi), edi(c.edi) {}
-    ~HeldEsiEdi()
-    {
-        cpu.esi = esi;
-        cpu.edi = edi;
-    }
-    HeldEsiEdi(const HeldEsiEdi&) = delete;
-    HeldEsiEdi& operator=(const HeldEsiEdi&) = delete;
-
-    void setEsi(reg32 value) { cpu.esi = value; }
-    void setEdi(reg32 value) { cpu.edi = value; }
-
-private:
-    CPU& cpu;
-    reg32 esi, edi;
-};
-
-/* A call into the game's code, its eax as the result (nothing when the game
- * stopped). */
-inline Result callGameResult(App* app, CPU& cpu, reg32 esp, reg32 target, Args a,
-                             std::initializer_list<reg32> stack = {})
-{
-    reg32 result;
-    if (!callGame(app, cpu, esp, target, a, stack, result))
-        return {};
-    return int32_t(result);
-}
 
 /* A quotient as the cdq; idiv of the game's code gives it: toward 0, the
  * divisor 0 (which the x86 traps and the arm64 answers) giving 0. */

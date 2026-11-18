@@ -2,6 +2,7 @@
 #define NFS3HP_PORT_SND_MIXER_H
 
 #include "port_snd.h"
+#include "port_sound_calls.h"
 
 /* The mixer of EA's SND library and what starts it, rewritten (port.h says
  * how): the mixer's set-ups for a channel's decoder, volume and resampler, and
@@ -31,7 +32,21 @@ void pickLastSetups(App* app);
 reg32 mixFrames(App* app, CPU& cpu, reg32 esp, reg32 target, int32_t frames, reg32 eax);
 reg32 rampChannel(App* app, CPU& cpu, reg32 esp, reg32 channel, reg32 frames);
 
+/* The game's conversions of a sound's samples (cdecl, every register kept): `count` 16-bit samples at 0x5008a0,
+ * 8-bit at 0x500b10 (by a table), each to a float; `frames` stereo float frames to 16-bit samples at 0x500910
+ * (where the loop stopped); the XA state at `state` decoded by the x87 at 0x500990 (stereo) and 0x500b90 (mono). */
+void samples16Converted(App* app, int32_t count, reg32 from, reg32 to);
+void samples8Converted(App* app, int32_t count, reg32 from, reg32 to);
+reg32 floatsPacked(App* app, uint32_t frames, reg32 from, reg32 to);
+void xaStereoConverted(App* app, reg32 state);
+void xaMonoConverted(App* app, reg32 state);
+
 }  // namespace port
+
+namespace guest
+{
+
+}  // namespace guest
 }  // namespace nfs3hp
 
 #endif

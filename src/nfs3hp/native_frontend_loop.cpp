@@ -1,10 +1,11 @@
 #include "native_frontend_loop.h"
+#include "native_frontend_screen.h"
 #include "native_frontend.h"
 #include <iterator>
 
 /* What the menu loop (port::loop, src/nfs3hp/port_loop.cpp) leaves to the
- * main menu's decompiled code: native whole, with no generated code behind
- * them (disassemble_nfs3hp.py's MENU_NATIVES), a screen's items shown, whether
+ * main menu's decompiled code: native whole, with no other code behind
+ * them, a screen's items shown, whether
  * an item is, and the name of the screen shown.
  *
  * The screen shown is a pointer into the table of screens (0x559230).  An item
@@ -17,7 +18,7 @@
  *
  * Plan step 5: each function a typed core in frontend::loop (native_frontend_loop.h), in a frame
  * of its own where it calls anything (fe::Frame: what it calls runs at the stack addresses it
- * did), and an adapter under the game's name for the calls by address. */
+ * did), and a thunk under the game's name for the calls by address. */
 namespace nfs3hp
 {
 
@@ -93,10 +94,10 @@ x86::reg32 frontend::loop::showItems(App* app, CPU& cpu, reg32 menu)
         if (guest.word(item + kMainOnly) != 0 && guest.dword(kAfterRace) != 0)
             guest.setWord(item + kStateWord, guest.word(item + kStateWord) | kGreyAndHide);
     }
-    // eax as the generated function leaves it: the end's offset in the
+    // eax as the game's function leaves it: the end's offset in the
     // table, or what the network screens' art leaves.
     if (guest.dword(kNetworkConnected) != 0)
-        return guest.call(kNetworkShown);
+        return fe::direct<kNetworkShown, frontend::screen::loadScreenArt>(guest.app(), guest.cpu());
     return x86::reg32(std::int32_t(index)) * fe::item::kSize;
 }
 
@@ -112,30 +113,29 @@ using fe::kRestoreEbx;
 using fe::kRestoreEdx;
 constexpr std::uint8_t kRestoreNone = 0;
 
-/* Native whole, no generated code behind them (disassemble_nfs3hp.py's
- * MENU_NATIVES): a screen's items shown, whether an item is, the shown
+/* Native whole, no other code behind them: a screen's items shown, whether an item is, the shown
  * screen's name. */
 namespace frontend
 {
 
-void menuShowItems(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 menuShowItems(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44a960", 0, 0, nullptr, 0, kRestoreEbx | kRestoreEdx };
-    const x86::reg32 menu = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loop::showItems(app, cpu, menu); });
+    const x86::reg32 menu = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loop::showItems(app, cpu, menu); });
 }
 
-void menuShownNow(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 menuShownNow(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44a660", 0, 0, nullptr, 0, kRestoreNone };
-    const x86::reg32 item = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loop::shownNow(app, cpu, item); });
+    const x86::reg32 item = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loop::shownNow(app, cpu, item); });
 }
 
-void menuCurrentName(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 menuCurrentName(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_44ae00", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loop::currentMenuName(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loop::currentMenuName(app, cpu); });
 }
 
 }  // namespace frontend

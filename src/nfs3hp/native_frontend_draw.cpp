@@ -13,17 +13,16 @@
  * port_text.cpp's, the 2D drawing port_draw2d.cpp's, the menus' shapes
  * port_shapes.cpp's.
  *
- * disassemble_nfs3hp.py binds each address to the function of that name here
- * (FRONTEND_DRAW_NATIVES), and the generated code calls it by name.  Written
+ * Each address is bound to the function of that name here
+ * (FRONTEND_DRAW_NATIVES), and the game's code calls it by name.  Written
  * as their code is: each push and pop to the guest's stack, each call with
  * the return address's slot, the frame's locals where the code keeps them,
  * the registers as the code leaves them; the x87's stack pushed and popped a
  * value at a time.  What the menus' other code and the graphics' natives do
- * is called by address, and so is what of this file has a stand-in in
- * tools/game_checks, which holds each against its generated code.
+ * is called by address.
  *
  * Plan step 5: each function a typed core in frontend::draw (native_frontend_draw.h) -- its
- * arguments into the registers, the code run, eax back, the ret left to the adapter under the
+ * arguments into the registers, the code run, eax back, the ret left to the thunk under the
  * game's name, which the calls by address enter. */
 namespace nfs3hp
 {
@@ -63,7 +62,7 @@ constexpr reg32 kSelectFont = 0x452100;
 constexpr reg32 kScreenText = 0x452190;
 constexpr reg32 kMouseHolds = 0x49c080;
 constexpr reg32 kLoadQfsFile = 0x4f2e20;
-// This file's functions with a stand-in of their own: called by address.
+// This file's functions that are called by address.
 constexpr reg32 kSetSliderValue = 0x469480, kShapeByName = 0x4d5db0;
 // The screen's size.
 constexpr reg32 kScreenWidth = 0x7cdac8, kScreenHeight = 0x7cdacc;
@@ -72,292 +71,108 @@ constexpr reg32 kRenderFlags = 0x7a3a58;
 // The menus' text in the fonts' quads rather than on the 2D screens (not 0).
 constexpr reg32 kMenu3d = 0x559234;
 
-void push(win32::WinApplication* app, x86::CPU& cpu, reg32 value)
-{
-    cpu.esp -= 4;
-    put(app, cpu.esp, value);
-}
-
-reg32 pop(win32::WinApplication* app, x86::CPU& cpu)
-{
-    const reg32 value = at(app, cpu.esp);
-    cpu.esp += 4;
-    return value;
-}
-
-x86::reg16 half(win32::WinApplication* app, reg32 address)
-{
-    return app->getMemory<x86::reg16>(address);
-}
-
-void putHalf(win32::WinApplication* app, reg32 address, x86::reg16 value)
-{
-    app->getMemory<x86::reg16>(address) = value;
-}
-
-/* mov r, [address]; sar r, 0x10: the word at address + 2, signed. */
-reg32 high(win32::WinApplication* app, reg32 address)
-{
-    return reg32(sreg32(at(app, address)) >> 16);
-}
-
-/* mov eax, v; sar edx, 0x1f; sub eax, edx; sar eax, 1 -- with v in edx: v
- * halved toward 0 in eax, its sign in edx. */
-void halve(x86::CPU& cpu, reg32 v)
-{
-    cpu.edx = reg32(sreg32(v) >> 31);
-    cpu.eax = reg32(sreg32(v - cpu.edx) >> 1);
-}
-
-/* A call as the code makes it: the return address's slot, and esp as the
- * callee leaves it.  False when the game stopped in it. */
-bool direct(win32::WinApplication* app, x86::CPU& cpu, void (*function)(win32::WinApplication*, x86::CPU&))
-{
-    cpu.esp -= 4;
-    function(app, cpu);
-    return !cpu.terminate;
-}
-
-bool byAddress(win32::WinApplication* app, x86::CPU& cpu, reg32 target)
-{
-    cpu.esp -= 4;
-    app->dynamic_call(target, cpu);
-    return !cpu.terminate;
-}
-
 x86::Float loadFloat(win32::WinApplication* app, reg32 address)
 {
     return x86::Float(app->getMemory<float>(address));
 }
 
-x86::Float loadDouble(win32::WinApplication* app, reg32 address)
-{
-    return x86::Float(app->getMemory<double>(address));
-}
-
-void storeFloat(win32::WinApplication* app, reg32 address, const x86::Float& value)
-{
-    app->getMemory<float>(address) = float(value);
-}
-
-void storeDouble(win32::WinApplication* app, reg32 address, const x86::Float& value)
-{
-    app->getMemory<double>(address) = double(value);
-}
-
-/* fild of a dword, of a word. */
-x86::Float integer(win32::WinApplication* app, reg32 address)
-{
-    return x86::Float(sreg32(at(app, address)));
-}
-
-x86::Float halfInteger(win32::WinApplication* app, reg32 address)
-{
-    return x86::Float(x86::sreg16(half(app, address)));
-}
-
-/* What sahf makes of the compare: jb, jbe. */
-bool below(const x86::CPU& cpu)
-{
-    return cpu.fpu.status.c0;
-}
-
-bool belowOrEqual(const x86::CPU& cpu)
-{
-    return cpu.fpu.status.c0 || cpu.fpu.status.c3;
-}
-
-/* ret, the adapters' end: the return address popped, unless the game stopped
- * in the function. */
 void ret(x86::CPU& cpu)
 {
     if (!cpu.terminate)
         cpu.esp += 4;
 }
 
-/* push ebp, mov ebp, esp after the registers named, and sub esp, `locals`;
- * leave it the other way round, ret `popped`. */
-void enter(win32::WinApplication* app, x86::CPU& cpu, std::initializer_list<reg32*> saved, reg32 locals)
+/* The string at `from` copied to `to`, its 0 too. */
+void copyString(win32::WinApplication* app, reg32 to, reg32 from)
 {
-    for (reg32* r : saved)
-        push(app, cpu, *r);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= locals;
-}
-
-void leave(win32::WinApplication* app, x86::CPU& cpu, std::initializer_list<reg32*> saved, reg32 popped = 0)
-{
-    cpu.esp = cpu.ebp;
-    cpu.ebp = pop(app, cpu);
-    for (auto r = std::rbegin(saved); r != std::rend(saved); ++r)
-        **r = pop(app, cpu);
-    cpu.esp += 4 + popped;
-}
-
-/* Signed division of edx:eax by `divisor`, as idiv. */
-void idiv(x86::CPU& cpu, reg32 divisor)
-{
-    const std::int64_t dividend = std::int64_t(std::uint64_t(cpu.edx) << 32 | cpu.eax);
-    cpu.eax = reg32(dividend / sreg32(divisor));
-    cpu.edx = reg32(dividend % sreg32(divisor));
-}
-
-/* rep movsd: ecx dwords from esi to edi. */
-void copyDwords(win32::WinApplication* app, x86::CPU& cpu)
-{
-    for (; cpu.ecx != 0; --cpu.ecx)
+    for (;; ++to, ++from)
     {
-        put(app, cpu.edi, at(app, cpu.esi));
-        cpu.esi += 4;
-        cpu.edi += 4;
-    }
-}
-
-/* repne scasb: edi past the first al within ecx bytes, ecx counted down. */
-void scanBytes(win32::WinApplication* app, x86::CPU& cpu)
-{
-    while (cpu.ecx != 0)
-    {
-        const x86::reg8 b = byte(app, cpu.ees + cpu.edi);
-        cpu.edi += 1;
-        --cpu.ecx;
-        if (b == cpu.al)
+        const x86::reg8 c = byte(app, from);
+        putByte(app, to, c);
+        if (c == 0)
             break;
     }
 }
 
-/* The code's own strcpy of esi to edi, two bytes a turn: esi and edi past
- * the 0's pair, al the last byte copied. */
-void copyPairs(win32::WinApplication* app, x86::CPU& cpu)
+reg32 stringLength(win32::WinApplication* app, reg32 string)
 {
-    for (;;)
-    {
-        cpu.al = byte(app, cpu.esi);
-        putByte(app, cpu.edi, cpu.al);
-        if (cpu.al == 0)
-            break;
-        cpu.al = byte(app, cpu.esi + 1);
-        cpu.esi += 2;
-        putByte(app, cpu.edi + 1, cpu.al);
-        cpu.edi += 2;
-        if (cpu.al == 0)
-            break;
-    }
-}
-
-/* That copy with edi kept across it (push edi ... pop edi). */
-void inlineCopy(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.edi);
-    copyPairs(app, cpu);
-    cpu.edi = pop(app, cpu);
-}
-
-/* And its strcat of esi onto the text at edi: push edi; sub ecx, ecx; dec ecx;
- * mov al, 0; repne scasb; dec edi -- the copy from there, pop edi. */
-void inlineAppend(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.edi);
-    cpu.ecx = 0xffffffff;
-    cpu.al = 0;
-    scanBytes(app, cpu);
-    cpu.edi -= 1;
-    copyPairs(app, cpu);
-    cpu.edi = pop(app, cpu);
+    reg32 length = 0;
+    while (byte(app, string + length) != 0)
+        ++length;
+    return length;
 }
 
 }  // namespace
 
-/* 0x469520: the value of the slider at eax (fld dword; its adapter leaves it on the x87's stack). */
+/* 0x469520: the value of the slider at eax (its thunk leaves it on the x87's stack). */
 double draw::sliderStoredValue(App* app, CPU& cpu, reg32 slider)
 {
-    cpu.eax = slider;
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    const x86::Float value = loadFloat(app, cpu.eax + 0x54);
-    cpu.ebp = pop(app, cpu);
-    return value;
+    NFS2_USE(cpu);  // ebp pushed and popped by the code: no value kept
+    return loadFloat(app, slider + 0x54);
 }
 
-/* 0x46afd0: value edx of the two-axis slider at eax (fld dword; its adapter leaves it on the x87's
- * stack). */
+/* 0x46afd0: the value of the slider at eax, end edx's. */
 double draw::twoAxisValue(App* app, CPU& cpu, reg32 slider, reg32 end)
 {
-    cpu.eax = slider;
-    cpu.edx = end;
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    const x86::Float value = loadFloat(app, cpu.eax + cpu.edx * 4 + 0x54);
-    cpu.ebp = pop(app, cpu);
-    return value;
+    NFS2_USE(cpu);
+    return loadFloat(app, slider + end * 4 + 0x54);
 }
 
 /* 0x4956f0: the .qfs file named at eax loaded (the formats' 0x4f2e20,
  * eax its result): the name copied into the frame, [0x55e544]'s extension put
- * after it where it has none of its own. */
-x86::reg32 draw::loadQfs(App* app, CPU& cpu, reg32 fileName)
+ * after it where it has none of its own.   edx holds the loader's flags. */
+x86::reg32 draw::loadQfsFlags(App* app, CPU& cpu, reg32 fileName, reg32 flags)
 {
-    cpu.eax = fileName;
-    enter(app, cpu, {&cpu.ebx, &cpu.ecx, &cpu.esi, &cpu.edi}, 0x200);
-    cpu.ebp -= 0x27e;
-    const reg32 name = cpu.ebp + 0x7e;
-    cpu.edi = name;
-    cpu.esi = cpu.eax;
-    inlineCopy(app, cpu);
-    cpu.edi = name;
-    cpu.ecx = 0xffffffff;
-    cpu.eax = 0;
-    scanBytes(app, cpu);
-    cpu.ecx = ~cpu.ecx - 1;
-    cpu.eax = name + cpu.ecx;
+    // ebx, ecx, esi, edi and ebp pushed by the code, then 0x200 bytes: the frame, whose bottom the
+    // name is built at.
+    cpu.esp -= 4 * 5 + 0x200;
+    const reg32 name = cpu.esp;
+    copyString(app, name, fileName);
+    reg32 at_ = name + stringLength(app, name);
     // Back from its end to a '.', ':', '/' or '\\', or its start.
     for (;;)
     {
-        cpu.eax -= 1;
-        cpu.ecx = name;
-        if (cpu.eax <= cpu.ecx)
+        at_ -= 1;
+        if (at_ <= name)
             break;
-        cpu.bl = byte(app, cpu.eax);
-        if (cpu.bl == '.' || cpu.bl == ':' || cpu.bl == '/' || cpu.bl == '\\')
+        const x86::reg8 c = byte(app, at_);
+        if (c == '.' || c == ':' || c == '/' || c == '\\')
             break;
     }
-    if (byte(app, cpu.eax) != '.')
-    {
-        cpu.edi = name;
-        cpu.esi = at(app, 0x55e544);
-        inlineAppend(app, cpu);
-    }
-    cpu.eax = name;
-    if (!byAddress(app, cpu, kLoadQfsFile))
-        return cpu.eax;
-    cpu.esp = cpu.ebp + 0x27e;
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
-    return cpu.eax;
+    if (byte(app, at_) != '.')
+        copyString(app, name + stringLength(app, name), at(app, 0x55e544));
+    x86::Args loader;
+    loader.eax = name;
+    loader.edx = flags;
+    const std::optional<reg32> block = guest::pointerCall(app, cpu, kLoadQfsFile, loader);
+    if (!block)
+        return 0;
+    cpu.esp += 4 * 5 + 0x200;
+    return *block;
 }
 
-/* The adapters under the game's names, which disassemble_nfs3hp.py binds the addresses to: the
- * arguments from the registers, the core, the ret. */
-void sliderStoredValue(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 sliderStoredValue(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    cpu.fpu.push(x86::Float(draw::sliderStoredValue(app, cpu, cpu.eax)));
+    args.floatSet = true;
+    args.floatResult = draw::sliderStoredValue(app, cpu, args.eax);
     ret(cpu);
+    return args.eax;
 }
 
-void twoAxisValue(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 twoAxisValue(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    cpu.fpu.push(x86::Float(draw::twoAxisValue(app, cpu, cpu.eax, cpu.edx)));
+    args.floatSet = true;
+    args.floatResult = draw::twoAxisValue(app, cpu, args.eax, args.edx);
     ret(cpu);
+    return args.eax;
 }
 
-void loadQfs(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 loadQfs(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    draw::loadQfs(app, cpu, cpu.eax);
+    const x86::reg32 block = draw::loadQfsFlags(app, cpu, args.eax, args.edx);
+    args.eax = block;
     ret(cpu);
+    return args.eax;
 }
 
 }  // namespace frontend

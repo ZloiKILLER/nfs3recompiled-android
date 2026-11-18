@@ -1,4 +1,6 @@
 #include "native_frontend_rendc.h"
+#include "native_load_carmodels.h"
+#include "native_collide.h"
 #include "native_watcom.h"
 #include "native_game.h"
 #include "game_settings.h"
@@ -18,11 +20,56 @@
 #include "native_vertices.h"
 #include "port_draw2d.h"
 #include "port_shapes.h"
+#include "native_graphics.h"
 #include <nfs3hp.h>
 #include <fpu.h>
 #include <cstdint>
 #include <cstring>
 #include <iterator>
+
+/* The thunks defined below under their qualified names. */
+namespace nfs3hp
+{
+namespace frontend
+{
+x86::reg32 rendBlinkColour(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendConeSideOffset(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendConeEdgePoint(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendConesPlace(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendConeCountPass(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendConesHit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendConesReset(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendConesLoad(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendConesFree(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendConesStep(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendConesDraw(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendBoltsClear(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendBoltGlow(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendBoltFreeNode(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendBoltBranch(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendBoltStrike(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendBoltsStep(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendBackImage(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendWrapFraction(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendApproxDistance(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendRotatePlane(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendWithinFlatDistance(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendObjectsBegin(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendObjectsDraw(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendObjectsEnd(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendObjectsCopy(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendModelFree(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendModelTransformAll(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendModelSetAlphas(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendModelSetShading(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendModelSetLight(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendModelSetEnvironment(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendModelSetColour(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendModelTransformPart(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendSkyRandomBetween(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendSkySpritePlace(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+}
+}
 
 /* What the race draws besides the track and the cars' bodies, decompiled:
  *
@@ -44,7 +91,7 @@
  * the ways out that follow a `fnstsw ax`.
  *
  * Plan step 5: each function a typed core in frontend::rendc (native_frontend_rendc.h), in a
- * frame of its own (fe::Frame: what it calls runs at the stack addresses it did), and an adapter
+ * frame of its own (fe::Frame: what it calls runs at the stack addresses it did), and a thunk
  * under the game's name for the calls by address.  A core of this file calls another as C++
  * (guest::direct), and the typed cores of other files too (fe::direct); the rest of the game
  * still by address. */
@@ -63,12 +110,55 @@ namespace
 using fe::args;
 using fe::Guest;
 using fe::GuestString;
-using fe::X87;
 using x86::Float;
 using x86::reg32;
 using x86::sreg32;
 
-/* A generated function's stack argument, by its place, before its frame. */
+/* Guest::call as a call through guest::pointerCall: `arguments`' registers in eax, edx, ebx and ecx, `esi` in esi,
+ * its stack words pushed in order, esp back after; Terminated when the game stopped in it.  `floatResult`, when given,
+ * takes the float the callee gives back. */
+inline reg32 callAt(Guest& guest, reg32 function, const fe::Arguments& arguments = fe::Arguments(), reg32 esi = 0,
+                    double* floatResult = nullptr)
+{
+    x86::CPU& cpu = guest.cpu();
+    x86::Args registers;
+    reg32* const into[4] = { &registers.eax, &registers.edx, &registers.ebx, &registers.ecx };
+    for (std::size_t i = 0; i < arguments.registerCount; ++i)
+        *into[i] = arguments.registers[i];
+    registers.esi = esi;
+    const reg32 esp = cpu.esp;
+    for (std::size_t i = arguments.stackCount; i-- > 0;)
+    {
+        cpu.esp -= 4;
+        guest.setDword(cpu.esp, arguments.stack[i]);
+    }
+    const std::optional<reg32> result = guest::pointerCall(guest.app(), cpu, function, registers);
+    if (!result)
+        throw fe::Terminated();
+    cpu.esp = esp;
+    if (floatResult)
+        *floatResult = registers.floatResult;  // what the callee leaves on the x87's top, as a float result
+    return *result;
+}
+
+/* fild, fld and sub_4dfd56 with fistp (fe::FloatMath's) as plain values: no x87 behind them. */
+class FloatMath
+{
+public:
+    explicit FloatMath(Guest& guest) : m_guest(guest) {}
+    static Float integer(std::int32_t value) { return Float(sreg32(value)); }
+    Float load(reg32 address) const { return Float(m_guest.floatAt(address)); }
+    std::int32_t truncated(const Float& value)
+    {
+        const double chopped = guest::direct<0x4dfd56, watcom::clib::chop>(m_guest.app(), m_guest.cpu(), double(value));
+        return fp::toInteger<sreg32>(chopped);  // fistp
+    }
+
+private:
+    Guest& m_guest;
+};
+
+/* A game function's stack argument, by its place, before its frame. */
 reg32 stackArgument(win32::WinApplication* app, const x86::CPU& cpu, reg32 place)
 {
     return app->getMemory<reg32>(cpu.esp + 4 + 4 * place);
@@ -141,12 +231,9 @@ reg32 fixedMultiply(reg32 a, reg32 b)
 // The game's functions, by address.
 constexpr reg32 kDrawMirroredRecords = 0x4349d0;
 constexpr reg32 kAppendBackslash = 0x4529a0;
-constexpr reg32 kLoadModel = 0x49d450;
 constexpr reg32 kShadeNormals = 0x49da30;
 constexpr reg32 kEnvironmentCoords = 0x49db70;
 constexpr reg32 kCullPolygons = 0x49dbf0;
-constexpr reg32 kTakeWindowAndClear = 0x4d9120;
-constexpr reg32 kFlipAndWait = 0x4d9140;
 constexpr reg32 kSprintf = 0x4df690;
 constexpr reg32 kMultiplyMatrices = 0x4e0280;  // eax, edx them; ebx the product
 constexpr reg32 kTransformPoints = 0x4e0430;   // eax how many; edx them; ebx the matrix; ecx the offset; the stack the result
@@ -259,7 +346,6 @@ x86::reg32 frontend::rendc::coneSideOffset(App* app, CPU& cpu, reg32 slice, reg3
     const reg32 least = 0x20000 - guest.dword(record + kSliceLeftLimit);
     if (sreg32(offset) < sreg32(least))
         offset = least;
-    guest.leaveEdx(least);
     return offset;
 }
 
@@ -288,9 +374,7 @@ x86::reg32 frontend::rendc::coneEdgePoint(App* app, CPU& cpu, reg32 slice, reg32
     guest.setFloat(out, float(fp::mul(Float(sreg32(x)), toMetres)));
     guest.setFloat(out + 4, float(fp::mul(Float(sreg32(y)), toMetres)));
     guest.setFloat(out + 8, float(fp::mul(toMetres, Float(sreg32(z)))));
-    guest.leaveEdx(y);
     // Where copying its local to `out` left esi.
-    guest.setEsi(guest.frame() + 0x24);
     return out;
 }
 
@@ -310,7 +394,7 @@ x86::reg32 frontend::rendc::conesPlace(App* app, CPU& cpu)
     for (reg32 slice = 0; sreg32(slice) < sliceCount(guest); ++slice)
         for (reg32 side = 0; side < 2; ++side)
         {
-            // `point` in esi, as the game's code hands it (ByAddress puts it there).
+            // `point` in esi, as the game's code hands it.
             guest::direct<0x4934c0, coneEdgePoint>(app, cpu, slice, side, point);
             copyDwords(guest, coneAt(guest, side, slice) + kConePosition, point, 3);
         }
@@ -350,7 +434,7 @@ x86::reg32 frontend::rendc::conesPlace(App* app, CPU& cpu)
             for (reg32 axis = 0; axis < 3; ++axis)
                 guest.setDword(fixedPoint + 4 * axis,
                                reg32(fp::toInteger<sreg32>(fp::mul(floatIn(guest, cone + kConePosition + 4 * axis), toFixed))));
-            // `place` in esi, as the game's code hands it (ByAddress puts it there).
+            // `place` in esi, as the game's code hands it.
             fe::direct<0x420650, trackdata::placeAt>(app, cpu, fixedPoint, 1, slice, place);
             const reg32 colour = fe::direct<0x4206f0, trackdata::placeColour>(app, cpu, place, 1);
 
@@ -531,9 +615,14 @@ x86::reg32 frontend::rendc::conesHit(App* app, CPU& cpu, reg32 car)
 /* sub_493e50: every cone back up at its home, for a restart. */
 x86::reg32 frontend::rendc::conesReset(App* app, CPU& cpu)
 {
+    return conesResetKeeping(app, cpu, 0);
+}
+
+x86::reg32 frontend::rendc::conesResetKeeping(App* app, CPU& cpu, reg32 eax)
+{
     Guest guest(app, cpu);
     if (gameSettings(guest).raceOptionCones == 0)
-        return guest.eax();
+        return eax;
     reg32 left = guest.dword(kTick);
     guest.setDword(kConeStepTick, left);
     for (reg32 slice = 0; sreg32(slice) < sliceCount(guest); ++slice)
@@ -559,10 +648,15 @@ const GuestString kConeStrings[] = { { 0x53bd74, "%scone" } };
 /* sub_493ef0: the rows and the model, as the race loads, if not yet there. */
 x86::reg32 frontend::rendc::conesLoad(App* app, CPU& cpu)
 {
+    return conesLoadKeeping(app, cpu, 0);
+}
+
+x86::reg32 frontend::rendc::conesLoadKeeping(App* app, CPU& cpu, reg32 eax)
+{
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 16 + 0x200);
     if (gameSettings(guest).raceOptionCones == 0)
-        return guest.eax();
+        return eax;
     if (guest.dword(kConeRows) == 0)
     {
         for (reg32 side = 0; side < 2; ++side)
@@ -577,7 +671,7 @@ x86::reg32 frontend::rendc::conesLoad(App* app, CPU& cpu)
     {
         const reg32 name = guest.frame();
         fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), name, kConeStrings[0].address, guest::Words{0x7a2934});
-        guest.setDword(kConeModel, guest.call(kLoadModel, args({ name, 8, 0 })));
+        guest.setDword(kConeModel, *fe::direct<0x49d450, load::modelLoaded>(guest.app(), guest.cpu(), name, 8, 0));
     }
     const reg32 now = guest.dword(kTick);
     guest.setDword(kConeStepTick, now);
@@ -587,12 +681,17 @@ x86::reg32 frontend::rendc::conesLoad(App* app, CPU& cpu)
 /* sub_493fb0: the rows and the model given back as the race ends. */
 x86::reg32 frontend::rendc::conesFree(App* app, CPU& cpu)
 {
+    return conesFreeKeeping(app, cpu, 0);
+}
+
+x86::reg32 frontend::rendc::conesFreeKeeping(App* app, CPU& cpu, reg32 eax)
+{
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 16);
     if (gameSettings(guest).raceOptionCones == 0)
-        return guest.eax();
+        return eax;
     // What eax is left with: as it came, or what the last free gave back.
-    reg32 left = guest.eax();
+    reg32 left = eax;
     if (guest.dword(kConeRows) != 0)
     {
         fe::direct<0x4e1890, ea::purgeBlock>(app, cpu, guest.dword(kConeRows));
@@ -686,7 +785,7 @@ x86::reg32 frontend::rendc::conesDraw(App* app, CPU& cpu, reg32 view, reg32 cent
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 20 + 0x34);
     if (gameSettings(guest).raceOptionCones == 0)
-        return guest.eax();
+        return view;  // eax as it came
     const reg32 position = guest.frame();
     const reg32 inView = position + 0x0c;
     const reg32 inViewDepth = inView + 8;
@@ -699,11 +798,10 @@ x86::reg32 frontend::rendc::conesDraw(App* app, CPU& cpu, reg32 view, reg32 cent
         {
             const reg32 cone = coneAt(guest, side, sliceAhead(guest, centre, ahead));
             copyDwords(guest, position, cone + kConePosition, 3);
-            guest.leaveEdx(cone);
             if (guest.word(cone + kConeDownTimer) != 0)
                 continue;
             // By address: what it leaves in edx is what the function leaves when the cone is too far.
-            guest.call(kTransformPoints, args({ 1, position, view + 0x44, view + 0x38 }, { inView }));
+            fe::direct<0x4e0430, vertices::transformPointList>(app, cpu, 1, position, view + 0x44, view + 0x38, inView);
 
             // The far test is on the float's bits, as the game has it: a negative one passes.
             const reg32 depthBits = guest.dword(inViewDepth);
@@ -731,8 +829,7 @@ x86::reg32 frontend::rendc::conesDraw(App* app, CPU& cpu, reg32 view, reg32 cent
             guest::direct<0x49de20, modelTransformPart>(app, cpu, model, detail, 0, model + 0xfc + detail * 12, spin, position,
                                                         view + 0x44, view + 0x38, 0);
 
-            guest.leaveEdx(objects);
-            // `objects` in esi, as the game's code hands it (ByAddress puts it there).
+            // `objects` in esi, as the game's code hands it.
             guest::direct<0x49c4a0, objectsCopy>(app, cpu, objects);
             const float sortDepth = float(fp::sub(depth, floatIn(guest, 0x7dd000)));
             guest::direct<0x49c420, objectsDraw>(app, cpu, view, objects, bitsOf(sortDepth));
@@ -779,7 +876,6 @@ x86::reg32 frontend::rendc::boltGlow(App* app, CPU& cpu, reg32 out, reg32 bright
     const reg32 root = guest.dword(kBoltAlive);
     if (root == 0)
     {
-        guest.leaveEdx(0);
         return 0;
     }
     copyDwords(guest, out, root + kNodePoint, 3);
@@ -787,7 +883,6 @@ x86::reg32 frontend::rendc::boltGlow(App* app, CPU& cpu, reg32 out, reg32 bright
     const sreg32 life = sreg32(guest.dword(kBoltLife));
     const sreg32 level = sreg32(scaled / life);
     guest.setDword(brightness, level < 0xff ? reg32(level) : 0xff);
-    guest.leaveEdx(reg32(sreg32(scaled % life)));
     return 1;
 }
 
@@ -824,7 +919,7 @@ x86::reg32 frontend::rendc::boltBranch(App* app, CPU& cpu, reg32 parent, reg32 s
     guest.setDword(guest.dword(slot) + kNodeLife, guest.dword(parent + kNodeLife));
     guest.setDword(guest.dword(slot) + kNodeIsRoot, 0);
 
-    const reg32 turn = guest.call(kRandom) % 5;
+    const reg32 turn = callAt(guest, kRandom) % 5;
     const Float part = fp::mul(Float(bend), doubleAt(guest, 0x53bda0));
     const Float turned = fp::mul(part, Float(sreg32(turn - 2)));
     guest.setFloat(guest.dword(slot) + kNodeAngle, float(fp::add(turned, floatIn(guest, parent + kNodeAngle))));
@@ -842,21 +937,21 @@ x86::reg32 frontend::rendc::boltBranch(App* app, CPU& cpu, reg32 parent, reg32 s
     guest.setFloat(guest.dword(slot) + kNodeWidth, float(width));
     guest.setDword(guest.dword(slot) + kNodeBelow, 0);
 
-    const bool forks = depth == forkAt && guest.call(kRandom) % forkAt != 0;
+    const bool forks = depth == forkAt && callAt(guest, kRandom) % forkAt != 0;
     // What the last of the branches below gave back, which the game's code adds from eax.
     reg32 node, last;
     if (forks)
     {
-        X87 x87(guest);
+        FloatMath math(guest);
         const reg32 first = guest.dword(slot);
         const Float at = Float(sreg32(forkAt));
-        const reg32 nextFork = reg32(x87.truncated(fp::mul(at, doubleAt(guest, 0x53bda8))));
+        const reg32 nextFork = reg32(math.truncated(fp::mul(at, doubleAt(guest, 0x53bda8))));
         const reg32 below =
             guest::direct<0x494420, boltBranch>(app, cpu, first, first + kNodeNext, forkAt - 1, nextFork, guest.dword(kBoltBend));
         const Float wider = fp::mul(floatIn(guest, kBoltBend), floatIn(guest, 0x53bdb0));
         const Float forkAtFork = fp::mul(at, doubleAt(guest, 0x53bdb8));
         guest.setDword(first + kNodeBelow, guest.dword(first + kNodeBelow) + below);
-        const reg32 forkFork = reg32(x87.truncated(forkAtFork));
+        const reg32 forkFork = reg32(math.truncated(forkAtFork));
         node = guest.dword(slot);
         last = guest::direct<0x494420, boltBranch>(app, cpu, node, node + kNodeFork, reg32(sreg32(depth) >> 1), forkFork,
                                                     bitsOf(float(wider)));
@@ -879,7 +974,7 @@ x86::reg32 frontend::rendc::boltStrike(App* app, CPU& cpu, reg32 x, reg32 y, reg
     const reg32 root = guest::direct<0x4943e0, boltFreeNode>(app, cpu);
     if (root == 0)
         return 0;
-    X87 x87(guest);
+    FloatMath math(guest);
     const Float forkAt = fp::mul(Float(sreg32(guest.dword(kBoltLength))), doubleAt(guest, 0x53bdc0));
     guest.setDword(root + kNodeLife, guest.dword(kBoltLife));
     guest.setDword(root + kNodeIsRoot, 1);
@@ -887,7 +982,7 @@ x86::reg32 frontend::rendc::boltStrike(App* app, CPU& cpu, reg32 x, reg32 y, reg
     guest.setDword(root + kNodePoint + 4, y);
     guest.setDword(root + kNodePoint + 8, z);
     guest.setDword(root + kNodeAngle, angle);
-    const reg32 fork = reg32(x87.truncated(forkAt));
+    const reg32 fork = reg32(math.truncated(forkAt));
     guest.setDword(root + kNodeWidth, 0);
     guest.setDword(root + kNodeBelow, 0);
     const reg32 made =
@@ -915,8 +1010,8 @@ x86::reg32 frontend::rendc::boltsStep(App* app, CPU& cpu)
             const reg32 node = kBoltNodes + i * kBoltNodeBytes;
             if (guest.dword(node + kNodeLife) == 0)
                 continue;
-            const sreg32 wayX = sreg32(guest.call(kRandom) % 3) - 1;
-            const sreg32 wayZ = sreg32(guest.call(kRandom) % 3) - 1;
+            const sreg32 wayX = sreg32(callAt(guest, kRandom) % 3) - 1;
+            const sreg32 wayZ = sreg32(callAt(guest, kRandom) % 3) - 1;
             const Float stepX = fp::mul(Float(wayX), floatIn(guest, node + kNodeWidth));
             const reg32 life = guest.dword(node + kNodeLife) - 1;
             guest.setDword(node + kNodeLife, life);
@@ -941,34 +1036,30 @@ const GuestString kBackImageStrings[] = { { 0x53be48, "%s.qfs" }, { 0x53be20, "b
 
 }  // namespace
 
-x86::reg32 frontend::rendc::backImage(App* app, CPU& cpu)
+x86::reg32 frontend::rendc::backImage(App* app, CPU& cpu, reg32 eax, reg32 edx, reg32 ebx, reg32 ecx)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 24 + 0x100);
-    guest.fpu().init();
-    guest.fpu().setControl(guest.word(0x79f3f4));
     const reg32 path = guest.frame();
-    fe::direct<0x4daf80, port::draw2d::resetScreens>(app, cpu, cpu.esp - 4, port::Args{ cpu.eax, cpu.edx, cpu.ebx, cpu.ecx });
+    fe::direct<0x4daf80, port::draw2d::resetScreens>(app, cpu, cpu.esp - 4, port::Args{ eax, edx, ebx, ecx });
     guest.copyString(path, 0x7a3134);
-    guest.call(kAppendBackslash, args({ path }));
+    callAt(guest, kAppendBackslash, args({ path }));
     const reg32 number = fe::direct<0x478290, frontend::loada::screenSizeNumber>(app, cpu);
-    guest.call(kSprintf, args({}, { path + guest.length(path), kBackImageStrings[0].address, number }));
-    // The flags in edx, which the core takes from there.
-    guest.leaveEdx(0x10);
-    const reg32 file = fe::direct<0x4956f0, draw::loadQfs>(app, cpu, path);
+    fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), path + guest.length(path), kBackImageStrings[0].address, guest::Words{number});
+    const reg32 file = fe::direct<0x4956f0, draw::loadQfsFlags>(app, cpu, path, 0x10u);
     if (file == 0)
         return 0;
     const reg32 shape = fe::direct<0x4ef1e0, frontend::eab::shapeFileFind>(app, cpu, file, kBackImageStrings[1].address);
     // The game's code hands it 0 in ebx too, which it does not read.
-    guest.setDword(0x8b7638, reg32(*fe::direct<0x4d6390, port::shapes::artTexturesOf>(app, cpu, cpu.esp - 4, shape, 0, cpu.ecx)));
-    guest.call(kTakeWindowAndClear);
+    guest.setDword(0x8b7638, reg32(*fe::direct<0x4d6390, port::shapes::artTexturesOf>(app, cpu, cpu.esp - 4, shape, 0, ecx)));
+    fe::direct<0x4d9120, graphics::windowTakenAndCleared>(app, cpu);
     fe::direct<0x4d7990, port::shapes::drawShapeOf>(app, cpu, cpu.esp - 4, std::int32_t(guest.dword(0x8b7638)), 0, 0);
-    guest.call(kFlipAndWait);
-    guest.call(kTakeWindowAndClear);
+    fe::direct<0x4d9140, graphics::flipAndWait>(app, cpu);
+    fe::direct<0x4d9120, graphics::windowTakenAndCleared>(app, cpu);
     fe::direct<0x4d7990, port::shapes::drawShapeOf>(app, cpu, cpu.esp - 4, std::int32_t(guest.dword(0x8b7638)), 0, 0);
     const reg32 freed = *fe::direct<0x4e1890, ea::purgeBlock>(app, cpu, file);
     return reg32(*fe::direct<0x4daf80, port::draw2d::resetScreens>(app, cpu, cpu.esp - 4,
-                                                                    port::Args{ freed, cpu.edx, cpu.ebx, cpu.ecx }));
+                                                                    port::Args{ freed, 0x10, ebx, ecx }));
 }
 
 namespace
@@ -1011,16 +1102,17 @@ x86::reg32 frontend::rendc::wrapFraction(App* app, CPU& cpu, reg32 value)
         return 0xffc00000u;
     }
     // eax goes on as it was, and the double on the stack.
+    double result = 0.0;  // what the callee gives back on the x87's top
     const auto call = [&](reg32 function, reg32 eax, Float argument) {
         const double wide = argument;
         std::uint64_t pieces;
         std::memcpy(&pieces, &wide, sizeof pieces);
-        return guest.call(function, args({ eax }, { reg32(pieces), reg32(pieces >> 32) }));
+        return callAt(guest, function, args({ eax }, { reg32(pieces), reg32(pieces >> 32) }), 0, &result);
     };
     if (sreg32(bits) > 0x3f800000)
     {
         const reg32 left = call(kFloor, bits, floatIn(guest, value));
-        guest.setFloat(value, float(fp::sub(floatIn(guest, value), guest.fpu().take())));
+        guest.setFloat(value, float(fp::sub(floatIn(guest, value), result)));
         return left;
     }
     const x86::reg16 status = fp::compare(0.0, Float(floatOf(bits)));
@@ -1028,7 +1120,7 @@ x86::reg32 frontend::rendc::wrapFraction(App* app, CPU& cpu, reg32 value)
         return withStatus(bits, status);
     const float size = float(-Float(floatOf(bits)));
     const reg32 left = call(kCeil, withStatus(bits, status), Float(size));
-    guest.setFloat(value, float(fp::add(guest.fpu().take(), floatIn(guest, value))));
+    guest.setFloat(value, float(fp::add(result, floatIn(guest, value))));
     return left;
 }
 
@@ -1045,7 +1137,6 @@ x86::reg32 frontend::rendc::approximateDistance(App* app, CPU& cpu, reg32 a, reg
         z = reg32(sreg32(z) >> 2);
     else
         flat = reg32(sreg32(flat) >> 2);
-    guest.leaveEdx(z);
     return flat + z;
 }
 
@@ -1107,7 +1198,7 @@ x86::reg32 frontend::rendc::objectsDraw(App* app, CPU& cpu, reg32 view, reg32 pa
     if (guest.dword(0x7a3a60) == 0)
         fe::direct<0x4c7400, frontend::rende::depthBucketAppend>(app, cpu, view, guest.dword(pair), guest.dword(pair + 4), depth);
     else
-        guest.call(kDrawMirroredRecords, args({ view }, { guest.dword(pair), guest.dword(pair + 4) }));
+        fe::direct<kDrawMirroredRecords, collide::listDrawnMirrored>(guest.app(), guest.cpu(), view, guest.dword(pair));
     const reg32 result = fe::direct<0x4bbe70, frontend::rendd::emptyList>(app, cpu, guest.frame());
     copyDwords(guest, pair, guest.frame(), 2);
     return result;
@@ -1145,7 +1236,6 @@ x86::reg32 frontend::rendc::objectsCopy(App* app, CPU& cpu, reg32 out)
     }
     guest.setDword(out, first);
     guest.setDword(out + 4, last);
-    guest.setEsi(frame + 8);
     return out;
 }
 
@@ -1197,7 +1287,7 @@ struct Chain
 }  // namespace
 
 /* sub_49de20: a part's vertices transformed and projected, and its polygons culled: the
- * nearest depth, which its adapter leaves on the x87 (0 for none). */
+ * nearest depth, which its thunk leaves on the x87 (0 for none). */
 frontend::rendc::Nearest frontend::rendc::modelTransformPart(App* app, CPU& cpu, reg32 model, reg32 part,
                                                              reg32 givenMatrix0, reg32 givenPlace0, reg32 givenMatrix1,
                                                              reg32 givenPlace1, reg32 givenMatrix2, reg32 givenPlace2,
@@ -1221,15 +1311,12 @@ frontend::rendc::Nearest frontend::rendc::modelTransformPart(App* app, CPU& cpu,
     copyDwords(guest, zero, 0x56448c, 3);
 
     // Left as the game leaves them on the ways out without a part.
-    guest.leaveEdx(chain.place0);
     if (model == 0)
     {
-        guest.leaveEcx(0);
         return { redGreen, 0.0 };
     }
     if (sreg32(part) >= sreg32(guest.dword(model + kModelParts)))
     {
-        guest.leaveEcx(model);
         return { part, 0.0 };
     }
 
@@ -1259,20 +1346,19 @@ frontend::rendc::Nearest frontend::rendc::modelTransformPart(App* app, CPU& cpu,
                                                                             allThree, placed, colour);
 
     const reg32 shading = guest.dword(kModelShading);
-    guest.leaveEcx(shading);
     if (shading == 1)
-        guest.call(kShadeNormals, args({ model, count, normals, coords }, { vertices, firstTwo }));
+        callAt(guest, kShadeNormals, args({ model, count, normals, coords }, { vertices, firstTwo }));
     if (chain.environment != 0)
     {
         fe::direct<0x4e0280, vertices::multiplyMatrix>(app, cpu, firstTwo, kEnvironmentMatrix, forEnvironment);
-        guest.call(kEnvironmentCoords, args({ count, normals, coords, vertices }, { forEnvironment }));
+        callAt(guest, kEnvironmentCoords, args({ count, normals, coords, vertices }, { forEnvironment }));
     }
-    guest.call(kCullPolygons, args({ model, part, chain.environment }));
+    callAt(guest, kCullPolygons, args({ model, part, chain.environment }));
     return { bitsOf(nearest), double(nearest) };
 }
 
 /* sub_49d5c0: all a model's parts, each at its place in the model: the nearest depth among
- * them, which its adapter leaves on the x87.  Its registers and stack go straight on to sub_49de20's
+ * them, which its thunk leaves on the x87.  Its registers and stack go straight on to sub_49de20's
  * stack. */
 frontend::rendc::Nearest frontend::rendc::modelTransformAll(App* app, CPU& cpu, reg32 model, reg32 matrix1,
                                                             reg32 place1, reg32 matrix2, reg32 place2, reg32 environment)
@@ -1280,7 +1366,6 @@ frontend::rendc::Nearest frontend::rendc::modelTransformAll(App* app, CPU& cpu, 
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 12 + 0x14);
     reg32 left = model;
-    guest.leaveEdx(0x477fff00);
     reg32 nearest = 0x477fff00;
     for (reg32 part = 0; sreg32(part) < sreg32(guest.dword(model + kModelParts)); ++part)
     {
@@ -1325,7 +1410,7 @@ x86::reg32 frontend::rendc::modelSetEnvironment(App* app, CPU& cpu, reg32 direct
     fe::direct<0x4dfde0, ea::rotateAboutY>(app, cpu, yawMatrix, yaw);
     fe::direct<0x4dfd80, ea::rotateAboutX>(app, cpu, pitchMatrix, pitch);
     // By address: the eax it leaves is this function's answer, and its core hands back none.
-    return guest.call(kMultiplyMatrices, args({ yawMatrix, pitchMatrix, kEnvironmentMatrix }));
+    return callAt(guest, kMultiplyMatrices, args({ yawMatrix, pitchMatrix, kEnvironmentMatrix }));
 }
 
 /* sub_49d8f0: the colour a model is lit from (0xrrggbb): from a third of it (half, for
@@ -1392,7 +1477,6 @@ x86::reg32 frontend::rendc::skyRandomBetween(App* app, CPU& cpu, reg32 a, reg32 
     const sreg32 range = sreg32(high - low + 1);
     const sreg32 value = nextRandomByte(guest);
     const reg32 remainder = reg32(value % range);
-    guest.leaveEdx(remainder);
     return low + remainder;
 }
 
@@ -1467,7 +1551,7 @@ x86::reg32 frontend::rendc::boltsClear(App* app, CPU& cpu)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 8);
-    const reg32 result = guest.call(kFillZero, args({ kBoltNodes, kBoltNodeCount * kBoltNodeBytes }));
+    const reg32 result = fe::direct<kFillZero, ea::clearBytes>(guest.app(), guest.cpu(), kBoltNodes, kBoltNodeCount * kBoltNodeBytes);
     guest.setDword(kBoltStepTick, 0);
     guest.setDword(kBoltAlive, 0);
     return result;
@@ -1488,7 +1572,6 @@ x86::reg32 frontend::rendc::objectsEnd(App* app, CPU& cpu, reg32 out)
     const fe::Frame frame(guest, cpu, 12 + 8);
     fe::direct<0x4bbfc0, frontend::rendd::openListClose>(app, cpu, guest.frame());
     copyDwords(guest, out, guest.frame(), 2);
-    guest.setEsi(guest.frame() + 8);
     return out;
 }
 
@@ -1533,197 +1616,198 @@ x86::reg32 frontend::rendc::modelSetLight(App* app, CPU& cpu, reg32 light)
  * As the game calls them
  * ------------------------------------------------------------------------- */
 
-void frontend::rendBlinkColour(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendBlinkColour(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_491120", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx };
-    const reg32 light = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendc::blinkColour(app, cpu, light); });
+    const reg32 light = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendc::blinkColour(app, cpu, light); });
 }
 
-void frontend::rendConeSideOffset(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendConeSideOffset(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_493380", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 slice = cpu.eax, kind = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendc::coneSideOffset(app, cpu, slice, kind); });
+    const reg32 slice = args.eax, kind = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendc::coneSideOffset(app, cpu, slice, kind); });
 }
 
-void frontend::rendConeEdgePoint(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendConeEdgePoint(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4934c0", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdi };
-    const reg32 slice = cpu.eax, side = cpu.edx, out = cpu.esi;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendc::coneEdgePoint(app, cpu, slice, side, out); });
+    const reg32 slice = args.eax, side = args.edx, out = args.esi;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendc::coneEdgePoint(app, cpu, slice, side, out); });
 }
 
-void frontend::rendConesPlace(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendConesPlace(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_493640", 0, 0, nullptr, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendc::conesPlace(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendc::conesPlace(app, cpu); });
 }
 
-void frontend::rendConeCountPass(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendConeCountPass(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_493a30", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx | fe::kRestoreEsi };
-    const reg32 car = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendc::coneCountPass(app, cpu, car); });
+    const reg32 car = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendc::coneCountPass(app, cpu, car); });
 }
 
-void frontend::rendConesHit(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendConesHit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_493ad0", 0, 0, nullptr, 0 };
-    const reg32 car = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendc::conesHit(app, cpu, car); });
+    const reg32 car = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendc::conesHit(app, cpu, car); });
 }
 
-void frontend::rendConesReset(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendConesReset(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_493e50", 0, 0, nullptr, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendc::conesReset(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendc::conesResetKeeping(app, cpu, args.eax); });
 }
 
-void frontend::rendConesLoad(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendConesLoad(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_493ef0", 0, 0, kConeStrings, std::size(kConeStrings), fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendc::conesLoad(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendc::conesLoadKeeping(app, cpu, args.eax); });
 }
 
-void frontend::rendConesFree(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendConesFree(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_493fb0", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdi };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendc::conesFree(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendc::conesFreeKeeping(app, cpu, args.eax); });
 }
 
-void frontend::rendConesStep(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendConesStep(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_494010", 0, 0, nullptr, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendc::conesStep(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendc::conesStep(app, cpu); });
 }
 
-void frontend::rendConesDraw(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendConesDraw(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_494170", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 view = cpu.eax, slice = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendc::conesDraw(app, cpu, view, slice); });
+    const reg32 view = args.eax, slice = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendc::conesDraw(app, cpu, view, slice); });
 }
 
-void frontend::rendBoltsClear(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendBoltsClear(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_494360", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendc::boltsClear(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendc::boltsClear(app, cpu); });
 }
 
-void frontend::rendBoltGlow(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendBoltGlow(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_494390", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 out = cpu.eax, brightness = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendc::boltGlow(app, cpu, out, brightness); });
+    const reg32 out = args.eax, brightness = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendc::boltGlow(app, cpu, out, brightness); });
 }
 
-void frontend::rendBoltFreeNode(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendBoltFreeNode(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4943e0", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendc::boltFreeNode(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendc::boltFreeNode(app, cpu); });
 }
 
-void frontend::rendBoltBranch(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendBoltBranch(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_494420", 4, 0, nullptr, 0, fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 parent = cpu.eax, slot = cpu.edx, depth = cpu.ebx, forkAt = cpu.ecx;
+    const reg32 parent = args.eax, slot = args.edx, depth = args.ebx, forkAt = args.ecx;
     const reg32 bend = stackArgument(app, cpu, 0);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendc::boltBranch(app, cpu, parent, slot, depth, forkAt, bend); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendc::boltBranch(app, cpu, parent, slot, depth, forkAt, bend); });
 }
 
-void frontend::rendBoltStrike(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendBoltStrike(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4945a0", 16, 0, nullptr, 0 };
     const reg32 x = stackArgument(app, cpu, 0), y = stackArgument(app, cpu, 1), z = stackArgument(app, cpu, 2);
     const reg32 angle = stackArgument(app, cpu, 3);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendc::boltStrike(app, cpu, x, y, z, angle); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendc::boltStrike(app, cpu, x, y, z, angle); });
 }
 
-void frontend::rendBoltsStep(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendBoltsStep(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_494630", 0, 0, nullptr, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendc::boltsStep(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendc::boltsStep(app, cpu); });
 }
 
-void frontend::rendBackImage(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendBackImage(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_495600", 0, 0, kBackImageStrings, std::size(kBackImageStrings) };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendc::backImage(app, cpu); });
+    const reg32 eax = args.eax, edx = args.edx, ebx = args.ebx, ecx = args.ecx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendc::backImage(app, cpu, eax, edx, ebx, ecx); });
 }
 
-void frontend::rendWrapFraction(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendWrapFraction(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4964d0", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    const reg32 value = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendc::wrapFraction(app, cpu, value); });
+    const reg32 value = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendc::wrapFraction(app, cpu, value); });
 }
 
-void frontend::rendApproxDistance(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendApproxDistance(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_496550", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi };
-    const reg32 a = cpu.eax, b = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendc::approximateDistance(app, cpu, a, b); });
+    const reg32 a = args.eax, b = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendc::approximateDistance(app, cpu, a, b); });
 }
 
-void frontend::rendRotatePlane(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendRotatePlane(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_496bf0", 20, 0, nullptr, 0 };
     const reg32 x = stackArgument(app, cpu, 0), y = stackArgument(app, cpu, 1), turn = stackArgument(app, cpu, 2);
     const reg32 outX = stackArgument(app, cpu, 3), outY = stackArgument(app, cpu, 4);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendc::rotatePlane(app, cpu, x, y, turn, outX, outY); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendc::rotatePlane(app, cpu, x, y, turn, outX, outY); });
 }
 
-void frontend::rendWithinFlatDistance(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendWithinFlatDistance(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_496f20", 4, 0, nullptr, 0, fe::kRestoreEcx };
-    const reg32 a = cpu.eax, b = cpu.edx;
+    const reg32 a = args.eax, b = args.edx;
     const reg32 limit = stackArgument(app, cpu, 0);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendc::withinFlatDistance(app, cpu, a, b, limit); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendc::withinFlatDistance(app, cpu, a, b, limit); });
 }
 
-void frontend::rendObjectsBegin(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendObjectsBegin(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_49c410", 0, 0, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendc::objectsBegin(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendc::objectsBegin(app, cpu); });
 }
 
-void frontend::rendObjectsDraw(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendObjectsDraw(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_49c420", 4, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 view = cpu.eax, pair = cpu.edx;
+    const reg32 view = args.eax, pair = args.edx;
     const reg32 depth = stackArgument(app, cpu, 0);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendc::objectsDraw(app, cpu, view, pair, depth); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendc::objectsDraw(app, cpu, view, pair, depth); });
 }
 
-void frontend::rendObjectsEnd(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendObjectsEnd(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_49c470", 0, 0, nullptr, 0, fe::kRestoreEdx | fe::kRestoreEdi };
-    const reg32 out = cpu.esi;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendc::objectsEnd(app, cpu, out); });
+    const reg32 out = args.esi;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendc::objectsEnd(app, cpu, out); });
 }
 
-void frontend::rendObjectsCopy(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendObjectsCopy(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_49c4a0", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx | fe::kRestoreEdi };
-    const reg32 out = cpu.esi;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendc::objectsCopy(app, cpu, out); });
+    const reg32 out = args.esi;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendc::objectsCopy(app, cpu, out); });
 }
 
-void frontend::rendModelFree(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendModelFree(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_49d5a0", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEdx };
-    const reg32 model = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendc::modelFree(app, cpu, model); });
+    const reg32 model = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendc::modelFree(app, cpu, model); });
 }
 
-std::optional<double> frontend::rendc::modelTransformAllCalled(App* app, CPU& cpu)
+std::optional<double> frontend::rendc::modelTransformAllCalled(App* app, CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_49d5c0", 8, 0, nullptr, 0, fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 model = cpu.eax, matrix1 = cpu.edx, place1 = cpu.ebx, matrix2 = cpu.ecx;
+    const reg32 model = args.eax, matrix1 = args.edx, place1 = args.ebx, matrix2 = args.ecx;
     const reg32 place2 = stackArgument(app, cpu, 0), environment = stackArgument(app, cpu, 1);
     std::optional<double> depth;
-    fe::runWhole(app, cpu, site, [&](Guest&) {
+    fe::runThunk(app, cpu, args, site, [&](Guest&) {
         const Nearest nearest = modelTransformAll(app, cpu, model, matrix1, place1, matrix2, place2, environment);
         depth = nearest.depth;
         return nearest.eax;
@@ -1731,57 +1815,61 @@ std::optional<double> frontend::rendc::modelTransformAllCalled(App* app, CPU& cp
     return depth;
 }
 
-void frontend::rendModelTransformAll(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendModelTransformAll(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const std::optional<double> depth = rendc::modelTransformAllCalled(app, cpu);
+    const std::optional<double> depth = rendc::modelTransformAllCalled(app, cpu, args);
     if (depth)
-        cpu.fpu.push(x86::Float(*depth));
+    {
+        args.floatSet = true;
+        args.floatResult = double(*depth);
+    }
+    return args.eax;
 }
 
-void frontend::rendModelSetAlphas(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendModelSetAlphas(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_49d720", 0, 0, nullptr, 0, 0 };
-    const reg32 high = cpu.eax, low = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendc::modelSetAlphas(app, cpu, high, low); });
+    const reg32 high = args.eax, low = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendc::modelSetAlphas(app, cpu, high, low); });
 }
 
-void frontend::rendModelSetShading(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendModelSetShading(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_49d750", 0, 0, nullptr, 0, 0 };
-    const reg32 shading = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendc::modelSetShading(app, cpu, shading); });
+    const reg32 shading = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendc::modelSetShading(app, cpu, shading); });
 }
 
-void frontend::rendModelSetLight(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendModelSetLight(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_49d760", 0, 0, nullptr, 0, fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 light = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendc::modelSetLight(app, cpu, light); });
+    const reg32 light = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendc::modelSetLight(app, cpu, light); });
 }
 
-void frontend::rendModelSetEnvironment(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendModelSetEnvironment(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_49d780", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEdx };
-    const reg32 direction = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendc::modelSetEnvironment(app, cpu, direction); });
+    const reg32 direction = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendc::modelSetEnvironment(app, cpu, direction); });
 }
 
-void frontend::rendModelSetColour(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendModelSetColour(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_49d8f0", 0, 0, nullptr, 0 };
-    const reg32 colour = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendc::modelSetColour(app, cpu, colour); });
+    const reg32 colour = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendc::modelSetColour(app, cpu, colour); });
 }
 
-std::optional<double> frontend::rendc::modelTransformPartCalled(App* app, CPU& cpu)
+std::optional<double> frontend::rendc::modelTransformPartCalled(App* app, CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_49de20", 20, 0, nullptr, 0, fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 model = cpu.eax, part = cpu.edx, matrix0 = cpu.ebx, place0 = cpu.ecx;
+    const reg32 model = args.eax, part = args.edx, matrix0 = args.ebx, place0 = args.ecx;
     const reg32 matrix1 = stackArgument(app, cpu, 0), place1 = stackArgument(app, cpu, 1);
     const reg32 matrix2 = stackArgument(app, cpu, 2), place2 = stackArgument(app, cpu, 3);
     const reg32 environment = stackArgument(app, cpu, 4);
     std::optional<double> depth;
-    fe::runWhole(app, cpu, site, [&](Guest&) {
+    fe::runThunk(app, cpu, args, site, [&](Guest&) {
         const Nearest nearest = modelTransformPart(app, cpu, model, part, matrix0, place0, matrix1, place1, matrix2,
                                                    place2, environment);
         depth = nearest.depth;
@@ -1790,25 +1878,29 @@ std::optional<double> frontend::rendc::modelTransformPartCalled(App* app, CPU& c
     return depth;
 }
 
-void frontend::rendModelTransformPart(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendModelTransformPart(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const std::optional<double> depth = rendc::modelTransformPartCalled(app, cpu);
+    const std::optional<double> depth = rendc::modelTransformPartCalled(app, cpu, args);
     if (depth)
-        cpu.fpu.push(x86::Float(*depth));
+    {
+        args.floatSet = true;
+        args.floatResult = double(*depth);
+    }
+    return args.eax;
 }
 
-void frontend::rendSkyRandomBetween(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendSkyRandomBetween(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4a4060", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi };
-    const reg32 a = cpu.eax, b = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendc::skyRandomBetween(app, cpu, a, b); });
+    const reg32 a = args.eax, b = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendc::skyRandomBetween(app, cpu, a, b); });
 }
 
-void frontend::rendSkySpritePlace(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendSkySpritePlace(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4a40c0", 0, 0, nullptr, 0 };
-    const reg32 sprite = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rendc::skySpritePlace(app, cpu, sprite); });
+    const reg32 sprite = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendc::skySpritePlace(app, cpu, sprite); });
 }
 
 }

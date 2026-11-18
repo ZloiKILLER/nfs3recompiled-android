@@ -1,10 +1,15 @@
 #include "port_text.h"
+#include "port_gamecall.h"
 #include "port_draw2d.h"
 #include "port_sound_effects.h"
 #include "native_controls_input.h"
 #include "native_ea_memory.h"
 #include "native_ea_support.h"
+#include "native_frontend_eaa.h"
 #include "native_frontend_glue.h"
+#include "native_frontend_menub.h"
+#include "native_frontend_simd.h"
+#include "native_vertices.h"
 #include "native_frontend_text.h"
 #include "native_graphics.h"
 #include "native_load_cardb.h"
@@ -16,6 +21,7 @@
 #include <cstring>
 #include <optional>
 #include <string>
+#include <type_traits>
 
 /* The menus' text and the 2D drawing under it, rewritten (port.h says how).
  *
@@ -30,22 +36,21 @@
  *
  * The x87's arithmetic is the game's to the bit: each sum, product and
  * quotient as the x87 rounds it under the control word the game has
- * (cpu.fpu's), each value stored to a float where the game's code stores it,
+ * (single precision), each value stored to a float where the game's code stores it,
  * the integers truncated as __CHP and fistp make them; a width that the
  * game's code leaves on the x87's stack is left there, and the compares the
  * game's code makes leave the status word as they do.  What these call of the
  * game's that is not rewritten -- the 2D screens' text, the render state, the
  * quads' clipping and indices, memmove, the mouse, the keyboard, the files --
  * they call by address, from where the game's code has its stack; the menu's
- * click sound (port::playMenuEffect) as the C++ it is.  A function of this
+ * click sound (port::playMenuEffectOf) as the C++ it is.  A function of this
  * file calls another of it as C++.
  *
  * The game's callers of these read no register but eax after them (by
- * liveness on nfs3.exe), so each adapter gives back every other register as
+ * liveness on nfs3.exe), so each thunk gives back every other register as
  * the caller had it, though the game's code leaves edx and ebx changed in
  * drawText, drawCharacter, takeQuad, queueQuad, unqueueQuad, drawTextAt,
- * drawMenuText, nextWord and the wrapped text's.  tools/game_checks holds
- * each adapter against the game's code for it (text.inc). */
+ * drawMenuText, nextWord and the wrapped text's. */
 #if defined(__clang__)
 #pragma clang fp contract(off)
 #else
@@ -55,18 +60,12 @@
 namespace nfs3hp
 {
 /* nfs3hp_main.cpp's HUD editor measuring each quad queued (at sub_49bd30's
- * start: tools/apply_hud_editor.py). */
+ * start: the port's HUD editor change). */
 void hudQueueQuad(win32::WinApplication* app, x86::reg32 list, x86::reg32 a, x86::reg32 b, x86::reg32 c,
                   x86::reg32 d);
 
 namespace port
 {
-/* port_sound_effects.cpp's menu effect (0x4181d0), declared by its type:
- * tools/game_checks/generate.py would take `void playMenuEffect(` for its
- * definition. */
-using Adapter = void(App* app, CPU& cpu);
-Adapter playMenuEffect;
-
 namespace text
 {
 
@@ -149,8 +148,8 @@ constexpr Var<int32_t> kRepeatFirst{0x664644}, kRepeatNext{0x559440}, kJoystickN
 constexpr Var<reg32> kRepeatNone{0x664650};
 constexpr reg32 kEnter = 0xd, kEscape = 0x1b;
 // The 2D drawing's (port_draw2d.h), called as the game's code calls them.
-constexpr guest::Native kDrawScreenText = draw2d::drawScreenText;  // 0x4da4a0: a 2D screen's text (eax, x edx, y ebx; ecx 1 only measured): its width
-constexpr guest::Native kScreenTextLine = draw2d::drawTurnedText;  // 0x4da120: a line of it at a size (stdcall: size, 0, colour)
+constexpr reg32 kDrawScreenText = 0x4da4a0;  // 0x4da4a0: a 2D screen's text (eax, x edx, y ebx; ecx 1 only measured): its width
+constexpr reg32 kScreenTextLine = 0x4da120;  // 0x4da120: a line of it at a size (stdcall: size, 0, colour)
 // What is not rewritten: called by address.
 constexpr reg32 kRenderState = 0x431900;     // render state eax to edx
 constexpr reg32 kQuadOutcodes = 0x4d5840, kQuadMesh = 0x4c1e20;
@@ -163,6 +162,76 @@ constexpr reg32 kDisplayModeName = 0x448400, kControllerName = 0x43d9f0;
 constexpr reg32 kCarKnown = 0x439cc0, kCarIsPolice = 0x4396b0, kCarName = 0x439250;
 constexpr reg32 kFree = 0x4e1890, kSprintf = 0x4df690, kLoadFile = 0x4e0ec0;
 constexpr int32_t kAltScanCode = 0x38, kPScanCode = 0x19;
+
+/* The typed cores called as C++ where the game's code calls their addresses, from `esp` (the call's frame
+ * base esp - 4 - 4 * Words): their answer in `*result` when given; false when the game stopped in one. */
+template <class T>
+struct is_optional : std::false_type
+{
+};
+template <class T>
+struct is_optional<std::optional<T>> : std::true_type
+{
+};
+
+template <class F>
+bool runCore(CPU& cpu, reg32 esp, reg32* result, F f)
+{
+    cpu.esp = esp;
+    if constexpr (std::is_void_v<decltype(f())>)
+    {
+        f();
+        return !cpu.terminate;
+    }
+    else
+    {
+        const auto v = f();
+        if (cpu.terminate)
+            return false;
+        if constexpr (is_optional<std::decay_t<decltype(v)>>::value)
+        {
+            if (!v)
+                return false;
+            if (result != nullptr)
+                *result = reg32(*v);
+        }
+        else if (result != nullptr)
+            *result = reg32(v);
+        return true;
+    }
+}
+
+template <reg32 Address, auto Core, unsigned Words, typename... A>
+bool coreAt(App* app, CPU& cpu, reg32 esp, reg32* result, A... args)
+{
+    return runCore(cpu, esp, result,
+                   [&] { return guest::direct<Address, Core>(app, cpu, reg32(esp - 4 - 4 * Words), args...); });
+}
+
+template <reg32 Address, auto Core, typename... A>
+bool plainAt(App* app, CPU& cpu, reg32 esp, reg32* result, A... args)
+{
+    return runCore(cpu, esp, result, [&] { return guest::direct<Address, Core>(app, cpu, args...); });
+}
+
+/* A core that leaves eax as it came: `*result` is `eax` after it. */
+template <reg32 Address, auto Core, typename... A>
+bool keepAt(App* app, CPU& cpu, reg32 esp, reg32* result, reg32 eax, A... args)
+{
+    if (result != nullptr)
+        *result = eax;
+    return runCore(cpu, esp, nullptr, [&] { return guest::direct<Address, Core>(app, cpu, args...); });
+}
+
+/* A box core whose four colours the game's code pushes. */
+template <reg32 Address, auto Core>
+bool boxedAt(App* app, CPU& cpu, reg32 esp, reg32* result, reg32 x, reg32 y, reg32 width, reg32 height, reg32 c0,
+             reg32 c1, reg32 c2, reg32 c3)
+{
+    const uint32_t colours[4] = {c0, c1, c2, c3};
+    return coreAt<Address, Core, 4>(app, cpu, esp, result, x, y, width, height, static_cast<const uint32_t*>(colours));
+}
+
 
 reg32 word(App* app, reg32 at)
 {
@@ -227,23 +296,8 @@ void appendString(App* app, reg32 to, reg32 from)
     copyString(app, to + length(app, to), from);
 }
 
-/* A call of the port's own adapter, as the game's code calls the address:
- * from `esp`, its eax. */
-bool callPort(App* app, CPU& cpu, reg32 esp, guest::Native target, Args a, reg32& result)
-{
-    cpu.esp = esp;
-    cpu.eax = a.eax;
-    cpu.edx = a.edx;
-    cpu.ebx = a.ebx;
-    cpu.ecx = a.ecx;
-    if (!guest::call(app, cpu, target))
-        return false;
-    result = cpu.eax;
-    return true;
-}
-
 /* A typed core called as C++ where the game's code calls its address, from `esp`: the registers
- * the call by address loaded are not loaded (the adapters give every one back but eax anyway), its
+ * the call by address loaded are not loaded (the thunks give every one back but eax anyway), its
  * result as the core gives it; cpu.terminate set when the game stopped in it. */
 template <reg32 Address, auto Core, typename... A>
 auto directAt(App* app, CPU& cpu, reg32 esp, A... args)
@@ -306,7 +360,6 @@ Result nameText(App* app, CPU& cpu, reg32 esp, int32_t number, reg32 edx)
     reg32 r;
     if (number >= 0x7a8 && number <= 0x7bc)
     {
-        cpu.edx = edx;  // pushed and popped by its code, as the call by address hands it
         r = directAt<kDisplayModeName, frontend::text::displayModeName>(app, cpu, at, reg32(number));
         if (cpu.terminate)
             return {};
@@ -315,7 +368,8 @@ Result nameText(App* app, CPU& cpu, reg32 esp, int32_t number, reg32 edx)
     if (number >= 0x7bd && number <= 0x7ee)
     {
         const reg32 car = reg32(number - 0x7bd);
-        if (!callGame(app, cpu, at, kCarKnown, {car, car}, {}, r))
+        r = directAt<kCarKnown, frontend::simd::bonusCarLocked>(app, cpu, at, car);
+        if (cpu.terminate)
             return {};
         if (r != 0)
         {
@@ -331,7 +385,6 @@ Result nameText(App* app, CPU& cpu, reg32 esp, int32_t number, reg32 edx)
     }
     if (!(number >= 0x7ef && number <= 0x821) && number >= 0x855 && number <= 0x865)
     {
-        cpu.edx = edx;  // as the call by address hands it; its code sets its own
         r = directAt<kControllerName, frontend::text::controllerName>(app, cpu, at, reg32(number - 0x855));
         if (cpu.terminate)
             return {};
@@ -341,6 +394,17 @@ Result nameText(App* app, CPU& cpu, reg32 esp, int32_t number, reg32 edx)
 }
 
 }  // namespace
+
+/* 0x451400's and 0x451440's cores for the menus' C++ (native_frontend_screen.cpp): no memory written. */
+int32_t screenX(App* app, int32_t x)
+{
+    return onScreenX(app, x);
+}
+
+int32_t screenY(App* app, int32_t y)
+{
+    return onScreenY(app, y);
+}
 
 /* 0x4d1850's: line `number` of the language's text, or a name past them
  * (edx as the caller had it, which those that are names hand on). */
@@ -416,11 +480,12 @@ Result unqueued(App* app, CPU& cpu, reg32 esp, reg32 list, reg32 a, reg32 b, reg
         if (word(app, at) == a && word(app, at + 4) == b && word(app, at + 8) == c && word(app, at + 0xc) == d)
         {
             const reg32 bytes = (word(app, list + kListQueued) - reg32(i)) * 4 - 0x10;
-            reg32 r;
-            if (!callGame(app, cpu, esp - 0x14, kMemmove, {at + 0x10, at, bytes, c}, {}, r))
+            // (0x4ea4f0 leaves eax where it was: the `from`.)
+            directAt<kMemmove, ea::moveMemory>(app, cpu, esp - 0x14, at, at + 0x10, bytes);
+            if (cpu.terminate)
                 return {};
             setWord(app, list + kListQueued, word(app, list + kListQueued) - 4);
-            return int32_t(r);
+            return int32_t(at + 0x10);
         }
     }
     return i;
@@ -456,11 +521,13 @@ Result quadsDrawn(App* app, CPU& cpu, reg32 esp, reg32 list)
     const reg32 vertices = list + kListVertices, numbers = list + kListNumbers;
     reg32 r;
     directAt<kRenderState, graphics::sendState>(app, cpu, at, reg32(1), word(app, list + kListState));
+    if (cpu.terminate)
+        return {};
+    directAt<kQuadOutcodes, draw2d::clipCodes>(app, cpu, at, int32_t(word(app, list + kListQueued)) >> 2, vertices,
+                                               numbers);
     if (cpu.terminate
-        || !callGame(app, cpu, at, kQuadOutcodes,
-                     {reg32(int32_t(word(app, list + kListQueued)) >> 2), vertices, numbers, list}, {}, r)
-        || !callGame(app, cpu, at, kQuadMesh, {reg32(int32_t(word(app, list + kListQueued)) >> 2), vertices, numbers, list},
-                     {}, r))
+        || !coreAt<kQuadMesh, nfs3hp::vertices::quadMeshDrawn, 0>(app, cpu, at, &r, int32_t(word(app, list + kListQueued)) >> 2,
+                                                                  vertices, numbers))
         return {};
     reg32 eax = r;
     for (int32_t i = 0;;)
@@ -475,9 +542,10 @@ Result quadsDrawn(App* app, CPU& cpu, reg32 esp, reg32 list)
             continue;
         }
         const reg32 from = numbers + eax;
-        if (!callGame(app, cpu, at, kMemmove, {from + 0x10, from, (queued - reg32(i)) * 4 - 0x10, list}, {}, r))
+        directAt<kMemmove, ea::moveMemory>(app, cpu, at, from, from + 0x10, (queued - reg32(i)) * 4 - 0x10);
+        if (cpu.terminate)
             return {};
-        eax = r;
+        eax = from + 0x10;  // (0x4ea4f0 leaves eax where it was)
         setWord(app, list + kListQueued, word(app, list + kListQueued) - 4);
     }
     setWord(app, list + kListNextVertex, 0xfff);
@@ -506,9 +574,10 @@ Result fontsDrawn(App* app, CPU& cpu, reg32 esp)
         return {};
     if ((kRenderFlags(app) & 2) != 0)
     {
-        if (!callGame(app, cpu, at, kRenderState, {0x2bf, 0}, {}, r))
+        const std::optional<reg32> answer = directAt<kRenderState, graphics::stateAnswer>(app, cpu, at, reg32(0x2bf), reg32(0));
+        if (!answer || cpu.terminate)
             return {};
-        return int32_t(r);
+        return int32_t(*answer);
     }
     return drawn;
 }
@@ -559,33 +628,32 @@ int32_t characterDropOf(App* app, CPU& cpu, uint8_t c)
  * the next character goes. */
 WidthResult drawnCharacter(App* app, CPU& cpu, reg32 esp, const Character& ch)
 {
-    auto& f = cpu.fpu;
     const int64_t number = x86::sreg32(ch.number);
     reg32 eax = reg32(int32_t(number / kCharacters));
     if (number % kCharacters != 0 && ch.measured == 0)
     {
         const FontTexture texture = kFontTextures(app, kFont(app));
-        const Float perWidth = f.div(Float(1.0), Float(x86::sreg32(texture.width)));
+        const Float perWidth = fp::div(Float(1.0), Float(x86::sreg32(texture.width)));
         const Float width = Float(x86::sreg32(ch.width));
         const float widthF = float(width);
         const Float size = Float(kCharacterSize(app));
-        const Float wide = f.mul(width, size);
+        const Float wide = fp::mul(width, size);
         const Float height = Float(x86::sreg32(ch.height));
         const float heightF = float(height);
-        const Float high = f.mul(height, size);
-        const Float offsetX = f.mul(Float(x86::sreg16(kOffsetX(app, int32_t(ch.number)))), size);
-        const Float perHeight = f.div(Float(1.0), Float(x86::sreg32(texture.height)));
+        const Float high = fp::mul(height, size);
+        const Float offsetX = fp::mul(Float(x86::sreg16(kOffsetX(app, int32_t(ch.number)))), size);
+        const Float perHeight = fp::div(Float(1.0), Float(x86::sreg32(texture.height)));
         const float y = float(Float(x86::sreg32(ch.y)));
-        const Float offsetY = f.mul(size, Float(x86::sreg16(kOffsetY(app, int32_t(ch.number)))));
+        const Float offsetY = fp::mul(size, Float(x86::sreg16(kOffsetY(app, int32_t(ch.number)))));
         const float textureX = float(Float(x86::sreg32(ch.textureX)));
         const float textureY = float(Float(x86::sreg32(ch.textureY)));
         const float wideF = float(wide);
-        const Float left = f.add(offsetX, Float(ch.x));
+        const Float left = fp::add(offsetX, Float(ch.x));
         const float highF = float(high);
         setFloat(app, esp + 4, float(left));
         const int32_t leftPixel = chopped<int32_t>(cpu, left);
-        const float top = float(f.add(offsetY, Float(y)));
-        const Float right = f.add(left, Float(wideF));
+        const float top = float(fp::add(offsetY, Float(y)));
+        const Float right = fp::add(left, Float(wideF));
         const float perWidthF = float(perWidth);
         const float rightF = float(right);
         const int32_t rightPixel = chopped<int32_t>(cpu, right);
@@ -594,7 +662,7 @@ WidthResult drawnCharacter(App* app, CPU& cpu, reg32 esp, const Character& ch)
         if (leftPixel != rightPixel)
         {
             const int32_t topPixel = chopped<int32_t>(cpu, Float(top));
-            const Float bottom = f.add(Float(top), Float(highF));
+            const Float bottom = fp::add(Float(top), Float(highF));
             eax = reg32(topPixel);
             const float bottomF = float(bottom);
             if (topPixel != chopped<int32_t>(cpu, bottom))
@@ -618,20 +686,20 @@ WidthResult drawnCharacter(App* app, CPU& cpu, reg32 esp, const Character& ch)
                 setFloat(app, p0 + kVertexY, float(Float(floatAt(app, p1 + kVertexY))));
                 setWord(app, p3 + kVertexY, bitsOf(bottomF));
                 const float bottomAgain = floatAt(app, p3 + kVertexY);
-                const Float u0 = f.mul(Float(textureX), Float(perWidthF));
+                const Float u0 = fp::mul(Float(textureX), Float(perWidthF));
                 setFloat(app, p2 + kVertexY, float(Float(bottomAgain)));
                 setFloat(app, p3 + kVertexU, float(u0));
-                const Float textureRight = f.add(Float(textureX), Float(widthF));
+                const Float textureRight = fp::add(Float(textureX), Float(widthF));
                 const float u0Again = floatAt(app, p3 + kVertexU);
-                const Float u1 = f.mul(Float(perWidthF), textureRight);
+                const Float u1 = fp::mul(Float(perWidthF), textureRight);
                 setFloat(app, p0 + kVertexU, float(Float(u0Again)));
                 setFloat(app, p2 + kVertexU, float(u1));
                 const float u1Again = floatAt(app, p2 + kVertexU);
-                const Float v0 = f.mul(Float(textureY), Float(perHeightF));
+                const Float v0 = fp::mul(Float(textureY), Float(perHeightF));
                 setFloat(app, p1 + kVertexU, float(Float(u1Again)));
                 setFloat(app, p1 + kVertexV, float(v0));
                 setFloat(app, p0 + kVertexV, float(Float(floatAt(app, p1 + kVertexV))));
-                const Float v1 = f.mul(f.add(Float(textureY), Float(heightF)), Float(perHeightF));
+                const Float v1 = fp::mul(fp::add(Float(textureY), Float(heightF)), Float(perHeightF));
                 setFloat(app, p3 + kVertexV, float(v1));
                 setFloat(app, p2 + kVertexV, float(Float(floatAt(app, p3 + kVertexV))));
                 const Result r = queued(app, cpu, esp - 0x10 - 0x5c - 4 - 4, fontList(app), q[0].number, q[1].number,
@@ -644,7 +712,7 @@ WidthResult drawnCharacter(App* app, CPU& cpu, reg32 esp, const Character& ch)
     }
     const x86::sreg16 advance = kAdvance(app, int32_t(ch.number));
     eax = (eax & 0xffff0000) | x86::reg16(advance);
-    return Width{eax, f.mul(Float(advance), Float(kCharacterSize(app)))};
+    return Width{eax, fp::mul(Float(advance), Float(kCharacterSize(app)))};
 }
 
 WidthResult measured(App* app, CPU& cpu, reg32 esp, reg32 text);
@@ -670,7 +738,6 @@ WidthResult measuredWithOverhang(App* app, CPU& cpu, reg32 esp, reg32 text)
  * How wide. */
 WidthResult drawnText(App* app, CPU& cpu, reg32 esp, reg32 text, int32_t x, int32_t y)
 {
-    auto& f = cpu.fpu;
     const reg32 at = esp - 0x10 - 0x18;
     const reg32 colour = kTextColour(app) | 0xff000000;
     float place = float(Float(x86::sreg32(x)));
@@ -681,13 +748,12 @@ WidthResult drawnText(App* app, CPU& cpu, reg32 esp, reg32 text, int32_t x, int3
         if (!w)
             return {};
         const float width = float(w->value);
-        const Float end = f.add(Float(place), Float(width));
+        const Float end = fp::add(Float(place), Float(width));
         const float screen = float(Float(x86::sreg32(kScreenWidth(app))));
-        f.compare(end, Float(screen));
-        if (!f.status.c0)
+        if ((fp::compare(end, Float(screen)) & 0x100) == 0)
         {
             // Past the edge: moved back to end a pixel short of it.
-            place = float(f.add(f.sub(Float(screen), Float(width)), Float(kMinusOne(app))));
+            place = float(fp::add(fp::sub(Float(screen), Float(width)), Float(kMinusOne(app))));
             start = place;
         }
     }
@@ -701,9 +767,9 @@ WidthResult drawnText(App* app, CPU& cpu, reg32 esp, reg32 text, int32_t x, int3
         const WidthResult advance = drawnCharacter(app, cpu, at - 0x18 - 4, ch);
         if (!advance)
             return {};
-        place = float(f.add(advance->value, Float(place)));
+        place = float(fp::add(advance->value, Float(place)));
     }
-    return Width{0, f.sub(Float(place), Float(start))};
+    return Width{0, fp::sub(Float(place), Float(start))};
 }
 
 /* 0x4d1430's: how wide text `text` is, in whole pixels. */
@@ -771,13 +837,10 @@ Result menuTextWidth(App* app, CPU& cpu, reg32 esp, reg32 text, reg32 font)
         return chopped<int32_t>(cpu, fp::div(wide, Float(x86::sreg32(kScreenWidth(app)))));
     }
     reg32 r;
-    if (!callGame(app, cpu, at, kDrawScreenText, {text, 0, 0, 1}, {}, r))
+    if (!coreAt<0x4da4a0, draw2d::screenText, 0>(app, cpu, at, &r, text, 0, 0, 1))
         return {};
     return int32_t(r);
 }
-
-namespace
-{
 
 /* 0x4513c0's: the menus' text's colour: the 3D card's font's in a race's
  * pause screens, the 2D screens' otherwise. */
@@ -799,12 +862,10 @@ Result textDrawnAt(App* app, CPU& cpu, reg32 esp, reg32 text, int32_t x, int32_t
         return fontsDrawn(app, cpu, at - 4);
     }
     reg32 r;
-    if (!callGame(app, cpu, at, kDrawScreenText, {text, reg32(x), reg32(y), 0}, {}, r))
+    if (!coreAt<0x4da4a0, draw2d::screenText, 0>(app, cpu, at, &r, text, reg32(x), reg32(y), 0))
         return {};
     return int32_t(r);
 }
-
-}  // namespace
 
 /* 0x452190's: text `text` (none: nothing) in font `font` at x, y -- its right
  * there with alignment 1 or 4, its middle with 2 or 5; past 2 with a shadow
@@ -843,11 +904,9 @@ reg32 dimmed(App* app, CPU& cpu, reg32 slot, reg32 eax)
     if (kInRace(app) != 0)
     {
         const double shade = double(Float(floatAt(app, slot)));
-        cpu.fpu.compare(Float(1.0), Float(shade));
-        if (!cpu.fpu.status.c0 && !cpu.fpu.status.c3)
+        if ((fp::compare(Float(1.0), Float(shade)) & 0x4100) == 0)
         {
-            cpu.fpu.compare(Float(shade), Float(kSixTenths(app)));
-            eax = cpu.fpu.status.c0 ? kShadeLess(app) : kShadeMost(app);
+            eax = (fp::compare(Float(shade), Float(kSixTenths(app))) & 0x100) != 0 ? kShadeLess(app) : kShadeMost(app);
         }
         else
             eax = kShadeFull(app);
@@ -930,27 +989,11 @@ int32_t wordTaken(App* app, reg32 from, reg32 to)
     return n;
 }
 
-/* What 0x451cd0 is handed: the text, its font, colour and place (y moves a
- * line down as each is drawn, in the argument's place on the stack), how wide
- * a line may be; where to put how wide the widest line is, how high the box,
- * how many lines; whether it is only measured; which lines are drawn, from
- * the first. */
-struct Box
-{
-    reg32 text, font, colour;
-    int32_t x, y;
-    int32_t width;
-    reg32 widest, height, lines;
-    int32_t measureOnly;
-    int32_t count, first;
-};
-
 /* 0x451cd0's: a text wrapped into a box a word at a time, each line drawn by
  * the 2D screens' font at its size [0x559450], 14 of it a line -- in a race's
  * pause screens only measured, as one line.  eax as its code leaves it. */
 Result wrapped(App* app, CPU& cpu, reg32 esp, Box b)
 {
-    auto& f = cpu.fpu;
     const reg32 at = esp - 0xc - 0x490;  // where its calls are made from
     const reg32 line = at;                // the line so far, 0x400 bytes
     const reg32 wordBuffer = esp - 0x9c;  // the word taken
@@ -960,7 +1003,7 @@ Result wrapped(App* app, CPU& cpu, reg32 esp, Box b)
         setWord(app, b.widest, 5);
     if (b.height != 0)
         setWord(app, b.height,
-                reg32(chopped<int32_t>(cpu, f.mul(Float(kScreenTextSize(app)), Float(kScreenLineHeight(app))))));
+                reg32(chopped<int32_t>(cpu, fp::mul(Float(kScreenTextSize(app)), Float(kScreenLineHeight(app))))));
     kScreenFont.set(app, b.font);
     reg32 eax = b.font;
     if (b.text == 0)
@@ -977,8 +1020,8 @@ Result wrapped(App* app, CPU& cpu, reg32 esp, Box b)
     }
     const auto drawLine = [&](reg32 shown) {
         reg32 r;
-        if (!callGame(app, cpu, at, kScreenTextLine, {line, reg32(b.x), reg32(b.y)},
-                      {bitsOf(kScreenTextSize(app)), shown, b.colour + kScreenTextShade(app)}, r))
+        if (!coreAt<0x4da120, draw2d::turnedText, 3>(app, cpu, at, &r, line, b.x, b.y, bitsOf(kScreenTextSize(app)),
+                                                     int32_t(shown), b.colour + kScreenTextShade(app)))
             return false;
         eax = r;
         return true;
@@ -1004,9 +1047,9 @@ Result wrapped(App* app, CPU& cpu, reg32 esp, Box b)
         const reg32 end = line + length(app, line);
         appendString(app, line, wordBuffer);
         reg32 w;
-        if (!callGame(app, cpu, at, kDrawScreenText, {line, 0, 0, 1}, {}, w))
+        if (!coreAt<0x4da4a0, draw2d::screenText, 0>(app, cpu, at, &w, line, 0, 0, 1))
             return {};
-        lastWidth = chopped<int32_t>(cpu, f.mul(Float(x86::sreg32(w)), Float(kScreenTextSize(app))));
+        lastWidth = chopped<int32_t>(cpu, fp::mul(Float(x86::sreg32(w)), Float(kScreenTextSize(app))));
         measuredLine = true;
         eax = reg32(lastWidth);
         if (b.width < lastWidth || newLine)
@@ -1016,7 +1059,7 @@ Result wrapped(App* app, CPU& cpu, reg32 esp, Box b)
             {
                 // The word goes to the next line: this one without it.
                 setByte(app, end, 0);
-                if (!callGame(app, cpu, at, kDrawScreenText, {line, 0, 0, 1}, {}, w))
+                if (!coreAt<0x4da4a0, draw2d::screenText, 0>(app, cpu, at, &w, line, 0, 0, 1))
                     return {};
                 eax = w;
                 if (int32_t(w) > widest)
@@ -1027,9 +1070,9 @@ Result wrapped(App* app, CPU& cpu, reg32 esp, Box b)
             ++lines;
             if (drawn)
             {
-                const Float down = f.mul(Float(kScreenTextSize(app)), Float(kScreenLineHeight(app)));
+                const Float down = fp::mul(Float(kScreenTextSize(app)), Float(kScreenLineHeight(app)));
                 eax = reg32(b.y);
-                b.y = chopped<int32_t>(cpu, f.add(down, Float(x86::sreg32(b.y))));
+                b.y = chopped<int32_t>(cpu, fp::add(down, Float(x86::sreg32(b.y))));
                 setWord(app, ySlot, reg32(b.y));
             }
             eax = reg32(lines);
@@ -1049,7 +1092,7 @@ Result wrapped(App* app, CPU& cpu, reg32 esp, Box b)
     {
         eax = reg32(lines + 1) * 14;
         setWord(app, b.height,
-                reg32(chopped<int32_t>(cpu, f.mul(Float(x86::sreg32(eax)), Float(kScreenTextSize(app))))));
+                reg32(chopped<int32_t>(cpu, fp::mul(Float(x86::sreg32(eax)), Float(kScreenTextSize(app))))));
     }
     if (b.widest != 0)
     {
@@ -1109,15 +1152,18 @@ Result capturedKeys(App* app, CPU& cpu, reg32 esp)
 {
     const reg32 at = esp - 4;
     reg32 r;
-    if (!callGame(app, cpu, at, kKeyDown, {kAltScanCode}, {}, r))
+    r = directAt<kKeyDown, frontend::eaa::keyStateByte>(app, cpu, at, reg32(kAltScanCode));
+    if (cpu.terminate)
         return {};
     if (r == 0)
         return int32_t(r);
-    if (!callGame(app, cpu, at, kKeyDown, {kPScanCode}, {}, r))
+    r = directAt<kKeyDown, frontend::eaa::keyStateByte>(app, cpu, at, reg32(kPScanCode));
+    if (cpu.terminate)
         return {};
     if (r == 0)
         return int32_t(r);
-    if (!callGame(app, cpu, at, kScreenCapture, {r}, {}, r))
+    r = directAt<0x452410, frontend::menub::menuCaptureScreen>(app, cpu, at);
+    if (cpu.terminate)
         return {};
     return int32_t(r);
 }
@@ -1142,14 +1188,10 @@ Result mouseKey(App* app, CPU& cpu, reg32 esp)
 
 /* Whether key `key` is held down (GetAsyncKeyState's top bit), eax the key
  * and esp `at` as the code has them: the port's own, called as C++
- * (native_windows.h); in the check through its import's slot. */
+ * (native_windows.h). */
 std::optional<bool> keyHeld(App* app, CPU& cpu, reg32 at, reg32 key)
 {
     cpu.esp = at;
-    cpu.eax = key;
-    cpu.edx = 0;
-    cpu.ebx = 0;
-    cpu.ecx = 0;
     const std::optional<reg32> state = guest::windows<kGetKeyState, &host::asyncKeyState>(app, cpu, key);
     if (!state)
         return {};
@@ -1204,15 +1246,23 @@ Result menuKeyOf(App* app, CPU& cpu, reg32 esp, reg32 repeating)
         scanCode = eax = scanCodeOf(key);
     if (scanCode != 0 && key == 0)
         key = eax = keyOf(scanCode);
-    if (key != 0 && !callGame(app, cpu, at, kKeyFeedback, {eax}, {}, eax))
+    if (key != 0 && !gameCall(app, cpu, at, kKeyFeedback, {eax}, {}, eax))
         return {};
     kKey.set(app, key);
     kKeyScanCode.set(app, scanCode);
     if (key != 0)
         kLastKey.set(app, key);
-    // The menu click through its adapter, as C++: the checks run the game's code for it on both sides here.
-    if (key == kEnter && !callPort(app, cpu, at, playMenuEffect, {1, 0x7f}, eax))
-        return {};
+    // The menu click as C++.
+    if (key == kEnter)
+    {
+        // By name: esp as the call leaves it.
+        cpu.esp = at;
+        const Result click = playMenuEffectOf(app, cpu, at - 4, 1, 0x7f);
+        cpu.esp = at;
+        if (!click)
+            return {};
+        eax = reg32(*click);
+    }
     if (repeating != 0 && kHeldKey(app) != 0)
     {
         for (const reg32 held : {kEnter, kEscape})
@@ -1271,66 +1321,67 @@ void restoreTextScaleOf(App* app, CPU& cpu)
     scaleSet(app, cpu, kKeptTextScale(app));
 }
 
-/* ---- The adapters: the game's registers and stack in, the result in eax
+/* ---- The thunks: the game's registers and stack in, the result in eax
  * (a width on the x87's stack too) out. ---- */
 
 namespace
 {
 
-void backWith(CPU& cpu, const Entry& e, const WidthResult& w, reg32 popped = 0)
+reg32 backWith(CPU& cpu, x86::Args& args, const Entry& e, const WidthResult& w, reg32 popped = 0)
 {
     if (!w)
-        return;
-    e.back(cpu, w->eax, popped);
-    cpu.fpu.push(w->value);
+        return args.eax;
+    args.floatSet = true;
+    args.floatResult = w->value;
+    return e.back(cpu, args, w->eax, popped);
 }
 
 }  // namespace
 
 /* 0x452020: how wide the text at eax is in font edx. */
-void textWidth(App* app, CPU& cpu)
+x86::reg32 textWidth(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, menuTextWidth(app, cpu, e.esp, e.eax, e.edx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, menuTextWidth(app, cpu, e.esp, e.eax, e.edx));
 }
 
 /* 0x452100: the 2D screens' font, eax. */
-void selectFont(App* app, CPU& cpu)
+x86::reg32 selectFont(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     selectFontOf(app, e.eax);
-    e.back(cpu, e.eax);
+    return e.back(cpu, args, e.eax);
 }
 
 /* 0x4d1430: how wide the text at eax is, in whole pixels, onto the x87's
  * stack. */
-void measureText(App* app, CPU& cpu)
+x86::reg32 measureText(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    backWith(cpu, e, measured(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return backWith(cpu, args, e, measured(app, cpu, e.esp, e.eax));
 }
 
 /* 0x4d1480: the text at eax measured, its last character's overhang added,
  * onto the x87's stack. */
-void textWidthWithOverhang(App* app, CPU& cpu)
+x86::reg32 textWidthWithOverhang(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    backWith(cpu, e, measuredWithOverhang(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return backWith(cpu, args, e, measuredWithOverhang(app, cpu, e.esp, e.eax));
 }
 
 /* 0x4d1000: the text at eax at x edx, y ebx; how wide onto the x87's stack. */
-void drawText(App* app, CPU& cpu)
+x86::reg32 drawText(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    backWith(cpu, e, drawnText(app, cpu, e.esp, e.eax, int32_t(e.edx), int32_t(e.ebx)));
+    const Entry e(cpu, args);
+    return backWith(cpu, args, e, drawnText(app, cpu, e.esp, e.eax, int32_t(e.edx), int32_t(e.ebx)));
 }
 
 /* 0x4d06f0 (stdcall 0x18): character eax with its texture's square at edx,
  * ebx, x (a float), y, width, height, colour and whether only measured the
  * stack's words; how far the next goes onto the x87's stack. */
-void drawCharacter(App* app, CPU& cpu)
+x86::reg32 drawCharacter(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     const Character ch{e.eax,
                        int32_t(e.edx),
                        int32_t(e.ebx),
@@ -1340,231 +1391,247 @@ void drawCharacter(App* app, CPU& cpu)
                        int32_t(e.arg(app, 3)),
                        e.arg(app, 4),
                        int32_t(e.arg(app, 5))};
-    backWith(cpu, e, drawnCharacter(app, cpu, e.esp, ch), 0x18);
+    return backWith(cpu, args, e, drawnCharacter(app, cpu, e.esp, ch), 0x18);
 }
 
 /* 0x49bcd0: the next free vertex of the list at eax: its number to [ebx], its
  * address to [edx] and eax. */
-void takeQuad(App* app, CPU& cpu)
+x86::reg32 takeQuad(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     // As the game's code orders the writes: the number, the list, the address.
     const reg32 n = word(app, e.eax + kListNextVertex);
     setWord(app, e.ebx, n);
     setWord(app, e.eax + kListNextVertex, n - 1);
     const reg32 vertex = e.eax + kListVertices + (n << 5);
     setWord(app, e.edx, vertex);
-    e.back(cpu, vertex);
+    return e.back(cpu, args, vertex);
 }
 
-/* 0x4beb80: the screen's viewport: its left to [eax], top to [edx], width to
- * [ebx], height to [ecx] and eax. */
-void viewport(App* app, CPU& cpu)
+Result quadQueued(App* app, CPU& cpu, reg32 esp, reg32 list, reg32 a, reg32 b, reg32 c, reg32 d)
 {
-    const Entry e(cpu);
-    const Rectangle r = screenViewport(app);
-    setWord(app, e.eax, reg32(r.left));
-    setWord(app, e.edx, reg32(r.top));
-    setWord(app, e.ebx, reg32(r.width));
-    setWord(app, e.ecx, reg32(r.height));
-    e.back(cpu, reg32(r.height));
+    return queued(app, cpu, esp, list, a, b, c, d);
+}
+
+Result quadUnqueued(App* app, CPU& cpu, reg32 esp, reg32 list, reg32 a, reg32 b, reg32 c, reg32 d)
+{
+    return unqueued(app, cpu, esp, list, a, b, c, d);
+}
+
+Result quadsFlushed(App* app, CPU& cpu, reg32 esp, reg32 list)
+{
+    return quadsDrawn(app, cpu, esp, list);
+}
+
+x86::reg32 viewport(App* app, CPU& cpu, x86::Args& args)
+{
+    const Entry e(cpu, args);
+    return e.back(cpu, args, viewportOf(app, e.eax, e.edx, e.ebx, e.ecx));
 }
 
 /* 0x451400, 0x451440: eax on the 640 by 480 screen of the menus, on the
  * screen's own. */
-void toScreenX(App* app, CPU& cpu)
+x86::reg32 toScreenX(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, reg32(onScreenX(app, int32_t(e.eax))));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, reg32(onScreenX(app, int32_t(e.eax))));
 }
 
-void toScreenY(App* app, CPU& cpu)
+x86::reg32 toScreenY(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, reg32(onScreenY(app, int32_t(e.eax))));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, reg32(onScreenY(app, int32_t(e.eax))));
 }
 
 /* 0x4d17b0: the text of number eax past the language's lines. */
-void specialText(App* app, CPU& cpu)
+x86::reg32 specialText(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, nameText(app, cpu, e.esp, int32_t(e.eax), e.edx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, nameText(app, cpu, e.esp, int32_t(e.eax), e.edx));
 }
 
 /* 0x4d1850: line eax of the language's text, or a name past them. */
-void languageText(App* app, CPU& cpu)
+x86::reg32 languageText(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, lineText(app, cpu, e.esp, int32_t(e.eax), e.edx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, lineText(app, cpu, e.esp, int32_t(e.eax), e.edx));
 }
 
 /* 0x4d1340: both fonts' quads drawn. */
-void flushFonts(App* app, CPU& cpu)
+x86::reg32 flushFonts(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, fontsDrawn(app, cpu, e.esp));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, fontsDrawn(app, cpu, e.esp));
 }
 
 /* 0x4d1390 (stdcall 4): the text scale set to the float on the stack, the one
  * before onto the x87's stack; eax as it was. */
-void setTextScale(App* app, CPU& cpu)
+x86::reg32 setTextScale(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     const double was = textScaleSet(app, cpu, e.arg(app, 0));
-    e.back(cpu, e.eax, 4);
-    cpu.fpu.push(Float(was));
+    args.floatSet = true;
+    args.floatResult = was;
+    return e.back(cpu, args, e.eax, 4);
 }
 
 /* 0x4d1400: the text scale kept, eax it. */
-void keepTextScale(App* app, CPU& cpu)
+x86::reg32 keepTextScale(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, keepTextScaleOf(app));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, keepTextScaleOf(app));
 }
 
 /* 0x4d1410: the text scale kept put back. */
-void restoreTextScale(App* app, CPU& cpu)
+x86::reg32 restoreTextScale(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     restoreTextScaleOf(app, cpu);
-    e.back(cpu, e.eax);
+    return e.back(cpu, args, e.eax);
 }
 
 /* 0x4d1540, 0x4d1590: character al's height (less one) and its offset down,
  * in pixels of the font as it is drawn. */
-void characterWidth(App* app, CPU& cpu)
+x86::reg32 characterWidth(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, reg32(characterHeightOf(app, cpu, uint8_t(e.eax))));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, reg32(characterHeightOf(app, cpu, uint8_t(e.eax))));
 }
 
-void characterOverhang(App* app, CPU& cpu)
+x86::reg32 characterOverhang(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, reg32(characterDropOf(app, cpu, uint8_t(e.eax))));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, reg32(characterDropOf(app, cpu, uint8_t(e.eax))));
 }
 
 /* 0x4513c0: the menus' text's colour, eax. */
-void setTextColour(App* app, CPU& cpu)
+x86::reg32 setTextColour(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     textColourSet(app, e.eax);
-    e.back(cpu, e.eax);
+    return e.back(cpu, args, e.eax);
 }
 
 /* 0x451480, 0x4514c0: eax on the screen's own, on the menus' 640 by 480. */
-void screenToMenuX(App* app, CPU& cpu)
+x86::reg32 screenToMenuX(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, reg32(onMenuX(app, int32_t(e.eax))));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, reg32(onMenuX(app, int32_t(e.eax))));
 }
 
-void screenToMenuY(App* app, CPU& cpu)
+x86::reg32 screenToMenuY(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, reg32(onMenuY(app, int32_t(e.eax))));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, reg32(onMenuY(app, int32_t(e.eax))));
+}
+
+/* 0x451500's core for the menus' C++ (native_frontend_glue.cpp): the mouse read to the four addresses; false
+ * when the game stopped. */
+bool mouseRead(App* app, CPU& cpu, reg32 esp, reg32 buttons, reg32 x, reg32 y, reg32 wheel)
+{
+    return menuMouseRead(app, cpu, esp, buttons, x, y, wheel).has_value();
 }
 
 /* 0x451500: the mouse read to [eax] (buttons), [edx] (x), [ebx] (y), [ecx]
  * (the wheel). */
-void readMenuMouse(App* app, CPU& cpu)
+x86::reg32 readMenuMouse(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, menuMouseRead(app, cpu, e.esp, e.eax, e.edx, e.ebx, e.ecx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, menuMouseRead(app, cpu, e.esp, e.eax, e.edx, e.ebx, e.ecx));
 }
 
 /* 0x451530 (stdcall 4): the screen behind the menus dimmed by the float on
  * the stack. */
-void dimBackground(App* app, CPU& cpu)
+x86::reg32 dimBackground(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, dimmed(app, cpu, e.esp + 4, e.eax), 4);
+    const Entry e(cpu, args);
+    return e.back(cpu, args, dimmed(app, cpu, e.esp + 4, e.eax), 4);
 }
 
 /* 0x451590: text eax at edx, ebx of the menus' screen. */
-void drawTextAt(App* app, CPU& cpu)
+x86::reg32 drawTextAt(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, textDrawnAt(app, cpu, e.esp, e.eax, int32_t(e.edx), int32_t(e.ebx)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, textDrawnAt(app, cpu, e.esp, e.eax, int32_t(e.edx), int32_t(e.ebx)));
 }
 
 /* 0x452190 (stdcall 8): text eax in font ecx at edx, ebx, its alignment and
  * colour the stack's words. */
-void drawMenuText(App* app, CPU& cpu)
+x86::reg32 drawMenuText(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu,
+    const Entry e(cpu, args);
+    return e.finish(cpu, args,
              menuTextDrawn(app, cpu, e.esp, e.eax, int32_t(e.edx), int32_t(e.ebx), e.ecx, int32_t(e.arg(app, 0)),
                            e.arg(app, 1)),
              8);
 }
 
 /* 0x49be40: the font's quads of the list at eax drawn. */
-void flushQuads(App* app, CPU& cpu)
+x86::reg32 flushQuads(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, quadsDrawn(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, quadsDrawn(app, cpu, e.esp, e.eax));
 }
 
 /* 0x451700: the joystick as a menu key: none (its code is not in this build
  * of the game). */
-void joystickKey(App*, CPU& cpu)
+x86::reg32 joystickKey(App*, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, 0);
+    const Entry e(cpu, args);
+    return e.back(cpu, args, 0);
 }
 
 /* 0x451810: the screen captured on Alt+P. */
-void captureKeys(App* app, CPU& cpu)
+x86::reg32 captureKeys(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, capturedKeys(app, cpu, e.esp));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, capturedKeys(app, cpu, e.esp));
 }
 
 /* 0x451840, 0x4518c0: menu key eax's scan code; scan code eax's key. */
-void scanCodeOfKey(App*, CPU& cpu)
+x86::reg32 scanCodeOfKey(App*, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, scanCodeOf(e.eax));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, scanCodeOf(e.eax));
 }
 
-void keyOfScanCode(App*, CPU& cpu)
+x86::reg32 keyOfScanCode(App*, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, keyOf(e.eax));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, keyOf(e.eax));
 }
 
 /* 0x451960: the menus' key, repeating with eax set. */
-void menuKey(App* app, CPU& cpu)
+x86::reg32 menuKey(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, menuKeyOf(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, menuKeyOf(app, cpu, e.esp, e.eax));
 }
 
 /* 0x451b20: no key held. */
-void resetMenuKey(App* app, CPU& cpu)
+x86::reg32 resetMenuKey(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     kRepeatFirst.set(app, 0);
     kRepeatNone.set(app, 0xffffffff);
     kHeldKey.set(app, 0);
-    e.back(cpu, e.eax);
+    return e.back(cpu, args, e.eax);
 }
 
 /* 0x451b50: the next word of the text at eax into edx; how much it took. */
-void nextWord(App* app, CPU& cpu)
+x86::reg32 nextWord(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, reg32(wordTaken(app, e.eax, e.edx)));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, reg32(wordTaken(app, e.eax, e.edx)));
 }
 
 /* 0x451cd0 (stdcall 0x20): the text at eax wrapped into a box, in font edx,
  * colour ebx, at x ecx; y, the width, where the widest line, the height and
  * the lines go, whether only measured, how many lines from which drawn, the
  * stack's words. */
-void drawWrappedText(App* app, CPU& cpu)
+x86::reg32 drawWrappedText(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     const Box b{e.eax,
                 e.edx,
                 e.ebx,
@@ -1577,72 +1644,103 @@ void drawWrappedText(App* app, CPU& cpu)
                 int32_t(e.arg(app, 5)),
                 int32_t(e.arg(app, 6)),
                 int32_t(e.arg(app, 7))};
-    e.finish(cpu, wrapped(app, cpu, e.esp, b), 0x20);
+    return e.finish(cpu, args, wrapped(app, cpu, e.esp, b), 0x20);
 }
 
 /* 0x451fc0 (stdcall 0x18): that box, every line drawn. */
-void drawTextBox(App* app, CPU& cpu)
+x86::reg32 drawTextBox(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    const Box b{e.eax,
-                e.edx,
-                e.ebx,
-                int32_t(e.ecx),
-                int32_t(e.arg(app, 0)),
-                int32_t(e.arg(app, 1)),
-                e.arg(app, 2),
-                e.arg(app, 3),
-                e.arg(app, 4),
-                int32_t(e.arg(app, 5)),
-                0x400,
-                0};
-    e.finish(cpu, wrapped(app, cpu, e.esp - 0xc - 0x20 - 4, b), 0x18);
+    const Entry e(cpu, args);
+    return e.finish(cpu, args,
+             wrappedBoxDrawn(app, cpu, e.esp, e.eax, e.edx, e.ebx, int32_t(e.ecx), int32_t(e.arg(app, 0)),
+                             int32_t(e.arg(app, 1)), e.arg(app, 2), e.arg(app, 3), e.arg(app, 4),
+                             int32_t(e.arg(app, 5))),
+             0x18);
 }
 
 /* 0x451ff0 (stdcall 8): the text at eax in font edx measured in a box ebx
  * wide: the widest line to [ecx], the height and the lines to the stack's
  * words. */
-void measureTextBox(App* app, CPU& cpu)
+x86::reg32 measureTextBox(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    const Box b{e.eax, e.edx, 0, 0, 0, int32_t(e.ebx), e.ecx, e.arg(app, 0), e.arg(app, 1), 1, 0x400, 0};
-    e.finish(cpu, wrapped(app, cpu, e.esp - 0xc - 0x20 - 4, b), 8);
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, boxMeasured(app, cpu, e.esp, e.eax, e.edx, int32_t(e.ebx), e.ecx, e.arg(app, 0), e.arg(app, 1)), 8);
 }
 
 /* 0x452110: the menus' end: nothing to do. */
-void menusEnd(App*, CPU& cpu)
+x86::reg32 menusEnd(App*, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, e.eax);
+    const Entry e(cpu, args);
+    return e.back(cpu, args, e.eax);
 }
 
 /* 0x49bd30 (stdcall 4): the quad of vertices edx, ebx, ecx and the stack's
  * word queued on the list at eax. */
-void queueQuad(App* app, CPU& cpu)
+x86::reg32 queueQuad(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, queued(app, cpu, e.esp, e.eax, e.edx, e.ebx, e.ecx, e.arg(app, 0)), 4);
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, queued(app, cpu, e.esp, e.eax, e.edx, e.ebx, e.ecx, e.arg(app, 0)), 4);
 }
 
 /* 0x49bdc0 (stdcall 4): and taken off it. */
-void unqueueQuad(App* app, CPU& cpu)
+x86::reg32 unqueueQuad(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, unqueued(app, cpu, e.esp, e.eax, e.edx, e.ebx, e.ecx, e.arg(app, 0)), 4);
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, unqueued(app, cpu, e.esp, e.eax, e.edx, e.ebx, e.ecx, e.arg(app, 0)), 4);
 }
 
 /* 0x49c000: the mouse as a menu key. */
-void mouseMenuKey(App* app, CPU& cpu)
+x86::reg32 mouseMenuKey(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, mouseKey(app, cpu, e.esp));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, mouseKey(app, cpu, e.esp));
 }
 
 /* 0x4d1750: the language eax's text loaded. */
-void loadLanguageText(App* app, CPU& cpu)
+x86::reg32 loadLanguageText(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, loadedLanguageText(app, cpu, e.esp, int32_t(e.eax)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, loadedLanguageText(app, cpu, e.esp, int32_t(e.eax)));
+}
+
+/* The cores of 0x451cd0, 0x4d1540, 0x4d1590 and 0x4beb80 for the menus' code (port_text.h). */
+Result wrappedText(App* app, CPU& cpu, reg32 esp, Box b)
+{
+    return wrapped(app, cpu, esp, b);
+}
+
+Result wrappedBoxDrawn(App* app, CPU& cpu, reg32 esp, reg32 text, reg32 font, reg32 colour, int32_t x, int32_t y,
+                       int32_t width, reg32 widest, reg32 height, reg32 lines, int32_t measureOnly)
+{
+    const Box b{text, font, colour, x, y, width, widest, height, lines, measureOnly, 0x400, 0};
+    return wrapped(app, cpu, esp - 0xc - 0x20 - 4, b);
+}
+
+Result boxMeasured(App* app, CPU& cpu, reg32 esp, reg32 text, reg32 font, int32_t width, reg32 widest, reg32 height,
+                   reg32 lines)
+{
+    const Box b{text, font, 0, 0, 0, width, widest, height, lines, 1, 0x400, 0};
+    return wrapped(app, cpu, esp - 0xc - 0x20 - 4, b);
+}
+
+int32_t characterHeight(App* app, CPU& cpu, reg32 character)
+{
+    return characterHeightOf(app, cpu, uint8_t(character));
+}
+
+int32_t characterDrop(App* app, CPU& cpu, reg32 character)
+{
+    return characterDropOf(app, cpu, uint8_t(character));
+}
+
+reg32 viewportOf(App* app, reg32 leftAt, reg32 topAt, reg32 widthAt, reg32 heightAt)
+{
+    const Rectangle r = screenViewport(app);
+    setWord(app, leftAt, reg32(r.left));
+    setWord(app, topAt, reg32(r.top));
+    setWord(app, widthAt, reg32(r.width));
+    setWord(app, heightAt, reg32(r.height));
+    return reg32(r.height);
 }
 
 }  // namespace text

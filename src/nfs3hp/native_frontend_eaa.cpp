@@ -1,4 +1,5 @@
 #include "native_frontend_eaa.h"
+#include "native_load_saves.h"
 #include "native_watcom.h"
 #include "native_game.h"
 #include "native_ea_files.h"
@@ -13,10 +14,12 @@
 #include "native_frontend_watb.h"
 #include "native_frontend_wina.h"
 #include "native_frontend.h"
+#include "native_frontend_pcall.h"
 #include "native_windows.h"
 #include "host_threads.h"
 #include "host_video.h"
 #include "host_window.h"
+#include "native_render.h"
 #include <nfs3hp.h>
 #include <lib/winapp.h>
 #include <winapi/types.h>
@@ -27,15 +30,75 @@
 #include <utility>
 #include <cstddef>
 
+/* The thunks defined below by qualified name, declared where they are defined. */
+namespace nfs3hp
+{
+namespace frontend {
+x86::reg32 memViewerRun(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 memViewerOpen(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+void memViewerClose(win32::WinApplication* app, x86::CPU& cpu);
+x86::reg32 memViewerFirstDraw(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 memViewerStatsLine(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 memViewerListBlocks(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 memViewerHeader(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 memViewerRows(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 memViewerStatusLine(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 memViewerDescribeBlock(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 memViewerCountShapes(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 memViewerMenu(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+void memViewerNextClass(win32::WinApplication* app, x86::CPU& cpu);
+x86::reg32 memViewerFlagText(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 memViewerSortMode(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 memViewerCompare(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 memPoolTotals(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 memPoolFirstBlock(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 memPoolCountBlocks(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 memPoolNextBlock(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 viewerBlockSize(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 memBlockData(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 viewerBlockFlags(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 memBlockKind(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 memBlockIsFree(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 memViewerViewShapes(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 memViewerViewWindow(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 memViewerViewBitmap(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 memShapeBits(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 memViewerHexDump(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 memViewerHexPage(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 memViewerWriteMap(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 memViewerFreeFileName(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 textLoadFonts(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 udffOpen(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 udffClose(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 udffReadWord(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 fileSizeOpened(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 fileSize(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 bitmapDrawToScreen(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 bitmapDrawInto(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 bitmapReadPixels(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 bitmapTgaSize(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 bitmapWriteTga(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 bitmapSaveTga(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 keyStateByte(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 ddrawCreate(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 ddrawMakePrimary(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 ddrawLockSurface(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 countBits(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 ddrawNoteMode(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 ddrawInit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 ddrawAccessDisplay(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 ddrawRemoveSurfaces(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 ddrawConfigDisplay(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+}  // frontend
+}  // namespace nfs3hp
+
 namespace nfs3hp
 {
 namespace
 {
 
-/* A typed core called as C++ (fe::direct) whose function changes no register but eax (as
- * tools/frontend_checks/specs_from_exe.py reads it): the registers left as the call by address
- * leaves them -- `words` in eax, edx, ebx and ecx as that call loads them, the first `Taken` of
- * them the core's arguments -- and its result in eax, which the call by address leaves there. */
+/* A typed core called as C++ (fe::direct) whose function changes no register but eax: the first `Taken` of `words` its arguments,
+ * its result in eax. */
 template <x86::reg32 Address, auto Core, std::size_t... I>
 auto directOf(win32::WinApplication* app, x86::CPU& cpu, const x86::reg32* words, std::index_sequence<I...>)
 {
@@ -46,15 +109,11 @@ template <x86::reg32 Address, auto Core, std::size_t Taken, typename... Words>
 x86::reg32 directKept(win32::WinApplication* app, x86::CPU& cpu, Words... words)
 {
     const x86::reg32 all[] = { x86::reg32(words)..., 0 };
-    x86::reg32* const into[] = { &cpu.eax, &cpu.edx, &cpu.ebx, &cpu.ecx };
-    for (std::size_t i = 0; i < sizeof...(Words) && i < 4; ++i)
-        *into[i] = all[i];
     const auto result = directOf<Address, Core>(app, cpu, all, std::make_index_sequence<Taken>{});
     if constexpr (std::is_same_v<std::remove_cv_t<decltype(result)>, x86::reg32>)
-        cpu.eax = result;
+        return result;
     else
-        cpu.eax = *result;
-    return cpu.eax;
+        return *result;
 }
 
 }  // namespace
@@ -82,11 +141,10 @@ x86::reg32 directKept(win32::WinApplication* app, x86::CPU& cpu, Words... words)
  *
  * All their state stays in guest memory.  What they call of the game is called by address but
  * the typed cores (below); Windows' functions and DirectDraw's methods are the port's own,
- * called as C++ (windows, thunked, method), in the checks through their slots, thunks and
- * tables; what each function leaves in eax and in the registers it does not save is kept.
+ * called as C++ (windows, thunked, method); what each function leaves in eax and in the registers it does not save is kept.
  *
  * Plan step 5: each function a typed core in frontend::eaa (native_frontend_eaa.h), in a frame
- * of its own where the game's function has one (fe::Frame), and an adapter under the game's
+ * of its own where the game's function has one (fe::Frame), and a thunk under the game's
  * name that reads the arguments from the registers and the stack for the calls by address.  A
  * core calls this file's and native_frontend_eab.cpp's as C++ (guest::direct), and the typed
  * cores of EA's libraries, of native_frontend_menz.cpp and of the other files with a header
@@ -109,7 +167,6 @@ using fe::kRestoreEcx;
 using fe::kRestoreEdi;
 using fe::kRestoreEdx;
 using fe::kRestoreEsi;
-using fe::runWhole;
 using fe::Site;
 using x86::reg32;
 using x86::sreg32;
@@ -180,7 +237,7 @@ public:
     reg32 metric(reg32 which)
     {
         const reg32 table = m_guest.dword(kConsole);
-        return m_guest.call(m_guest.dword(table + 0x08), args({ which }));
+        return fe::pointerCall(m_guest, m_guest.dword(table + 0x08), args({ which }));
     }
     /* At a column and a row, printf's arguments after them. */
     reg32 print(std::initializer_list<reg32> stack)
@@ -189,12 +246,12 @@ public:
         Arguments arguments;
         for (const reg32 value : stack)
             arguments.stack[arguments.stackCount++] = value;
-        return m_guest.call(m_guest.dword(table + 0x0c), arguments);
+        return fe::pointerCall(m_guest, m_guest.dword(table + 0x0c), arguments);
     }
     reg32 drawShape(reg32 shape, reg32 bits, reg32 x, reg32 y)
     {
         const reg32 table = m_guest.dword(kConsole);
-        return m_guest.call(m_guest.dword(table + 0x14), args({ shape, bits, x, y }));
+        return fe::pointerCall(m_guest, m_guest.dword(table + 0x14), args({ shape, bits, x, y }));
     }
     reg32 key() { return callSlot(0x18); }
     reg32 init() { return callSlot(0x1c); }
@@ -202,19 +259,19 @@ public:
     reg32 clear(reg32 x, reg32 y, reg32 w, reg32 h, reg32 colour)
     {
         const reg32 table = m_guest.dword(kConsole);
-        return m_guest.call(m_guest.dword(table + 0x20), args({ x, y, w, h }, { colour }));
+        return fe::pointerCall(m_guest, m_guest.dword(table + 0x20), args({ x, y, w, h }, { colour }));
     }
     reg32 colours(reg32 foreground, reg32 background)
     {
         const reg32 table = m_guest.dword(kConsole);
-        return m_guest.call(m_guest.dword(table + 0x24), args({ foreground, background }));
+        return fe::pointerCall(m_guest, m_guest.dword(table + 0x24), args({ foreground, background }));
     }
 
 private:
     reg32 callSlot(reg32 slot)
     {
         const reg32 table = m_guest.dword(kConsole);
-        return m_guest.call(m_guest.dword(table + slot), args({ table }));
+        return fe::pointerCall(m_guest, m_guest.dword(table + slot), args({ table }));
     }
 
     Guest& m_guest;
@@ -295,7 +352,7 @@ void measureAndShow(Guest& guest, x86::CPU& cpu, reg32 total, reg32 used, reg32 
                                                                 guest.dword(available), guest.dword(largest));
 }
 
-/* An adapter's stack argument `index` (0 the first), above the return address. */
+/* A thunk's stack argument `index` (0 the first), above the return address. */
 reg32 stackWord(win32::WinApplication* app, const x86::CPU& cpu, reg32 index)
 {
     return app->getMemory<reg32>(cpu.esp + 4 + 4 * index);
@@ -320,10 +377,13 @@ x86::reg32 frontend::eaa::memViewerRun(App* app, CPU& cpu, reg32 table)
     {
         // Else room for the table on the stack, if there is any.
         reg32 room = 0;
-        // stackavail, handed the count sub_4993d0 left in eax.
-        if (g.call(0x4f45c0, args({ blocks })) > 0x2000)
+        // stackavail; the count sub_4993d0 left in eax is not read by it.
+        if (fe::direct<0x4f45c0, watcom::clib::stackavail>(app, cpu) > 0x2000)
         {
-            g.call(0x4f4610, args({}, { 0x2000 }));
+            cpu.esp -= 4;  // __GRO's word, 0x2000, below the return address
+            g.setDword(cpu.esp, 0x2000);
+            fe::direct<0x4f4610, watcom::clib::stackProbed>(app, cpu, 0x2000u);
+            cpu.esp += 4;
             cpu.esp -= 0x2000;
             room = cpu.esp;
         }
@@ -521,11 +581,11 @@ x86::reg32 frontend::eaa::memViewerRun(App* app, CPU& cpu, reg32 table)
     return kKeyEscape;
 }
 
-void frontend::memViewerRun(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::memViewerRun(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_497620", 0, 0, nullptr, 0, kRestoreAll };
-    const reg32 table = cpu.eax;
-    runWhole(app, cpu, site, [&](Guest&) { return eaa::memViewerRun(app, cpu, table); });
+    const reg32 table = args.eax;
+    return runThunk(app, cpu, args, site, [&](Guest&) { return eaa::memViewerRun(app, cpu, table); });
 }
 
 /* sub_497ba0: the viewer's state, and the screen's size, afresh. */
@@ -558,23 +618,23 @@ x86::reg32 frontend::eaa::memViewerOpen(App* app, CPU& cpu)
     return result;
 }
 
-void frontend::memViewerOpen(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::memViewerOpen(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_497ba0", 0, 0, nullptr, 0, kRestoreEbx | kRestoreEcx | kRestoreEdx };
-    runWhole(app, cpu, site, [&](Guest&) { return eaa::memViewerOpen(app, cpu); });
+    return runThunk(app, cpu, args, site, [&](Guest&) { return eaa::memViewerOpen(app, cpu); });
 }
 
 /* sub_497cb0: nothing, at the viewer's end. */
-x86::reg32 frontend::eaa::memViewerClose(App* app, CPU& cpu)
+void frontend::eaa::memViewerClose(App* app, CPU& cpu)
 {
-    Guest g(app, cpu);
-    return g.eax();
+    (void)app;
+    (void)cpu;
 }
 
-void frontend::memViewerClose(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::memViewerClose(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_497cb0", 0, 0, nullptr, 0, 0 };
-    runWhole(app, cpu, site, [&](Guest&) { return eaa::memViewerClose(app, cpu); });
+    return runThunk(app, cpu, args, site, [&](Guest&) { eaa::memViewerClose(app, cpu); return args.eax; });
 }
 
 /* sub_497cc0: the whole screen, first: the numbers, the list, the header, its rows. */
@@ -590,11 +650,11 @@ x86::reg32 frontend::eaa::memViewerFirstDraw(App* app, CPU& cpu, reg32 blocks)
     return guest::direct<0x498370, memViewerRows>(app, cpu);  // the count in eax too, which it does not read
 }
 
-void frontend::memViewerFirstDraw(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::memViewerFirstDraw(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_497cc0", 0, 0, nullptr, 0, kRestoreEbx | kRestoreEcx | kRestoreEdx | kRestoreEsi };
-    const reg32 blocks = cpu.eax;
-    runWhole(app, cpu, site, [&](Guest&) { return eaa::memViewerFirstDraw(app, cpu, blocks); });
+    const reg32 blocks = args.eax;
+    return runThunk(app, cpu, args, site, [&](Guest&) { return eaa::memViewerFirstDraw(app, cpu, blocks); });
 }
 
 /* sub_497d20: the numbers at the top, as many lines as they take: eax the total, edx
@@ -662,17 +722,14 @@ x86::reg32 frontend::eaa::memViewerStatsLine(App* app, CPU& cpu, reg32 total, re
         g.setDword(kListTop, row);
         g.setDword(kHeaderRow, row);
     }
-    g.leaveEbx(lastRow);
-    g.leaveEcx(g.dword(kConsole));
-    g.leaveEdx(lastRow);
     return header;
 }
 
-void frontend::memViewerStatsLine(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::memViewerStatsLine(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_497d20", 0, 0, nullptr, 0, kRestoreEsi | kRestoreEdi };
-    const reg32 total = cpu.eax, used = cpu.edx, available = cpu.ebx, largest = cpu.ecx;
-    runWhole(app, cpu, site, [&](Guest&) {
+    const reg32 total = args.eax, used = args.edx, available = args.ebx, largest = args.ecx;
+    return runThunk(app, cpu, args, site, [&](Guest&) {
         return eaa::memViewerStatsLine(app, cpu, total, used, available, largest);
     });
 }
@@ -705,11 +762,11 @@ x86::reg32 frontend::eaa::memViewerListBlocks(App* app, CPU& cpu, reg32 blocks)
     return listed;
 }
 
-void frontend::memViewerListBlocks(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::memViewerListBlocks(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_497fe0", 0, 0, nullptr, 0, kRestoreAll };
-    const reg32 blocks = cpu.eax;
-    runWhole(app, cpu, site, [&](Guest&) { return eaa::memViewerListBlocks(app, cpu, blocks); });
+    const reg32 blocks = args.eax;
+    return runThunk(app, cpu, args, site, [&](Guest&) { return eaa::memViewerListBlocks(app, cpu, blocks); });
 }
 
 /* sub_498090: the columns' header, and the list's size under it. */
@@ -803,10 +860,10 @@ x86::reg32 frontend::eaa::memViewerHeader(App* app, CPU& cpu)
     return result;
 }
 
-void frontend::memViewerHeader(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::memViewerHeader(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_498090", 0, 0, nullptr, 0, kRestoreAll };
-    runWhole(app, cpu, site, [&](Guest&) { return eaa::memViewerHeader(app, cpu); });
+    return runThunk(app, cpu, args, site, [&](Guest&) { return eaa::memViewerHeader(app, cpu); });
 }
 
 /* sub_498370: the list's rows: the names' column, then a column at a time; only the
@@ -980,10 +1037,10 @@ x86::reg32 frontend::eaa::memViewerRows(App* app, CPU& cpu)
     return console.end();
 }
 
-void frontend::memViewerRows(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::memViewerRows(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_498370", 0, 0, nullptr, 0, kRestoreAll };
-    runWhole(app, cpu, site, [&](Guest&) { return eaa::memViewerRows(app, cpu); });
+    return runThunk(app, cpu, args, site, [&](Guest&) { return eaa::memViewerRows(app, cpu); });
 }
 
 /* sub_4989a0: the line at the bottom, of the block selected: eax its index. */
@@ -1001,11 +1058,11 @@ x86::reg32 frontend::eaa::memViewerStatusLine(App* app, CPU& cpu, reg32 index)
     return console.colours(0, 1);
 }
 
-void frontend::memViewerStatusLine(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::memViewerStatusLine(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_4989a0", 0, 0, nullptr, 0, kRestoreEbx | kRestoreEcx | kRestoreEdx | kRestoreEsi };
-    const reg32 index = cpu.eax;
-    runWhole(app, cpu, site, [&](Guest&) { return eaa::memViewerStatusLine(app, cpu, index); });
+    const reg32 index = args.eax;
+    return runThunk(app, cpu, args, site, [&](Guest&) { return eaa::memViewerStatusLine(app, cpu, index); });
 }
 
 /* sub_498a40: what the status line says of a block: eax its index, edx its kind
@@ -1016,12 +1073,10 @@ x86::reg32 frontend::eaa::memViewerDescribeBlock(App* app, CPU& cpu, reg32 index
     const fe::Frame frame(g, cpu, 0x20);
     const reg32 fp = g.frame() + 0x10;
     const reg32 showFile = g.dword(kShowFile);
-    g.leaveEbx(showFile);
     for (const reg32 at : { fp - 0xc, fp - 8, fp - 4, fp - 0x10 })
         g.setDword(at, 0);
     if (showFile != 0)
     {
-        g.leaveEdx(index * 8);
         const reg32 name = directKept<0x4e15e0, ea::blockNameOf, 1>(g.app(), g.cpu(), listedBlock(g, index) + 0x10);
         return fe::direct<kSprintf, watcom::clib::sprintf>(g.app(), g.cpu(), text, 0x53c1ac, guest::Words{name, 0x53c0e0});
     }
@@ -1036,8 +1091,6 @@ x86::reg32 frontend::eaa::memViewerDescribeBlock(App* app, CPU& cpu, reg32 index
         guest::direct<0x498b70, memViewerCountShapes>(app, cpu, listedBlock(g, index) + 0x10, fp - 0x10, fp - 0xc, fp - 8,
                                                       fp - 4);
         const reg32 columns = g.dword(kColumnsTotal);
-        g.leaveEbx(columns);
-        g.leaveEdx(g.dword(fp - 8));
         return fe::direct<kSprintf, watcom::clib::sprintf>(g.app(), g.cpu(), text, std::int32_t(columns) < 0x46 ? 0x53c0e4u : 0x53c10cu, guest::Words{g.dword(fp - 0x10), g.dword(fp - 8), g.dword(fp - 4), g.dword(fp - 0xc)});
     }
     case 4:
@@ -1049,11 +1102,11 @@ x86::reg32 frontend::eaa::memViewerDescribeBlock(App* app, CPU& cpu, reg32 index
     }
 }
 
-void frontend::memViewerDescribeBlock(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::memViewerDescribeBlock(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_498a40", 0, 0, nullptr, 0, kRestoreEcx | kRestoreEsi | kRestoreEdi };
-    const reg32 index = cpu.eax, kind = cpu.edx, text = cpu.ebx;
-    runWhole(app, cpu, site, [&](Guest&) { return eaa::memViewerDescribeBlock(app, cpu, index, kind, text); });
+    const reg32 index = args.eax, kind = args.edx, text = args.ebx;
+    return runThunk(app, cpu, args, site, [&](Guest&) { return eaa::memViewerDescribeBlock(app, cpu, index, kind, text); });
 }
 
 /* sub_498b70: the entries of a pack by what they are: eax the pack, edx the number of
@@ -1069,11 +1122,8 @@ x86::reg32 frontend::eaa::memViewerCountShapes(App* app, CPU& cpu, reg32 pack, r
     reg32 i = 0;
     for (; std::int32_t(i) < std::int32_t(g.dword(countAt)); ++i)
     {
-        g.leaveEcx(i);
-        g.leaveEbx(fp - 0x10);  // the game's code hands it in ebx, where it stays to this one's exit
         fe::direct<0x4ea665, wina::tableEntry>(app, cpu, pack, i, fp - 0x10);
         const reg32 shape = guest::direct<0x4ef1e0, eab::shapeFileFind>(app, cpu, pack, fp - 0x10);
-        g.leaveEdx(shape);
         const reg32 type = g.dword(shape) & 0x7f;
         reg32 counter;
         if (type == 0x7c || type == 0x6e || type == 0x6f || (type & 0x70) == 0x20)
@@ -1082,16 +1132,15 @@ x86::reg32 frontend::eaa::memViewerCountShapes(App* app, CPU& cpu, reg32 pack, r
             counter = (g.dword(shape) & 0x80) != 0 ? packed : unpacked;
         g.setDword(counter, g.dword(counter) + 1);
     }
-    g.leaveEcx(i);
     return countAt;
 }
 
-void frontend::memViewerCountShapes(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::memViewerCountShapes(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_498b70", 4, 0, nullptr, 0, kRestoreEsi | kRestoreEdi };
-    const reg32 pack = cpu.eax, countAt = cpu.edx, others = cpu.ebx, packed = cpu.ecx;
+    const reg32 pack = args.eax, countAt = args.edx, others = args.ebx, packed = args.ecx;
     const reg32 unpacked = stackWord(app, cpu, 0);
-    runWhole(app, cpu, site, [&](Guest&) {
+    return runThunk(app, cpu, args, site, [&](Guest&) {
         return eaa::memViewerCountShapes(app, cpu, pack, countAt, others, packed, unpacked);
     });
 }
@@ -1152,7 +1201,7 @@ x86::reg32 frontend::eaa::memViewerMenu(App* app, CPU& cpu)
             break;
         case kKeyEnter:
             done = true;
-            g.call(g.dword(reg32(chosen) * 12 + kMenuEntries + 8));
+            fe::pointerCall(g, g.dword(reg32(chosen) * 12 + kMenuEntries + 8));
             break;
         default:
             break;
@@ -1168,14 +1217,14 @@ x86::reg32 frontend::eaa::memViewerMenu(App* app, CPU& cpu)
     return console.colours(0, 1);
 }
 
-void frontend::memViewerMenu(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::memViewerMenu(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_498bf0", 0, 0, nullptr, 0, kRestoreAll };
-    runWhole(app, cpu, site, [&](Guest&) { return eaa::memViewerMenu(app, cpu); });
+    return runThunk(app, cpu, args, site, [&](Guest&) { return eaa::memViewerMenu(app, cpu); });
 }
 
 /* sub_498e10: the next pool that exists. */
-x86::reg32 frontend::eaa::memViewerNextClass(App* app, CPU& cpu)
+void frontend::eaa::memViewerNextClass(App* app, CPU& cpu)
 {
     Guest g(app, cpu);
     reg32 pool = g.dword(kPoolShown);
@@ -1183,13 +1232,12 @@ x86::reg32 frontend::eaa::memViewerNextClass(App* app, CPU& cpu)
         pool = (pool + 1) & 0xf;
     while (g.dword(pool * 4 + kPools) == 0);
     g.setDword(kPoolShown, pool);
-    return g.eax();
 }
 
-void frontend::memViewerNextClass(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::memViewerNextClass(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_498e10", 0, 0, nullptr, 0, kRestoreEdx };
-    runWhole(app, cpu, site, [&](Guest&) { return eaa::memViewerNextClass(app, cpu); });
+    return runThunk(app, cpu, args, site, [&](Guest&) { eaa::memViewerNextClass(app, cpu); return args.eax; });
 }
 
 /* sub_498e40: a block's flags in eax as letters at edx. */
@@ -1210,11 +1258,11 @@ x86::reg32 frontend::eaa::memViewerFlagText(App* app, CPU& cpu, reg32 flags, reg
     return last;
 }
 
-void frontend::memViewerFlagText(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::memViewerFlagText(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_498e40", 0, 0, nullptr, 0, kRestoreEcx };
-    const reg32 flags = cpu.eax, text = cpu.edx;
-    runWhole(app, cpu, site, [&](Guest&) { return eaa::memViewerFlagText(app, cpu, flags, text); });
+    const reg32 flags = args.eax, text = args.edx;
+    return runThunk(app, cpu, args, site, [&](Guest&) { return eaa::memViewerFlagText(app, cpu, flags, text); });
 }
 
 /* sub_498f00: choosing the column to sort by: the arrows move along the header, Up
@@ -1229,6 +1277,7 @@ x86::reg32 frontend::eaa::memViewerSortMode(App* app, CPU& cpu, reg32 blocks)
     g.setDword(kSortColumn, 0);
     g.setDword(kSortAscending, 1);
     guest::direct<0x498090, memViewerHeader>(app, cpu);
+    reg32 result = blocks;  // eax as the code leaves it: the last call's
 
     const auto sort = [&] {
         // Column 4 has nothing to sort by.
@@ -1241,6 +1290,7 @@ x86::reg32 frontend::eaa::memViewerSortMode(App* app, CPU& cpu, reg32 blocks)
         bool headerChanged = false;
         g.setDword(kRedrawAll, 0);
         const reg32 key = console.key();
+        result = key;
         switch (key)
         {
         case kKeyEscape:
@@ -1313,32 +1363,32 @@ x86::reg32 frontend::eaa::memViewerSortMode(App* app, CPU& cpu, reg32 blocks)
         default:
             break;
         }
-        // Its result is what the calls leave in eax: the direct ones' put there.
+        // Its result is what the calls leave in eax.
         if (headerChanged)
-            cpu.eax = guest::direct<0x498090, memViewerHeader>(app, cpu);
+            result = guest::direct<0x498090, memViewerHeader>(app, cpu);
         if (g.dword(kRedrawAll) == 1)
-            cpu.eax = guest::direct<0x498370, memViewerRows>(app, cpu);  // the count in eax too, which it does not read
+            result = guest::direct<0x498370, memViewerRows>(app, cpu);
     }
-    return g.eax();
+    return result;
 }
 
-void frontend::memViewerSortMode(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::memViewerSortMode(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_498f00", 0, 0, nullptr, 0, kRestoreAll };
-    const reg32 blocks = cpu.eax;
-    runWhole(app, cpu, site, [&](Guest&) { return eaa::memViewerSortMode(app, cpu, blocks); });
+    const reg32 blocks = args.eax;
+    return runThunk(app, cpu, args, site, [&](Guest&) { return eaa::memViewerSortMode(app, cpu, blocks); });
 }
 
 /* sub_499150: qsort's comparison of two entries of the block table, by the sort column,
  * the way the sort goes (0x55e5a8): eax and edx the entries. */
-x86::reg32 frontend::eaa::memViewerCompare(App* app, CPU& cpu, reg32 a, reg32 b)
+x86::reg32 frontend::eaa::memViewerCompare(App* app, CPU& cpu, reg32 a, reg32 b, reg32 esi, reg32 ebx)
 {
     Guest g(app, cpu);
     const fe::Frame frame(g, cpu, 0x30);
     const bool ascending = g.dword(kSortAscending) != 0;
     // What is compared, first and then on a tie; columns 5 and 6 compare what the
     // registers held.
-    std::int32_t first = std::int32_t(cpu.esi), second = std::int32_t(cpu.ebx);
+    std::int32_t first = std::int32_t(esi), second = std::int32_t(ebx);
     std::int32_t tieFirst = 0, tieSecond = 0;
     bool tie = false;
     const reg32 column = g.dword(kSortColumn);
@@ -1398,11 +1448,11 @@ x86::reg32 frontend::eaa::memViewerCompare(App* app, CPU& cpu, reg32 a, reg32 b)
     return tieFirst == tieSecond ? 0 : reg32(-1);
 }
 
-void frontend::memViewerCompare(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::memViewerCompare(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_499150", 0, 0, nullptr, 0, kRestoreEbx | kRestoreEcx | kRestoreEsi | kRestoreEdi };
-    const reg32 a = cpu.eax, b = cpu.edx;
-    runWhole(app, cpu, site, [&](Guest&) { return eaa::memViewerCompare(app, cpu, a, b); });
+    const reg32 a = args.eax, b = args.edx, esi = args.esi, ebx = args.ebx;
+    return runThunk(app, cpu, args, site, [&](Guest&) { return eaa::memViewerCompare(app, cpu, a, b, esi, ebx); });
 }
 
 /* sub_499330: the pool's numbers: its total, used, free and largest free into what eax,
@@ -1430,17 +1480,14 @@ x86::reg32 frontend::eaa::memPoolTotals(App* app, CPU& cpu, reg32 totalAt, reg32
     g.setDword(usedAt, used);
     g.setDword(freeAt, available);
     g.setDword(largestAt, largest);
-    g.leaveEbx(used);
-    g.leaveEcx(available);
-    g.leaveEdx(largest);
     return largestAt;
 }
 
-void frontend::memPoolTotals(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::memPoolTotals(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_499330", 0, 0, nullptr, 0, kRestoreEsi | kRestoreEdi };
-    const reg32 totalAt = cpu.eax, usedAt = cpu.edx, freeAt = cpu.ebx, largestAt = cpu.ecx;
-    runWhole(app, cpu, site, [&](Guest&) { return eaa::memPoolTotals(app, cpu, totalAt, usedAt, freeAt, largestAt); });
+    const reg32 totalAt = args.eax, usedAt = args.edx, freeAt = args.ebx, largestAt = args.ecx;
+    return runThunk(app, cpu, args, site, [&](Guest&) { return eaa::memPoolTotals(app, cpu, totalAt, usedAt, freeAt, largestAt); });
 }
 
 /* sub_4993b0: the first block of the pool shown. */
@@ -1450,10 +1497,10 @@ x86::reg32 frontend::eaa::memPoolFirstBlock(App* app, CPU& cpu)
     return firstBlock(g);
 }
 
-void frontend::memPoolFirstBlock(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::memPoolFirstBlock(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_4993b0", 0, 0, nullptr, 0, 0 };
-    runWhole(app, cpu, site, [&](Guest&) { return eaa::memPoolFirstBlock(app, cpu); });
+    return runThunk(app, cpu, args, site, [&](Guest&) { return eaa::memPoolFirstBlock(app, cpu); });
 }
 
 /* sub_4993d0: how many blocks of the two kinds the pool has. */
@@ -1470,10 +1517,10 @@ x86::reg32 frontend::eaa::memPoolCountBlocks(App* app, CPU& cpu)
     return count;
 }
 
-void frontend::memPoolCountBlocks(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::memPoolCountBlocks(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_4993d0", 0, 0, nullptr, 0, kRestoreEbx | kRestoreEdx };
-    runWhole(app, cpu, site, [&](Guest&) { return eaa::memPoolCountBlocks(app, cpu); });
+    return runThunk(app, cpu, args, site, [&](Guest&) { return eaa::memPoolCountBlocks(app, cpu); });
 }
 
 /* sub_499400: the next block, or the first if the list is to start again: where it is,
@@ -1495,16 +1542,15 @@ x86::reg32 frontend::eaa::memPoolNextBlock(App* app, CPU& cpu, reg32 blockAt, re
     const reg32 size = g.dword(block + 4);
     g.setDword(sizeAt, size);
     g.setDword(kListCursor, block);
-    g.leaveEdx(zeroAt);
     return size;
 }
 
-void frontend::memPoolNextBlock(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::memPoolNextBlock(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_499400", 4, 0, nullptr, 0, kRestoreEsi };
-    const reg32 blockAt = cpu.edx, sizeAt = cpu.ebx, flagsAt = cpu.ecx;
+    const reg32 blockAt = args.edx, sizeAt = args.ebx, flagsAt = args.ecx;
     const reg32 zeroAt = stackWord(app, cpu, 0);
-    runWhole(app, cpu, site, [&](Guest&) { return eaa::memPoolNextBlock(app, cpu, blockAt, sizeAt, flagsAt, zeroAt); });
+    return runThunk(app, cpu, args, site, [&](Guest&) { return eaa::memPoolNextBlock(app, cpu, blockAt, sizeAt, flagsAt, zeroAt); });
 }
 
 /* sub_499460: a block's size, the selected one's for none. */
@@ -1514,11 +1560,11 @@ x86::reg32 frontend::eaa::viewerBlockSize(App* app, CPU& cpu, reg32 block)
     return blockSize(g, block);
 }
 
-void frontend::viewerBlockSize(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::viewerBlockSize(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_499460", 0, 0, nullptr, 0, kRestoreEdx };
-    const reg32 block = cpu.eax;
-    runWhole(app, cpu, site, [&](Guest&) { return eaa::viewerBlockSize(app, cpu, block); });
+    const reg32 block = args.eax;
+    return runThunk(app, cpu, args, site, [&](Guest&) { return eaa::viewerBlockSize(app, cpu, block); });
 }
 
 /* sub_499480: a block's data. */
@@ -1527,11 +1573,11 @@ x86::reg32 frontend::eaa::memBlockData(App* app, CPU& cpu, reg32 block)
     return blockData(block);
 }
 
-void frontend::memBlockData(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::memBlockData(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_499480", 0, 0, nullptr, 0, 0 };
-    const reg32 block = cpu.eax;
-    runWhole(app, cpu, site, [&](Guest&) { return eaa::memBlockData(app, cpu, block); });
+    const reg32 block = args.eax;
+    return runThunk(app, cpu, args, site, [&](Guest&) { return eaa::memBlockData(app, cpu, block); });
 }
 
 /* sub_499490: a block's flags. */
@@ -1541,11 +1587,11 @@ x86::reg32 frontend::eaa::viewerBlockFlags(App* app, CPU& cpu, reg32 block)
     return blockFlags(g, block);
 }
 
-void frontend::viewerBlockFlags(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::viewerBlockFlags(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_499490", 0, 0, nullptr, 0, 0 };
-    const reg32 block = cpu.eax;
-    runWhole(app, cpu, site, [&](Guest&) { return eaa::viewerBlockFlags(app, cpu, block); });
+    const reg32 block = args.eax;
+    return runThunk(app, cpu, args, site, [&](Guest&) { return eaa::viewerBlockFlags(app, cpu, block); });
 }
 
 /* sub_4994a0: what a listed block is: 0 free, 1 the system's, 2 unknown, 3 a pack of
@@ -1568,11 +1614,11 @@ x86::reg32 frontend::eaa::memBlockKind(App* app, CPU& cpu, reg32 index)
     return (flags & 0x10) != 0 ? 4 : 5;
 }
 
-void frontend::memBlockKind(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::memBlockKind(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_4994a0", 0, 0, nullptr, 0, kRestoreEbx | kRestoreEcx | kRestoreEdx | kRestoreEsi };
-    const reg32 index = cpu.eax;
-    runWhole(app, cpu, site, [&](Guest&) { return eaa::memBlockKind(app, cpu, index); });
+    const reg32 index = args.eax;
+    return runThunk(app, cpu, args, site, [&](Guest&) { return eaa::memBlockKind(app, cpu, index); });
 }
 
 /* sub_499580: 1 if a block is free space. */
@@ -1582,11 +1628,11 @@ x86::reg32 frontend::eaa::memBlockIsFree(App* app, CPU& cpu, reg32 block)
     return blockIsFree(g, block) ? 1 : 0;
 }
 
-void frontend::memBlockIsFree(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::memBlockIsFree(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_499580", 0, 0, nullptr, 0, 0 };
-    const reg32 block = cpu.eax;
-    runWhole(app, cpu, site, [&](Guest&) { return eaa::memBlockIsFree(app, cpu, block); });
+    const reg32 block = args.eax;
+    return runThunk(app, cpu, args, site, [&](Guest&) { return eaa::memBlockIsFree(app, cpu, block); });
 }
 
 /* sub_4995b0: VIEW: the shapes of a pack one at a time, Left and Right, until Escape; or a
@@ -1700,10 +1746,10 @@ x86::reg32 frontend::eaa::memViewerViewShapes(App* app, CPU& cpu)
     return console.end();
 }
 
-void frontend::memViewerViewShapes(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::memViewerViewShapes(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_4995b0", 0, 0, nullptr, 0, kRestoreAll };
-    runWhole(app, cpu, site, [&](Guest&) { return eaa::memViewerViewShapes(app, cpu); });
+    return runThunk(app, cpu, args, site, [&](Guest&) { return eaa::memViewerViewShapes(app, cpu); });
 }
 
 /* sub_499b30: VIEW of a window: its bitmap and the numbers of it, or why not. */
@@ -1733,7 +1779,6 @@ x86::reg32 frontend::eaa::memViewerViewWindow(App* app, CPU& cpu)
     if (bits == 0)
         return saying(0x53c350);
 
-    g.leaveEdx(bits);
     console.begin();
     const reg32 across = console.metric(2);
     const reg32 x = reg32(sreg32(across - highWord(g, shape + 2)) >> 1);
@@ -1748,10 +1793,10 @@ x86::reg32 frontend::eaa::memViewerViewWindow(App* app, CPU& cpu)
     return console.end();
 }
 
-void frontend::memViewerViewWindow(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::memViewerViewWindow(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_499b30", 0, 0, nullptr, 0, kRestoreAll };
-    runWhole(app, cpu, site, [&](Guest&) { return eaa::memViewerViewWindow(app, cpu); });
+    return runThunk(app, cpu, args, site, [&](Guest&) { return eaa::memViewerViewWindow(app, cpu); });
 }
 
 /* sub_499d30: VIEW of a bitmap, if the block is the size of one: its bits a pixel back,
@@ -1781,10 +1826,10 @@ x86::reg32 frontend::eaa::memViewerViewBitmap(App* app, CPU& cpu)
     return bits;
 }
 
-void frontend::memViewerViewBitmap(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::memViewerViewBitmap(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_499d30", 0, 0, nullptr, 0, kRestoreAll };
-    runWhole(app, cpu, site, [&](Guest&) { return eaa::memViewerViewBitmap(app, cpu); });
+    return runThunk(app, cpu, args, site, [&](Guest&) { return eaa::memViewerViewBitmap(app, cpu); });
 }
 
 /* sub_499e90: a shape's bits a pixel. */
@@ -1794,11 +1839,11 @@ x86::reg32 frontend::eaa::memShapeBits(App* app, CPU& cpu, reg32 shape)
     return shapeBits(g, shape);
 }
 
-void frontend::memShapeBits(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::memShapeBits(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_499e90", 0, 0, nullptr, 0, 0 };
-    const reg32 shape = cpu.eax;
-    runWhole(app, cpu, site, [&](Guest&) { return eaa::memShapeBits(app, cpu, shape); });
+    const reg32 shape = args.eax;
+    return runThunk(app, cpu, args, site, [&](Guest&) { return eaa::memShapeBits(app, cpu, shape); });
 }
 
 /* sub_499ea0: HEX DUMP of the block, by arrows and pages, until any other key. */
@@ -1840,10 +1885,10 @@ x86::reg32 frontend::eaa::memViewerHexDump(App* app, CPU& cpu)
     return console.end();
 }
 
-void frontend::memViewerHexDump(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::memViewerHexDump(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_499ea0", 0, 0, nullptr, 0, kRestoreEbx | kRestoreEcx | kRestoreEdx | kRestoreEsi };
-    runWhole(app, cpu, site, [&](Guest&) { return eaa::memViewerHexDump(app, cpu); });
+    return runThunk(app, cpu, args, site, [&](Guest&) { return eaa::memViewerHexDump(app, cpu); });
 }
 
 /* sub_499f70: a screenful of the dump: eax the address, edx the bytes a row. */
@@ -1884,15 +1929,14 @@ x86::reg32 frontend::eaa::memViewerHexPage(App* app, CPU& cpu, reg32 base, reg32
         }
         console.print({ 0, row, line });
     }
-    g.leaveEdx(row);
     return console.end();
 }
 
-void frontend::memViewerHexPage(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::memViewerHexPage(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_499f70", 0, 0, nullptr, 0, kRestoreEbx | kRestoreEcx | kRestoreEsi | kRestoreEdi };
-    const reg32 base = cpu.eax, perRow = cpu.edx;
-    runWhole(app, cpu, site, [&](Guest&) { return eaa::memViewerHexPage(app, cpu, base, perRow); });
+    const reg32 base = args.eax, perRow = args.edx;
+    return runThunk(app, cpu, args, site, [&](Guest&) { return eaa::memViewerHexPage(app, cpu, base, perRow); });
 }
 
 /* sub_49a120: P: the pool's numbers and blocks into a file of a free name. */
@@ -1957,10 +2001,10 @@ x86::reg32 frontend::eaa::memViewerWriteMap(App* app, CPU& cpu)
     return fe::direct<0x4ee100, watcom::clib::fclose>(g.app(), g.cpu(), file);
 }
 
-void frontend::memViewerWriteMap(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::memViewerWriteMap(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_49a120", 0, 0, nullptr, 0, kRestoreAll };
-    runWhole(app, cpu, site, [&](Guest&) { return eaa::memViewerWriteMap(app, cpu); });
+    return runThunk(app, cpu, args, site, [&](Guest&) { return eaa::memViewerWriteMap(app, cpu); });
 }
 
 /* sub_49a400: the file's name free: its ?? become the first two digits no file has, or
@@ -1988,11 +2032,11 @@ x86::reg32 frontend::eaa::memViewerFreeFileName(App* app, CPU& cpu, reg32 name)
     return 1;
 }
 
-void frontend::memViewerFreeFileName(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::memViewerFreeFileName(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_49a400", 0, 0, nullptr, 0, kRestoreAll };
-    const reg32 name = cpu.eax;
-    runWhole(app, cpu, site, [&](Guest&) { return eaa::memViewerFreeFileName(app, cpu, name); });
+    const reg32 name = args.eax;
+    return runThunk(app, cpu, args, site, [&](Guest&) { return eaa::memViewerFreeFileName(app, cpu, name); });
 }
 
 namespace
@@ -2004,7 +2048,6 @@ constexpr reg32 kFontNumber = 0x840184;
 constexpr reg32 kFontScale = 0x84018c;
 constexpr reg32 kFontShapes = 0x83f6a0;
 constexpr reg32 kLoadedShapes = 0x567218;
-constexpr reg32 kPictureTexture = 0x4d0a10;
 
 }  // namespace
 
@@ -2059,7 +2102,7 @@ x86::reg32 frontend::eaa::textLoadFonts(App* app, CPU& cpu)
         g.setByte(i + 0x83ffc0, g.byte(glyph + 9));
         g.setByte(i + 0x83fa80, g.byte(glyph + 0xa));
     }
-    g.call(kPictureTexture);
+    fe::direct<0x4d0a10, render::pictureTextured>(app, cpu);
     reg32 result = *fe::direct<0x4e1890, ea::purgeBlock>(app, cpu, first);
     if (g.byte(secondName) == 0)
         return result;
@@ -2081,16 +2124,16 @@ x86::reg32 frontend::eaa::textLoadFonts(App* app, CPU& cpu)
         g.setByte(i + 0x8400a0, g.byte(glyph + 9));
         g.setByte(i + 0x83fb60, g.byte(glyph + 0xa));
     }
-    g.call(kPictureTexture);
+    fe::direct<0x4d0a10, render::pictureTextured>(app, cpu);
     result = *fe::direct<0x4e1890, ea::purgeBlock>(app, cpu, second);
     g.setDword(kFontNumber, 0);
     return result;
 }
 
-void frontend::textLoadFonts(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::textLoadFonts(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_4d0d50", 0, 0, nullptr, 0, kRestoreAll };
-    runWhole(app, cpu, site, [&](Guest&) { return eaa::textLoadFonts(app, cpu); });
+    return runThunk(app, cpu, args, site, [&](Guest&) { return eaa::textLoadFonts(app, cpu); });
 }
 
 /* sub_4dc0e0: a udff opened on a file named in eax or the memory at edx, one and not both;
@@ -2101,7 +2144,7 @@ x86::reg32 frontend::eaa::udffOpen(App* app, CPU& cpu, reg32 name, reg32 memory,
     const fe::Frame frame(g, cpu, 0x1c);
     const reg32 fp = g.frame() + 0xc;
     // By address: what it leaves in ebx and edx is what this function leaves there.
-    const reg32 record = g.call(kReserve, args({ 0x549734, 0xc, 0x10 }));
+    const reg32 record = *fe::direct<kReserve, ea::reserved>(app, cpu, 0x549734u, 0xcu, 0x10u);
     if (record == 0)
     {
         if (complain != 0)
@@ -2126,19 +2169,18 @@ x86::reg32 frontend::eaa::udffOpen(App* app, CPU& cpu, reg32 name, reg32 memory,
     g.setDword(fp - 8, 0);
     g.setDword(record, 0);
     g.setDword(record + 8, 0);
-    g.call(0x4e28d0, args({ name, record + 4, fp - 0xc, fp - 8 }));  // by address: its ebx is this one's
-    g.leaveEdx(g.dword(record + 4));
+    fe::direct<0x4e28d0, ea::openToRead>(app, cpu, name, record + 4, fp - 0xc, fp - 8);
     if (g.dword(record + 4) != 0)
         return record;
     fe::direct<0x4e1890, ea::purgeBlock>(app, cpu, record);
     return 0;
 }
 
-void frontend::udffOpen(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::udffOpen(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_4dc0e0", 0, 0, nullptr, 0, kRestoreEcx | kRestoreEsi | kRestoreEdi };
-    const reg32 name = cpu.eax, memory = cpu.edx, complain = cpu.ebx;
-    runWhole(app, cpu, site, [&](Guest&) { return eaa::udffOpen(app, cpu, name, memory, complain); });
+    const reg32 name = args.eax, memory = args.edx, complain = args.ebx;
+    return runThunk(app, cpu, args, site, [&](Guest&) { return eaa::udffOpen(app, cpu, name, memory, complain); });
 }
 
 /* sub_4dc1b0: a udff closed: its file, if it has one, and its record. */
@@ -2157,11 +2199,11 @@ x86::reg32 frontend::eaa::udffClose(App* app, CPU& cpu, reg32 record)
     return *fe::direct<0x4e1890, ea::purgeBlock>(app, cpu, record);
 }
 
-void frontend::udffClose(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::udffClose(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_4dc1b0", 0, 0, nullptr, 0, kRestoreEbx | kRestoreEdx };
-    const reg32 record = cpu.eax;
-    runWhole(app, cpu, site, [&](Guest&) { return eaa::udffClose(app, cpu, record); });
+    const reg32 record = args.eax;
+    return runThunk(app, cpu, args, site, [&](Guest&) { return eaa::udffClose(app, cpu, record); });
 }
 
 /* sub_4dc1e0: the next word of a udff. */
@@ -2173,7 +2215,7 @@ x86::reg32 frontend::eaa::udffReadWord(App* app, CPU& cpu, reg32 record)
     if (g.dword(record) == 0)
     {
         // By address: the registers it leaves are what sub_4f2a7d hands on to exit.
-        if (g.call(0x4e2de0, args({ g.dword(record + 4), word, 4 })) == 0)
+        if (fe::direct<0x4e2de0, ea::readChecked>(app, cpu, g.dword(record + 4), word, 4) == 0)
             guest::direct<0x4f2a7d, eab::exitGameNow>(app, cpu);
     }
     else
@@ -2184,11 +2226,11 @@ x86::reg32 frontend::eaa::udffReadWord(App* app, CPU& cpu, reg32 record)
     return g.dword(word);
 }
 
-void frontend::udffReadWord(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::udffReadWord(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_4dc1e0", 0, 0, nullptr, 0, kRestoreEbx | kRestoreEdx };
-    const reg32 record = cpu.eax;
-    runWhole(app, cpu, site, [&](Guest&) { return eaa::udffReadWord(app, cpu, record); });
+    const reg32 record = args.eax;
+    return runThunk(app, cpu, args, site, [&](Guest&) { return eaa::udffReadWord(app, cpu, record); });
 }
 
 /* sub_4e4360: a file's size, the way of opening it in edx. */
@@ -2197,19 +2239,18 @@ x86::reg32 frontend::eaa::fileSizeOpened(App* app, CPU& cpu, reg32 name, reg32 m
     Guest g(app, cpu);
     const fe::Frame frame(g, cpu, 0x14);
     const reg32 handleAt = g.frame(), sizeAt = g.frame() + 8;
-    g.call(0x4e2ab0, args({ name, handleAt, g.frame() + 4, sizeAt }, { mode }));
+    fe::direct<0x4e2ab0, ea::errorsAsOpened>(app, cpu, name, handleAt, g.frame() + 4, sizeAt, mode);
     const reg32 handle = g.dword(handleAt);
-    g.leaveEdx(handle);
     if (handle != 0)
         fe::direct<0x4e2da0, ea::closeChecked>(app, cpu, handle);
     return g.dword(sizeAt);
 }
 
-void frontend::fileSizeOpened(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::fileSizeOpened(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_4e4360", 0, 0, nullptr, 0, kRestoreEbx | kRestoreEcx };
-    const reg32 name = cpu.eax, mode = cpu.edx;
-    runWhole(app, cpu, site, [&](Guest&) { return eaa::fileSizeOpened(app, cpu, name, mode); });
+    const reg32 name = args.eax, mode = args.edx;
+    return runThunk(app, cpu, args, site, [&](Guest&) { return eaa::fileSizeOpened(app, cpu, name, mode); });
 }
 
 /* sub_4e43a0: a file's size. */
@@ -2220,11 +2261,11 @@ x86::reg32 frontend::eaa::fileSize(App* app, CPU& cpu, reg32 name)
     return guest::direct<0x4e4360, fileSizeOpened>(app, cpu, name, 1u);
 }
 
-void frontend::fileSize(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::fileSize(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_4e43a0", 0, 0, nullptr, 0, kRestoreEdx };
-    const reg32 name = cpu.eax;
-    runWhole(app, cpu, site, [&](Guest&) { return eaa::fileSize(app, cpu, name); });
+    const reg32 name = args.eax;
+    return runThunk(app, cpu, args, site, [&](Guest&) { return eaa::fileSize(app, cpu, name); });
 }
 
 namespace
@@ -2254,7 +2295,7 @@ reg32 drawInto(Guest& g, x86::CPU& cpu, reg32 bitmap)
     if (result == 0)
         return 0;
     if (const reg32 callback = g.dword(kDrawCallback))
-        result = g.call(callback, args({ bitmap }));
+        result = fe::pointerCall(g, callback, args({ bitmap }));
     else if (bitmap == 0)
         guest::direct<0x4ed2a0, frontend::eab::ddrawUnlockBitmap>(g.app(), cpu, kDisplay);
     else
@@ -2292,10 +2333,10 @@ x86::reg32 frontend::eaa::bitmapDrawToScreen(App* app, CPU& cpu)
     return drawInto(g, cpu, 0);
 }
 
-void frontend::bitmapDrawToScreen(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::bitmapDrawToScreen(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_4ead90", 0, 0, nullptr, 0, kRestoreAll };
-    runWhole(app, cpu, site, [&](Guest&) { return eaa::bitmapDrawToScreen(app, cpu); });
+    return runThunk(app, cpu, args, site, [&](Guest&) { return eaa::bitmapDrawToScreen(app, cpu); });
 }
 
 /* sub_4eada0: drawing goes into a bitmap. */
@@ -2306,11 +2347,11 @@ x86::reg32 frontend::eaa::bitmapDrawInto(App* app, CPU& cpu, reg32 bitmap)
     return drawInto(g, cpu, bitmap);
 }
 
-void frontend::bitmapDrawInto(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::bitmapDrawInto(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_4eada0", 0, 0, nullptr, 0, kRestoreAll };
-    const reg32 bitmap = cpu.eax;
-    runWhole(app, cpu, site, [&](Guest&) { return eaa::bitmapDrawInto(app, cpu, bitmap); });
+    const reg32 bitmap = args.eax;
+    return runThunk(app, cpu, args, site, [&](Guest&) { return eaa::bitmapDrawInto(app, cpu, bitmap); });
 }
 
 /* sub_4eaeb0: pixels read off what is drawn into, at their width: eax, edx the left and
@@ -2321,7 +2362,6 @@ x86::reg32 frontend::eaa::bitmapReadPixels(App* app, CPU& cpu, reg32 left, reg32
     const fe::Frame frame(g, cpu, 0x14);
     const reg32 bits = (reg32(g.byte(kDrawBits)) + 7) & ~reg32(7);
     const reg32 right = left + width;
-    g.leaveEbx(bits);
     for (--rows; rows != reg32(-1); --rows, ++y)
     {
         for (reg32 x = left; std::int32_t(x) < std::int32_t(right); ++x)
@@ -2350,17 +2390,15 @@ x86::reg32 frontend::eaa::bitmapReadPixels(App* app, CPU& cpu, reg32 left, reg32
             }
         }
     }
-    g.leaveEcx(out);
-    g.leaveEdx(reg32(-1));
     return right;
 }
 
-void frontend::bitmapReadPixels(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::bitmapReadPixels(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_4eaeb0", 4, 0, nullptr, 0, kRestoreEsi | kRestoreEdi };
-    const reg32 left = cpu.eax, y = cpu.edx, width = cpu.ebx, rows = cpu.ecx;
+    const reg32 left = args.eax, y = args.edx, width = args.ebx, rows = args.ecx;
     const reg32 out = stackWord(app, cpu, 0);
-    runWhole(app, cpu, site, [&](Guest&) { return eaa::bitmapReadPixels(app, cpu, left, y, width, rows, out); });
+    return runThunk(app, cpu, args, site, [&](Guest&) { return eaa::bitmapReadPixels(app, cpu, left, y, width, rows, out); });
 }
 
 /* sub_4eaf60: the size of a TGA of what is drawn into. */
@@ -2379,10 +2417,10 @@ x86::reg32 frontend::eaa::bitmapTgaSize(App* app, CPU& cpu)
     return size;
 }
 
-void frontend::bitmapTgaSize(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::bitmapTgaSize(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_4eaf60", 0, 0, nullptr, 0, kRestoreEbx | kRestoreEcx | kRestoreEdx };
-    runWhole(app, cpu, site, [&](Guest&) { return eaa::bitmapTgaSize(app, cpu); });
+    return runThunk(app, cpu, args, site, [&](Guest&) { return eaa::bitmapTgaSize(app, cpu); });
 }
 
 /* sub_4eafc0: a TGA of what is drawn into, at eax: its header, its palette, its pixels. */
@@ -2428,11 +2466,11 @@ x86::reg32 frontend::eaa::bitmapWriteTga(App* app, CPU& cpu, reg32 tga)
     return result;
 }
 
-void frontend::bitmapWriteTga(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::bitmapWriteTga(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_4eafc0", 0, 0, nullptr, 0, kRestoreAll };
-    const reg32 tga = cpu.eax;
-    runWhole(app, cpu, site, [&](Guest&) { return eaa::bitmapWriteTga(app, cpu, tga); });
+    const reg32 tga = args.eax;
+    return runThunk(app, cpu, args, site, [&](Guest&) { return eaa::bitmapWriteTga(app, cpu, tga); });
 }
 
 /* sub_4eb160: what is drawn into saved as a TGA to the file named in eax; the file's
@@ -2443,25 +2481,23 @@ x86::reg32 frontend::eaa::bitmapSaveTga(App* app, CPU& cpu, reg32 name)
     const fe::Frame frame(g, cpu, 0x84);
     const reg32 saved = g.frame();
     const reg32 size = guest::direct<0x4eaf60, bitmapTgaSize>(app, cpu);
-    g.leaveEbx(size);
-    const reg32 buffer = g.call(0x4e19d0, args({}, { size }));
+    const reg32 buffer = *fe::direct<0x4e19d0, ea::defaultReserved>(app, cpu, size);
     if (buffer == 0)
         return 0;
-    g.leaveEcx(buffer);
     guest::direct<0x4eafc0, bitmapWriteTga>(app, cpu, buffer);
     fe::direct<0x4f46d0, wata::windowSave>(app, cpu, saved);
     guest::direct<0x4ead90, bitmapDrawToScreen>(app, cpu);
-    const reg32 result = g.call(0x4eeae0, args({ name, buffer }));
+    const reg32 result = *fe::direct<0x4eeae0, load::blockSaved>(app, cpu, name, buffer, size);
     fe::direct<0x4f4700, wata::windowRestore>(app, cpu, saved);
-    g.call(0x4e19f0, args({}, { buffer }));
+    fe::direct<0x4e19f0, ea::defaultPurged>(app, cpu, buffer);
     return result;
 }
 
-void frontend::bitmapSaveTga(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::bitmapSaveTga(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_4eb160", 0, 0, nullptr, 0, kRestoreAll };
-    const reg32 name = cpu.eax;
-    runWhole(app, cpu, site, [&](Guest&) { return eaa::bitmapSaveTga(app, cpu, name); });
+    const reg32 name = args.eax;
+    return runThunk(app, cpu, args, site, [&](Guest&) { return eaa::bitmapSaveTga(app, cpu, name); });
 }
 
 /* sub_4eb1c0: a key's state, by its number. */
@@ -2471,11 +2507,11 @@ x86::reg32 frontend::eaa::keyStateByte(App* app, CPU& cpu, reg32 key)
     return g.byte(key + 0x564818);
 }
 
-void frontend::keyStateByte(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::keyStateByte(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_4eb1c0", 0, 0, nullptr, 0, 0 };
-    const reg32 key = cpu.eax;
-    runWhole(app, cpu, site, [&](Guest&) { return eaa::keyStateByte(app, cpu, key); });
+    const reg32 key = args.eax;
+    return runThunk(app, cpu, args, site, [&](Guest&) { return eaa::keyStateByte(app, cpu, key); });
 }
 
 namespace
@@ -2484,12 +2520,12 @@ namespace
 /* The library's log of DirectDraw. */
 reg32 report(Guest& g, reg32 level, reg32 text, std::initializer_list<reg32> values = {})
 {
-    // eax as the call by address leaves it: the report's answer (it changes no other register).
-    return g.cpu().eax = *fe::direct<0x501050, ea::reportedAt>(g.app(), g.cpu(), 0x564ed4u, level, text, guest::Words(values));
+    // eax: the report's answer.
+    return *fe::direct<0x501050, ea::reportedAt>(g.app(), g.cpu(), 0x564ed4u, level, text, guest::Words(values));
 }
 
 /* A method of a DirectDraw object, by its offset in the object's table, its `this` first on the
- * stack: the host's method called as C++ where the table has it there, else, and in the check,
+ * stack: the host's method called as C++ where the table has it there, else
  * through the table (host_video.h, guest::ddraw).  Terminated when the game stopped in it, as
  * g.call. */
 template <reg32 Offset, auto Method, typename... Words>
@@ -2510,11 +2546,11 @@ reg32 tableMethod(Guest& g, reg32 object, reg32 slot, std::initializer_list<reg3
     arguments.stack[arguments.stackCount++] = object;
     for (const reg32 value : values)
         arguments.stack[arguments.stackCount++] = value;
-    return g.call(g.dword(g.dword(object) + slot), arguments);
+    return fe::pointerCall(g, g.dword(g.dword(object) + slot), arguments);
 }
 
-/* A function of Windows', its words handed: the port's own, called as C++ (native_windows.h); in
- * the check through its slot in the imports.  Terminated when the game stopped in it, as g.call. */
+/* A function of Windows', its words handed: the port's own, called as C++ (native_windows.h).
+ * Terminated when the game stopped in it, as g.call. */
 template <reg32 Slot, auto Function, typename... Words>
 reg32 windows(Guest& g, x86::CPU& cpu, Words... words)
 {
@@ -2524,7 +2560,7 @@ reg32 windows(Guest& g, x86::CPU& cpu, Words... words)
     return *eax;
 }
 
-/* A function of Windows' the code calls through its import thunk: windows, but in the check by
+/* A function of Windows' the code calls through its import thunk: windows, but by
  * the thunk's address (native_windows.h, guest::thunked). */
 template <reg32 Thunk, auto Function, typename... Words>
 reg32 thunked(Guest& g, x86::CPU& cpu, Words... words)
@@ -2571,7 +2607,6 @@ x86::reg32 frontend::eaa::ddrawCreate(App* app, CPU& cpu, reg32 driver)
     Guest g(app, cpu);
     const fe::Frame frame(g, cpu, 0x10);
     const reg32 object = g.frame();
-    g.leaveEdx(0);
     g.setDword(object, 0);
     const reg32 error =
         thunked<kDirectDrawCreate, &host::ddraw::directDrawCreate>(g, cpu, driver, object, 0) & 0xffff;
@@ -2581,11 +2616,11 @@ x86::reg32 frontend::eaa::ddrawCreate(App* app, CPU& cpu, reg32 driver)
     return g.dword(object);
 }
 
-void frontend::ddrawCreate(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::ddrawCreate(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_4eb430", 0, 0, nullptr, 0, kRestoreEbx | kRestoreEcx | kRestoreEdi };
-    const reg32 driver = cpu.edx;
-    runWhole(app, cpu, site, [&](Guest&) { return eaa::ddrawCreate(app, cpu, driver); });
+    const reg32 driver = args.edx;
+    return runThunk(app, cpu, args, site, [&](Guest&) { return eaa::ddrawCreate(app, cpu, driver); });
 }
 
 /* sub_4eb490: the primary surface of a display, as asked in edx, else whatever will do. */
@@ -2620,11 +2655,11 @@ x86::reg32 frontend::eaa::ddrawMakePrimary(App* app, CPU& cpu, reg32 display, re
     return make(0, flags);
 }
 
-void frontend::ddrawMakePrimary(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::ddrawMakePrimary(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_4eb490", 0, 0, nullptr, 0, kRestoreEbx | kRestoreEcx | kRestoreEsi | kRestoreEdi };
-    const reg32 display = cpu.eax, wanted = cpu.edx;
-    runWhole(app, cpu, site, [&](Guest&) { return eaa::ddrawMakePrimary(app, cpu, display, wanted); });
+    const reg32 display = args.eax, wanted = args.edx;
+    return runThunk(app, cpu, args, site, [&](Guest&) { return eaa::ddrawMakePrimary(app, cpu, display, wanted); });
 }
 
 /* sub_4eb5e0: a surface locked: eax the display, edx the surface, ebx its description.
@@ -2640,7 +2675,6 @@ x86::reg32 frontend::eaa::ddrawLockSurface(App* app, CPU& cpu, reg32 display, re
         return method<kLock, &host::ddraw::surfaceLock>(g, cpu, surface, 0, description, 1, 0) & 0xffff;
     };
     reg32 error = lock();
-    g.leaveEbx(error);
     if (display == 0 || error != kSurfaceLost)
         return error;
     report(g, 9, 0x54b824);
@@ -2653,7 +2687,6 @@ x86::reg32 frontend::eaa::ddrawLockSurface(App* app, CPU& cpu, reg32 display, re
         method<kRestore, &host::ddraw::surfaceRestore>(g, cpu, g.dword(display + kBack));
     if (method<kIsLost, &host::ddraw::surfaceIsLost>(g, cpu, surface) != 0)
     {
-        g.leaveEbx(kSurfaceLost);
         return kSurfaceLost;
     }
     error = lock();
@@ -2662,12 +2695,11 @@ x86::reg32 frontend::eaa::ddrawLockSurface(App* app, CPU& cpu, reg32 display, re
     {
         report(g, 0xa, 0x54b860);
         windows<kLeaveCriticalSection, &host::leaveLock>(g, cpu, g.dword(kDisplayLock));
-        g.call(0x5084e0);
+        fe::pointerCall(g, 0x5084e0);
         windows<kEnterCriticalSection, &host::enterLock>(g, cpu, g.dword(kDisplayLock));
         error = lock();
         report(g, 0xb, 0x54b884, { error });
     }
-    g.leaveEbx(error);
     if (error != 0)
         return error;
     if (g.byte(display + kFullscreen) != 0 && fe::direct<0x4f9120, wina::hasFocus>(app, cpu) == 0)
@@ -2684,20 +2716,19 @@ x86::reg32 frontend::eaa::ddrawLockSurface(App* app, CPU& cpu, reg32 display, re
         const reg32 set = method<kSetPalette, &host::ddraw::surfaceSetPalette>(g, cpu, g.dword(display + kPrimary),
                                                                                g.dword(display + kPalette))
                           & 0xffff;
-        g.leaveEbx(0);
         report(g, 0xc, 0x54b8c4, { set });
     }
     report(g, 0xa, 0x54b8e0);
     if (const reg32 changed = g.dword(kDisplayChanged))
-        g.call(changed);
+        fe::pointerCall(g, changed);
     return 0;
 }
 
-void frontend::ddrawLockSurface(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::ddrawLockSurface(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_4eb5e0", 0, 0, nullptr, 0, kRestoreEcx | kRestoreEsi | kRestoreEdi };
-    const reg32 display = cpu.eax, surface = cpu.edx, description = cpu.ebx;
-    runWhole(app, cpu, site, [&](Guest&) { return eaa::ddrawLockSurface(app, cpu, display, surface, description); });
+    const reg32 display = args.eax, surface = args.edx, description = args.ebx;
+    return runThunk(app, cpu, args, site, [&](Guest&) { return eaa::ddrawLockSurface(app, cpu, display, surface, description); });
 }
 
 /* sub_4eb880: the bits set in eax. */
@@ -2709,11 +2740,11 @@ x86::reg32 frontend::eaa::countBits(App* app, CPU& cpu, reg32 value)
     return count;
 }
 
-void frontend::countBits(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::countBits(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_4eb880", 0, 0, nullptr, 0, kRestoreEdx };
-    const reg32 value = cpu.eax;
-    runWhole(app, cpu, site, [&](Guest&) { return eaa::countBits(app, cpu, value); });
+    const reg32 value = args.eax;
+    return runThunk(app, cpu, args, site, [&](Guest&) { return eaa::countBits(app, cpu, value); });
 }
 
 /* sub_4eb8a0: a surface's description (ebx) into the display's list of modes at the
@@ -2788,7 +2819,6 @@ x86::reg32 frontend::eaa::ddrawNoteMode(App* app, CPU& cpu, reg32 display, reg32
             leftEax = index * 20;
             const std::uint8_t clip = g.byte(display + 0x460);
             const reg32 modes = g.dword(display + kModes);
-            g.leaveEdx(modes);
             const reg32 at = modes + leftEax + 0xc;
             g.setByte(at, clip != 0 ? g.byte(at) | 0x10 : g.byte(at) & 0xef);
         }
@@ -2802,15 +2832,14 @@ x86::reg32 frontend::eaa::ddrawNoteMode(App* app, CPU& cpu, reg32 display, reg32
         leftEax = (leftEax & 0xffffff00) | bitsByte;
         g.setByte(display + kBits, bitsByte);
     }
-    g.leaveEcx(leftEcx);
     return leftEax;
 }
 
-void frontend::ddrawNoteMode(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::ddrawNoteMode(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_4eb8a0", 0, 0, nullptr, 0, kRestoreEsi | kRestoreEdi };
-    const reg32 display = cpu.eax, index = cpu.edx, description = cpu.ebx, current = cpu.ecx;
-    runWhole(app, cpu, site, [&](Guest&) {
+    const reg32 display = args.eax, index = args.edx, description = args.ebx, current = args.ecx;
+    return runThunk(app, cpu, args, site, [&](Guest&) {
         return eaa::ddrawNoteMode(app, cpu, display, index, description, current);
     });
 }
@@ -2894,11 +2923,11 @@ x86::reg32 frontend::eaa::ddrawInit(App* app, CPU& cpu, reg32 given)
     return g.dword(display) != 0 ? 1 : 0;
 }
 
-void frontend::ddrawInit(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::ddrawInit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_4ebaf0", 0, 0, nullptr, 0, kRestoreAll };
-    const reg32 given = cpu.eax;
-    runWhole(app, cpu, site, [&](Guest&) { return eaa::ddrawInit(app, cpu, given); });
+    const reg32 given = args.eax;
+    return runThunk(app, cpu, args, site, [&](Guest&) { return eaa::ddrawInit(app, cpu, given); });
 }
 
 /* sub_4ebe50: the display taken: its cooperative level, the list of its modes, a clipper
@@ -2980,11 +3009,11 @@ x86::reg32 frontend::eaa::ddrawAccessDisplay(App* app, CPU& cpu, reg32 given)
     return 1;
 }
 
-void frontend::ddrawAccessDisplay(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::ddrawAccessDisplay(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_4ebe50", 0, 0, nullptr, 0, kRestoreAll };
-    const reg32 given = cpu.eax;
-    runWhole(app, cpu, site, [&](Guest&) { return eaa::ddrawAccessDisplay(app, cpu, given); });
+    const reg32 given = args.eax;
+    return runThunk(app, cpu, args, site, [&](Guest&) { return eaa::ddrawAccessDisplay(app, cpu, given); });
 }
 
 /* sub_4ec0d0: a display's surfaces and their windows gone. */
@@ -3012,11 +3041,11 @@ x86::reg32 frontend::eaa::ddrawRemoveSurfaces(App* app, CPU& cpu, reg32 display)
     return 1;
 }
 
-void frontend::ddrawRemoveSurfaces(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::ddrawRemoveSurfaces(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_4ec0d0", 0, 0, nullptr, 0, kRestoreAll };
-    const reg32 display = cpu.eax;
-    runWhole(app, cpu, site, [&](Guest&) { return eaa::ddrawRemoveSurfaces(app, cpu, display); });
+    const reg32 display = args.eax;
+    return runThunk(app, cpu, args, site, [&](Guest&) { return eaa::ddrawRemoveSurfaces(app, cpu, display); });
 }
 
 /* sub_4ec1a0: the display configured as its record says: what was made gone, the palette,
@@ -3184,15 +3213,15 @@ x86::reg32 frontend::eaa::ddrawConfigDisplay(App* app, CPU& cpu, reg32 given)
                              g.byte(display + kPagesWanted), modeXLetter, memory, system, flipping });
     windows<kLeaveCriticalSection, &host::leaveLock>(g, cpu, g.dword(kDisplayLock));
     if (const reg32 changed = g.dword(kDisplayChanged))
-        g.call(changed);
+        fe::pointerCall(g, changed);
     return 1;
 }
 
-void frontend::ddrawConfigDisplay(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::ddrawConfigDisplay(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_4ec1a0", 0, 0, nullptr, 0, kRestoreAll };
-    const reg32 given = cpu.eax;
-    runWhole(app, cpu, site, [&](Guest&) { return eaa::ddrawConfigDisplay(app, cpu, given); });
+    const reg32 given = args.eax;
+    return runThunk(app, cpu, args, site, [&](Guest&) { return eaa::ddrawConfigDisplay(app, cpu, given); });
 }
 
 }  // namespace nfs3hp

@@ -1,14 +1,14 @@
 // EA SND's mixer code that never runs on the port, one DEAD(address) a
 // function: native_snd_dead.cpp makes each a stub that stops the game with
-// its address, and disassemble_nfs3hp.py generates no code for it.
+// its address.
 //
-// The port's CPU has MMX (WITH_MMX, [0x5643b4] set): mixFunctions and the
+// The game is told the machine has MMX ([0x5643b4] set): mixFunctions and the
 // decoders' tables (native_snd_fx.cpp, native_snd_mixsetup.cpp) hand the
 // channels the MMX set only, which native_snd_mixfuncs.cpp and native_mix.cpp
 // translate.  Left: the plain set's volume functions, resamplers and outputs,
 // the decoders' plain set-ups and what only they reach; the reverb's own hooks
 // (0x5230dc, 0x523118), which native_mixer.cpp runs itself whenever the MMX
-// flag is set, and what only they reach.  Nothing still generated, no game
+// flag is set, and what only they reach.  Nothing in the game's code, no game
 // data and no native calls or stores any of these.
 
 DEAD(0x4ffd80)

@@ -1,11 +1,43 @@
 #include "game_settings.h"
+#include "native_load_cardb.h"
+#include "native_load_saves.h"
+#include "native_raceload.h"
 #include "port_buttons.h"
+#include "port_gamecall.h"
+#include "native_frontend_dialogs.h"
+#include "native_frontend_simd.h"
 #include "port_draw2d.h"
 #include "port_text.h"
+#include "native_frontend_glue.h"
+#include "native_frontend_menud.h"
+#include "native_frontend_menuf.h"
+#include "native_frontend_misc.h"
+#include "native_frontend_pause.h"
+#include "native_frontend_screen.h"
+#include "native_graphics.h"
+#include "native_watcom.h"
+#include "native_ea_formats.h"
+#include "native_ea_memory.h"
+#include "native_frontend_connect.h"
+#include "native_frontend_draw.h"
+#include "native_frontend_eaa.h"
+#include "native_frontend_eab.h"
+#include "native_frontend_loop.h"
+#include "native_frontend_menus.h"
+#include "native_frontend_wata.h"
+#include "native_vertices.h"
+#include "port_dialogs.h"
+#include "port_loop.h"
+#include "port_menus.h"
+#include "port_shapes.h"
+#include "port_sound_effects.h"
+#include "port_sound_speech.h"
 
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <optional>
+#include <type_traits>
 
 /* The menus' widgets, rewritten (port.h says how).
  *
@@ -20,24 +52,23 @@
  * the language's text numbers, words to a 0 -- which of them may be chosen,
  * their colours, where the line chosen is kept) are looked up by name.
  *
- * Each function is a typed core and an adapter under the game's name.  The
+ * Each function is a typed core and a thunk under the game's name.  The
  * cores call each other as C++; the menus' text, the 2D drawing and the
  * shapes, which are the port's own (port_text, port_draw2d, port_shapes),
- * through their adapters as the game's code calls them; what is not
+ * through their thunks as the game's code calls them; what is not
  * rewritten -- the menu loop and the dialogs, the pointer, the codelinks,
  * the graphics, EA's bitmaps, the sound's descriptions, the runtime -- by
  * address, from where the game's code has its stack, with the registers it
  * has there.  The x87's arithmetic is the game's to the bit: each product
- * and sum through cpu.fpu as the code has them, each value stored where and
+ * and sum as the single-precision arithmetic has them, each value stored where and
  * as the code stores it, the integers chopped as __CHP and fistp make them,
  * the compares leaving the status word as they do.
  *
  * The game's code leaves ebx and edx changed in buttonKey and edx in
  * findList, drawReadyMarks and buttonDraw; no caller reads them after (by
  * liveness on nfs3.exe, the menu loop's calls through the widgets' table
- * included), so each adapter gives back every register but eax as the
- * caller had it.  tools/game_checks holds each adapter against the game's
- * code for it (buttons.inc). */
+ * included), so each thunk gives back every register but eax as the
+ * caller had it. */
 #if defined(__clang__)
 #pragma clang fp contract(off)
 #else
@@ -304,50 +335,48 @@ constexpr reg32 kYellow = 0xffe440, kBlue = 0xff649dfd, kGrey = 0x908080, kDark 
 /* ---- What they call ---- */
 
 // The port's own: as the game's code calls them.
-constexpr guest::Native kLanguageText = text::languageText;      // 0x4d1850
-constexpr guest::Native kDrawMenuText = text::drawMenuText;      // 0x452190 (stdcall: align, colour)
-constexpr guest::Native kTextWidth = text::textWidth;            // 0x452020
-constexpr guest::Native kSelectFont = text::selectFont;          // 0x452100
-constexpr guest::Native kDimBackground = text::dimBackground;    // 0x451530 (stdcall: a float)
-constexpr guest::Native kKeepTextScale = text::keepTextScale;    // 0x4d1400
-constexpr guest::Native kRestoreTextScale = text::restoreTextScale;  // 0x4d1410
-constexpr guest::Native kCharacterWidth = text::characterWidth;  // 0x4d1540
-constexpr guest::Native kCharacterOverhang = text::characterOverhang;  // 0x4d1590
-constexpr guest::Native kWrappedText = text::drawWrappedText;    // 0x451cd0
-constexpr guest::Native kShadedBox = draw2d::drawShadedBox;      // 0x4d8860
-constexpr guest::Native kFrame = draw2d::frame;                  // 0x4d8930
-constexpr guest::Native kPanel = draw2d::drawPanel;              // 0x4d89f0
-constexpr guest::Native kFieldBox = draw2d::drawFieldBox;        // 0x4d8ac0
-constexpr guest::Native kTileRectangle = draw2d::drawTileRectangle;  // 0x4d8b80
-constexpr guest::Native kShadedRectangle = draw2d::drawShadedRectangle;  // 0x4d81b0
-constexpr guest::Native kTurnedText = draw2d::drawTurnedText;    // 0x4da120
-constexpr guest::Native kTitleText = draw2d::drawTitleText;      // 0x4da1e0
-constexpr guest::Native kTexturedQuad = draw2d::drawTexturedQuad;  // 0x4db000
-constexpr guest::Native kShapeByName = shapes::shapeByName;      // 0x4d5db0
-constexpr guest::Native kShapeSize = shapes::shapeSize;          // 0x4d66f0
-constexpr guest::Native kDrawArtShape = shapes::drawArtShape;    // 0x4d7160
-constexpr guest::Native kDrawShape = shapes::drawShape;          // 0x4d7990
-constexpr guest::Native kMenuEffect = playMenuEffect;            // 0x4181d0
+constexpr reg32 kLanguageText = 0x4d1850;  // 0x4d1850
+constexpr reg32 kDrawMenuText = 0x452190;  // 0x452190 (stdcall: align, colour)
+constexpr reg32 kTextWidth = 0x452020;  // 0x452020
+constexpr reg32 kSelectFont = 0x452100;  // 0x452100
+constexpr reg32 kDimBackground = 0x451530;  // 0x451530 (stdcall: a float)
+constexpr reg32 kKeepTextScale = 0x4d1400;  // 0x4d1400
+constexpr reg32 kRestoreTextScale = 0x4d1410;  // 0x4d1410
+constexpr reg32 kCharacterWidth = 0x4d1540;  // 0x4d1540
+constexpr reg32 kCharacterOverhang = 0x4d1590;  // 0x4d1590
+constexpr reg32 kWrappedText = 0x451cd0;  // 0x451cd0
+constexpr reg32 kShadedBox = 0x4d8860;  // 0x4d8860
+constexpr reg32 kFrame = 0x4d8930;  // 0x4d8930
+constexpr reg32 kPanel = 0x4d89f0;  // 0x4d89f0
+constexpr reg32 kFieldBox = 0x4d8ac0;  // 0x4d8ac0
+constexpr reg32 kTileRectangle = 0x4d8b80;  // 0x4d8b80
+constexpr reg32 kShadedRectangle = 0x4d81b0;  // 0x4d81b0
+constexpr reg32 kTurnedText = 0x4da120;  // 0x4da120
+constexpr reg32 kTitleText = 0x4da1e0;  // 0x4da1e0
+constexpr reg32 kTexturedQuad = 0x4db000;  // 0x4db000
+constexpr reg32 kShapeByName = 0x4d5db0;  // 0x4d5db0
+constexpr reg32 kShapeSize = 0x4d66f0;  // 0x4d66f0
+constexpr reg32 kDrawArtShape = 0x4d7160;  // 0x4d7160
+constexpr reg32 kDrawShape = 0x4d7990;  // 0x4d7990
+constexpr reg32 kMenuEffect = 0x4181d0;  // 0x4181d0
 // What is not rewritten: by address.
 constexpr reg32 kStrcmp = 0x4ee310, kStricmp = 0x4e9ec0, kStrstr = 0x4e0820, kStrncpy = 0x4e0e30;
-constexpr reg32 kSprintf = 0x4df690, kFree = 0x4e1890, kTrace = 0x42d500, kWaitForKey = 0x4f0120;
+constexpr reg32 kSprintf = 0x4df690, kFree = 0x4e1890, kWaitForKey = 0x4f0120;
 constexpr reg32 kLoadQfs = 0x4956f0;
 constexpr reg32 kTakeWindow = 0x4d9120, kFlip = 0x4d9140, kDrawScreen = 0x44a4f0, kDrawScreenItems = 0x44aeb0;
-constexpr reg32 kDialogShown = 0x4438b0, kDrawDialog = 0x445f50, kDialogMessage = 0x444be0;
+constexpr reg32 kDialogShown = 0x4438b0, kDrawDialog = 0x445f50;
 constexpr reg32 kCloseDialog = 0x444a60, kJoinNetworkGame = 0x49e800, kMenuShownNow = 0x44a660;
-constexpr reg32 kCodelinkMatches = 0x4429c0, kMenuFindItem = 0x442a40, kListReplays = 0x4475a0;
+constexpr reg32 kCodelinkMatches = 0x4429c0, kMenuFindItem = 0x442a40;
 constexpr reg32 kAllPlayersReady = 0x49ab60, kNetworkOk = 0x4cf090, kHelpShown = 0x449df0;
 constexpr reg32 kPointerLine = 0x49c1c0, kPointerInBox = 0x49c1f0, kSetPointer = 0x49bfc0;
 constexpr reg32 kRenderState = 0x431900, kSetClip = 0x4bebe0, kRectangleOut = 0x4beb20, kClipQuad = 0x4c12e0;
 constexpr reg32 kSine = 0x4ea930, kCosine = 0x4ea950;
 constexpr reg32 kSpokenStatus = 0x4c95e0, kDescriptionStart = 0x4c95f0;
-constexpr reg32 kCarClass = 0x439730, kCarIsPolice = 0x4396b0;
 constexpr reg32 kMainEffectsDraw = 0x4a49c0, kTextEffectsDraw = 0x4a4410, kLogoDraw = 0x4a4c20;
 constexpr reg32 kBandEffectsDraw = 0x4a47c0, kMainEffectsStart = 0x4a4a10, kTextEffectsStart = 0x4a4390;
 constexpr reg32 kNewBitmap = 0x4ef190, kSetBitmap = 0x4eada0, kClearBitmap = 0x4ef1b0, kBitmapShape = 0x4ef1e0;
 constexpr reg32 kDrawBitmapShape = 0x4f0a10, kBitmapDone = 0x4ead90, kFreeBitmap = 0x4eff00;
-// port_shapes' art's textures (0x4d6390), by address: game_checks stands it
-// in for these, as the graphics' work under it is the shapes' own check's.
+// port_shapes' art's textures (0x4d6390), by address.
 constexpr reg32 kArtShapeTextures = 0x4d6390;
 
 /* ---- Small things ---- */
@@ -483,11 +512,133 @@ struct Caller
     reg32 r = 0;
     bool operator()(reg32 esp, reg32 target, Args a = {}, std::initializer_list<reg32> stack = {})
     {
-        return callGame(app, cpu, esp, target, a, stack, r);
+        return gameCall(app, cpu, esp, target, a, stack, r);
     }
-    bool operator()(reg32 esp, guest::Native target, Args a = {}, std::initializer_list<reg32> stack = {})
+
+    /* A typed core called as C++ where the game's code calls its address: from `esp`, the core's frame base
+     * esp - 4 - 4 * Words (Words the stack words the game's call pushes); its answer in r; false when the game
+     * stopped in it. */
+    template <class F>
+    bool run(reg32 esp, F f)
     {
-        return callGame(app, cpu, esp, target, a, stack, r);
+        cpu.esp = esp;
+        if constexpr (std::is_void_v<decltype(f())>)
+        {
+            f();
+            return !cpu.terminate;
+        }
+        else
+        {
+            const auto v = f();
+            if (cpu.terminate)
+                return false;
+            return store(v);
+        }
+    }
+    template <class V>
+    bool store(const std::optional<V>& v)
+    {
+        if (!v)
+            return false;
+        r = reg32(*v);
+        return true;
+    }
+    template <class V>
+    bool store(const V& v)
+    {
+        r = reg32(v);
+        return true;
+    }
+    template <reg32 Address, auto Core, unsigned Words, class... P>
+    bool core(reg32 esp, P... p)
+    {
+        return run(esp, [&] { return guest::direct<Address, Core>(app, cpu, reg32(esp - 4 - 4 * Words), p...); });
+    }
+    /* A core with no esp (and maybe no cpu): the runtime's, the plain ones. */
+    template <reg32 Address, auto Core, class... P>
+    bool plain(reg32 esp, P... p)
+    {
+        return run(esp, [&] { return guest::direct<Address, Core>(app, cpu, p...); });
+    }
+    /* The same of one that leaves eax as it came: r is `eax` after it. */
+    template <reg32 Address, auto Core, class... P>
+    bool keep(reg32 esp, reg32 eax, P... p)
+    {
+        r = eax;
+        return run(esp, [&] { return guest::direct<Address, Core>(app, cpu, p...); });
+    }
+    /* A core that gives al: the rest of eax as it came. */
+    template <reg32 Address, auto Core, class... P>
+    bool low(reg32 esp, reg32 eax, P... p)
+    {
+        const bool ok = run(esp, [&] { return guest::direct<Address, Core>(app, cpu, p...); });
+        r = (eax & 0xffffff00u) | (r & 0xff);
+        return ok;
+    }
+    /* A box core whose colours the game's code pushes (four stack words): its colours as an array. */
+    template <reg32 Address, auto Core>
+    bool boxed(reg32 esp, reg32 x, reg32 y, reg32 width, reg32 height, reg32 c0, reg32 c1, reg32 c2, reg32 c3)
+    {
+        const uint32_t colours[4] = {c0, c1, c2, c3};
+        return core<Address, Core, 4>(esp, x, y, width, height, static_cast<const uint32_t*>(colours));
+    }
+    /* The same, called by name, as C++. */
+    template <auto Core, unsigned Words, class... P>
+    bool named(reg32 esp, P... p)
+    {
+        return run(esp, [&] {
+            const auto v = Core(app, cpu, reg32(esp - 4 - 4 * Words), p...);
+            cpu.esp = esp;
+            return v;
+        });
+    }
+    template <auto Core, class... P>
+    bool namedPlain(reg32 esp, P... p)
+    {
+        return run(esp, [&] { return callNamed<Core>(p...); });
+    }
+    template <auto Core, class... P>
+    bool keepNamed(reg32 esp, reg32 eax, P... p)
+    {
+        r = eax;
+        return run(esp, [&] { return callNamed<Core>(p...); });
+    }
+    template <auto Core, class... P>
+    bool lowNamed(reg32 esp, reg32 eax, P... p)
+    {
+        const bool ok = run(esp, [&] { return callNamed<Core>(p...); });
+        r = (eax & 0xffffff00u) | (r & 0xff);
+        return ok;
+    }
+    template <auto Core>
+    bool boxedNamed(reg32 esp, reg32 x, reg32 y, reg32 width, reg32 height, reg32 c0, reg32 c1, reg32 c2, reg32 c3)
+    {
+        const uint32_t colours[4] = {c0, c1, c2, c3};
+        return named<Core, 4>(esp, x, y, width, height, static_cast<const uint32_t*>(colours));
+    }
+    template <auto Core, class... P>
+    auto callNamed(P... p)
+    {
+        if constexpr (std::is_invocable_v<decltype(Core), App*, CPU&, P...>)
+            return Core(app, cpu, p...);
+        else
+            return Core(app, p...);
+    }
+    /* 0x4d1850, by name (esp restored). */
+    bool lineByName(reg32 esp, int32_t number, reg32 edx)
+    {
+        cpu.esp = esp;
+        const auto v = text::lineText(app, cpu, esp - 4, number, edx);
+        cpu.esp = esp;
+        return store(v);
+    }
+    /* 0x4181d0, by name (esp restored). */
+    bool effectByName(reg32 esp, int32_t effect, int32_t volume)
+    {
+        cpu.esp = esp;
+        const auto v = playMenuEffectOf(app, cpu, esp - 4, effect, volume);
+        cpu.esp = esp;
+        return store(v);
     }
 };
 
@@ -505,7 +656,7 @@ Result listNumber(App* app, CPU& cpu, reg32 at, reg32 name)
         const reg32 entry = kLists(app, i).name;
         if (entry == 0)
             break;
-        if (!call(at, kStrcmp, {name, entry, reg32(i), name}))
+        if (!call.plain<0x4ee310, watcom::clib::strcmp>(at, name, entry))
             return {};
         if (call.r == 0)
             break;
@@ -554,8 +705,8 @@ Result linesOf(App* app, CPU& cpu, reg32 esp, reg32 name, reg32 chosenAt)
         return int32_t(l.lines);
     }
     Caller call{app, cpu};
-    if (!call(at, kTrace, {reg32(*i * 0x14), 0, reg32(*i), name}, {kListNotFound, name})
-        || !call(at, kWaitForKey, {call.r, 0, reg32(*i), name}))
+    if (!call.keep<0x42d500, raceload::noHook>(at, reg32(*i * 0x14))
+        || !call.plain<kWaitForKey, ea::waitKey>(at))
         return {};
     return 0;
 }
@@ -584,7 +735,7 @@ Result shapesLoaded(App* app, CPU& cpu, reg32 esp, reg32 name, reg32 ebx)
 {
     const reg32 at = esp - 0x14;
     Caller call{app, cpu};
-    if (!call(at, kStrstr, {name, kHud, ebx, name}))
+    if (!call.plain<0x4e0820, watcom::clib::strstr>(at, name, kHud))
         return {};
     const reg32 found = call.r;
     if (found != 0)
@@ -595,14 +746,14 @@ Result shapesLoaded(App* app, CPU& cpu, reg32 esp, reg32 name, reg32 ebx)
     }
     if (kHudShapes(app) != 0)
     {
-        if (!call(at, kStrcmp, {name, kHudName, ebx, name}))
+        if (!call.plain<0x4ee310, watcom::clib::strcmp>(at, name, kHudName))
             return {};
         if (call.r == 0)
             return int32_t(kHudShapes(app));
-        if (!call(at, kFree, {kHudShapes(app), kHudName, ebx, name}))
+        if (!call.plain<0x4e1890, watcom::clib::free>(at, kHudShapes(app)))
             return {};
     }
-    if (!call(at, kLoadQfs, {name, 0x10, ebx, name}))
+    if (!call.plain<kLoadQfs, frontend::draw::loadQfsFlags>(at, name, 0x10u))
         return {};
     kHudShapes.set(app, call.r);
     copyString(app, kHudName, name);
@@ -622,15 +773,15 @@ Result redrawn(App* app, CPU& cpu, reg32 esp, const Args& in)
 {
     const reg32 at = esp - 4;
     Caller call{app, cpu};
-    if (!call(at, kTakeWindow, in))
+    if (!call.plain<kTakeWindow, graphics::windowTakenAndCleared>(at))
         return {};
-    if (!call(at, kDrawScreen, {kScreen(app), in.edx, in.ebx, in.ecx}))
+    if (!call.core<0x44a4f0, loop::drawItemsOf, 0>(at, kScreen(app)))
         return {};
-    if (!call(at, kDialogShown, {call.r, in.edx, in.ebx, in.ecx}))
+    if (!call.plain<0x4438b0, dialogs::dialogShownWith>(at, call.r))
         return {};
-    if ((call.r & 0xff) != 0 && !call(at, kDrawDialog, {call.r, in.edx, in.ebx, in.ecx}))
+    if ((call.r & 0xff) != 0 && !call.core<0x445f50, dialogs::dialogPassOf, 0>(at, call.r))
         return {};
-    if (!call(at, kFlip, {call.r, in.edx, in.ebx, in.ecx}))
+    if (!call.plain<kFlip, graphics::flipAndWait>(at))
         return {};
     return int32_t(call.r);
 }
@@ -651,8 +802,8 @@ Result slideFinished(App* app, CPU& cpu, reg32 esp, const Args& in)
     Caller call{app, cpu};
     while (kSlide(app) < 0x251)
     {
-        if (!call(at, kTakeWindow, {eax, in.edx, in.ebx, 0}) || !call(at, kDrawScreenItems, {call.r, in.edx, in.ebx, 0})
-            || !call(at, kDrawScreen, {call.r, in.edx, in.ebx, 0}) || !call(at, kFlip, {call.r, in.edx, in.ebx, 0}))
+        if (!call.plain<kTakeWindow, graphics::windowTakenAndCleared>(at) || !call.plain<0x44aeb0, loop::currentMenuOf>(at)
+            || !call.core<0x44a4f0, loop::drawItemsOf, 0>(at, call.r) || !call.plain<kFlip, graphics::flipAndWait>(at))
             return {};
         eax = call.r;
     }
@@ -673,7 +824,7 @@ Result joined(App* app, CPU& cpu, reg32 esp, const Args& in)
     const reg32 row = word(app, kSelectList(app) + 0x4c) << 6;
     copyBlock(app, game, row + word(app, games + 4) + 0x2c, 0x14);
     Caller call{app, cpu};
-    if (!call(at, kDialogMessage, {0xc, row, in.ebx, 0}))
+    if (!call.run(at, [&] { return guest::direct<0x444be0, frontend::dialogs::messageById>(app, cpu, 0xcu); }))
         return {};
     reg32 eax = call.r;
     for (reg32 i = 0; i < 0xf; ++i)
@@ -683,11 +834,11 @@ Result joined(App* app, CPU& cpu, reg32 esp, const Args& in)
             return {};
         eax = reg32(*r);
     }
-    if (!call(at, kJoinNetworkGame, {game, 0xf, in.ebx, 0}))
+    if (!call.plain<kJoinNetworkGame, frontend::connect::joinSession>(at, game))
         return {};
     if (call.r == 0)
         return 0;
-    if (!call(at, kCloseDialog, {call.r, 0xf, in.ebx, 0}) || !redrawn(app, cpu, at - 4, {call.r, 0xf, in.ebx, 0}))
+    if (!call.plain<0x444a60, dialogs::endMessageOf>(at, call.r) || !redrawn(app, cpu, at - 4, {call.r, 0xf, in.ebx, 0}))
         return {};
     return 5;
 }
@@ -711,7 +862,7 @@ Result readyMarks(App* app, CPU& cpu, reg32 esp, int32_t x, int32_t y)
     reg32 ecx = ready != 0 ? reg32(ready) : 0;
     if (half(app, glow) != 0)
     {
-        if (!call(at, kDrawArtShape, {reg32(wide(half(app, glow))), reg32(x - 6), reg32(y - 5), colour}))
+        if (!call.named<shapes::drawArt, 0>(at, reg32(wide(half(app, glow))), reg32(x - 6), reg32(y - 5), colour))
             return {};
         eax = call.r;
         ecx = colour;
@@ -719,7 +870,7 @@ Result readyMarks(App* app, CPU& cpu, reg32 esp, int32_t x, int32_t y)
     if (half(app, mark) != 0)
     {
         const int32_t dx = ready != 0 ? -1 : 0, dy = ready != 0 ? 1 : 0;
-        if (!call(at, kDrawShape, {reg32(wide(half(app, mark))), reg32(x + dx), reg32(y + dy), ecx}))
+        if (!call.core<0x4d7990, shapes::drawShapeOf, 0>(at, reg32(wide(half(app, mark))), reg32(x + dx), reg32(y + dy)))
             return {};
         eax = call.r;
     }
@@ -735,7 +886,7 @@ Result readyMarks(App* app, CPU& cpu, reg32 esp, int32_t x, int32_t y)
 Result colouredRectangle(App* app, CPU& cpu, reg32 esp, const Args& a, const reg32 colours[4])
 {
     Caller call{app, cpu};
-    if (!call(esp - 0xc, kShadedRectangle, a, {colours[0], colours[1], colours[2], colours[3]}))
+    if (!call.core<0x4d81b0, draw2d::shadedRectangle, 4>(esp - 0xc, a.eax, a.edx, a.ebx, a.ecx, static_cast<const uint32_t*>(colours)))
         return {};
     return int32_t(call.r);
 }
@@ -791,7 +942,7 @@ Result licenceDrawn(App* app, CPU& cpu, reg32 esp, const Args& in)
     if (picture != 0)
     {
         Caller call{app, cpu};
-        if (!call(at, kDrawShape, {picture, reg32(kSlideX(app) + 0x10), 0x39, ecx}))
+        if (!call.core<0x4d7990, shapes::drawShapeOf, 0>(at, picture, reg32(kSlideX(app) + 0x10), 0x39))
             return {};
     }
     return 0;
@@ -807,7 +958,7 @@ constexpr reg32 kArrowNames[] = {0x539918, 0x539920, 0x539928, 0x539930};  // bu
 Result shownNow(App* app, CPU& cpu, reg32 at, reg32 item, reg32 ebx, reg32 ecx)
 {
     Caller call{app, cpu};
-    if (!call(at, kMenuShownNow, {item, 0x1e, ebx, ecx}))
+    if (!call.plain<kMenuShownNow, frontend::loop::shownNow>(at, item))
         return {};
     return int32_t(call.r);
 }
@@ -839,29 +990,28 @@ Result textBoxDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 lit)
     }
     const reg32 widthAt = frame - 4, heightAt = frame - 8;
     Caller call{app, cpu};
-    if (!call(call_at, kShapeSize, {reg32(wide(down)), widthAt, heightAt, 0xa0000040}))
+    if (!call.namedPlain<shapes::shapeSizeOf>(call_at, reg32(wide(down)), widthAt, heightAt))
         return {};
     const reg32 edge = colour == kYellow ? 0xffffe440 : 0xff000040;
-    if ((kRenderFlags(app) & 2) != 0 && !call(call_at, kRenderState, {6, 1, 0xd0222222, 0xa0000040}))
+    if ((kRenderFlags(app) & 2) != 0 && !call.plain<0x431900, graphics::sendState>(call_at, 6, 1))
         return {};
     {
         const int32_t width = wide(half(app, widthAt)) + wide(t.width) + 1;
-        if (!call(call_at, kShadedBox, {reg32(wide(t.x)), reg32(wide(t.y)), reg32(width), reg32(wide(t.height))},
-                  {0xa0000040, 0xa0000040, 0xd0222222, 0xd0222222}))
+        if (!call.boxedNamed<draw2d::shadedBox>(call_at, reg32(wide(t.x)), reg32(wide(t.y)), reg32(width), reg32(wide(t.height)), 0xa0000040, 0xa0000040, 0xd0222222, 0xd0222222))
             return {};
-        if (!call(call_at, kFrame, {reg32(wide(t.x)), reg32(wide(t.y)), reg32(width), reg32(wide(t.height))}, {edge}))
+        if (!call.named<draw2d::outline, 1>(call_at, reg32(wide(t.x)), reg32(wide(t.y)), reg32(width), reg32(wide(t.height)), edge))
             return {};
-        if ((kRenderFlags(app) & 2) != 0 && !call(call_at, kRenderState, {6, 0, reg32(width), reg32(wide(t.height))}))
+        if ((kRenderFlags(app) & 2) != 0 && !call.plain<0x431900, graphics::sendState>(call_at, 6, 0))
             return {};
-        if (!call(call_at, kSelectFont, {kMenuFont, call.r, reg32(width), kOne}))
+        if (!call.keepNamed<text::selectFontOf>(call_at, kMenuFont, kMenuFont))
             return {};
     }
     kScreenTextSize.set(app, kOne);
     if (t.text != 0)
     {
-        if (!call(call_at, kWrappedText, {t.text, kMenuFont, colour, reg32(wide(t.x))},
-                  {reg32(wide(t.y)), reg32(wide(t.width) - 1), frame - 0x1c, frame - 0x18, frame - 0x14, 0,
-                   reg32(wide(t.gap)), reg32(wide(t.first))}))
+        if (!call.core<0x451cd0, text::wrappedText, 8>(
+                call_at, text::Box{t.text, kMenuFont, colour, wide(t.x), wide(t.y), wide(t.width) - 1, frame - 0x1c,
+                                   frame - 0x18, frame - 0x14, 0, wide(t.gap), wide(t.first)}))
             return {};
         item<TextBoxItem>(app, at).lines = int16_t(word(app, frame - 0x14));
     }
@@ -869,10 +1019,10 @@ Result textBoxDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 lit)
         t.lines = 1;
     const reg32 up = reg32(wide(colour == kYellow ? kUpArrowLit(app) : kUpArrow(app)));
     const int32_t right = wide(t.x) + wide(t.width);
-    if (!call(call_at, kDrawShape, {up, reg32(right), reg32(wide(t.y))}))
+    if (!call.core<0x4d7990, shapes::drawShapeOf, 0>(call_at, up, reg32(right), reg32(wide(t.y))))
         return {};
     const int32_t bottom = wide(t.height) + wide(t.y) - 1 - wide(half(app, heightAt));
-    if (!call(call_at, kDrawShape, {reg32(wide(down)), reg32(right), reg32(bottom)}))
+    if (!call.core<0x4d7990, shapes::drawShapeOf, 0>(call_at, reg32(wide(down)), reg32(right), reg32(bottom)))
         return {};
     return 0;
 }
@@ -888,7 +1038,7 @@ Result textBoxKeyed(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 key)
     if (*shown == 0)
         return 0;
     Caller call{app, cpu};
-    if (!call(call_at, kShapeSize, {reg32(wide(kDownArrowLit(app))), frame - 8, frame - 4, at}))
+    if (!call.namedPlain<shapes::shapeSizeOf>(call_at, reg32(wide(kDownArrowLit(app))), frame - 8, frame - 4))
         return {};
     TextBoxItem& t = item<TextBoxItem>(app, at);
     const int16_t width = int16_t(word(app, frame - 8)), height = int16_t(word(app, frame - 4));
@@ -904,7 +1054,7 @@ Result textBoxKeyed(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 key)
     setHalf(app, down + 4, width);
     if (int16_t(key) != 0xd)
         return 0;
-    if (!call(call_at, kPointerInBox, {up, 0, key, at}))
+    if (!call.plain<0x49c1f0, frontend::glue::pointerInBox>(call_at, up))
         return {};
     if (call.r != 0)
     {
@@ -914,7 +1064,7 @@ Result textBoxKeyed(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 key)
             t.first = 0;
         return 2;
     }
-    if (!call(call_at, kPointerInBox, {down, 0, key, at}))
+    if (!call.plain<0x49c1f0, frontend::glue::pointerInBox>(call_at, down))
         return {};
     if (call.r == 0)
         return 0;
@@ -940,7 +1090,7 @@ Result textBoxLaidOut(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 ebx)
     t.boxHeight = t.height;
     t.boxWidth = t.width;
     Caller call{app, cpu};
-    if (!call(call_at, kShapeSize, {reg32(wide(kDownArrowLit(app))), frame - 4, frame - 8, at}))
+    if (!call.namedPlain<shapes::shapeSizeOf>(call_at, reg32(wide(kDownArrowLit(app))), frame - 4, frame - 8))
         return {};
     const reg32 width = word(app, frame - 4);
     t.boxWidth = int16_t(t.boxWidth + int16_t(width));
@@ -961,7 +1111,7 @@ Result textBoxShowing(App* app, CPU& cpu, reg32 esp, const Args& in)
     const Var<int16_t> arrows[] = {kUpArrow, kDownArrow, kUpArrowLit, kDownArrowLit};
     for (int i = 0; i < 4; ++i)
     {
-        if (!call(at, kShapeByName, {kArrowNames[i], 0x1e, in.ebx, in.ecx}))
+        if (!call.named<shapes::shapeNamed, 0>(at, kArrowNames[i]))
             return {};
         arrows[i].set(app, int16_t(call.r));
     }
@@ -979,7 +1129,7 @@ Result textBoxHiding(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 ebx)
     if (*shown == 0 || t.owned == 0)
         return shown;
     Caller call{app, cpu};
-    if (!call(call_at, kFree, {t.text, 0x1e, ebx, at}))
+    if (!call.plain<0x4e1890, watcom::clib::free>(call_at, t.text))
         return {};
     item<TextBoxItem>(app, at).owned = 0;
     return int32_t(call.r);
@@ -999,7 +1149,6 @@ constexpr Var<int16_t> kMapTile{0x677d90};
  * coming in to going.  1 while it waits, 0 once it moves. */
 Result mapSlid(App* app, CPU& cpu, reg32 esp, reg32 advance)
 {
-    auto& f = cpu.fpu;
     const reg32 frame = esp - 0x18, at = frame - 0x34;
     // [ebp-8], unset where the step is past 2: the frame's own.
     reg32 along = word(app, frame - 8);
@@ -1019,7 +1168,7 @@ Result mapSlid(App* app, CPU& cpu, reg32 esp, reg32 advance)
             if (was + 0xc > 0x100)
                 kMapAlong.set(app, 0x100);
         }
-        along = bitsOf(float(f.add(f.mul(Float(kMapAlong(app)), Float(floatAt(app, 0x539a48))),
+        along = bitsOf(float(fp::add(fp::mul(Float(kMapAlong(app)), Float(floatAt(app, 0x539a48))),
                                    Float(doubleAt(app, 0x539a50)))));
         result = 0;
     }
@@ -1034,7 +1183,7 @@ Result mapSlid(App* app, CPU& cpu, reg32 esp, reg32 advance)
             else
                 kMapAlong.set(app, 0);
         }
-        along = bitsOf(float(f.add(f.mul(Float(kMapAlong(app)), Float(floatAt(app, 0x539a48))),
+        along = bitsOf(float(fp::add(fp::mul(Float(kMapAlong(app)), Float(floatAt(app, 0x539a48))),
                                    Float(doubleAt(app, 0x539a58)))));
     }
     const bool wideMap = kMapWidth(app, kMapLine(app)) > 0x140;
@@ -1061,38 +1210,34 @@ Result mapSlid(App* app, CPU& cpu, reg32 esp, reg32 advance)
                 band = 0xe;
             }
             else
-                along = bitsOf(float(f.add(Float(floatOf(along)), Float(doubleAt(app, 0x539a60)))));
+                along = bitsOf(float(fp::add(Float(floatOf(along)), Float(doubleAt(app, 0x539a60)))));
             if (advance != 0)
                 kMapStep.set(app, kMapStep(app) + 1);
         }
         else if (now == 2)
-            along = bitsOf(float(f.add(Float(floatOf(along)), Float(doubleAt(app, 0x539a68)))));
+            along = bitsOf(float(fp::add(Float(floatOf(along)), Float(doubleAt(app, 0x539a68)))));
         const Float v = Float(floatOf(along));
         const Float vd = Float(double(v));
-        f.compare(Float(0.0), vd);
         if (Float(0.0) > vd)
             continue;
-        f.compare(Float(1.0), vd);
         if (!(Float(1.0) >= vd))
             continue;
         const int32_t line = kMapLine(app);
-        const Float vk = f.mul(v, Float(floatAt(app, 0x539a70)));
-        const Float rest = f.sub(Float(1.0), vd);
-        const Float wRest = f.mul(Float(kMapWidth(app, line)), rest);
-        const Float xRest = f.mul(rest, Float(kMapX(app, line)));
-        const Float topV = f.mul(Float(top), v);
-        const Float size = f.add(vk, Float(floatAt(app, 0x539a74)));
-        const Float downV = f.mul(v, Float(height));
+        const Float vk = fp::mul(v, Float(floatAt(app, 0x539a70)));
+        const Float rest = fp::sub(Float(1.0), vd);
+        const Float wRest = fp::mul(Float(kMapWidth(app, line)), rest);
+        const Float xRest = fp::mul(rest, Float(kMapX(app, line)));
+        const Float topV = fp::mul(Float(top), v);
+        const Float size = fp::add(vk, Float(floatAt(app, 0x539a74)));
+        const Float downV = fp::mul(v, Float(height));
         const int32_t side = chopped<int32_t>(cpu, size);
-        const Float across = f.add(topV, wRest);
-        const Float down = f.add(downV, xRest);
+        const Float across = fp::add(topV, wRest);
+        const Float down = fp::add(downV, xRest);
         const int32_t x = chopped<int32_t>(cpu, across);
         const int32_t y = chopped<int32_t>(cpu, down);
         const reg32 colour = band == 0xe ? 0xffffffff : 0x40ffffff;
         const int32_t half_ = halved(side);
-        if (!call(at, kTileRectangle,
-                  {reg32(wide(kMapTile(app))), reg32(x - half_), reg32(y - half_), reg32(x + half_)},
-                  {reg32(y + half_), colour, colour}))
+        if (!call.core<0x4d8b80, draw2d::drawTileRectangleOf, 3>(at, reg32(wide(kMapTile(app))), reg32(x - half_), reg32(x + half_), reg32(y - half_), reg32(y + half_), colour, colour))
             return {};
     }
     return result;
@@ -1115,21 +1260,22 @@ Result trackFacts(App* app, CPU& cpu, reg32 esp, const Args& in)
     const int32_t language = gameSettings(app).language;
     if (language == 0)
     {
-        if (!call(at, kLanguageText, {6, reg32(x), reg32(y), in.ecx}))
+        if (!call.lineByName(at, 6, reg32(x)))
             return {};
         const reg32 miles = call.r;
-        if (!call(at, kSprintf, {miles, reg32(x), reg32(y), word(app, reg32(gameSettings(app).track) * 4 + 0x559644)},
-                  {text, 0x539a78, word(app, reg32(gameSettings(app).track) * 4 + 0x559644), miles}))
+        if (!call.plain<kSprintf, watcom::clib::sprintf>(
+                at, text, 0x539a78u,
+                guest::Words({word(app, reg32(gameSettings(app).track) * 4 + 0x559644), miles})))
             return {};
     }
     else
     {
         const reg32 table = language == 1 || language == 2 || language == 5 ? 0x559668 : 0x55968c;
         const reg32 length = word(app, reg32(gameSettings(app).track) * 4 + table);
-        if (!call(at, kSprintf, {reg32(gameSettings(app).track), reg32(x), reg32(y), in.ecx}, {text, 0x539a80, length}))
+        if (!call.plain<kSprintf, watcom::clib::sprintf>(at, text, 0x539a80u, guest::Words({length})))
             return {};
     }
-    if (!call(at, kDrawMenuText, {text, reg32(x), reg32(y), kMenuFont}, {0, 0x488cfd}))
+    if (!call.named<text::menuTextDrawn, 2>(at, text, reg32(x), reg32(y), kMenuFont, 0, 0x488cfd))
         return {};
     return int32_t(call.r);
 }
@@ -1144,27 +1290,27 @@ Result mapShape(App* app, CPU& cpu, reg32 esp, reg32 shape, int32_t index)
     constexpr Var<reg32> kMapArt{0x677d80};
     const reg32 at = esp - 0x14;
     Caller call{app, cpu};
-    if (!call(at, kNewBitmap, {0x100, 0x100, 0x10, 0x10}))
+    if (!call.plain<kNewBitmap, frontend::eab::windowBitmapCreateDefault>(at, 0x100u, 0x100u, 0x10u, 0x10u))
         return {};
     const reg32 bitmap = call.r;
-    if (!call(at, kSetBitmap, {bitmap, 0x100, 0x10, bitmap}))
+    if (!call.plain<kSetBitmap, frontend::eaa::bitmapDrawInto>(at, bitmap))
         return {};
-    if (!call(at, kClearBitmap, {byteAt(app, 0x565010) == 8 ? 0xffu : 0u, 0x100, 0x10, bitmap}))
+    if (!call.plain<kClearBitmap, frontend::eab::drawClearClip>(at, byteAt(app, 0x565010) == 8 ? 0xffu : 0u))
         return {};
     reg32 edx = 0x100;
     if (kMapArt(app) != 0)
     {
         edx = word(app, (reg32(gameSettings(app).track) << 4) + reg32(index) * 4 + 0x559764);
-        if (!call(at, kBitmapShape, {kMapArt(app), edx, 0x10, bitmap})
-            || !call(at, kDrawBitmapShape, {call.r, edx, 0x10, bitmap}))
+        if (!call.plain<kBitmapShape, frontend::eab::shapeFileFind>(at, kMapArt(app), edx)
+            || !call.plain<kDrawBitmapShape, frontend::wata::blitShapeAtPosition>(at, call.r))
             return {};
     }
-    if (!call(at, kBitmapDone, {call.r, edx, 0x10, bitmap}))
+    if (!call.plain<kBitmapDone, frontend::eaa::bitmapDrawToScreen>(at))
         return {};
-    if (!call(at, kArtShapeTextures, {word(app, bitmap + 0x20), shape, 0x10, bitmap}))
+    if (!call.core<kArtShapeTextures, shapes::artTexturesOf, 0>(at, word(app, bitmap + 0x20), int32_t(shape), bitmap))
         return {};
     const reg32 textures = call.r;
-    if (!call(at, kFreeBitmap, {bitmap, textures, 0x10, bitmap}))
+    if (!call.plain<kFreeBitmap, frontend::eab::windowBitmapFree>(at, bitmap))
         return {};
     return int32_t(textures);
 }
@@ -1176,10 +1322,9 @@ Result mapShape(App* app, CPU& cpu, reg32 esp, reg32 shape, int32_t index)
 Result turnedShape(App* app, CPU& cpu, reg32 esp, int32_t shape, int32_t x, int32_t y, int32_t nudge, int32_t angle,
                    reg32 scaleBits)
 {
-    auto& f = cpu.fpu;
     const reg32 frame = esp - 0xc, at = frame - 0x4c;
-    const float scale = float(f.mul(Float(floatOf(scaleBits)), Float(doubleAt(app, 0x54965c))));
-    const reg32 turn = bitsOf(float(f.mul(Float(angle), Float(doubleAt(app, 0x549664)))));
+    const float scale = float(fp::mul(Float(floatOf(scaleBits)), Float(doubleAt(app, 0x54965c))));
+    const reg32 turn = bitsOf(float(fp::mul(Float(angle), Float(doubleAt(app, 0x549664)))));
     if (kOverRace(app) != 0)
         return angle;
     const reg32 rec = reg32(shape) * 0x14 + 0x8b48c0;
@@ -1187,16 +1332,16 @@ Result turnedShape(App* app, CPU& cpu, reg32 esp, int32_t shape, int32_t x, int3
     Caller call{app, cpu};
     if (tile == -1)
     {
-        if (!call(at, kTrace, {reg32(shape) * 0x14, reg32(tile), reg32(shape), reg32(nudge)}, {0x549630, reg32(shape)}))
+        if (!call.keep<0x42d500, raceload::noHook>(at, reg32(shape) * 0x14))
             return {};
         return int32_t(call.r);
     }
     const Float s = Float(scale);
     const Float k = Float(floatAt(app, 0x54966c));
-    const Float across = f.mul(Float(wide(half(app, rec + 4))), s);
-    const Float down = f.mul(s, Float(-wide(half(app, rec + 6))));
-    const Float halfAcross = f.mul(across, k);
-    const Float halfDown = f.mul(k, down);
+    const Float across = fp::mul(Float(wide(half(app, rec + 4))), s);
+    const Float down = fp::mul(s, Float(-wide(half(app, rec + 6))));
+    const Float halfAcross = fp::mul(across, k);
+    const Float halfDown = fp::mul(k, down);
     app->getMemory<float>(0x563b18) = float(Float(floatAt(app, 0x563aa8)));
     app->getMemory<float>(0x563b1c) = float(Float(floatAt(app, 0x563aac)));
     setWord(app, 0x563af8, word(app, 0x563b18));
@@ -1204,19 +1349,24 @@ Result turnedShape(App* app, CPU& cpu, reg32 esp, int32_t shape, int32_t x, int3
     setWord(app, 0x563ad8, word(app, 0x563af8));
     app->getMemory<float>(0x563adc) = float(Float(floatAt(app, 0x563afc)));
     const Float depth = Float(floatAt(app, 0x563ad8)), w = Float(floatAt(app, 0x563adc));
-    const Float left = f.sub(Float(nudge), halfAcross);
+    const Float left = fp::sub(Float(nudge), halfAcross);
     app->getMemory<float>(0x563ab8) = float(depth);
-    const float x0 = float(f.add(left, Float(wide(half(app, rec + 8)))));
+    const float x0 = float(fp::add(left, Float(wide(half(app, rec + 8)))));
     app->getMemory<float>(0x563abc) = float(w);
-    const float y0 = float(f.add(halfDown, Float(wide(half(app, rec + 0xa)))));
+    const float y0 = float(fp::add(halfDown, Float(wide(half(app, rec + 0xa)))));
     for (const reg32 code : {0x563b20u, 0x563b00u, 0x563ae0u, 0x563ac0u})
         setWord(app, code, 0xffffffff);
     // A trig function of the angle, left on the x87's stack by the game's code.
-    const auto trig = [&](reg32 target, Float& value) {
-        if (!call(at, target, {}, {turn}))
-            return false;
-        value = f.pop();
-        return true;
+    // 0x4ea930's and 0x4ea950's sine and cosine of the float.
+    const auto sine = [&](Float& value) {
+        cpu.esp = at;
+        value = guest::direct<0x4ea930, frontend::simd::sineValue>(app, cpu, turn);
+        return !cpu.terminate;
+    };
+    const auto cosine = [&](Float& value) {
+        cpu.esp = at;
+        value = guest::direct<0x4ea950, frontend::simd::cosineValue>(app, cpu, turn);
+        return !cpu.terminate;
     };
     int32_t eax = 0;
     for (int32_t column = 0;; ++column)
@@ -1224,35 +1374,35 @@ Result turnedShape(App* app, CPU& cpu, reg32 esp, int32_t shape, int32_t x, int3
         eax = wide(half(app, rec + 4));
         if (eax <= column)
             break;
-        const Float xaFull = f.add(f.mul(Float(column), s), Float(x0));
+        const Float xaFull = fp::add(fp::mul(Float(column), s), Float(x0));
         const float xa = float(xaFull);
-        const float xb = float(f.add(s, xaFull));
+        const float xb = float(fp::add(s, xaFull));
         for (int32_t row = 0;; ++row)
         {
             if (wide(half(app, rec + 6)) <= row)
                 break;
-            const Float yaFull = f.add(f.mul(Float(row), s), Float(y0));
+            const Float yaFull = fp::add(fp::mul(Float(row), s), Float(y0));
             const float ya = float(yaFull);
-            const float yb = float(f.add(s, yaFull));
+            const float yb = float(fp::add(s, yaFull));
             const float xf = float(Float(x)), yf = float(Float(y));
             Float c, sn;
             float t;
             const auto vertexX = [&](reg32 at_, float xs, float ys) {
-                if (!trig(kCosine, c))
+                if (!cosine(c))
                     return false;
-                t = float(f.add(f.mul(c, Float(xs)), Float(xf)));
-                if (!trig(kSine, sn))
+                t = float(fp::add(fp::mul(c, Float(xs)), Float(xf)));
+                if (!sine(sn))
                     return false;
-                app->getMemory<float>(at_) = float(f.sub(Float(t), f.mul(sn, Float(ys))));
+                app->getMemory<float>(at_) = float(fp::sub(Float(t), fp::mul(sn, Float(ys))));
                 return true;
             };
             const auto vertexY = [&](reg32 at_, float xs, float ys) {
-                if (!trig(kSine, sn))
+                if (!sine(sn))
                     return false;
-                t = float(f.add(f.mul(sn, Float(xs)), Float(yf)));
-                if (!trig(kCosine, c))
+                t = float(fp::add(fp::mul(sn, Float(xs)), Float(yf)));
+                if (!cosine(c))
                     return false;
-                app->getMemory<float>(at_) = float(f.add(f.mul(c, Float(ys)), Float(t)));
+                app->getMemory<float>(at_) = float(fp::add(fp::mul(c, Float(ys)), Float(t)));
                 return true;
             };
             if (!vertexX(0x563ab0, xa, ya) || !vertexX(0x563ad0, xb, ya) || !vertexX(0x563af0, xb, yb)
@@ -1261,7 +1411,7 @@ Result turnedShape(App* app, CPU& cpu, reg32 esp, int32_t shape, int32_t x, int3
                 return {};
             const reg32 texture = word(app, reg32(tile) * 0xc + 0x8b5090);
             ++tile;
-            if (!call(at, kRenderState, {1, texture, reg32(shape), 0}))
+            if (!call.plain<0x431900, graphics::sendState>(at, 1, texture))
                 return {};
             for (reg32 vertex = 0x563ab0; vertex <= 0x563b10; vertex += 0x20)
             {
@@ -1285,7 +1435,7 @@ Result turnedShape(App* app, CPU& cpu, reg32 esp, int32_t shape, int32_t x, int3
                 app->getMemory<uint8_t>(vertex + 0x14) = code;
             }
             if ((kRenderFlags(app) & 2) == 0
-                && !call(at, kClipQuad, {0x563ab0, 0x563ad0, 0x563af0, 0x563b10}))
+                && !call.core<kClipQuad, vertices::quadClippedAt, 0>(at, 0x563ab0u, 0x563ad0u, 0x563af0u, 0x563b10u))
                 return {};
         }
     }
@@ -1295,7 +1445,7 @@ Result turnedShape(App* app, CPU& cpu, reg32 esp, int32_t shape, int32_t x, int3
 namespace
 {
 
-/* 0x4d88f0's adapter's core is colouredRectangle (above). */
+/* 0x4d88f0's thunk's core is colouredRectangle (above). */
 
 /* 0x456670's: the "glow" image's pass: on the track's screen once it has slid
  * in, the facts drawn, the map's shape turned, its line pulsing, the
@@ -1325,7 +1475,7 @@ Result glowDrawn(App* app, CPU& cpu, reg32 esp, const Args& in)
     kPulse.set(app, pulse);
     const reg32 alpha = reg32(pulse < 0x100 ? pulse : 0x1ff - pulse);
     Caller call{app, cpu};
-    if (!call(at, kSpokenStatus, {reg32(int32_t(int64_t(sum) / 0x200)), reg32(pulse), reg32(angle), alpha}))
+    if (!call.core<0x4c95e0, spokenStatusOf, 0>(at))
         return {};
     if (call.r != 0 && kSpoken(app) != 0)
     {
@@ -1342,7 +1492,8 @@ Result glowDrawn(App* app, CPU& cpu, reg32 esp, const Args& in)
         kMapAlong.set(app, 0);
         const int32_t lines = int32_t(word(app, reg32(gameSettings(app).track) * 4 + 0x5597f4));
         if (kMapLine(app) <= lines
-            && !call(at, kDescriptionStart, {reg32(kMapLine(app)), 0x33, reg32(gameSettings(app).language), alpha}))
+            && !call.core<kDescriptionStart, descriptionStarted, 0>(at, reg32(kMapLine(app)), 0x33u,
+                                                                   reg32(gameSettings(app).language)))
             return {};
     }
     const int32_t line = kMapLine(app);
@@ -1354,11 +1505,9 @@ Result glowDrawn(App* app, CPU& cpu, reg32 esp, const Args& in)
     }
     const reg32 at2 = reg32(line) * 2;
     if (half(app, at2 + 0x677d6e) != 0
-        && !call(at, kDrawArtShape,
-                 {reg32(wide(half(app, at2 + 0x677d6e))), reg32(wide(half(app, at2 + 0x677d4e))),
-                  reg32(wide(half(app, at2 + 0x677d56))), colour}))
+        && !call.named<shapes::drawArt, 0>(at, reg32(wide(half(app, at2 + 0x677d6e))), reg32(wide(half(app, at2 + 0x677d4e))), reg32(wide(half(app, at2 + 0x677d56))), colour))
         return {};
-    if (!call(at, kSpokenStatus, {call.r, 0, 0, colour}))
+    if (!call.core<0x4c95e0, spokenStatusOf, 0>(at))
         return {};
     const Result slid = mapSlid(app, cpu, at - 4, call.r);
     if (!slid)
@@ -1385,8 +1534,7 @@ Result rectDrawn(App* app, CPU& cpu, reg32 esp, reg32 at)
     const int32_t x = wide(r.x), y = wide(r.y), width = wide(r.width), height = wide(r.height);
     const int32_t thick = wide(r.thick);
     const auto box = [&](int32_t bx, int32_t by, int32_t w, int32_t h) {
-        return call(call_at, kShadedBox, {reg32(bx), reg32(by), reg32(w), reg32(h)},
-                    {r.text, r.moreColours[0], r.moreColours[1], r.moreColours[2]});
+        return call.boxedNamed<draw2d::shadedBox>(call_at, reg32(bx), reg32(by), reg32(w), reg32(h), r.text, r.moreColours[0], r.moreColours[1], r.moreColours[2]);
     };
     if (kind == 0)
     {
@@ -1403,12 +1551,11 @@ Result rectDrawn(App* app, CPU& cpu, reg32 esp, reg32 at)
     {
         if (kSlidingIn(app) != 0)
             return 0;
-        if (!call(call_at, kHelpShown, {2, 0, 0, at}))
+        if (!call.core<0x449df0, loop::keysTakenOf, 0>(call_at, 2))
             return {};
         if (call.r != 0)
             return 0;
-        if (!call(call_at, kFieldBox, {reg32(x), reg32(y), reg32(width), reg32(height)},
-                  {kFieldColours[0], kFieldColours[1], kFieldColours[2], kFieldColours[3]}))
+        if (!call.boxedNamed<draw2d::drawFieldBoxOf>(call_at, reg32(x), reg32(y), reg32(width), reg32(height), kFieldColours[0], kFieldColours[1], kFieldColours[2], kFieldColours[3]))
             return {};
     }
     else
@@ -1436,9 +1583,9 @@ Result textDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, const Args& in)
     if (t.align == 3)
     {
         // eax as the colour's switch left it: its number, the item's upper half
-        // past 4 (the help's stand-in may hand eax back).
+        // past 4.
         const reg32 eax = uint16_t(t.colour) <= 4 ? reg32(uint16_t(t.colour)) : (at & 0xffff0000) | uint16_t(t.colour);
-        if (!call(call_at, kHelpShown, {eax, in.edx, in.ebx, in.ecx}))
+        if (!call.core<0x449df0, loop::keysTakenOf, 0>(call_at, eax))
             return {};
         if (call.r != 0)
             colour = kDark;
@@ -1459,7 +1606,7 @@ Result textDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, const Args& in)
         if (*lines != 0)
         {
             const reg32 chosen = word(app, word(app, frame - 0x24));
-            if (!call(call_at, kLanguageText, {reg32(wide(half(app, reg32(*lines) + chosen * 2))), chosen, list, 0}))
+            if (!call.lineByName(call_at, reg32(wide(half(app, reg32(*lines) + chosen * 2))), chosen))
                 return {};
             item<TextItem>(app, at).text = call.r;
         }
@@ -1471,33 +1618,32 @@ Result textDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, const Args& in)
         const reg32 bright = colour | 0xff000000;
         if (kOverRace(app) != 0)
         {
-            if (!call(call_at, kSelectFont, {kMenuFont, 0, 0, 0}))
+            if (!call.keepNamed<text::selectFontOf>(call_at, kMenuFont, kMenuFont))
                 return {};
             kNudge.set(app, wide(t.nudge));
-            if (!call(call_at, kKeepTextScale, {reg32(wide(t.nudge)), 0, 0, 0})
-                || !call(call_at, kDimBackground, {call.r, 0, 0, 0}, {kOne}))
+            if (!call.plain<0x4d1400, text::keepTextScaleOf>(call_at)
+                || !(setWord(app, call_at - 4, kOne), call.plain<0x451530, text::dimmed>(call_at, call_at - 4, call.r)))
                 return {};
             if ((scale & 0x7fffffff) != 0)
             {
-                if (!call(call_at, kTurnedText, {t.text, reg32(x + 2), reg32(y + 2), reg32(x)}, {scale, 0, 0xff000000})
-                    || !call(call_at, kTurnedText, {t.text, reg32(x), reg32(y), reg32(x)}, {t.scale, 0, bright}))
+                if (!call.core<0x4da120, draw2d::turnedText, 3>(call_at, t.text, reg32(x + 2), reg32(y + 2), scale, 0, 0xff000000)
+                    || !call.core<0x4da120, draw2d::turnedText, 3>(call_at, t.text, reg32(x), reg32(y), t.scale, 0, bright))
                     return {};
             }
-            else if (!call(call_at, kDrawMenuText, {t.text, reg32(x), reg32(y), kMenuFont}, {align, colour}))
+            else if (!call.named<text::menuTextDrawn, 2>(call_at, t.text, reg32(x), reg32(y), kMenuFont, align, colour))
                 return {};
-            if (!call(call_at, kRestoreTextScale))
+            if (!call.keep<0x4d1410, text::restoreTextScaleOf>(call_at, 0))
                 return {};
         }
         else
         {
-            if (!call(call_at, kSelectFont, {kBigFont, 0, 0, 0}))
+            if (!call.keepNamed<text::selectFontOf>(call_at, kBigFont, kBigFont))
                 return {};
             if ((scale & 0x7fffffff) != 0)
             {
-                if (!call(call_at, kTurnedText, {t.text, reg32(x + 4), reg32(y + 4), reg32(x)}, {scale, 0, 0xff000040})
-                    || !call(call_at, kTurnedText, {t.text, reg32(x + 2), reg32(y + 2), reg32(x)},
-                             {t.scale, 0, 0xff000008})
-                    || !call(call_at, kTurnedText, {t.text, reg32(x), reg32(y), reg32(x)}, {t.scale, 0, bright}))
+                if (!call.core<0x4da120, draw2d::turnedText, 3>(call_at, t.text, reg32(x + 4), reg32(y + 4), scale, 0, 0xff000040)
+                    || !call.core<0x4da120, draw2d::turnedText, 3>(call_at, t.text, reg32(x + 2), reg32(y + 2), t.scale, 0, 0xff000008)
+                    || !call.core<0x4da120, draw2d::turnedText, 3>(call_at, t.text, reg32(x), reg32(y), t.scale, 0, bright))
                     return {};
             }
             else
@@ -1505,14 +1651,14 @@ Result textDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, const Args& in)
                 bool swept = false;
                 if (t.colour == 0)
                 {
-                    if (!call(call_at, kTitleText, {t.text, reg32(x), reg32(y), reg32(wide(t.restart))}))
+                    if (!call.core<0x4da1e0, draw2d::titleText, 0>(call_at, t.text, reg32(x), reg32(y), reg32(wide(t.restart))))
                         return {};
                     swept = call.r != 0;
                 }
                 if (!swept
-                    && (!call(call_at, kDrawMenuText, {t.text, reg32(x + 4), reg32(y + 4), kBigFont}, {align, 0x40})
-                        || !call(call_at, kDrawMenuText, {t.text, reg32(x + 2), reg32(y + 2), kBigFont}, {align, 8})
-                        || !call(call_at, kDrawMenuText, {t.text, reg32(x), reg32(y), kBigFont}, {align, colour})))
+                    && (!call.named<text::menuTextDrawn, 2>(call_at, t.text, reg32(x + 4), reg32(y + 4), kBigFont, align, 0x40)
+                        || !call.named<text::menuTextDrawn, 2>(call_at, t.text, reg32(x + 2), reg32(y + 2), kBigFont, align, 8)
+                        || !call.named<text::menuTextDrawn, 2>(call_at, t.text, reg32(x), reg32(y), kBigFont, align, colour)))
                     return {};
             }
         }
@@ -1522,21 +1668,21 @@ Result textDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, const Args& in)
         const reg32 text = t.text;
         if (kOverRace(app) != 0)
         {
-            if (!call(call_at, kDialogShown, {text, 0, 0, 0}))
+            if (!call.plain<0x4438b0, dialogs::dialogShownWith>(call_at, text))
                 return {};
             if ((call.r & 0xff) != 0)
                 return 0;
         }
-        if (!call(call_at, kSelectFont, {kMenuFont, 0, 0, 0}))
+        if (!call.keepNamed<text::selectFontOf>(call_at, kMenuFont, kMenuFont))
             return {};
         kNudge.set(app, wide(t.nudge));
         if ((t.scale & 0x7fffffff) != 0)
         {
-            if (!call(call_at, kTurnedText, {text, reg32(x + 2), reg32(y + 2), reg32(y)}, {t.scale, 0, 0xff000000})
-                || !call(call_at, kTurnedText, {text, reg32(x), reg32(y), reg32(y)}, {t.scale, 0, colour | 0xff000000}))
+            if (!call.core<0x4da120, draw2d::turnedText, 3>(call_at, text, reg32(x + 2), reg32(y + 2), t.scale, 0, 0xff000000)
+                || !call.core<0x4da120, draw2d::turnedText, 3>(call_at, text, reg32(x), reg32(y), t.scale, 0, colour | 0xff000000))
                 return {};
         }
-        else if (!call(call_at, kDrawMenuText, {text, reg32(x), reg32(y), kMenuFont}, {align, colour}))
+        else if (!call.named<text::menuTextDrawn, 2>(call_at, text, reg32(x), reg32(y), kMenuFont, align, colour))
             return {};
     }
     item<TextItem>(app, at).restart = 0;
@@ -1553,7 +1699,7 @@ Result textLaidOut(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 ebx)
     t.boxTop = t.y;
     t.boxHeight = 0x1d;
     Caller call{app, cpu};
-    if (!call(esp - 0xc, kTextWidth, {t.text, kMenuFont, ebx, at}))
+    if (!call.named<text::menuTextWidth, 0>(esp - 0xc, t.text, kMenuFont))
         return {};
     item<TextItem>(app, at).boxWidth = int16_t(call.r);
     return int32_t(call.r);
@@ -1588,7 +1734,7 @@ Result imageDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, const Args& in)
     const reg32 frame = esp - 0x14, call_at = frame - 8;
     Caller call{app, cpu};
     const auto codelinkIs = [&](reg32 name, reg32 ebx) {
-        return call(call_at, kCodelinkMatches, {item<ImageItem>(app, at).codelink, name, ebx, at});
+        return call.core<0x4429c0, menus::codelinkMatched, 0>(call_at, item<ImageItem>(app, at).codelink, name, ebx);
     };
     if (!codelinkIs(kGlow, in.ebx))
         return {};
@@ -1609,8 +1755,8 @@ Result imageDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, const Args& in)
             return {};
         if (call.r != 0)
         {
-            if (!call(call_at, kDrawShape, {reg32(wide(m.shape)), reg32(x), reg32(y), at})
-                || !call(call_at, kMainEffectsDraw, {at, reg32(x), reg32(y), at}))
+            if (!call.core<0x4d7990, shapes::drawShapeOf, 0>(call_at, reg32(wide(m.shape)), reg32(x), reg32(y))
+                || !call.plain<0x4a49c0, frontend::menud::drawScreenEffect>(call_at))
                 return {};
         }
         else
@@ -1619,7 +1765,7 @@ Result imageDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, const Args& in)
                 return {};
             if (call.r != 0)
             {
-                if (!call(call_at, kDrawShape, {reg32(wide(m.shape)), reg32(x), reg32(y), at})
+                if (!call.core<0x4d7990, shapes::drawShapeOf, 0>(call_at, reg32(wide(m.shape)), reg32(x), reg32(y))
                     || !call(call_at, kTextEffectsDraw, {call.r, reg32(x), reg32(y), at}))
                     return {};
             }
@@ -1629,7 +1775,7 @@ Result imageDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, const Args& in)
                     return {};
                 if (call.r != 0)
                 {
-                    if (!call(call_at, kLogoDraw, {at, reg32(x), reg32(y), at}))
+                    if (!call.plain<0x4a4c20, frontend::menud::drawLogo>(call_at, at, reg32(x), reg32(y)))
                         return {};
                 }
                 else
@@ -1641,9 +1787,10 @@ Result imageDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, const Args& in)
                         if (gameSettings(app).track != kTrackShown(app))
                         {
                             const reg32 shape = reg32(wide(m.shape));
-                            if (!call(call_at, kBitmapShape,
-                                      {kArt(app), word(app, reg32(gameSettings(app).track) * 4 + 0x559fb0), in.ebx, shape})
-                                || !call(call_at, kArtShapeTextures, {call.r, shape, in.ebx, shape}))
+                            if (!call.plain<kBitmapShape, frontend::eab::shapeFileFind>(
+                                    call_at, kArt(app), word(app, reg32(gameSettings(app).track) * 4 + 0x559fb0))
+                                || !call.core<kArtShapeTextures, shapes::artTexturesOf, 0>(call_at, call.r, int32_t(shape),
+                                                                                           shape))
                                 return {};
                             item<ImageItem>(app, at).shape = int16_t(call.r);
                             kTrackShown.set(app, std::int32_t(gameSettings(app).track));
@@ -1680,7 +1827,7 @@ Result imageDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, const Args& in)
                                     ax += slide < 0x64 ? wide(m.slide) : 0x64;
                             }
                         }
-                        if (!call(call_at, kDrawArtShape, {reg32(wide(m.shape)), reg32(ax), reg32(y), colour}))
+                        if (!call.named<shapes::drawArt, 0>(call_at, reg32(wide(m.shape)), reg32(ax), reg32(y), colour))
                             return {};
                     }
                     else
@@ -1689,12 +1836,12 @@ Result imageDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, const Args& in)
                         reg32 dark = 0;
                         if (text != 0)
                         {
-                            if (!call(call_at, kStrcmp, {text, kThreeButtons, in.ebx, at}))
+                            if (!call.plain<0x4ee310, watcom::clib::strcmp>(call_at, text, kThreeButtons))
                                 return {};
                             bool bar = call.r == 0;
                             if (!bar)
                             {
-                                if (!call(call_at, kStrcmp, {m.text, kTwoButtons, in.ebx, at}))
+                                if (!call.plain<0x4ee310, watcom::clib::strcmp>(call_at, m.text, kTwoButtons))
                                     return {};
                                 bar = call.r == 0;
                             }
@@ -1702,7 +1849,7 @@ Result imageDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, const Args& in)
                                 dark = 0x78ffffff;
                             else
                             {
-                                if (!call(call_at, kStrcmp, {m.text, kBackground, in.ebx, at}))
+                                if (!call.plain<0x4ee310, watcom::clib::strcmp>(call_at, m.text, kBackground))
                                     return {};
                                 if (call.r == 0)
                                     dark = 0xff787878;
@@ -1710,19 +1857,16 @@ Result imageDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, const Args& in)
                         }
                         if (dark != 0)
                         {
-                            if (!call(call_at, kDrawArtShape, {reg32(wide(m.shape)), reg32(x), reg32(y), dark}))
+                            if (!call.named<shapes::drawArt, 0>(call_at, reg32(wide(m.shape)), reg32(x), reg32(y), dark))
                                 return {};
                         }
                         else
                         {
                             if (m.framed != 0)
                             {
-                                if (!call(call_at, kShapeSize, {reg32(wide(m.shape)), frame - 4, frame - 8, at}))
+                                if (!call.namedPlain<shapes::shapeSizeOf>(call_at, reg32(wide(m.shape)), frame - 4, frame - 8))
                                     return {};
-                                if (!call(call_at, kFieldBox,
-                                          {reg32(x), reg32(y), reg32(wide(half(app, frame - 4))),
-                                           reg32(wide(half(app, frame - 8)))},
-                                          {kFieldColours[0], kFieldColours[1], kFieldColours[2], kFieldColours[3]}))
+                                if (!call.boxedNamed<draw2d::drawFieldBoxOf>(call_at, reg32(x), reg32(y), reg32(wide(half(app, frame - 4))), reg32(wide(half(app, frame - 8))), kFieldColours[0], kFieldColours[1], kFieldColours[2], kFieldColours[3]))
                                     return {};
                             }
                             drawPlain = true;
@@ -1733,11 +1877,11 @@ Result imageDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, const Args& in)
         }
     }
     if (drawPlain
-        && !call(call_at, kDrawShape, {reg32(wide(item<ImageItem>(app, at).shape)), reg32(x), reg32(y), at}))
+        && !call.core<0x4d7990, shapes::drawShapeOf, 0>(call_at, reg32(wide(item<ImageItem>(app, at).shape)), reg32(x), reg32(y)))
         return {};
     if (!codelinkIs(kBandEffects, in.ebx))
         return {};
-    if (call.r != 0 && !call(call_at, kBandEffectsDraw, {call.r, kBandEffects, in.ebx, at}))
+    if (call.r != 0 && !call.plain<0x4a47c0, frontend::menud::drawBand>(call_at))
         return {};
     return 0;
 }
@@ -1766,11 +1910,12 @@ Result imageShowing(App* app, CPU& cpu, reg32 esp, reg32 at, const Args& in)
     Caller call{app, cpu};
     ImageItem& m = item<ImageItem>(app, at);
     const auto codelinkIs = [&](reg32 name) {
-        return call(call_at, kCodelinkMatches, {item<ImageItem>(app, at).codelink, name, at, at});
+        return call.core<0x4429c0, menus::codelinkMatched, 0>(call_at, item<ImageItem>(app, at).codelink, name, at);
     };
-    const auto shapeOf = [&](reg32 name) { return call(call_at, kShapeByName, {name, call.r, at, at}); };
+    const auto shapeOf = [&](reg32 name) { return call.named<shapes::shapeNamed, 0>(call_at, name); };
     const auto loadArt = [&](reg32 eax, reg32 file) {
-        if (!call(call_at, kSprintf, {eax, kArt(app), at, at}, {text, kTwoStrings, kGameFolder, file}))
+        if (!call.plain<kSprintf, watcom::clib::sprintf>(call_at, text, kTwoStrings,
+                                                         guest::Words({kGameFolder, file})))
             return false;
         const Result shapes = shapesLoaded(app, cpu, call_at - 4, text, at);
         if (!shapes)
@@ -1785,13 +1930,13 @@ Result imageShowing(App* app, CPU& cpu, reg32 esp, reg32 at, const Args& in)
             return {};
         if (call.r != 0)
         {
-            if (!call(call_at, kMainEffectsStart, {at, 0, at, at}))
+            if (!call.plain<0x4a4a10, frontend::menuf::startScreenEffects>(call_at, at, 0))
                 return {};
             return int32_t(call.r);
         }
         if (!codelinkIs(kTextEffects))
             return {};
-        if (call.r != 0 && !call(call_at, kTextEffectsStart, {call.r, kTextEffects, at, at}))
+        if (call.r != 0 && !call.plain<0x4a4390, frontend::menud::startLogoTexture>(call_at))
             return {};
         if (!codelinkIs(kTrackImage))
             return {};
@@ -1843,8 +1988,9 @@ Result imageShowing(App* app, CPU& cpu, reg32 esp, reg32 at, const Args& in)
                     return {};
                 item<ImageItem>(app, at).shape = int16_t(call.r);
                 const reg32 shape = reg32(wide(item<ImageItem>(app, at).shape));
-                if (!call(call_at, kBitmapShape, {kArt(app), word(app, reg32(kMapCar2(app)) * 4 + 0x559cbc), shape, at})
-                    || !call(call_at, kArtShapeTextures, {call.r, shape, shape, at}))
+                if (!call.plain<kBitmapShape, frontend::eab::shapeFileFind>(
+                        call_at, kArt(app), word(app, reg32(kMapCar2(app)) * 4 + 0x559cbc))
+                    || !call.core<kArtShapeTextures, shapes::artTexturesOf, 0>(call_at, call.r, int32_t(shape), at))
                     return {};
             }
             else if (!shapeOf(word(app, reg32(kMapCar2(app)) * 4 + 0x559cbc)))
@@ -1879,23 +2025,24 @@ Result imageShowing(App* app, CPU& cpu, reg32 esp, reg32 at, const Args& in)
         const reg32 saved = kArt(app);
         if (byteAt(app, file) == 1)
         {
-            if (!call(call_at, kSprintf, {file, saved, at, at}, {text, kFedataFile, file + 1}))
+            if (!call.plain<kSprintf, watcom::clib::sprintf>(call_at, text, kFedataFile, guest::Words({file + 1})))
                 return {};
         }
-        else if (!call(call_at, kSprintf, {file, saved, at, at}, {text, kTwoStrings, kGameFolder, file}))
+        else if (!call.plain<kSprintf, watcom::clib::sprintf>(call_at, text, kTwoStrings,
+                                                              guest::Words({kGameFolder, file})))
             return {};
         const Result shapes = shapesLoaded(app, cpu, call_at - 4, text, at);
         if (!shapes)
             return {};
         kArt.set(app, reg32(*shapes));
-        if (!call(call_at, kShapeByName, {item<ImageItem>(app, at).text, saved, at, at}))
+        if (!call.named<shapes::shapeNamed, 0>(call_at, item<ImageItem>(app, at).text))
             return {};
         kArt.set(app, saved);
         eax = call.r;
     }
     else
     {
-        if (!call(call_at, kShapeByName, {eax, 0, at, at}))
+        if (!call.named<shapes::shapeNamed, 0>(call_at, eax))
             return {};
         eax = call.r;
     }
@@ -1967,20 +2114,20 @@ Result buttonText(App* app, CPU& cpu, reg32 at, reg32 item_, reg32 text, bool dr
     if (b.styleName == 0)
         return 0;
     Caller call{app, cpu};
-    if (!call(at, kStrcmp, {b.styleName, kControlsScreen, item_, item_}))
+    if (!call.plain<0x4ee310, watcom::clib::strcmp>(at, b.styleName, kControlsScreen))
         return {};
     if (call.r != 0)
     {
-        if (!call(at, kStrcmp, {item<ButtonItem>(app, item_).styleName, kGraphicsScreen, item_, item_}))
+        if (!call.plain<0x4ee310, watcom::clib::strcmp>(at, item<ButtonItem>(app, item_).styleName, kGraphicsScreen))
             return {};
         if (call.r != 0)
             return 0;
     }
     if (drawn)
     {
-        if (!call(at, kLanguageText, {0xc6, item_, item_, item_}))
+        if (!call.lineByName(at, 0xc6, item_))
             return {};
-        if (!call(at, kStrcmp, {item<ButtonItem>(app, item_).text, call.r, item_, item_}))
+        if (!call.plain<0x4ee310, watcom::clib::strcmp>(at, item<ButtonItem>(app, item_).text, call.r))
             return {};
         if (call.r == 0)
             return 0;
@@ -1997,7 +2144,6 @@ Result buttonText(App* app, CPU& cpu, reg32 at, reg32 item_, reg32 text, bool dr
  * of its list beside it.  0. */
 Result buttonDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 lit)
 {
-    auto& f = cpu.fpu;
     const reg32 frame = esp - 0x14, call_at = frame - 0x14c, text = frame - 0x14c;
     copyBlock(app, text, 0x45cbd0, 0x100);
     if (demoHides(app))
@@ -2009,23 +2155,23 @@ Result buttonDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 lit)
     int16_t x = int16_t(b.x + styleHalf(app, style, 0x559fe8));
     const int16_t y = int16_t(b.y + styleHalf(app, style, 0x559fec));
     Caller call{app, cpu};
-    if (!call(call_at, kSelectFont, {kMenuFont, style, 0, 0}))
+    if (!call.keepNamed<text::selectFontOf>(call_at, kMenuFont, kMenuFont))
         return {};
     if (!buttonText(app, cpu, call_at, at, text, true))
         return {};
     int32_t width;
     if (b.style == 3 && kOverRace(app) != 0)
     {
-        if (!call(call_at, kKeepTextScale) || !call(call_at, kDimBackground, {call.r, 0, 0, 0}, {0x3f19999a})
-            || !call(call_at, kTextWidth, {text, kMenuFont, 0, 0}))
+        if (!call.plain<0x4d1400, text::keepTextScaleOf>(call_at) || !(setWord(app, call_at - 4, 0x3f19999a), call.plain<0x451530, text::dimmed>(call_at, call_at - 4, call.r))
+            || !call.named<text::menuTextWidth, 0>(call_at, text, kMenuFont))
             return {};
         width = int32_t(call.r);
-        if (!call(call_at, kRestoreTextScale, {call.r, kMenuFont, 0, reg32(width)}))
+        if (!call.keep<0x4d1410, text::restoreTextScaleOf>(call_at, call.r))
             return {};
     }
     else
     {
-        if (!call(call_at, kTextWidth, {text, kMenuFont, 0, 0}))
+        if (!call.named<text::menuTextWidth, 0>(call_at, text, kMenuFont))
             return {};
         width = int32_t(call.r);
     }
@@ -2039,7 +2185,7 @@ Result buttonDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 lit)
     if (lit != 0)
     {
         kHighlit.set(app, 0);
-        if (!call(call_at, kDialogShown, {call.r, 0, 0, reg32(width)}))
+        if (!call.plain<0x4438b0, dialogs::dialogShownWith>(call_at, call.r))
             return {};
         if ((call.r & 0xff) == 0 && (b.style == 1 || (b.style == 2 && b.nextMenu != 0)))
             kHighlit.set(app, 1);
@@ -2048,7 +2194,7 @@ Result buttonDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 lit)
     if (kind == 0 || kind == 0xf)
     {
         if (kOverRace(app) == 0
-            && !call(call_at, kPanel, {reg32(wide(x) - 1), reg32(wide(y)), reg32(width + 2), kMenuFont}))
+            && !call.core<0x4d89f0, draw2d::panel, 0>(call_at, reg32(wide(x) - 1), reg32(wide(y)), reg32(width + 2), kMenuFont))
             return {};
     }
     else if (kind == 1 || kind == 2)
@@ -2084,31 +2230,46 @@ Result buttonDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 lit)
     {
         if (kOverRace(app) != 0)
         {
-            if (!call(call_at, kDialogShown, {call.r, 0, 0, reg32(width)}))
+            if (!call.plain<0x4438b0, dialogs::dialogShownWith>(call_at, call.r))
                 return {};
             if ((call.r & 0xff) == 0)
             {
                 // The title's bar on the race's pause screens: three quads of
                 // the menus' art, its ends and its middle.
                 const int32_t left = wide(x) - 5, top = wide(y) - 1;
-                const int32_t a = chopped<int32_t>(cpu, f.add(Float(y), Float(floatAt(app, 0x53a9d8))));
-                const int32_t c0 = chopped<int32_t>(cpu, f.add(Float(left), Float(floatAt(app, 0x53a9d4))));
-                if (!call(call_at, kTexturedQuad, {reg32(c0), reg32(top), reg32(left), reg32(top)},
-                          {reg32(left), reg32(a), reg32(c0), reg32(a), 0x3f6a0000, 0x3f6a0000, 0x3f740000, 0x3f6a0000,
-                           0x3f740000, 0x3f7f8000, 0x3f6a0000, 0x3f7f8000, kQuadTexture(app), 0xffffffff}))
+                const int32_t a = chopped<int32_t>(cpu, fp::add(Float(y), Float(floatAt(app, 0x53a9d8))));
+                const int32_t c0 = chopped<int32_t>(cpu, fp::add(Float(left), Float(floatAt(app, 0x53a9d4))));
+                if (!call.core<0x4db000, draw2d::texturedQuad, 14>(
+                        call_at,
+                        draw2d::ArtQuad{{c0, left, left, c0},
+                                        {top, top, a, a},
+                                        {0x3f6a0000, 0x3f740000, 0x3f740000, 0x3f6a0000},
+                                        {0x3f6a0000, 0x3f6a0000, 0x3f7f8000, 0x3f7f8000},
+                                        kQuadTexture(app),
+                                        0xffffffff}))
                     return {};
                 const int32_t right = width + 0xa + left;
                 const float topF = float(Float(top));
-                const float edge = float(f.add(Float(topF), Float(floatAt(app, 0x53a9dc))));
+                const float edge = float(fp::add(Float(topF), Float(floatAt(app, 0x53a9dc))));
                 const int32_t c = chopped<int32_t>(cpu, Float(edge));
-                if (!call(call_at, kTexturedQuad, {reg32(left), reg32(top), reg32(right), reg32(top)},
-                          {reg32(right), reg32(c), reg32(left), reg32(c), 0x3f7f0000, 0x3f6a0000, 0x3f7f0000, 0x3f6a0000,
-                           0x3f7f0000, 0x3f800000, 0x3f7f0000, 0x3f800000, kQuadTexture(app), 0xffffffff}))
+                if (!call.core<0x4db000, draw2d::texturedQuad, 14>(
+                        call_at,
+                        draw2d::ArtQuad{{left, right, right, left},
+                                        {top, top, c, c},
+                                        {0x3f7f0000, 0x3f7f0000, 0x3f7f0000, 0x3f7f0000},
+                                        {0x3f6a0000, 0x3f6a0000, 0x3f800000, 0x3f800000},
+                                        kQuadTexture(app),
+                                        0xffffffff}))
                     return {};
-                const int32_t d = chopped<int32_t>(cpu, f.add(Float(right), Float(floatAt(app, 0x53a9e0))));
-                if (!call(call_at, kTexturedQuad, {reg32(right), reg32(top), reg32(d), reg32(top)},
-                          {reg32(d), reg32(c), reg32(right), reg32(c), 0x3f740000, 0x3f6a0000, 0x3f7e0000, 0x3f6a0000,
-                           0x3f7e0000, 0x3f800000, 0x3f740000, 0x3f800000, kQuadTexture(app), 0xffffffff}))
+                const int32_t d = chopped<int32_t>(cpu, fp::add(Float(right), Float(floatAt(app, 0x53a9e0))));
+                if (!call.core<0x4db000, draw2d::texturedQuad, 14>(
+                        call_at,
+                        draw2d::ArtQuad{{right, d, d, right},
+                                        {top, top, c, c},
+                                        {0x3f740000, 0x3f7e0000, 0x3f7e0000, 0x3f740000},
+                                        {0x3f6a0000, 0x3f6a0000, 0x3f800000, 0x3f800000},
+                                        kQuadTexture(app),
+                                        0xffffffff}))
                     return {};
             }
         }
@@ -2116,11 +2277,8 @@ Result buttonDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 lit)
         {
             const reg32 shade = lit != 0 ? 0xffd84b : 0x727eb3, dark = shade - 0x1000000;
             const int32_t left = wide(x) + 0xe;
-            if (!call(call_at, kShadedBox, {reg32(left), reg32(wide(y)), reg32(wide(b.boxWidth) - 5), 1},
-                      {dark, shade, shade, dark})
-                || !call(call_at, kShadedBox,
-                         {reg32(left), reg32(wide(y) + 0xf), reg32(wide(item<ButtonItem>(app, at).boxWidth)), 1},
-                         {dark, shade, shade, dark}))
+            if (!call.boxedNamed<draw2d::shadedBox>(call_at, reg32(left), reg32(wide(y)), reg32(wide(b.boxWidth) - 5), 1, dark, shade, shade, dark)
+                || !call.boxedNamed<draw2d::shadedBox>(call_at, reg32(left), reg32(wide(y) + 0xf), reg32(wide(item<ButtonItem>(app, at).boxWidth)), 1, dark, shade, shade, dark))
                 return {};
         }
     }
@@ -2135,26 +2293,22 @@ Result buttonDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 lit)
             {
                 if (glow == 0xff)
                 {
-                    if (!call(call_at, kDrawShape, {reg32(wide(c.glow)), reg32(wide(x)), reg32(wide(y))}))
+                    if (!call.core<0x4d7990, shapes::drawShapeOf, 0>(call_at, reg32(wide(c.glow)), reg32(wide(x)), reg32(wide(y))))
                         return {};
                 }
-                else if (!call(call_at, kDrawArtShape,
-                               {reg32(wide(c.glow)), reg32(wide(x)), reg32(wide(y)),
-                                (glow << 16) - 0x1000000 + (glow << 8) + glow}))
+                else if (!call.named<shapes::drawArt, 0>(call_at, reg32(wide(c.glow)), reg32(wide(x)), reg32(wide(y)), (glow << 16) - 0x1000000 + (glow << 8) + glow))
                     return {};
             }
             if (item<ButtonItem>(app, at).pulse != 0 && kSlidingIn(app) == 0)
             {
-                if (!call(call_at, kDialogShown, {call.r, 0, 0, 0}))
+                if (!call.plain<0x4438b0, dialogs::dialogShownWith>(call_at, call.r))
                     return {};
                 if ((call.r & 0xff) == 0 && (kRenderFlags(app) & 2) == 0)
                 {
                     const reg32 pulse = pulseOf(app, int32_t(glow));
                     pulsed(app);
                     const reg32 s2 = reg32(wide(item<ButtonItem>(app, at).style)) << 6;
-                    if (!call(call_at, kDrawArtShape,
-                              {reg32(wide(item<ButtonItem>(app, at).pulse)), reg32(wide(x) + styleWord(app, s2, 0x55a000)),
-                               reg32(wide(y) + styleWord(app, s2, 0x55a004)), pulse}))
+                    if (!call.named<shapes::drawArt, 0>(call_at, reg32(wide(item<ButtonItem>(app, at).pulse)), reg32(wide(x) + styleWord(app, s2, 0x55a000)), reg32(wide(y) + styleWord(app, s2, 0x55a004)), pulse))
                         return {};
                 }
             }
@@ -2166,18 +2320,18 @@ Result buttonDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 lit)
         const reg32 name = word(app, s + 0x559ff0);
         if (name != 0)
         {
-            if (!call(call_at, kStrcmp, {name, kSmallBack, 0, reg32(left)}))
+            if (!call.plain<0x4ee310, watcom::clib::strcmp>(call_at, name, kSmallBack))
                 return {};
             if (call.r == 0)
                 left -= 5;
         }
         if (kOverRace(app) == 0 && item<ButtonItem>(app, at).shape != 0
-            && !call(call_at, kDrawShape, {reg32(wide(item<ButtonItem>(app, at).shape)), reg32(left), reg32(wide(y))}))
+            && !call.core<0x4d7990, shapes::drawShapeOf, 0>(call_at, reg32(wide(item<ButtonItem>(app, at).shape)), reg32(left), reg32(wide(y))))
             return {};
     }
     // A network race's start: the host's when every machine is ready, the
     // others' ready or not with their marks.
-    if (!call(call_at, kCodelinkMatches, {item<ButtonItem>(app, at).codelink, kRaceNow, 0, 0}))
+    if (!call.core<0x4429c0, menus::codelinkMatched, 0>(call_at, item<ButtonItem>(app, at).codelink, kRaceNow, 0))
         return {};
     if (call.r != 0 && kNetworkRace(app) != 0)
     {
@@ -2192,13 +2346,13 @@ Result buttonDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 lit)
             bool ask = true;
             if (word(app, 0x662968) != 0)
             {
-                if (!call(call_at, kNetworkOk, {call.r, kRaceNow, 0, 0}))
+                if (!call.plain<0x4cf090, frontend::misc::postgameRaceAgain>(call_at))
                     return {};
                 ask = call.r != 0;
             }
             if (ask)
             {
-                if (!call(call_at, kAllPlayersReady))
+                if (!call.plain<0x49ab60, frontend::glue::allPlayersReady>(call_at))
                     return {};
                 ready = call.r != 0;
             }
@@ -2206,13 +2360,13 @@ Result buttonDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 lit)
                 item<ButtonItem>(app, at).flags &= 0xfe;
             else
                 item<ButtonItem>(app, at).flags |= 1;
-            if (!call(call_at, kLanguageText, {0x1bb, reg32(tx), reg32(ty), kMenuFont})
-                || !call(call_at, kDrawMenuText, {call.r, reg32(tx), reg32(ty), kMenuFont}, {align, colour}))
+            if (!call.lineByName(call_at, 0x1bb, reg32(tx))
+                || !call.named<text::menuTextDrawn, 2>(call_at, call.r, reg32(tx), reg32(ty), kMenuFont, align, colour))
                 return {};
             return 0;
         }
-        if (!call(call_at, kLanguageText, {0x26, reg32(tx), reg32(ty), kMenuFont})
-            || !call(call_at, kDrawMenuText, {call.r, reg32(tx), reg32(ty), kMenuFont}, {align, colour}))
+        if (!call.lineByName(call_at, 0x26, reg32(tx))
+            || !call.named<text::menuTextDrawn, 2>(call_at, call.r, reg32(tx), reg32(ty), kMenuFont, align, colour))
             return {};
         if (!readyMarks(app, cpu, call_at - 4, wide(x) + 8, wide(y) + 8))
             return {};
@@ -2223,13 +2377,13 @@ Result buttonDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 lit)
     {
         if (kOverRace(app) != 0 && d.style == 3)
         {
-            if (!call(call_at, kDialogShown, {call.r, 0, 0, 0}))
+            if (!call.plain<0x4438b0, dialogs::dialogShownWith>(call_at, call.r))
                 return {};
             if ((call.r & 0xff) == 0)
             {
-                if (!call(call_at, kKeepTextScale) || !call(call_at, kDimBackground, {call.r, 0, 0, 0}, {0x3f19999a})
-                    || !call(call_at, kDrawMenuText, {text, reg32(wide(x)), reg32(wide(y)), kMenuFont}, {0, colour})
-                    || !call(call_at, kRestoreTextScale))
+                if (!call.plain<0x4d1400, text::keepTextScaleOf>(call_at) || !(setWord(app, call_at - 4, 0x3f19999a), call.plain<0x451530, text::dimmed>(call_at, call_at - 4, call.r))
+                    || !call.named<text::menuTextDrawn, 2>(call_at, text, reg32(wide(x)), reg32(wide(y)), kMenuFont, 0, colour)
+                    || !call.keep<0x4d1410, text::restoreTextScaleOf>(call_at, 0))
                     return {};
             }
         }
@@ -2238,17 +2392,14 @@ Result buttonDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 lit)
             bool hidden = false;
             if (kOverRace(app) != 0)
             {
-                if (!call(call_at, kDialogShown, {call.r, 0, 0, 0}))
+                if (!call.plain<0x4438b0, dialogs::dialogShownWith>(call_at, call.r))
                     return {};
                 hidden = (call.r & 0xff) != 0;
             }
             if (!hidden)
             {
                 const reg32 s4 = reg32(wide(item<ButtonItem>(app, at).style)) << 6;
-                if (!call(call_at, kDrawMenuText,
-                          {text, reg32(wide(x) + styleWord(app, s4, 0x55a008)),
-                           reg32(wide(y) + styleWord(app, s4, 0x55a00c)), kMenuFont},
-                          {word(app, s4 + 0x55a010), colour}))
+                if (!call.named<text::menuTextDrawn, 2>(call_at, text, reg32(wide(x) + styleWord(app, s4, 0x55a008)), reg32(wide(y) + styleWord(app, s4, 0x55a00c)), kMenuFont, word(app, s4 + 0x55a010), colour))
                     return {};
             }
         }
@@ -2258,7 +2409,7 @@ Result buttonDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 lit)
         return 0;
     if (kOverRace(app) != 0)
     {
-        if (!call(call_at, kDialogShown, {call.r, 0, 0, 0}))
+        if (!call.plain<0x4438b0, dialogs::dialogShownWith>(call_at, call.r))
             return {};
         if ((call.r & 0xff) != 0)
             return 0;
@@ -2282,7 +2433,7 @@ Result buttonDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 lit)
     if (*lines == 0)
         return 0;
     const reg32 chosen = word(app, word(app, frame - 0x3c));
-    if (!call(call_at, kLanguageText, {reg32(wide(half(app, reg32(*lines) + chosen * 2))), chosen, 0, 0}))
+    if (!call.lineByName(call_at, reg32(wide(half(app, reg32(*lines) + chosen * 2))), chosen))
         return {};
     const reg32 line = call.r;
     if (line == 0)
@@ -2292,14 +2443,14 @@ Result buttonDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 lit)
     {
         setWord(app, frame - 0x4c, 0);
         setWord(app, frame - 0x48, 0);
-        if (!call(call_at, kRectangleOut, {0x7cdac0, frame - 0x4c, frame - 0x4c, frame - 0x48}, {frame - 0x4c}))
+        if (!call.plain<0x4beb20, frontend::pause::readRect>(call_at - 4, 0x7cdac0, frame - 0x4c, frame - 0x4c, frame - 0x48, frame - 0x4c))
             return {};
         if (int32_t(word(app, frame - 0x48)) < 0x280)
         {
             const reg32 n = length(app, line);
             if (n >= 0x19)
             {
-                if (!call(call_at, kStrncpy, {text, line, 0x19, n}))
+                if (!call.plain<0x4e0e30, watcom::clib::strncpy>(call_at, text, line, 0x19))
                     return {};
                 appendString(app, text, kEllipsis);
                 copied = true;
@@ -2308,7 +2459,7 @@ Result buttonDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 lit)
     }
     if (!copied)
         copyString(app, text, line);
-    if (!call(call_at, kDrawMenuText, {text, reg32(lx), reg32(ly), kMenuFont}, {0, colour}))
+    if (!call.named<text::menuTextDrawn, 2>(call_at, text, reg32(lx), reg32(ly), kMenuFont, 0, colour))
         return {};
     return 0;
 }
@@ -2340,7 +2491,7 @@ Result buttonKeyed(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 key)
                 return {};
             return int32_t(call.r);
         }
-        if (!call(call_at, kCodelinkMatches, {b.codelink, kRaceNow, 0, at}))
+        if (!call.core<0x4429c0, menus::codelinkMatched, 0>(call_at, b.codelink, kRaceNow, 0))
             return {};
         if (call.r != 0)
         {
@@ -2348,7 +2499,7 @@ Result buttonKeyed(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 key)
                 return 6;
             if (kNetworkHost(app) != 0)
             {
-                if (!call(call_at, kAllPlayersReady, {call.r, kRaceNow, 0, at}))
+                if (!call.plain<0x49ab60, frontend::glue::allPlayersReady>(call_at))
                     return {};
                 if (call.r != 0)
                     gameSettings(app).networkLobby = 1;
@@ -2357,7 +2508,7 @@ Result buttonKeyed(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 key)
             gameSettings(app).networkLobby = gameSettings(app).networkLobby == 0 ? 1 : 0;
             return 0;
         }
-        if (!call(call_at, kCodelinkMatches, {item<ButtonItem>(app, at).codelink, kExitProgram, 0, at}))
+        if (!call.core<0x4429c0, menus::codelinkMatched, 0>(call_at, item<ButtonItem>(app, at).codelink, kExitProgram, 0))
             return {};
         if (call.r != 0)
             return 0xa;
@@ -2406,7 +2557,6 @@ namespace
  * caller reads its eax: its result is not the game's. */
 Result menuItemLaidOut(App* app, CPU& cpu, reg32 esp, reg32 at)
 {
-    auto& f = cpu.fpu;
     const reg32 frame = esp - 0x18, call_at = frame - 0x114, text = frame - 0x114;
     copyBlock(app, text, 0x45ccd0, 0x100);
     setWord(app, frame - 0xc, 0);
@@ -2423,15 +2573,15 @@ Result menuItemLaidOut(App* app, CPU& cpu, reg32 esp, reg32 at)
     // A line of the fonts' text's height on the 3D card: an 'A''s height and
     // its drop each times [0x53a9f4] over the screen's height, whole pixels.
     const auto lineHeight = [&]() {
-        if (!call(call_at, kCharacterWidth, {0x41, at, at, 0}))
+        if (!call.plain<0x4d1540, text::characterHeight>(call_at, 0x41u))
             return false;
         const Float scale = Float(doubleAt(app, 0x53a9f4));
         const Float screen = Float(int32_t(word(app, 0x7cdacc)));
-        const double height = double(f.div(f.mul(Float(int32_t(call.r)), scale), screen));
-        if (!call(call_at, kCharacterOverhang, {0x41, at, at, 0}))
+        const double height = double(fp::div(fp::mul(Float(int32_t(call.r)), scale), screen));
+        if (!call.plain<0x4d1590, text::characterDrop>(call_at, 0x41u))
             return false;
-        const Float drop = f.div(f.mul(Float(int32_t(call.r)), scale), screen);
-        item<ButtonItem>(app, at).boxHeight = int16_t(chopped<int32_t>(cpu, f.add(drop, Float(height))));
+        const Float drop = fp::div(fp::mul(Float(int32_t(call.r)), scale), screen);
+        item<ButtonItem>(app, at).boxHeight = int16_t(chopped<int32_t>(cpu, fp::add(drop, Float(height))));
         return true;
     };
     const uint16_t kind = uint16_t(b.style);
@@ -2439,16 +2589,16 @@ Result menuItemLaidOut(App* app, CPU& cpu, reg32 esp, reg32 at)
     {
         if (kOverRace(app) != 0)
         {
-            if (!call(call_at, kKeepTextScale) || !call(call_at, kDimBackground, {call.r, 0, 0, 0}, {0x3f19999a}))
+            if (!call.plain<0x4d1400, text::keepTextScaleOf>(call_at) || !(setWord(app, call_at - 4, 0x3f19999a), call.plain<0x451530, text::dimmed>(call_at, call_at - 4, call.r)))
                 return {};
             ButtonItem& t = item<ButtonItem>(app, at);
             t.boxTop = int16_t(t.boxTop - 1);
-            if (!call(call_at, kTextWidth, {text, kMenuFont, at, 0}))
+            if (!call.named<text::menuTextWidth, 0>(call_at, text, kMenuFont))
                 return {};
             item<ButtonItem>(app, at).boxHeight = 0x16;
             item<ButtonItem>(app, at).boxWidth =
-                int16_t(chopped<int32_t>(cpu, f.add(Float(int32_t(call.r) + 0xa), Float(floatAt(app, 0x53a9f0)))));
-            if (!call(call_at, kRestoreTextScale))
+                int16_t(chopped<int32_t>(cpu, fp::add(Float(int32_t(call.r) + 0xa), Float(floatAt(app, 0x53a9f0)))));
+            if (!call.keep<0x4d1410, text::restoreTextScaleOf>(call_at, 0))
                 return {};
         }
     }
@@ -2456,7 +2606,7 @@ Result menuItemLaidOut(App* app, CPU& cpu, reg32 esp, reg32 at)
     {
         if (kind == 0)
         {
-            if (!call(call_at, kTextWidth, {text, kMenuFont, at, 0}))
+            if (!call.named<text::menuTextWidth, 0>(call_at, text, kMenuFont))
                 return {};
             item<ButtonItem>(app, at).boxWidth = int16_t(call.r);
         }
@@ -2476,11 +2626,11 @@ Result menuItemLaidOut(App* app, CPU& cpu, reg32 esp, reg32 at)
         if (*lines != 0)
         {
             const reg32 chosen = word(app, word(app, frame - 0xc));
-            if (!call(call_at, kLanguageText, {reg32(wide(half(app, reg32(*lines) + chosen * 2))), chosen, at, 0}))
+            if (!call.lineByName(call_at, reg32(wide(half(app, reg32(*lines) + chosen * 2))), chosen))
                 return {};
             if (call.r != 0)
             {
-                if (!call(call_at, kTextWidth, {call.r, kMenuFont, at, 0}))
+                if (!call.named<text::menuTextWidth, 0>(call_at, call.r, kMenuFont))
                     return {};
                 setWord(app, frame - 8, call.r);
             }
@@ -2505,7 +2655,7 @@ Result menuItemLaidOut(App* app, CPU& cpu, reg32 esp, reg32 at)
             return 0;
         }
         p.boxLeft = int16_t(chopped<int32_t>(
-            cpu, f.add(Float(wide(p.boxLeft) - wide(p.boxWidth) + 5), Float(floatAt(app, 0x53a9fc)))));
+            cpu, fp::add(Float(wide(p.boxLeft) - wide(p.boxWidth) + 5), Float(floatAt(app, 0x53a9fc)))));
         return 0;
     }
     if (p.align == 2)
@@ -2515,7 +2665,7 @@ Result menuItemLaidOut(App* app, CPU& cpu, reg32 esp, reg32 at)
     }
     if (p.style != 3 || kOverRace(app) == 0)
         return 0;
-    p.boxLeft = int16_t(chopped<int32_t>(cpu, f.add(Float(wide(p.boxLeft) - 5), Float(floatAt(app, 0x53aa00)))));
+    p.boxLeft = int16_t(chopped<int32_t>(cpu, fp::add(Float(wide(p.boxLeft) - 5), Float(floatAt(app, 0x53aa00)))));
     return 0;
 }
 
@@ -2538,7 +2688,7 @@ Result buttonShowing(App* app, CPU& cpu, reg32 esp, reg32 at)
             const reg32 name = word(app, (reg32(i) << 6) + kStyles);
             if (name == 0)
                 break;
-            if (!call(call_at, kStrcmp, {name, item<ButtonItem>(app, at).styleName, reg32(i), at}))
+            if (!call.plain<0x4ee310, watcom::clib::strcmp>(call_at, name, item<ButtonItem>(app, at).styleName))
                 return {};
             if (call.r == 0)
             {
@@ -2559,7 +2709,7 @@ Result buttonShowing(App* app, CPU& cpu, reg32 esp, reg32 at)
         int16_t shape = 0;
         if (name != 0 && kOverRace(app) == 0 && (i < 2 || (kRenderFlags(app) & 2) == 0))
         {
-            if (!call(call_at, kShapeByName, {name, 0, 0, at}))
+            if (!call.named<shapes::shapeNamed, 0>(call_at, name))
                 return {};
             shape = int16_t(call.r);
         }
@@ -2577,7 +2727,7 @@ Result buttonShowing(App* app, CPU& cpu, reg32 esp, reg32 at)
     const reg32 codelink = item<ButtonItem>(app, at).codelink;
     if (codelink == 0 || kNetworkRace(app) == 0 || kNetworkHost(app) != 0)
         return int32_t(codelink);
-    if (!call(call_at, kCodelinkMatches, {codelink, kHostOnly, 0, at}))
+    if (!call.core<0x4429c0, menus::codelinkMatched, 0>(call_at, codelink, kHostOnly, 0))
         return {};
     if (call.r != 0)
         item<ButtonItem>(app, at).flags |= 1;
@@ -2607,15 +2757,14 @@ Result cascadeLine(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 out, reg32 lin
     setWord(app, frame - 0xc, lines);
     Caller call{app, cpu};
     const auto lineText = [&](reg32 edx, reg32 ebx, reg32 ecx) {
-        return call(call_at, kLanguageText,
-                    {reg32(wide(half(app, word(app, chosenAt) * 2 + lines))), edx, ebx, ecx});
+        return call.lineByName(call_at, reg32(wide(half(app, word(app, chosenAt) * 2 + lines))), edx);
     };
-    if (!lineText(lines, chosenAt, chosenAt) || !call(call_at, kSprintf, {call.r, lines, chosenAt, out},
-                                                    {out, kPercentS, call.r}))
+    if (!lineText(lines, chosenAt, chosenAt)
+        || !call.plain<kSprintf, watcom::clib::sprintf>(call_at, out, kPercentS, guest::Words({call.r})))
         return {};
     reg32 eax = call.r;
     const auto stricmp = [&](reg32 name) {
-        return call(call_at, kStricmp, {item<CascadeItem>(app, at).listName, name, chosenAt, out});
+        return call.plain<0x4e9ec0, watcom::clib::stricmp>(call_at, item<CascadeItem>(app, at).listName, name);
     };
     if (std::int32_t(gameSettings(app).playMode) <= 1)
     {
@@ -2628,7 +2777,7 @@ Result cascadeLine(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 out, reg32 lin
             const int32_t car = int32_t(word(app, chosenAt));
             if (car >= 4)
             {
-                if (!call(call_at, kCarClass, {reg32(car - 4), 0, chosenAt, out}))
+                if (!call.plain<0x439730, load::classOfCar>(call_at, reg32(car - 4)))
                     return {};
                 kindOf = call.r;
                 known = true;
@@ -2651,11 +2800,11 @@ Result cascadeLine(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 out, reg32 lin
             }
             if (asked)
             {
-                if (!call(call_at, kCarIsPolice, {player, 0, chosenAt, out}))
+                if (!call.plain<0x4396b0, load::policeFlag>(call_at, player))
                     return {};
                 if (call.r == 0)
                 {
-                    if (!call(call_at, kCarClass, {player, 0, chosenAt, out}))
+                    if (!call.plain<0x439730, load::classOfCar>(call_at, player))
                         return {};
                     kindOf = call.r;
                     known = true;
@@ -2672,17 +2821,17 @@ Result cascadeLine(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 out, reg32 lin
     if (call.r != 0)
         return int32_t(eax);
     const reg32 laps = gameSettings(app).laps;
-    if (!call(call_at, kLanguageText, {5, kTracks, chosenAt, out}))
+    if (!call.lineByName(call_at, 5, kTracks))
         return {};
     const reg32 lapsText = call.r;
     if (gameSettings(app).raceType == 2 && gameSettings(app).seriesVariant == 1)
     {
-        if (!call(call_at, kLanguageText, {0xac, kTracks, chosenAt, laps}))
+        if (!call.lineByName(call_at, 0xac, kTracks))
             return {};
     }
     else if (!lineText(kTracks, chosenAt, laps))
         return {};
-    if (!call(call_at, kSprintf, {call.r, kTracks, chosenAt, laps}, {out, kCountedText, call.r, laps, lapsText}))
+    if (!call.plain<kSprintf, watcom::clib::sprintf>(call_at, out, kCountedText, guest::Words({call.r, laps, lapsText})))
         return {};
     return int32_t(call.r);
 }
@@ -2700,8 +2849,8 @@ Result widestLine(App* app, CPU& cpu, reg32 at, reg32 item_, reg32 lines)
         const int16_t line = half(app, lines + i * 2);
         if (line == 0)
             break;
-        if (!call(at, kLanguageText, {reg32(wide(line)), kMenuFont, i, item_})
-            || !call(at, kTextWidth, {call.r, kMenuFont, i, item_}))
+        if (!call.lineByName(at, reg32(wide(line)), kMenuFont)
+            || !call.named<text::menuTextWidth, 0>(at, call.r, kMenuFont))
             return {};
         if (int32_t(call.r) > wide(item<Item>(app, item_).boxWidth))
             item<Item>(app, item_).boxWidth = int16_t(call.r);
@@ -2716,10 +2865,10 @@ Result trackMarks(App* app, CPU& cpu, reg32 at, int32_t line, int32_t left, int3
     Caller call{app, cpu};
     const int32_t bit = 1 << (line & 31);
     if ((wide(gameSettings(app).duelsLost) & bit) != 0
-        && !call(at, kDrawShape, {reg32(wide(half(app, first))), reg32(left - 0x21), reg32(top + 2)}))
+        && !call.core<0x4d7990, shapes::drawShapeOf, 0>(at, reg32(wide(half(app, first))), reg32(left - 0x21), reg32(top + 2)))
         return {};
     if ((wide(gameSettings(app).duelsWon) & bit) != 0
-        && !call(at, kDrawShape, {reg32(wide(half(app, second))), reg32(left - 0x11), reg32(top + 2)}))
+        && !call.core<0x4d7990, shapes::drawShapeOf, 0>(at, reg32(wide(half(app, second))), reg32(left - 0x11), reg32(top + 2)))
         return {};
     return 0;
 }
@@ -2738,7 +2887,7 @@ Result followPointer(App* app, CPU& cpu, reg32 at, reg32 item_, const ListBox& w
 {
     Caller call{app, cpu};
     Item& it = item<Item>(app, item_);
-    if (!call(at, kPointerLine, {reg32(wide(it.boxTop)), 0x10, 0, 0}))
+    if (!call.plain<0x49c1c0, frontend::menud::pointerListLine>(at, int32_t(reg32(wide(it.boxTop))), 0x10))
         return {};
     const int32_t line = int32_t(call.r);
     if (line < 0 || line >= wide(half(app, item_ + w.shown)))
@@ -2764,13 +2913,13 @@ Result followPointer(App* app, CPU& cpu, reg32 at, reg32 item_, const ListBox& w
                 setHalf(app, item_ + w.first, int16_t(last - int16_t(half(app, item_ + w.shown) - 1)));
             }
             if (wide(half(app, item_ + w.first)) != was
-                && !call(at, kMenuEffect, {0, 0x7f, reg32(line), reg32(was)}))
+                && !call.effectByName(at, 0, 0x7f))
                 return {};
         }
     }
     else
     {
-        if (!call(at, kPointerInBox, {item_ + 0x1a, reg32(line), 0, 0}))
+        if (!call.plain<0x49c1f0, frontend::glue::pointerInBox>(at, item_ + 0x1a))
             return {};
         if (call.r != 0 && line + wide(half(app, item_ + w.first)) != wide(half(app, item_ + w.chosen)))
         {
@@ -2805,7 +2954,7 @@ Result cascadeDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 lit)
         return 0;
     const reg32 frame = esp - 0x14, call_at = frame - 0x238;
     Caller call{app, cpu};
-    if (!call(call_at, kStricmp, {item<CascadeItem>(app, at).listName, kTracks, 0, lit}))
+    if (!call.plain<0x4e9ec0, watcom::clib::stricmp>(call_at, item<CascadeItem>(app, at).listName, kTracks))
         return {};
     const int32_t gap = call.r == 0 && gameSettings(app).raceType == 3 ? 0x23 : 0xf;
     const Result allowed = allowedOf(app, cpu, call_at - 4, item<CascadeItem>(app, at).listName);
@@ -2843,13 +2992,13 @@ Result cascadeDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 lit)
         cascadeClosedBox(app, at);
         demoGreys(app, at);
         reg32 colour = (item<CascadeItem>(app, at).flags & 1) != 0 ? kGrey : kYellow;
-        if (!call(call_at, kHelpShown, {(at & 0xffff0000) | uint16_t(item<CascadeItem>(app, at).y), 0, 0, 0}))
+        if (!call.core<0x449df0, loop::keysTakenOf, 0>(call_at, (at & 0xffff0000) | uint16_t(item<CascadeItem>(app, at).y)))
             return {};
         if (call.r != 0)
             colour = kDark;
         if (kSlidingIn(app) != 0)
         {
-            if (!call(call_at, kCodelinkMatches, {item<CascadeItem>(app, at).codelink, kDontHide, 0, 0}))
+            if (!call.core<0x4429c0, menus::codelinkMatched, 0>(call_at, item<CascadeItem>(app, at).codelink, kDontHide, 0))
                 return {};
             if (call.r == 0)
                 return 0;
@@ -2858,7 +3007,7 @@ Result cascadeDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 lit)
         if (!cascadeLine(app, cpu, call_at - 4, at, out, reg32(*lines), word(app, chosenAt)))
             return {};
         CascadeItem& e = item<CascadeItem>(app, at);
-        if (!call(call_at, kDrawMenuText, {out, reg32(wide(e.x) + 0x19), reg32(wide(e.y)), kMenuFont}, {0, colour}))
+        if (!call.named<text::menuTextDrawn, 2>(call_at, out, reg32(wide(e.x) + 0x19), reg32(wide(e.y)), kMenuFont, 0, colour))
             return {};
         return 0;
     }
@@ -2867,7 +3016,7 @@ Result cascadeDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 lit)
     {
         const int16_t x = d.x, y = d.y;
         if ((d.flags & 1) == 0
-            && !call(call_at, kDrawShape, {reg32(wide(d.shapes[0])), reg32(wide(x)), reg32(wide(y) + 0xc)}))
+            && !call.core<0x4d7990, shapes::drawShapeOf, 0>(call_at, reg32(wide(d.shapes[0])), reg32(wide(x)), reg32(wide(y) + 0xc)))
             return {};
         CascadeItem& e = item<CascadeItem>(app, at);
         if (e.unused44 != 0)
@@ -2878,7 +3027,7 @@ Result cascadeDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 lit)
         const reg32 out = frame - 0x238;
         if (!cascadeLine(app, cpu, call_at - 4, at, out, reg32(*lines), word(app, chosenAt)))
             return {};
-        if (!call(call_at, kDrawMenuText, {out, reg32(wide(x) + 0x19), reg32(wide(y)), kMenuFont}, {0, colour}))
+        if (!call.named<text::menuTextDrawn, 2>(call_at, out, reg32(wide(x) + 0x19), reg32(wide(y)), kMenuFont, 0, colour))
             return {};
         return 0;
     }
@@ -2887,9 +3036,7 @@ Result cascadeDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 lit)
         return {};
     {
         CascadeItem& e = item<CascadeItem>(app, at);
-        if (!call(call_at, kFieldBox,
-                  {reg32(wide(e.boxLeft)), reg32(wide(e.boxTop)), reg32(wide(e.boxWidth)), reg32(wide(e.boxHeight))},
-                  {kFieldColours[0], kFieldColours[1], kFieldColours[2], kFieldColours[3]}))
+        if (!call.boxedNamed<draw2d::drawFieldBoxOf>(call_at, reg32(wide(e.boxLeft)), reg32(wide(e.boxTop)), reg32(wide(e.boxWidth)), reg32(wide(e.boxHeight)), kFieldColours[0], kFieldColours[1], kFieldColours[2], kFieldColours[3]))
             return {};
     }
     int16_t top = item<CascadeItem>(app, at).boxTop;
@@ -2898,7 +3045,7 @@ Result cascadeDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 lit)
         const reg32 lineAt = reg32(*lines) + reg32(i) * 2;
         if (half(app, lineAt) == 0 || wide(item<CascadeItem>(app, at).last) < i)
             break;
-        if (!call(call_at, kLanguageText, {reg32(wide(half(app, lineAt))), reg32(i) * 2, reg32(*allowed), kBlue}))
+        if (!call.lineByName(call_at, reg32(wide(half(app, lineAt))), reg32(i) * 2))
             return {};
         const reg32 text = call.r;
         reg32 colour = kBlue;
@@ -2907,41 +3054,34 @@ Result cascadeDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 lit)
             may = wide(half(app, reg32(*allowed) + reg32(i) * 2));
         if (*colours != 0)
             colour = word(app, reg32(i) * 4 + reg32(*colours));
-        if (!call(call_at, kStricmp, {item<CascadeItem>(app, at).listName, kTracks, reg32(*allowed), kBlue}))
+        if (!call.plain<0x4e9ec0, watcom::clib::stricmp>(call_at, item<CascadeItem>(app, at).listName, kTracks))
             return {};
         const int32_t left = wide(item<CascadeItem>(app, at).boxLeft) + gap;
         if (call.r == 0 && gameSettings(app).raceType == 3
             && !trackMarks(app, cpu, call_at, i, left, wide(top), at + 0x5c, at + 0x5e))
             return {};
         const reg32 shade = wide(item<CascadeItem>(app, at).chosen) == i && may != 0 ? kYellow : may != 0 ? colour : kGrey;
-        if (!call(call_at, kDrawMenuText,
-                  {text, reg32(wide(item<CascadeItem>(app, at).boxLeft) + gap), reg32(wide(top)), kMenuFont},
-                  {0, shade}))
+        if (!call.named<text::menuTextDrawn, 2>(call_at, text, reg32(wide(item<CascadeItem>(app, at).boxLeft) + gap), reg32(wide(top)), kMenuFont, 0, shade))
             return {};
     }
     CascadeItem& e = item<CascadeItem>(app, at);
-    if (!call(call_at, kPointerLine, {reg32(wide(e.boxTop)), 0x10, 0, 0}))
+    if (!call.plain<0x49c1c0, frontend::menud::pointerListLine>(call_at, int32_t(reg32(wide(e.boxTop))), 0x10))
         return {};
     const int32_t line = int32_t(call.r);
     CascadeItem& g = item<CascadeItem>(app, at);
     if (g.first != 0
-        && !call(call_at, kDrawShape,
-                 {reg32(wide(line < 0 ? g.shapes[4] : g.shapes[2])), reg32(wide(g.boxLeft) + 1), reg32(wide(g.boxTop) + 2)}))
+        && !call.core<0x4d7990, shapes::drawShapeOf, 0>(call_at, reg32(wide(line < 0 ? g.shapes[4] : g.shapes[2])), reg32(wide(g.boxLeft) + 1), reg32(wide(g.boxTop) + 2)))
         return {};
     CascadeItem& h = item<CascadeItem>(app, at);
     if (wide(h.last) < *count - 1
-        && !call(call_at, kDrawShape,
-                 {reg32(wide(wide(h.shown) > line ? h.shapes[3] : h.shapes[5])), reg32(wide(h.boxLeft) + 1),
-                  reg32(wide(h.boxHeight) + wide(h.boxTop) - 0x10)}))
+        && !call.core<0x4d7990, shapes::drawShapeOf, 0>(call_at, reg32(wide(wide(h.shown) > line ? h.shapes[3] : h.shapes[5])), reg32(wide(h.boxLeft) + 1), reg32(wide(h.boxHeight) + wide(h.boxTop) - 0x10)))
         return {};
     CascadeItem& k = item<CascadeItem>(app, at);
     const int32_t x = wide(k.x), y = wide(k.y);
-    if (!call(call_at, kDrawShape, {reg32(wide(k.shapes[0])), reg32(x), reg32(y + 0xc)})
-        || !call(call_at, kDrawShape, {reg32(wide(item<CascadeItem>(app, at).shapes[1])), reg32(x + 0xc), reg32(y - 1)}))
+    if (!call.core<0x4d7990, shapes::drawShapeOf, 0>(call_at, reg32(wide(k.shapes[0])), reg32(x), reg32(y + 0xc))
+        || !call.core<0x4d7990, shapes::drawShapeOf, 0>(call_at, reg32(wide(item<CascadeItem>(app, at).shapes[1])), reg32(x + 0xc), reg32(y - 1)))
         return {};
-    if (!call(call_at, kDrawMenuText,
-              {item<CascadeItem>(app, at).text, reg32(wide(item<CascadeItem>(app, at).boxLeft) + gap), reg32(y), kMenuFont},
-              {0, kYellow}))
+    if (!call.named<text::menuTextDrawn, 2>(call_at, item<CascadeItem>(app, at).text, reg32(wide(item<CascadeItem>(app, at).boxLeft) + gap), reg32(y), kMenuFont, 0, kYellow))
         return {};
     return 0;
 }
@@ -2955,7 +3095,7 @@ Result cascadePassed(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 open, reg32 
         return 0;
     const reg32 call_at = esp - 0x14;
     Caller call{app, cpu};
-    if (!call(call_at, kPointerLine, {reg32(wide(item<Item>(app, at).boxTop)), 0x10, at, at}))
+    if (!call.plain<0x49c1c0, frontend::menud::pointerListLine>(call_at, int32_t(reg32(wide(item<Item>(app, at).boxTop))), 0x10))
         return {};
     const int32_t line = int32_t(call.r);
     const Result count = lengthOf(app, cpu, call_at - 4, word(app, at + list));
@@ -2992,14 +3132,14 @@ Result cascadeShowing(App* app, CPU& cpu, reg32 esp, reg32 at)
     static const reg32 fields[] = {0x46, 0x48, 0x4a, 0x4c, 0x4e, 0x50, 0x5c, 0x5e};
     for (int i = 0; i < 8; ++i)
     {
-        if (!call(call_at, kShapeByName, {names[i], 0, 0, at}))
+        if (!call.named<shapes::shapeNamed, 0>(call_at, names[i]))
             return {};
         setHalf(app, at + fields[i], int16_t(call.r));
     }
     const reg32 codelink = item<CascadeItem>(app, at).codelink;
     if (codelink == 0 || kNetworkRace(app) == 0 || kNetworkHost(app) != 0)
         return int32_t(call.r);
-    if (!call(call_at, kCodelinkMatches, {codelink, kHostOnly, 0, at}))
+    if (!call.core<0x4429c0, menus::codelinkMatched, 0>(call_at, codelink, kHostOnly, 0))
         return {};
     if (call.r != 0)
         item<CascadeItem>(app, at).flags |= 1;
@@ -3012,8 +3152,8 @@ Result pointAtChosen(App* app, CPU& cpu, reg32 at, reg32 item_, int32_t chosen, 
 {
     Item& it = item<Item>(app, item_);
     Caller call{app, cpu};
-    if (!call(at, kSetPointer,
-              {reg32(halved(wide(it.boxWidth)) + wide(it.boxLeft)), reg32((chosen - first) * 16 + wide(it.boxTop) + 8)}))
+    if (!call.plain<0x49bfc0, frontend::screen::setPointer>(
+            at, reg32(halved(wide(it.boxWidth)) + wide(it.boxLeft)), reg32((chosen - first) * 16 + wide(it.boxTop) + 8)))
         return {};
     return int32_t(call.r);
 }
@@ -3043,7 +3183,7 @@ Result cascadeKeyed(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 key)
     CascadeItem& c = item<CascadeItem>(app, at);
     c.shown = count < c.most ? int16_t(*counted) : c.most;
     const uint16_t k = uint16_t(key);
-    const auto click = [&]() { return call(call_at, kMenuEffect, {1, 0x7f, at, at}); };
+    const auto click = [&]() { return call.effectByName(call_at, 1, 0x7f); };
     const auto point = [&]() {
         CascadeItem& p = item<CascadeItem>(app, at);
         return pointAtChosen(app, cpu, call_at, at, wide(p.chosen), wide(p.first));
@@ -3106,7 +3246,7 @@ Result cascadeKeyed(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 key)
     case 0xd:
     case 0x4b00:
     {
-        if (!call(call_at, kPointerInBox, {at + 0x1a, key, at, at}))
+        if (!call.plain<0x49c1f0, frontend::glue::pointerInBox>(call_at, at + 0x1a))
             return {};
         if (call.r == 0)
             return close();
@@ -3195,12 +3335,12 @@ Result cascadeLaidOut(App* app, CPU& cpu, reg32 esp, reg32 at)
     const Result lines = linesOf(app, cpu, call_at - 4, item<CascadeItem>(app, at).listName, frame - 8);
     if (!lines)
         return {};
-    if (!call(call_at, kStricmp, {item<CascadeItem>(app, at).listName, kTracks, at, at}))
+    if (!call.plain<0x4e9ec0, watcom::clib::stricmp>(call_at, item<CascadeItem>(app, at).listName, kTracks))
         return {};
     bool tracks = call.r == 0;
     if (!tracks)
     {
-        if (!call(call_at, kStricmp, {item<CascadeItem>(app, at).listName, kRecordTracks, at, at}))
+        if (!call.plain<0x4e9ec0, watcom::clib::stricmp>(call_at, item<CascadeItem>(app, at).listName, kRecordTracks))
             return {};
         tracks = call.r == 0;
     }
@@ -3236,15 +3376,15 @@ Result checkDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 lit)
     Caller call{app, cpu};
     if (c.labelled != 0)
     {
-        if (!call(call_at, kDrawMenuText, {c.text, reg32(x), reg32(y), kMenuFont}, {0, colour})
-            || !call(call_at, kTextWidth, {item<CheckItem>(app, at).text, kMenuFont, reg32(y), kMenuFont}))
+        if (!call.named<text::menuTextDrawn, 2>(call_at, c.text, reg32(x), reg32(y), kMenuFont, 0, colour)
+            || !call.named<text::menuTextWidth, 0>(call_at, item<CheckItem>(app, at).text, kMenuFont))
             return {};
         across = int32_t(call.r) + 0xa;
-        if (!call(call_at, kPanel, {reg32(x + across), reg32(y), 0x13, kMenuFont}))
+        if (!call.core<0x4d89f0, draw2d::panel, 0>(call_at, reg32(x + across), reg32(y), 0x13, kMenuFont))
             return {};
     }
-    else if (!call(call_at, kDrawMenuText, {c.text, reg32(x + 0x16), reg32(y), kMenuFont}, {0, colour})
-             || !call(call_at, kPanel, {reg32(x + 2), reg32(y), 0x13, kMenuFont}))
+    else if (!call.named<text::menuTextDrawn, 2>(call_at, c.text, reg32(x + 0x16), reg32(y), kMenuFont, 0, colour)
+             || !call.core<0x4d89f0, draw2d::panel, 0>(call_at, reg32(x + 2), reg32(y), 0x13, kMenuFont))
         return {};
     if (item<CheckItem>(app, at).ticked != 0)
     {
@@ -3262,7 +3402,7 @@ Result checkKeyed(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 key)
     if (uint16_t(key) != 0xd)
         return 0;
     Caller call{app, cpu};
-    if (!call(esp - 0xc, kMenuEffect, {1, 0x7f, key, at}))
+    if (!call.effectByName(esp - 0xc, 1, 0x7f))
         return {};
     CheckItem& c = item<CheckItem>(app, at);
     c.ticked = c.ticked == 0 ? 1 : 0;
@@ -3278,7 +3418,7 @@ Result checkLaidOut(App* app, CPU& cpu, reg32 esp, reg32 at)
     int32_t across = 0;
     if (item<CheckItem>(app, at).labelled != 0)
     {
-        if (!call(call_at, kTextWidth, {item<CheckItem>(app, at).text, kMenuFont, 0, at}))
+        if (!call.named<text::menuTextWidth, 0>(call_at, item<CheckItem>(app, at).text, kMenuFont))
             return {};
         across = int32_t(call.r) + 0xa;
     }
@@ -3286,7 +3426,7 @@ Result checkLaidOut(App* app, CPU& cpu, reg32 esp, reg32 at)
     c.boxLeft = int16_t(c.x + int16_t(across));
     c.boxTop = c.y;
     c.boxHeight = 0x1d;
-    if (!call(call_at, kTextWidth, {c.text, kMenuFont, reg32(across), at}))
+    if (!call.named<text::menuTextWidth, 0>(call_at, c.text, kMenuFont))
         return {};
     const reg32 width = call.r + 0x13;
     item<CheckItem>(app, at).boxWidth = int16_t(width);
@@ -3304,12 +3444,10 @@ Result overlayDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 lit)
     Item& o = item<Item>(app, at);
     const int32_t x = wide(o.x), y = wide(o.y);
     Caller call{app, cpu};
-    if (!call(call_at, kSelectFont, {kMenuFont, kMenuFont, 0, 0})
-        || !call(call_at, kTextWidth, {item<Item>(app, at).text, kMenuFont, 0, 0})
-        || !call(call_at, kFieldBox, {reg32(x), reg32(y), 0xc8, 0xc8},
-                 {kFieldColours[0], kFieldColours[1], kFieldColours[2], kFieldColours[3]})
-        || !call(call_at, kDrawMenuText, {item<Item>(app, at).text, reg32(x + 0x64), reg32(y + 2), kMenuFont},
-                 {5, colour}))
+    if (!call.keepNamed<text::selectFontOf>(call_at, kMenuFont, kMenuFont)
+        || !call.named<text::menuTextWidth, 0>(call_at, item<Item>(app, at).text, kMenuFont)
+        || !call.boxedNamed<draw2d::drawFieldBoxOf>(call_at, reg32(x), reg32(y), 0xc8, 0xc8, kFieldColours[0], kFieldColours[1], kFieldColours[2], kFieldColours[3])
+        || !call.named<text::menuTextDrawn, 2>(call_at, item<Item>(app, at).text, reg32(x + 0x64), reg32(y + 2), kMenuFont, 5, colour))
         return {};
     return 0;
 }
@@ -3372,7 +3510,7 @@ Result selectShowing(App* app, CPU& cpu, reg32 esp, reg32 at)
     static const reg32 fields[] = {0x58, 0x5a, 0x5c, 0x5e};
     for (int i = 0; i < 4; ++i)
     {
-        if (!call(call_at, kShapeByName, {kArrowNames[i], 0, 0, at}))
+        if (!call.named<shapes::shapeNamed, 0>(call_at, kArrowNames[i]))
             return {};
         setHalf(app, at + fields[i], int16_t(call.r));
     }
@@ -3380,9 +3518,9 @@ Result selectShowing(App* app, CPU& cpu, reg32 esp, reg32 at)
     const reg32 codelink = item<SelectItem>(app, at).codelink;
     if (codelink != 0)
     {
-        if (!call(call_at, kCodelinkMatches, {codelink, kReplays, 0, at}))
+        if (!call.core<0x4429c0, menus::codelinkMatched, 0>(call_at, codelink, kReplays, 0))
             return {};
-        if (call.r != 0 && !call(call_at, kListReplays, {at, kReplayFile, 0, at}))
+        if (call.r != 0 && !call.plain<0x4475a0, load::replaysListed>(call_at, at, kReplayFile))
             return {};
     }
     setWord(app, 0x5556c8, at);
@@ -3397,7 +3535,7 @@ Result selectHiding(App* app, CPU& cpu, reg32 esp, reg32 at)
     if (s.texts != 0)
     {
         Caller call{app, cpu};
-        if (!call(esp - 0x10, kFree, {s.texts, at, s.texts, at}))
+        if (!call.plain<0x4e1890, watcom::clib::free>(esp - 0x10, s.texts))
             return {};
         eax = call.r;
         item<SelectItem>(app, at).texts = 0;
@@ -3417,7 +3555,7 @@ Result selectDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 lit)
         return 0;
     const reg32 frame = esp - 0x14, call_at = frame - 0xc;
     Caller call{app, cpu};
-    if (!call(call_at, kDialogShown, {at, lit, 0, at}))
+    if (!call.plain<0x4438b0, dialogs::dialogShownWith>(call_at, at))
         return {};
     if ((call.r & 0xff) != 0 || kSlidingIn(app) != 0)
         return 0;
@@ -3428,15 +3566,12 @@ Result selectDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 lit)
     if (height <= wide(s.boxHeight))
         height = wide(s.boxHeight);
     const int32_t left = wide(s.boxLeft), top = wide(s.boxTop);
-    if (!call(call_at, kFieldBox, {reg32(left), reg32(top), reg32(wide(s.boxWidth)), reg32(height)},
-              {kFieldColours[0], kFieldColours[1], kFieldColours[2], kFieldColours[3]})
-        || !call(call_at, kDrawArtShape, {word(app, 0x66108c), reg32(left - 0xe), reg32(top - 9), 0xffffffff}))
+    if (!call.boxedNamed<draw2d::drawFieldBoxOf>(call_at, reg32(left), reg32(top), reg32(wide(s.boxWidth)), reg32(height), kFieldColours[0], kFieldColours[1], kFieldColours[2], kFieldColours[3])
+        || !call.named<shapes::drawArt, 0>(call_at, word(app, 0x66108c), reg32(left - 0xe), reg32(top - 9), 0xffffffff))
         return {};
     SelectItem& t = item<SelectItem>(app, at);
     if (t.text != 0
-        && !call(call_at, kDrawMenuText,
-                 {t.text, reg32(wide(t.x) + 0x1a + halved(wide(t.boxWidth))), reg32(wide(t.y) + 0x13), kMenuFont},
-                 {2, colour}))
+        && !call.named<text::menuTextDrawn, 2>(call_at, t.text, reg32(wide(t.x) + 0x1a + halved(wide(t.boxWidth))), reg32(wide(t.y) + 0x13), kMenuFont, 2, colour))
         return {};
     int32_t y = top + 0x39;
     if (item<SelectItem>(app, at).count != 0)
@@ -3447,19 +3582,13 @@ Result selectDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 lit)
             if (i >= int32_t(u.count) || wide(u.last) < i)
                 break;
             const reg32 shade = reg32(i) == u.chosen ? kYellow : 0xff649dfd;
-            if (!call(call_at, kDrawMenuText,
-                      {word(app, u.texts + reg32(i) * 8), reg32(wide(item<SelectItem>(app, at).boxLeft) + 0xa), reg32(y),
-                       kMenuFont},
-                      {0, shade}))
+            if (!call.named<text::menuTextDrawn, 2>(call_at, word(app, u.texts + reg32(i) * 8), reg32(wide(item<SelectItem>(app, at).boxLeft) + 0xa), reg32(y), kMenuFont, 0, shade))
                 return {};
         }
         if (item<SelectItem>(app, at).empty != 0)
             while (y < wide(item<SelectItem>(app, at).boxTop) + height)
             {
-                if (!call(call_at, kDrawMenuText,
-                          {item<SelectItem>(app, at).empty,
-                           reg32(wide(item<SelectItem>(app, at).boxLeft) + 0xa), reg32(y), kMenuFont},
-                          {0, kDark}))
+                if (!call.named<text::menuTextDrawn, 2>(call_at, item<SelectItem>(app, at).empty, reg32(wide(item<SelectItem>(app, at).boxLeft) + 0xa), reg32(y), kMenuFont, 0, kDark))
                     return {};
                 y += 0x10;
             }
@@ -3467,30 +3596,27 @@ Result selectDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 lit)
     else if (item<SelectItem>(app, at).empty != 0)
     {
         for (int32_t i = 0; wide(item<SelectItem>(app, at).lines) > i; ++i, y += 0x10)
-            if (!call(call_at, kDrawMenuText,
-                      {item<SelectItem>(app, at).empty, reg32(wide(item<SelectItem>(app, at).boxLeft) + 0xa),
-                       reg32(y), kMenuFont},
-                      {0, kDark}))
+            if (!call.named<text::menuTextDrawn, 2>(call_at, item<SelectItem>(app, at).empty, reg32(wide(item<SelectItem>(app, at).boxLeft) + 0xa), reg32(y), kMenuFont, 0, kDark))
                 return {};
     }
     SelectItem& v = item<SelectItem>(app, at);
     if (v.first != 0)
     {
         const int32_t bx = wide(v.upBox[1]), by = wide(v.upBox[0]);
-        if (!call(call_at, kPointerInBox, {at + 0x60, reg32(bx), reg32(by), 0}))
+        if (!call.plain<0x49c1f0, frontend::glue::pointerInBox>(call_at, at + 0x60))
             return {};
         SelectItem& w = item<SelectItem>(app, at);
-        if (!call(call_at, kDrawShape, {reg32(wide(call.r != 0 ? w.shapes[2] : w.shapes[0])), reg32(bx), reg32(by)}))
+        if (!call.core<0x4d7990, shapes::drawShapeOf, 0>(call_at, reg32(wide(call.r != 0 ? w.shapes[2] : w.shapes[0])), reg32(bx), reg32(by)))
             return {};
     }
     SelectItem& w = item<SelectItem>(app, at);
     if (wide(w.last) < int32_t(w.count) - 1)
     {
         const int32_t bx = wide(w.downBox[1]), by = wide(w.downBox[0]);
-        if (!call(call_at, kPointerInBox, {at + 0x68, reg32(bx), reg32(by), 0}))
+        if (!call.plain<0x49c1f0, frontend::glue::pointerInBox>(call_at, at + 0x68))
             return {};
         SelectItem& z = item<SelectItem>(app, at);
-        if (!call(call_at, kDrawShape, {reg32(wide(call.r != 0 ? z.shapes[3] : z.shapes[1])), reg32(bx), reg32(by)}))
+        if (!call.core<0x4d7990, shapes::drawShapeOf, 0>(call_at, reg32(wide(call.r != 0 ? z.shapes[3] : z.shapes[1])), reg32(bx), reg32(by)))
             return {};
     }
     return 0;
@@ -3532,7 +3658,7 @@ Result selectKeyed(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 key)
     };
     if (k == 0xd)
     {
-        if (!call(call_at, kPointerInBox, {at + 0x60, key, at, at}))
+        if (!call.plain<0x49c1f0, frontend::glue::pointerInBox>(call_at, at + 0x60))
             return {};
         if (call.r != 0)
         {
@@ -3541,7 +3667,7 @@ Result selectKeyed(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 key)
             selectLaidOut(app, at);
             return 2;
         }
-        if (!call(call_at, kPointerInBox, {at + 0x68, key, at, at}))
+        if (!call.plain<0x49c1f0, frontend::glue::pointerInBox>(call_at, at + 0x68))
             return {};
         if (call.r != 0)
         {
@@ -3556,7 +3682,7 @@ Result selectKeyed(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 key)
     case 0xd:
     {
         SelectItem& t = item<SelectItem>(app, at);
-        if (!call(call_at, kPointerLine, {reg32(wide(t.boxTop) + 0x39), 0x10, at, at}))
+        if (!call.plain<0x49c1c0, frontend::menud::pointerListLine>(call_at, int32_t(reg32(wide(t.boxTop) + 0x39)), 0x10))
             return {};
         const int32_t line = int32_t(call.r);
         SelectItem& u = item<SelectItem>(app, at);
@@ -3588,10 +3714,10 @@ Result selectKeyed(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 key)
             {
                 kSelectHeld.set(app, 0);
                 joinTried = true;
-                if (!call(call_at, kDrawScreenItems, {0, 1, at, at}))
+                if (!call.plain<0x44aeb0, loop::currentMenuOf>(call_at))
                     return {};
                 const reg32 screen = call.r;
-                if (!call(call_at, kMenuFindItem, {screen, kJoinGameName, at, at}))
+                if (!call.plain<kMenuFindItem, frontend::menus::findItem>(call_at, screen, kJoinGameName))
                     return {};
                 const reg32 found = call.r;
                 if (found != 0)
@@ -3785,9 +3911,7 @@ Result dropDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 lit)
         if (!followPointer(app, cpu, call_at, at, box, count, 0x55a434))
             return {};
         DropItem& e = item<DropItem>(app, at);
-        if (!call(call_at, kFieldBox,
-                  {reg32(wide(e.boxLeft)), reg32(wide(e.boxTop)), reg32(wide(e.boxWidth)), reg32(wide(e.boxHeight))},
-                  {kFieldColours[0], kFieldColours[1], kFieldColours[2], kFieldColours[3]}))
+        if (!call.boxedNamed<draw2d::drawFieldBoxOf>(call_at, reg32(wide(e.boxLeft)), reg32(wide(e.boxTop)), reg32(wide(e.boxWidth)), reg32(wide(e.boxHeight)), kFieldColours[0], kFieldColours[1], kFieldColours[2], kFieldColours[3]))
             return {};
         int16_t top = item<DropItem>(app, at).boxTop;
         for (int32_t i = wide(item<DropItem>(app, at).first);; ++i, top = int16_t(top + 0x10))
@@ -3795,7 +3919,7 @@ Result dropDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 lit)
             const reg32 lineAt = reg32(*lines) + reg32(i) * 2;
             if (half(app, lineAt) == 0 || wide(item<DropItem>(app, at).last) < i)
                 break;
-            if (!call(call_at, kLanguageText, {reg32(wide(half(app, lineAt))), reg32(i) * 2, reg32(*allowed), kBlue}))
+            if (!call.lineByName(call_at, reg32(wide(half(app, lineAt))), reg32(i) * 2))
                 return {};
             const reg32 text = call.r;
             reg32 colour = kBlue;
@@ -3804,12 +3928,12 @@ Result dropDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 lit)
                 may = wide(half(app, reg32(*allowed) + reg32(i) * 2));
             if (*colours != 0)
                 colour = word(app, reg32(i) * 4 + reg32(*colours));
-            if (!call(call_at, kStricmp, {item<DropItem>(app, at).listName, kTracks, reg32(*allowed), kBlue}))
+            if (!call.plain<0x4e9ec0, watcom::clib::stricmp>(call_at, item<DropItem>(app, at).listName, kTracks))
                 return {};
             bool tracks = call.r == 0;
             if (!tracks)
             {
-                if (!call(call_at, kStricmp, {item<DropItem>(app, at).listName, kRecordTracks, reg32(*allowed), kBlue}))
+                if (!call.plain<0x4e9ec0, watcom::clib::stricmp>(call_at, item<DropItem>(app, at).listName, kRecordTracks))
                     return {};
                 tracks = call.r == 0;
             }
@@ -3817,30 +3941,26 @@ Result dropDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 lit)
             if (tracks && gameSettings(app).raceType == 3 && !trackMarks(app, cpu, call_at, i, left, wide(top), at + 0x60, at + 0x62))
                 return {};
             const reg32 shade = wide(item<DropItem>(app, at).chosen) == i && may != 0 ? kYellow : may != 0 ? colour : kGrey;
-            if (!call(call_at, kDrawMenuText,
-                      {text, reg32(wide(item<DropItem>(app, at).boxLeft) + gap), reg32(wide(top)), kMenuFont}, {0, shade}))
+            if (!call.named<text::menuTextDrawn, 2>(call_at, text, reg32(wide(item<DropItem>(app, at).boxLeft) + gap), reg32(wide(top)), kMenuFont, 0, shade))
                 return {};
         }
         DropItem& f = item<DropItem>(app, at);
-        if (!call(call_at, kPointerLine, {reg32(wide(f.boxTop)), 0x10, 0, 0}))
+        if (!call.plain<0x49c1c0, frontend::menud::pointerListLine>(call_at, int32_t(reg32(wide(f.boxTop))), 0x10))
             return {};
         const int32_t line = int32_t(call.r);
         DropItem& g = item<DropItem>(app, at);
         if (g.first != 0
-            && !call(call_at, kDrawShape,
-                     {reg32(wide(line < 0 ? g.shapes[6] : g.shapes[4])), reg32(wide(g.boxLeft)), reg32(wide(g.boxTop) + 2)}))
+            && !call.core<0x4d7990, shapes::drawShapeOf, 0>(call_at, reg32(wide(line < 0 ? g.shapes[6] : g.shapes[4])), reg32(wide(g.boxLeft)), reg32(wide(g.boxTop) + 2)))
             return {};
         DropItem& h = item<DropItem>(app, at);
         if (wide(h.last) < count - 1
-            && !call(call_at, kDrawShape,
-                     {reg32(wide(wide(h.shown) > line ? h.shapes[5] : h.shapes[7])), reg32(wide(h.boxLeft)),
-                      reg32(wide(h.boxHeight) + wide(h.boxTop) - 0x10)}))
+            && !call.core<0x4d7990, shapes::drawShapeOf, 0>(call_at, reg32(wide(wide(h.shown) > line ? h.shapes[5] : h.shapes[7])), reg32(wide(h.boxLeft)), reg32(wide(h.boxHeight) + wide(h.boxTop) - 0x10)))
             return {};
     }
     else
     {
         const reg32 chosen = word(app, word(app, chosenAt));
-        if (!call(call_at, kLanguageText, {reg32(wide(half(app, chosen * 2 + reg32(*lines)))), 0, 0, 0}))
+        if (!call.lineByName(call_at, reg32(wide(half(app, chosen * 2 + reg32(*lines)))), 0))
             return {};
         item<DropItem>(app, at).text = call.r;
         item<DropItem>(app, at).chosen = half(app, word(app, chosenAt));
@@ -3856,45 +3976,42 @@ Result dropDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 lit)
             DropItem& p = item<DropItem>(app, at);
             if (p.shapes[2] == 0)
                 return true;
-            if (!call(call_at, kDialogShown, {0, 0, 0, pulse}))
+            if (!call.plain<0x4438b0, dialogs::dialogShownWith>(call_at, 0))
                 return false;
             if ((call.r & 0xff) != 0 || (kRenderFlags(app) & 2) != 0)
                 return true;
-            return call(call_at, kDrawArtShape, {reg32(wide(item<DropItem>(app, at).shapes[2])), reg32(px), reg32(py), pulse});
+            return call.named<shapes::drawArt, 0>(call_at, reg32(wide(item<DropItem>(app, at).shapes[2])), reg32(px), reg32(py), pulse);
         };
         if (e.wide != 0)
         {
-            if (!call(call_at, kDrawShape, {reg32(wide(e.shapes[0])), reg32(wide(x)), reg32(wide(y))}))
+            if (!call.core<0x4d7990, shapes::drawShapeOf, 0>(call_at, reg32(wide(e.shapes[0])), reg32(wide(x)), reg32(wide(y))))
                 return {};
             if (item<DropItem>(app, at).right != 0)
             {
-                if (!call(call_at, kDrawShape,
-                          {reg32(wide(item<DropItem>(app, at).shapes[1])), reg32(wide(x) + 5), reg32(wide(y) + 0xe)})
+                if (!call.core<0x4d7990, shapes::drawShapeOf, 0>(call_at, reg32(wide(item<DropItem>(app, at).shapes[1])), reg32(wide(x) + 5), reg32(wide(y) + 0xe))
                     || !drawPulse(wide(x) - 0xa, wide(y)))
                     return {};
             }
-            else if (!call(call_at, kDrawShape,
-                           {reg32(wide(item<DropItem>(app, at).shapes[1])), reg32(wide(x) + 0xf), reg32(wide(y) + 0xe)})
+            else if (!call.core<0x4d7990, shapes::drawShapeOf, 0>(call_at, reg32(wide(item<DropItem>(app, at).shapes[1])), reg32(wide(x) + 0xf), reg32(wide(y) + 0xe))
                      || !drawPulse(wide(x) + 0x80, wide(y)))
                 return {};
         }
         else
         {
-            if (!call(call_at, kDrawShape, {reg32(wide(e.shapes[1])), reg32(wide(x)), reg32(wide(y))}))
+            if (!call.core<0x4d7990, shapes::drawShapeOf, 0>(call_at, reg32(wide(e.shapes[1])), reg32(wide(x)), reg32(wide(y))))
                 return {};
             if (map ? !drawPulse(wide(x) + 0xad, wide(y) - 0xf) : !drawPulse(wide(x) + 0x64, wide(y)))
                 return {};
         }
-        if (!call(call_at, kDrawShape,
-                  {reg32(wide(item<DropItem>(app, at).shapes[3])), reg32(wide(x) + wide(artX)), reg32(wide(y) + artY)}))
+        if (!call.core<0x4d7990, shapes::drawShapeOf, 0>(call_at, reg32(wide(item<DropItem>(app, at).shapes[3])), reg32(wide(x) + wide(artX)), reg32(wide(y) + artY)))
             return {};
     }
-    else if (!call(call_at, kDrawShape, {reg32(wide(item<DropItem>(app, at).shapes[0])), reg32(wide(x)), reg32(wide(y))}))
+    else if (!call.core<0x4d7990, shapes::drawShapeOf, 0>(call_at, reg32(wide(item<DropItem>(app, at).shapes[0])), reg32(wide(x)), reg32(wide(y))))
         return {};
-    if (!call(call_at, kSelectFont, {kMenuFont, 0, 0, 0}))
+    if (!call.keepNamed<text::selectFontOf>(call_at, kMenuFont, kMenuFont))
         return {};
     const auto stricmp = [&](reg32 name) {
-        return call(call_at, kStricmp, {item<DropItem>(app, at).listName, name, 0, 0});
+        return call.plain<0x4e9ec0, watcom::clib::stricmp>(call_at, item<DropItem>(app, at).listName, name);
     };
     int32_t across = textX;
     if (*lines != 0 && map)
@@ -3917,13 +4034,12 @@ Result dropDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 lit)
                 return {};
             if (call.r != 0)
                 car -= 4;
-            if (!call(call_at, kCarClass, {car, 0, 4, car}))
+            if (!call.plain<0x439730, load::classOfCar>(call_at, car))
                 return {};
-            if (!call(call_at, kLanguageText, {call.r + 0xbe, 0, 4, reg32(textX)}))
+            if (!call.lineByName(call_at, call.r + 0xbe, 0))
                 return {};
             kNudge.set(app, 4);
-            if (!call(call_at, kDrawMenuText,
-                      {call.r, reg32(wide(x) + textX + 0x83), reg32(textY + wide(y) - 1), kMenuFont}, {1, kBlue}))
+            if (!call.named<text::menuTextDrawn, 2>(call_at, call.r, reg32(wide(x) + textX + 0x83), reg32(textY + wide(y) - 1), kMenuFont, 1, kBlue))
                 return {};
             kNudge.set(app, 0);
         }
@@ -3944,38 +4060,32 @@ Result dropDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 lit)
                 const reg32 kind = n > 7 ? 9 : n > 3 ? 8 : 7;
                 kNudge.set(app, 4);
                 const int32_t tx = wide(x) + textX + 0x83, ty = textY + wide(y) - 1;
-                if (!call(call_at, kLanguageText, {kind, reg32(tx), reg32(ty), kMenuFont})
-                    || !call(call_at, kDrawMenuText, {call.r, reg32(tx), reg32(ty), kMenuFont}, {1, kBlue}))
+                if (!call.lineByName(call_at, kind, reg32(tx))
+                    || !call.named<text::menuTextDrawn, 2>(call_at, call.r, reg32(tx), reg32(ty), kMenuFont, 1, kBlue))
                     return {};
                 kNudge.set(app, 0);
                 if (gameSettings(app).raceType == 3)
                 {
                     const int32_t bit = 1 << (word(app, chosen) & 31);
                     if ((wide(gameSettings(app).duelsLost) & bit) != 0
-                        && !call(call_at, kDrawShape,
-                                 {reg32(wide(item<DropItem>(app, at).marks[0])), reg32(wide(x) + 0x22),
-                                  reg32(wide(y) + textY + 1)}))
+                        && !call.core<0x4d7990, shapes::drawShapeOf, 0>(call_at, reg32(wide(item<DropItem>(app, at).marks[0])), reg32(wide(x) + 0x22), reg32(wide(y) + textY + 1)))
                         return {};
                     if ((wide(gameSettings(app).duelsWon) & bit) != 0
-                        && !call(call_at, kDrawShape,
-                                 {reg32(wide(item<DropItem>(app, at).marks[1])), reg32(wide(x) + 0x32),
-                                  reg32(wide(y) + textY + 1)}))
+                        && !call.core<0x4d7990, shapes::drawShapeOf, 0>(call_at, reg32(wide(item<DropItem>(app, at).marks[1])), reg32(wide(x) + 0x32), reg32(wide(y) + textY + 1)))
                         return {};
                 }
             }
             else
             {
                 across = textX + 0x19;
-                if (!call(call_at, kTextWidth, {item<DropItem>(app, at).text, kMenuFont, reg32(across), 0}))
+                if (!call.named<text::menuTextWidth, 0>(call_at, item<DropItem>(app, at).text, kMenuFont))
                     return {};
                 if (int32_t(call.r) > 0xc8)
                 {
                     const int32_t left = across + wide(x);
-                    if (!call(call_at, kSetClip, {0, 0, reg32(left + 0x64), 0x1e0})
-                        || !call(call_at, kDrawMenuText,
-                                 {item<DropItem>(app, at).text, reg32(left - 0x64), reg32(textY + wide(y) - 1), kMenuFont},
-                                 {0, kYellow})
-                        || !call(call_at, kSetClip, {0, 0, 0x280, 0x1e0}))
+                    if (!call.plain<kSetClip, graphics::clipSet>(call_at, 0, 0, left + 0x64, 0x1e0)
+                        || !call.named<text::menuTextDrawn, 2>(call_at, item<DropItem>(app, at).text, reg32(left - 0x64), reg32(textY + wide(y) - 1), kMenuFont, 0, kYellow)
+                        || !call.plain<kSetClip, graphics::clipSet>(call_at, 0, 0, 0x280, 0x1e0))
                         return {};
                     return 0;
                 }
@@ -3983,8 +4093,7 @@ Result dropDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 lit)
         }
     }
     const reg32 colour = (item<DropItem>(app, at).flags & 1) != 0 ? kGrey : kYellow;
-    if (!call(call_at, kDrawMenuText,
-              {item<DropItem>(app, at).text, reg32(wide(x) + across), reg32(textY + wide(y) - 1), kMenuFont}, {5, colour}))
+    if (!call.named<text::menuTextDrawn, 2>(call_at, item<DropItem>(app, at).text, reg32(wide(x) + across), reg32(textY + wide(y) - 1), kMenuFont, 5, colour))
         return {};
     return 0;
 }
@@ -4007,7 +4116,7 @@ Result dropShowing(App* app, CPU& cpu, reg32 esp, reg32 at)
     d.last = int16_t(d.most - 1);
     Caller call{app, cpu};
     const auto shape = [&](reg32 name, reg32 field) {
-        if (!call(call_at, kShapeByName, {name, 0, 0, at}))
+        if (!call.named<shapes::shapeNamed, 0>(call_at, name))
             return false;
         setHalf(app, at + field, int16_t(call.r));
         return true;
@@ -4043,7 +4152,7 @@ Result dropShowing(App* app, CPU& cpu, reg32 esp, reg32 at)
     const reg32 codelink = item<DropItem>(app, at).codelink;
     if (codelink == 0 || kNetworkRace(app) == 0 || kNetworkHost(app) != 0)
         return int32_t(call.r);
-    if (!call(call_at, kCodelinkMatches, {codelink, kHostOnly, codelink, at}))
+    if (!call.core<0x4429c0, menus::codelinkMatched, 0>(call_at, codelink, kHostOnly, codelink))
         return {};
     if (call.r != 0)
         item<DropItem>(app, at).flags |= 1;
@@ -4080,7 +4189,7 @@ Result listKeyed(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 key)
         d.shown = count16 < d.most ? count16 : d.most;
     }
     const uint16_t k = uint16_t(key);
-    const auto click = [&]() { return call(call_at, kMenuEffect, {1, 0x7f, at, at}); };
+    const auto click = [&]() { return call.effectByName(call_at, 1, 0x7f); };
     const auto point = [&]() {
         DropItem& p = item<DropItem>(app, at);
         return pointAtChosen(app, cpu, call_at, at, wide(p.chosen), wide(p.first));
@@ -4158,7 +4267,7 @@ Result listKeyed(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 key)
     {
     case 0xd:
     {
-        if (!call(call_at, kPointerInBox, {at + 0x1a, key, at, at}))
+        if (!call.plain<0x49c1f0, frontend::glue::pointerInBox>(call_at, at + 0x1a))
             return {};
         if (call.r == 0)
             return close(false);
@@ -4286,7 +4395,7 @@ Result dropLaidOut(App* app, CPU& cpu, reg32 esp, reg32 at)
 
 }  // namespace
 
-/* ---- The adapters ---- */
+/* ---- The thunks ---- */
 
 namespace
 {
@@ -4298,393 +4407,393 @@ Args regsOf(const Entry& e)
 
 }  // namespace
 
-void joinListedGame(App* app, CPU& cpu)
+x86::reg32 joinListedGame(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, joined(app, cpu, e.esp, regsOf(e)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, joined(app, cpu, e.esp, regsOf(e)));
 }
 
-void drawReadyMarks(App* app, CPU& cpu)
+x86::reg32 drawReadyMarks(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, readyMarks(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, readyMarks(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx)));
 }
 
-void networkLeft(App* app, CPU& cpu)
+x86::reg32 networkLeft(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, slideFinished(app, cpu, e.esp, regsOf(e)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, slideFinished(app, cpu, e.esp, regsOf(e)));
 }
 
-void drawLicence(App* app, CPU& cpu)
+x86::reg32 drawLicence(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, licenceDrawn(app, cpu, e.esp, regsOf(e)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, licenceDrawn(app, cpu, e.esp, regsOf(e)));
 }
 
-void listColours(App* app, CPU& cpu)
+x86::reg32 listColours(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, coloursOf(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, coloursOf(app, cpu, e.esp, e.eax));
 }
 
-void listAllowed(App* app, CPU& cpu)
+x86::reg32 listAllowed(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, allowedOf(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, allowedOf(app, cpu, e.esp, e.eax));
 }
 
-void listLength(App* app, CPU& cpu)
+x86::reg32 listLength(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, lengthOf(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, lengthOf(app, cpu, e.esp, e.eax));
 }
 
-void findList(App* app, CPU& cpu)
+x86::reg32 findList(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, linesOf(app, cpu, e.esp, e.eax, e.edx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, linesOf(app, cpu, e.esp, e.eax, e.edx));
 }
 
 /* 0x442d20: whether the menu's record at eax was edited (its word at
  * +0x1e). */
-void menuRecordEdited(App* app, CPU& cpu)
+x86::reg32 menuRecordEdited(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, reg32(wide(half(app, e.eax + 0x1e))));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, reg32(wide(half(app, e.eax + 0x1e))));
 }
 
 /* 0x442d00: whether menu eax was edited (0x24 bytes a menu at 0x6040d0). */
-void menuEdited(App* app, CPU& cpu)
+x86::reg32 menuEdited(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, reg32(wide(half(app, e.eax * 0x24 + 0x6040d0 + 0x1e))));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, reg32(wide(half(app, e.eax * 0x24 + 0x6040d0 + 0x1e))));
 }
 
-void loadShapes(App* app, CPU& cpu)
+x86::reg32 loadShapes(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, shapesLoaded(app, cpu, e.esp, e.eax, e.ebx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, shapesLoaded(app, cpu, e.esp, e.eax, e.ebx));
 }
 
-void redrawMenu(App* app, CPU& cpu)
+x86::reg32 redrawMenu(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, redrawn(app, cpu, e.esp, regsOf(e)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, redrawn(app, cpu, e.esp, regsOf(e)));
 }
 
-void textBoxDraw(App* app, CPU& cpu)
+x86::reg32 textBoxDraw(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, textBoxDrawn(app, cpu, e.esp, e.eax, e.edx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, textBoxDrawn(app, cpu, e.esp, e.eax, e.edx));
 }
 
-void textBoxKey(App* app, CPU& cpu)
+x86::reg32 textBoxKey(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, textBoxKeyed(app, cpu, e.esp, e.eax, e.ebx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, textBoxKeyed(app, cpu, e.esp, e.eax, e.ebx));
 }
 
-void textBoxUp(App* app, CPU& cpu)
+x86::reg32 textBoxUp(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, textBoxLaidOut(app, cpu, e.esp, e.eax, e.ebx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, textBoxLaidOut(app, cpu, e.esp, e.eax, e.ebx));
 }
 
-void textBoxShown(App* app, CPU& cpu)
+x86::reg32 textBoxShown(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, textBoxShowing(app, cpu, e.esp, regsOf(e)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, textBoxShowing(app, cpu, e.esp, regsOf(e)));
 }
 
-void textBoxHidden(App* app, CPU& cpu)
+x86::reg32 textBoxHidden(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, textBoxHiding(app, cpu, e.esp, e.eax, e.ebx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, textBoxHiding(app, cpu, e.esp, e.eax, e.ebx));
 }
 
-void slideTrackMap(App* app, CPU& cpu)
+x86::reg32 slideTrackMap(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, mapSlid(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, mapSlid(app, cpu, e.esp, e.eax));
 }
 
-void drawTrackFacts(App* app, CPU& cpu)
+x86::reg32 drawTrackFacts(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, trackFacts(app, cpu, e.esp, regsOf(e)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, trackFacts(app, cpu, e.esp, regsOf(e)));
 }
 
-void drawGlow(App* app, CPU& cpu)
+x86::reg32 drawGlow(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, glowDrawn(app, cpu, e.esp, regsOf(e)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, glowDrawn(app, cpu, e.esp, regsOf(e)));
 }
 
-void trackMapShape(App* app, CPU& cpu)
+x86::reg32 trackMapShape(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, mapShape(app, cpu, e.esp, e.eax, int32_t(e.edx)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, mapShape(app, cpu, e.esp, e.eax, int32_t(e.edx)));
 }
 
-void rectDraw(App* app, CPU& cpu)
+x86::reg32 rectDraw(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, rectDrawn(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, rectDrawn(app, cpu, e.esp, e.eax));
 }
 
 /* 0x45fc90: a speech item draws nothing: 0. */
-void speechDraw(App*, CPU& cpu)
+x86::reg32 speechDraw(App*, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, 0);
+    const Entry e(cpu, args);
+    return e.back(cpu, args, 0);
 }
 
 /* 0x45fca0, 0x45fcb0: nor does it do anything as it is shown or hidden. */
-void speechShown(App*, CPU& cpu)
+x86::reg32 speechShown(App*, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, e.eax);
+    const Entry e(cpu, args);
+    return e.back(cpu, args, e.eax);
 }
 
-void speechHidden(App*, CPU& cpu)
+x86::reg32 speechHidden(App*, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, e.eax);
+    const Entry e(cpu, args);
+    return e.back(cpu, args, e.eax);
 }
 
-void textDraw(App* app, CPU& cpu)
+x86::reg32 textDraw(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, textDrawn(app, cpu, e.esp, e.eax, regsOf(e)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, textDrawn(app, cpu, e.esp, e.eax, regsOf(e)));
 }
 
-void textUp(App* app, CPU& cpu)
+x86::reg32 textUp(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, textLaidOut(app, cpu, e.esp, e.eax, e.ebx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, textLaidOut(app, cpu, e.esp, e.eax, e.ebx));
 }
 
-void textShown(App* app, CPU& cpu)
+x86::reg32 textShown(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     textShowing(app, e.eax);
-    e.back(cpu, e.eax);
+    return e.back(cpu, args, e.eax);
 }
 
-void imageDraw(App* app, CPU& cpu)
+x86::reg32 imageDraw(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, imageDrawn(app, cpu, e.esp, e.eax, regsOf(e)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, imageDrawn(app, cpu, e.esp, e.eax, regsOf(e)));
 }
 
-void imageUp(App* app, CPU& cpu)
+x86::reg32 imageUp(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     imageLaidOut(app, e.eax);
-    e.back(cpu, e.eax);
+    return e.back(cpu, args, e.eax);
 }
 
-void imageShown(App* app, CPU& cpu)
+x86::reg32 imageShown(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, imageShowing(app, cpu, e.esp, e.eax, regsOf(e)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, imageShowing(app, cpu, e.esp, e.eax, regsOf(e)));
 }
 
-void pulseOn(App* app, CPU& cpu)
+x86::reg32 pulseOn(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, reg32(pulsed(app)));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, reg32(pulsed(app)));
 }
 
-void pulseColour(App* app, CPU& cpu)
+x86::reg32 pulseColour(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, pulseOf(app, int32_t(e.eax)));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, pulseOf(app, int32_t(e.eax)));
 }
 
-void buttonDraw(App* app, CPU& cpu)
+x86::reg32 buttonDraw(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, buttonDrawn(app, cpu, e.esp, e.eax, e.edx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, buttonDrawn(app, cpu, e.esp, e.eax, e.edx));
 }
 
-void buttonKey(App* app, CPU& cpu)
+x86::reg32 buttonKey(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, buttonKeyed(app, cpu, e.esp, e.eax, e.ebx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, buttonKeyed(app, cpu, e.esp, e.eax, e.ebx));
 }
 
-void layoutMenuItem(App* app, CPU& cpu)
+x86::reg32 layoutMenuItem(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, menuItemLaidOut(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, menuItemLaidOut(app, cpu, e.esp, e.eax));
 }
 
-void buttonShown(App* app, CPU& cpu)
+x86::reg32 buttonShown(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, buttonShowing(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, buttonShowing(app, cpu, e.esp, e.eax));
 }
 
-void cascadeLayoutClosed(App* app, CPU& cpu)
+x86::reg32 cascadeLayoutClosed(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     cascadeClosedBox(app, e.eax);
-    e.back(cpu, e.eax);
+    return e.back(cpu, args, e.eax);
 }
 
-void cascadeLineText(App* app, CPU& cpu)
+x86::reg32 cascadeLineText(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, cascadeLine(app, cpu, e.esp, e.eax, e.edx, e.ebx, e.ecx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, cascadeLine(app, cpu, e.esp, e.eax, e.edx, e.ebx, e.ecx));
 }
 
-void cascadeDraw(App* app, CPU& cpu)
+x86::reg32 cascadeDraw(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, cascadeDrawn(app, cpu, e.esp, e.eax, e.edx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, cascadeDrawn(app, cpu, e.esp, e.eax, e.edx));
 }
 
-void cascadePass(App* app, CPU& cpu)
+x86::reg32 cascadePass(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, cascadePassed(app, cpu, e.esp, e.eax, 0x42, 0x58, 0x5a, 0x56, 0x54, 0x60));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, cascadePassed(app, cpu, e.esp, e.eax, 0x42, 0x58, 0x5a, 0x56, 0x54, 0x60));
 }
 
-void cascadeShown(App* app, CPU& cpu)
+x86::reg32 cascadeShown(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, cascadeShowing(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, cascadeShowing(app, cpu, e.esp, e.eax));
 }
 
-void cascadeKey(App* app, CPU& cpu)
+x86::reg32 cascadeKey(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, cascadeKeyed(app, cpu, e.esp, e.eax, e.ebx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, cascadeKeyed(app, cpu, e.esp, e.eax, e.ebx));
 }
 
-void cascadeUp(App* app, CPU& cpu)
+x86::reg32 cascadeUp(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, cascadeLaidOut(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, cascadeLaidOut(app, cpu, e.esp, e.eax));
 }
 
-void checkboxDraw(App* app, CPU& cpu)
+x86::reg32 checkboxDraw(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, checkDrawn(app, cpu, e.esp, e.eax, e.edx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, checkDrawn(app, cpu, e.esp, e.eax, e.edx));
 }
 
-void checkboxKey(App* app, CPU& cpu)
+x86::reg32 checkboxKey(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, checkKeyed(app, cpu, e.esp, e.eax, e.ebx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, checkKeyed(app, cpu, e.esp, e.eax, e.ebx));
 }
 
 /* 0x462b20: a check box does nothing as it is shown. */
-void checkboxShown(App*, CPU& cpu)
+x86::reg32 checkboxShown(App*, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, e.eax);
+    const Entry e(cpu, args);
+    return e.back(cpu, args, e.eax);
 }
 
-void checkboxUp(App* app, CPU& cpu)
+x86::reg32 checkboxUp(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, checkLaidOut(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, checkLaidOut(app, cpu, e.esp, e.eax));
 }
 
-void boxOverlayDraw(App* app, CPU& cpu)
+x86::reg32 boxOverlayDraw(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, overlayDrawn(app, cpu, e.esp, e.eax, e.edx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, overlayDrawn(app, cpu, e.esp, e.eax, e.edx));
 }
 
-void selectListShown(App* app, CPU& cpu)
+x86::reg32 selectListShown(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, selectShowing(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, selectShowing(app, cpu, e.esp, e.eax));
 }
 
-void selectListHidden(App* app, CPU& cpu)
+x86::reg32 selectListHidden(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, selectHiding(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, selectHiding(app, cpu, e.esp, e.eax));
 }
 
-void selectListDraw(App* app, CPU& cpu)
+x86::reg32 selectListDraw(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, selectDrawn(app, cpu, e.esp, e.eax, e.edx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, selectDrawn(app, cpu, e.esp, e.eax, e.edx));
 }
 
 /* 0x462f90: a select list's pass: 0. */
-void selectListPass(App*, CPU& cpu)
+x86::reg32 selectListPass(App*, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, 0);
+    const Entry e(cpu, args);
+    return e.back(cpu, args, 0);
 }
 
-void selectListKey(App* app, CPU& cpu)
+x86::reg32 selectListKey(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, selectKeyed(app, cpu, e.esp, e.eax, e.ebx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, selectKeyed(app, cpu, e.esp, e.eax, e.ebx));
 }
 
-void selectListUp(App* app, CPU& cpu)
+x86::reg32 selectListUp(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     selectLaidOut(app, e.eax);
-    e.back(cpu, e.eax);
+    return e.back(cpu, args, e.eax);
 }
 
-void dropListDraw(App* app, CPU& cpu)
+x86::reg32 dropListDraw(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, dropDrawn(app, cpu, e.esp, e.eax, e.edx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, dropDrawn(app, cpu, e.esp, e.eax, e.edx));
 }
 
-void dropListPass(App* app, CPU& cpu)
+x86::reg32 dropListPass(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, cascadePassed(app, cpu, e.esp, e.eax, 0x40, 0x5c, 0x5e, 0x5a, 0x58, 0x64));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, cascadePassed(app, cpu, e.esp, e.eax, 0x40, 0x5c, 0x5e, 0x5a, 0x58, 0x64));
 }
 
-void dropListShown(App* app, CPU& cpu)
+x86::reg32 dropListShown(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, dropShowing(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, dropShowing(app, cpu, e.esp, e.eax));
 }
 
-void listKey(App* app, CPU& cpu)
+x86::reg32 listKey(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, listKeyed(app, cpu, e.esp, e.eax, e.ebx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, listKeyed(app, cpu, e.esp, e.eax, e.ebx));
 }
 
-void layoutList(App* app, CPU& cpu)
+x86::reg32 layoutList(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, dropLaidOut(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, dropLaidOut(app, cpu, e.esp, e.eax));
 }
 
 /* 0x4d6730 (stdcall: the angle, the scale). */
-void drawTurnedShape(App* app, CPU& cpu)
+x86::reg32 drawTurnedShape(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu,
+    const Entry e(cpu, args);
+    return e.finish(cpu, args,
              turnedShape(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx), int32_t(e.ebx), int32_t(e.ecx),
                          int32_t(e.arg(app, 0)), e.arg(app, 1)),
              8);
 }
 
 /* 0x4d88f0 (stdcall: the four corners' colours). */
-void drawColouredRectangle(App* app, CPU& cpu)
+x86::reg32 drawColouredRectangle(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     const reg32 colours[] = {e.arg(app, 0), e.arg(app, 1), e.arg(app, 2), e.arg(app, 3)};
-    e.finish(cpu, colouredRectangle(app, cpu, e.esp, regsOf(e), colours), 0x10);
+    return e.finish(cpu, args, colouredRectangle(app, cpu, e.esp, regsOf(e), colours), 0x10);
 }
 
 }  // namespace buttons

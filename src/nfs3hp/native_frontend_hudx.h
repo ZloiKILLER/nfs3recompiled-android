@@ -6,8 +6,8 @@
 
 /* native_frontend_hudx.cpp's typed functions (the 3D letters' looks, the HUD's records, panes,
  * surface and text), which other files call as C++ (guest::direct), and how the game's code calls
- * each by address (ByAddress, for the checks' stand-ins).  Each calls the game's other functions by
- * address on `cpu` and throws fe::Terminated when the game stopped in one, as Guest::call does; its
+ * each by address.  Each calls the game's other functions by
+ * address on `cpu` and throws fe::Terminated when the game stopped in one, as a call by address does; its
  * result is what the game's function leaves in eax. */
 namespace nfs3hp
 {
@@ -36,6 +36,8 @@ void clearRebuildFlag(App* app, CPU& cpu);
 reg32 toggleShown(App* app, CPU& cpu, reg32 view);
 // The game's 0x484450: the rear-view mirror on or off, in a race of one view (eax as it came otherwise).
 reg32 toggleRearView(App* app, CPU& cpu);
+// The same with the eax the game's function was entered with, which it leaves where it does nothing.
+reg32 toggleRearViewKeeping(App* app, CPU& cpu, reg32 eax);
 // The game's 0x485640: a view's pane, its elements and its band made afresh.
 reg32 rebuildView(App* app, CPU& cpu, reg32 view);
 // The game's 0x487340: a group of the HUD's rectangles empty.
@@ -65,211 +67,6 @@ reg32 characterDrop(App* app, CPU& cpu, reg32 character);
 
 namespace guest
 {
-
-template <>
-struct ByAddress<frontend::hudx::clearLights>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({}));
-    }
-};
-
-// The colours in eax, edx and ebx.
-template <>
-struct ByAddress<frontend::hudx::setFlat>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 first, x86::reg32 second,
-                           x86::reg32 third)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({ first, second, third }));
-    }
-};
-
-// The colour in eax, the direction in edx.
-template <>
-struct ByAddress<frontend::hudx::setDirectional>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 colour, x86::reg32 direction)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({ colour, direction }));
-    }
-};
-
-// In eax, edx, ebx and ecx.
-template <>
-struct ByAddress<frontend::hudx::addLight>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 first, x86::reg32 position,
-                           x86::reg32 third, x86::reg32 second)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({ first, position, third, second }));
-    }
-};
-
-// The texture in eax.
-template <>
-struct ByAddress<frontend::hudx::setTexture>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 texture)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({ texture }));
-    }
-};
-
-template <>
-struct ByAddress<frontend::hudx::clearRebuildFlag>
-{
-    template <x86::reg32 Address>
-    static void call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        fe::callByAddress(app, cpu, Address, fe::args({}));
-    }
-};
-
-// The view in eax, for each of those of one.
-template <>
-struct ByAddress<frontend::hudx::toggleShown>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 view)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({ view }));
-    }
-};
-
-template <>
-struct ByAddress<frontend::hudx::toggleRearView>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({}));
-    }
-};
-
-template <>
-struct ByAddress<frontend::hudx::rebuildView>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 view)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({ view }));
-    }
-};
-
-template <>
-struct ByAddress<frontend::hudx::groupClearCount>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 group)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({ group }));
-    }
-};
-
-template <>
-struct ByAddress<frontend::hudx::groupDropLast>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 group)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({ group }));
-    }
-};
-
-template <>
-struct ByAddress<frontend::hudx::refreshPane>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 view)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({ view }));
-    }
-};
-
-template <>
-struct ByAddress<frontend::hudx::stepZoom>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 step)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({ step }));
-    }
-};
-
-// x and y on the stack, popped; the length off the x87's stack.
-template <>
-struct ByAddress<frontend::hudx::vectorLength>
-{
-    template <x86::reg32 Address>
-    static double call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 x, x86::reg32 y)
-    {
-        fe::callByAddress(app, cpu, Address, fe::args({}, { x, y }));
-        return double(cpu.fpu.take());
-    }
-};
-
-// The surface in eax.
-template <>
-struct ByAddress<frontend::hudx::resetSurface>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 surface)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({ surface }));
-    }
-};
-
-// The surface in eax, the pairs in edx, where the first goes in ebx.
-template <>
-struct ByAddress<frontend::hudx::takeVertices>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 surface, x86::reg32 pairs,
-                           x86::reg32 first)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({ surface, pairs, first }));
-    }
-};
-
-// The text in eax, x in edx, y in ebx.
-template <>
-struct ByAddress<frontend::hudx::drawTextToRightEdge>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 text, x86::reg32 right,
-                           x86::reg32 y)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({ text, right, y }));
-    }
-};
-
-template <>
-struct ByAddress<frontend::hudx::beginFontSurfaces>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({}));
-    }
-};
-
-// The character in eax.
-template <>
-struct ByAddress<frontend::hudx::characterDrop>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 character)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({ character }));
-    }
-};
 
 }  // namespace guest
 }  // namespace nfs3hp

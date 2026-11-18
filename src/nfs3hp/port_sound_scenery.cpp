@@ -1,5 +1,10 @@
 #include "game_settings.h"
+#include "native_trackdata.h"
+#include "native_ea_support.h"
 #include "port_snd_3d.h"
+#include "port_snd_voices.h"
+#include "port_sound_calls.h"
+#include "port_sound_effects.h"
 
 #include <cstdint>
 
@@ -30,7 +35,7 @@ namespace
 {
 
 #pragma pack(push, 1)
-// A repeating call (0x570f70 on, one a player).
+// A repeating call: 0x570f70 on, one a player.
 struct Repeat
 {
     int32_t times;        // left
@@ -65,8 +70,11 @@ constexpr Var<int32_t> kHornSpot{0x552d84}, kCheerSpot{0x552d88}, kBellLap{0x552
 constexpr Records<Repeat> kRepeats{0x570f70};
 constexpr reg32 kTrainPlace = 0x412988;
 constexpr Var<double> kTrainUnit{0x536ba8};
-// What it calls of the game's.
+// What it calls: the trace (compiled out), the tunnel's test (by address: the function may leave
+// the eax it was called with, which its typed function's call does not set), the sound rewrites (as C++).
 constexpr reg32 kTrace = 0x42d510, kInTunnel = 0x420bf0, kZone = 0x415050;
+constexpr reg32 kPlayEffect = 0x4182b0, kSlotPlay = 0x417080, kSlotStop = 0x416f60, kSoundFade = 0x4e9420;
+constexpr reg32 kSoundVolume = 0x4e95fc;
 
 // The pans: a side, and what the code makes of the heading.
 constexpr reg32 kLeft = 0x3fff, kRight = 0xc000;
@@ -81,13 +89,13 @@ struct Roll
     reg32 quotient, remainder;
 };
 
-Result sceneryIn(App* app, CPU& cpu, reg32 entryEsp, reg32 entryEsi, reg32 entryEdi, Arithmetic arithmetic,
+Result sceneryIn(App* app, CPU& cpu, reg32 entryEsp, Arithmetic arithmetic,
                  reg32 car, reg32 heading)
 {
     // Five pushes, and a frame of 0x44.
     const reg32 frame = entryEsp - 5 * 4, below = frame - 0x44;
     const HeldEbp ebp(cpu, frame);
-    Calls game{app, cpu, below, entryEsi, entryEdi};
+    Calls game{app, cpu, below};
     const auto player = [&] { return guest::at(app, car + 0x1f0); };
     const auto cell = [&] { return signedAt(app, car + 0x1c); };
     const auto track = [&] { return std::int32_t(gameSettings(app).track); };
@@ -101,28 +109,30 @@ Result sceneryIn(App* app, CPU& cpu, reg32 entryEsp, reg32 entryEsi, reg32 entry
 
     if (gameSettings(app).viewedPlayer != gameSettings(app).localPlayer)
     {
-        reg32 r;
-        if (!game(kTrace, {car, reg32(gameSettings(app).viewedPlayer)}, {0x64, 2, 0x536b98}, r))
+        // The game's trace, compiled out (its words, 0x64, 2 and the text, the caller's to push): nothing, eax
+        // left as the code has it, the car.
+        game.atCall();
+        guest::direct<kTrace, ea::traceOff>(app, cpu);
+        if (cpu.terminate)
             return {};
-        return int32_t(r);
+        return int32_t(car);
     }
     // In a tunnel (0x420bf0's, of the car's place), the rain (the same with the
     // player's weather, 0x564288).
     const reg32 x = guest::at(app, car + 0x98), y = guest::at(app, car + 0x9c), z = guest::at(app, car + 0xa0);
-    game.edi = x;
-    game.esi = y;
-    reg32 tunnel;
-    // (A stand-in of the checks may give back the eax it was called with: it is
-    // the code's here, the car, then the y.)
-    if (!game(kInTunnel, {car, reg32(gameSettings(app).viewedPlayer), z, reg32(cell())}, {x, y, z, reg32(cell())}, tunnel))
+    // (The place's x, y and z are the car's three words from +0x98.)
+    game.atCall();
+    const std::optional<reg32> inTunnel = guest::direct<kInTunnel, trackdata::placeInTunnel>(app, cpu, car + 0x98, reg32(cell()));
+    if (!inTunnel)
         return {};
-    game.edi = tunnel;
+    const reg32 tunnel = *inTunnel;
     const reg32 weather = gameSettings(app).playMode == 1 ? player() : 0;
-    game.esi = weather;
     const reg32 rain = guest::at(app, kWeather.address(int32_t(weather)));
-    reg32 echo;
-    if (!game(kInTunnel, {y, rain, z, x}, {x, y, z, reg32(cell())}, echo))
+    game.atCall();
+    const std::optional<reg32> inEcho = guest::direct<kInTunnel, trackdata::placeInTunnel>(app, cpu, car + 0x98, reg32(cell()));
+    if (!inEcho)
         return {};
+    const reg32 echo = *inEcho;
     if (rain != 0)
     {
         int32_t level = int32_t(rain);
@@ -134,15 +144,19 @@ Result sceneryIn(App* app, CPU& cpu, reg32 entryEsp, reg32 entryEsi, reg32 entry
         {
             const reg32 pan = gameSettings(app).playMode == 1 ? (weather != 0 ? kRight : kLeft) : 0;
             const int32_t volume = idiv(imul(level, 127), 100);
-            reg32 sound;
-            if (!game(playEffect, {kRainBank(app), 4, pan, reg32(volume)}, {0x40}, sound))
+            game.atCall();
+            const Result sound =
+                guest::direct<kPlayEffect, bankEffect>(app, cpu, below - 8, kRainBank(app), 4, volume, pan, uint8_t(0x40));
+            if (!sound)
                 return {};
-            guest::put(app, kRainSound.address(int32_t(weather)), sound);
+            guest::put(app, kRainSound.address(int32_t(weather)), reg32(*sound));
             app->getMemory<uint8_t>(kRainOn.address(int32_t(weather))) = 1;
         }
         else if (rainNow == 0 && on != 0)
         {
-            if (!game(SNDautovol, {guest::at(app, kRainSound.address(int32_t(weather))), 5, 0xffffffff}))
+            game.atCall();
+            if (!guest::direct<kSoundFade, fadeSound>(app, cpu, below - 4, guest::at(app, kRainSound.address(int32_t(weather))),
+                                                      5, -1))
                 return {};
             app->getMemory<uint8_t>(kRainOn.address(int32_t(weather))) = 0;
         }
@@ -151,18 +165,23 @@ Result sceneryIn(App* app, CPU& cpu, reg32 entryEsp, reg32 entryEsi, reg32 entry
             // Louder with the effects' volume and the rain.
             const int32_t loudness = imul(level, imul(std::int32_t(gameSettings(app).effectsVolume), 63));
             const int32_t volume = idiv(loudness, 100) >> 7;
-            if (!game(SNDvol, {guest::at(app, kRainSound.address(int32_t(weather))), reg32(volume)}))
+            game.atCall();
+            if (!guest::direct<kSoundVolume, setVolume>(app, cpu, below - 4,
+                                                        guest::at(app, kRainSound.address(int32_t(weather))), volume))
                 return {};
         }
         if (echo != 0 || kRainAlways(app) == 0)
-            if (!game(SNDvol, {guest::at(app, kRainSound.address(int32_t(weather))), 0}))
+        {
+            game.atCall();
+            if (!guest::direct<kSoundVolume, setVolume>(app, cpu, below - 4,
+                                                        guest::at(app, kRainSound.address(int32_t(weather))), 0))
                 return {};
+        }
     }
     // The stretch's slot; the player's side in the split screen.
     const bool split = gameSettings(app).playMode == 1;
     const reg32 sidePan = player() != 0 ? kRight : kLeft;
     const reg32 slot = split && player() != 0 ? 0x24 : 0x1a;
-    game.esi = slot;
     // The pans the effects take: a side, the heading less or more a quarter,
     // or at random.
     const auto pickedPan = [&] { return split ? sidePan : random() % 0xffff; };
@@ -180,23 +199,35 @@ Result sceneryIn(App* app, CPU& cpu, reg32 entryEsp, reg32 entryEsi, reg32 entry
         return (heading + (mirror == mirrorFirst ? 0xc000 : 0x3fff)) & 0xffff;
     };
     const auto play = [&](reg32 effect, reg32 pitch, reg32 pan, reg32 volume, reg32& result) {
-        return game(playEffect, {kAmbience(app), effect, pan, volume}, {pitch}, result);
+        game.atCall();
+        const Result r = guest::direct<kPlayEffect, bankEffect>(app, cpu, below - 8, kAmbience(app), int32_t(effect),
+                                                                int32_t(volume), pan, uint8_t(pitch));
+        if (!r)
+            return false;
+        result = reg32(*r);
+        return true;
     };
     const auto playOnly = [&](reg32 effect, reg32 pitch, reg32 pan, reg32 volume) {
         reg32 ignored;
         return play(effect, pitch, pan, volume, ignored);
     };
+    const auto slotStop = [&](reg32 s) {
+        game.atCall();
+        return bool(guest::direct<kSlotStop, slotStopped>(app, cpu, below - 4, int32_t(s)));
+    };
     // The slot's sound played: the stretch's volume at its slot.
     const auto playSlot = [&](reg32 effect, reg32 pan) {
         const reg32 volume = guest::at(app, kStretchVolume.address(int32_t(player())));
-        return game(slotPlay, {slot, effect, volume, volume}, {pan});
+        game.atCall();
+        return bool(guest::direct<kSlotPlay, slotPlayed>(app, cpu, below - 8, int32_t(slot), int32_t(effect),
+                                                         int32_t(volume), int32_t(volume), pan));
     };
     // A stretch entered: its sound started (`effect`), the old zone's stopped.
     const auto stretchStart = [&](reg32 effect, bool slowPan) {
         const uint8_t zoned = bits(kInStretch.address(int32_t(player())));
         if (bits(kZoneSound.address(int32_t(player()))) != 0)
         {
-            if (!game(slotStop, {slot}))
+            if (!slotStop(slot))
                 return false;
             app->getMemory<uint8_t>(kZoneSound.address(int32_t(player()))) = zoned;
         }
@@ -245,7 +276,9 @@ Result sceneryIn(App* app, CPU& cpu, reg32 entryEsp, reg32 entryEsi, reg32 entry
         const reg32 effect = track() == 3 || track() == 7 ? 6 : track() == 4 ? 3 : 8;
         if (tunnel != 0)
         {
-            if (!game(SNDautovol, {reg32(kSlots(app, int32_t(slot)).sound), 0x32, 0}))
+            game.atCall();
+            if (!guest::direct<kSoundFade, fadeSound>(app, cpu, below - 4, reg32(kSlots(app, int32_t(slot)).sound), 0x32,
+                                                      0))
                 return {};
             guest::put(app, kStretchVolume.address(int32_t(player())), 0);
             guest::put(app, kStretchTarget.address(int32_t(player())), 0);
@@ -286,20 +319,21 @@ Result sceneryIn(App* app, CPU& cpu, reg32 entryEsp, reg32 entryEsi, reg32 entry
     }
     else
     {
-        reg32 zone;
-        if (!game(kZone, {slot, car, heading, reg32(kZoneTable(app, track()))}, {}, zone))
+        game.atCall();
+        const Result zone = guest::direct<kZone, zoneSoundPlayed>(app, cpu, below - 4, int32_t(slot), car,
+                                                                  reg32(kZoneTable(app, track())), heading);
+        if (!zone)
             return {};
-        if (zone != 0)
+        if (*zone != 0)
             app->getMemory<uint8_t>(kZoneSound.address(int32_t(player()))) = 1;
         else if (bits(kZoneSound.address(int32_t(player()))) != 0)
         {
-            if (!game(slotStop, {slot}))
+            if (!slotStop(slot))
                 return {};
             app->getMemory<uint8_t>(kZoneSound.address(int32_t(player()))) = 0;
         }
     }
     // The scenery's effects, now and then.  Track 8: two kinds of bird.
-    game.esi = reg32(cell());
     if (inside(0x3d4, 0x45b) && track() == 8)
     {
         if (roll(0x1f40).remainder > 0x1f27)
@@ -314,7 +348,6 @@ Result sceneryIn(App* app, CPU& cpu, reg32 entryEsp, reg32 entryEsi, reg32 entry
         {
             const reg32 pitch = (random() & 0x1f) + 0x40;
             const reg32 volume = roll(0x28).remainder + 0x32;
-            game.esi = split ? 1 : 0;
             const reg32 pan = pickedPan();
             if (!playOnly(9, pitch, pan, volume))
                 return {};
@@ -344,12 +377,10 @@ Result sceneryIn(App* app, CPU& cpu, reg32 entryEsp, reg32 entryEsi, reg32 entry
         }
     }
     // Track 6: a repeating call.
-    game.esi = reg32(cell());
     if (inside(0x2f0, 0x3de) && track() == 6)
     {
         Repeat& call = kRepeats(app, int32_t(player()));
         const reg32 callAt = kRepeats.address(int32_t(player()));
-        game.esi = callAt;
         if (call.times != 0)
         {
             const uint16_t ticks = uint16_t(call.ticks - 1);
@@ -403,8 +434,6 @@ Result sceneryIn(App* app, CPU& cpu, reg32 entryEsp, reg32 entryEsi, reg32 entry
                 {
                     const bool mirror = gameSettings(app).mirrored != 0;
                     pan = ((random() & 0x3fff) + (mirror ? 0x2000 : 0xc000) + heading) & 0xffff;
-                    if (mirror)
-                        game.edi = heading;
                 }
                 const reg32 pitch = random() & 0x7f;
                 const reg32 volume = (random() & 0x3f) + 0x40;
@@ -416,7 +445,6 @@ Result sceneryIn(App* app, CPU& cpu, reg32 entryEsp, reg32 entryEsi, reg32 entry
     // Tracks 3 and 7: now and then.
     if (inside(0x28c, 0x3b1))
     {
-        game.esi = reg32(track());
         if (track() == 3 || track() == 7)
         {
             if (roll(0xfa0).remainder > 0xf96)
@@ -435,7 +463,6 @@ Result sceneryIn(App* app, CPU& cpu, reg32 entryEsp, reg32 entryEsi, reg32 entry
     {
         Repeat& call = kRepeats(app, int32_t(player()));
         call.times = 0x140;
-        game.edi = split ? 1 : 0;
         call.ticks = 0x10;
         if (!playOnly(0xa, 0x40, split ? sidePan : 0, 0x7f))
             return {};
@@ -444,15 +471,12 @@ Result sceneryIn(App* app, CPU& cpu, reg32 entryEsp, reg32 entryEsi, reg32 entry
     if (inside(0x12c, 0x1f4) && track() == 4)
     {
         Repeat& call = kRepeats(app, int32_t(player()));
-        game.esi = reg32(call.times);
         if (call.times != 0)
         {
             const uint16_t ticks = call.ticks;
-            game.esi = (reg32(call.times) & 0xffff0000) | ticks;
             if (ticks != 0)
             {
-                game.edi = game.esi - 1;
-                call.ticks = uint16_t(game.edi);
+                call.ticks = uint16_t(ticks - 1);
             }
             else
             {
@@ -461,8 +485,6 @@ Result sceneryIn(App* app, CPU& cpu, reg32 entryEsp, reg32 entryEsi, reg32 entry
                 if (int32_t(rolled.remainder) > threshold)
                 {
                     // Its place: 0x412988's, scaled.
-                    game.edi = frame - 0x38 + 0xc;
-                    game.esi = kTrainPlace + 0xc;
                     const double unit = kTrainUnit(app);
                     const Vec3 place = withArithmetic(arithmetic, [&](auto real) {
                         using Real = decltype(real);
@@ -485,7 +507,6 @@ Result sceneryIn(App* app, CPU& cpu, reg32 entryEsp, reg32 entryEsi, reg32 entry
                         pan = reg32(*angle);
                     }
                     const reg32 effect = (random() & 1) + 6;
-                    game.esi = effect;
                     if (!playOnly(effect, 0x40, pan, reg32(volume)))
                         return {};
                 }
@@ -505,7 +526,6 @@ Result sceneryIn(App* app, CPU& cpu, reg32 entryEsp, reg32 entryEsi, reg32 entry
         const reg32 volume = roll(0x4b).remainder + 5;
         if (kind == 0)
         {
-            game.esi = split ? 1 : 0;
             const reg32 pan = pickedPan();
             if (!playOnly(5, 0x40, pan, volume))
                 return {};
@@ -514,7 +534,6 @@ Result sceneryIn(App* app, CPU& cpu, reg32 entryEsp, reg32 entryEsi, reg32 entry
         {
             const reg32 pan = pickedPan();
             const reg32 effect = (random() & 1) + 8;
-            game.esi = kAmbience(app);
             if (!playOnly(effect, 0x40, pan, volume))
                 return {};
         }
@@ -529,7 +548,6 @@ Result sceneryIn(App* app, CPU& cpu, reg32 entryEsp, reg32 entryEsi, reg32 entry
                 const reg32 pitch = random() & 0x7f;
                 const reg32 volume = roll(0x64).remainder + 0x1c;
                 const reg32 pan = pickedPan();
-                game.esi = 3;
                 const reg32 effect = roll(3).remainder + 0xb;
                 if (!playOnly(effect, pitch, pan, volume))
                     return {};
@@ -558,18 +576,15 @@ Result sceneryIn(App* app, CPU& cpu, reg32 entryEsp, reg32 entryEsi, reg32 entry
     // Tracks 1 and 5, braking at a spot: a call.
     if (cell() == 0xa6 || cell() == 0xa7)
     {
-        game.edi = reg32(track());
         if ((track() == 1 || track() == 5) && guest::at(app, car + 0x18c) == 0xa &&
             app->getMemory<uint16_t>(car + 0x74) != 0)
             if (!playOnly(3, 0x40, split ? sidePan : 0, 0x7f))
                 return {};
     }
     // Track 2: a call repeating, louder each time; or a single one.
-    game.esi = reg32(cell());
     if (inside(0x398, 0x42a) && track() == 2)
     {
         Repeat& call = kRepeats(app, int32_t(player()));
-        game.esi = kRepeats.address(int32_t(player()));
         if (call.times != 0)
         {
             const uint16_t ticks = uint16_t(call.ticks - 1);
@@ -618,33 +633,30 @@ Result sceneryIn(App* app, CPU& cpu, reg32 entryEsp, reg32 entryEsi, reg32 entry
             if (roll(0x1388).remainder > 0x1374)
             {
                 const reg32 volume = roll(0x25).remainder + 0x5a;
-                game.edi = split ? 1 : 0;
                 const reg32 pan = pickedPan();
                 const reg32 effect = (random() & 1) + 0xa;
-                game.esi = effect;
                 if (!playOnly(effect, 0x40, pan, volume))
                     return {};
             }
         }
     }
     // Track 1: three more, by stretch.
-    const auto rare = [&](bool in, reg32 limit, reg32 effect, bool useEdi) {
+    const auto rare = [&](bool in, reg32 limit, reg32 effect) {
         if (!in || track() != 1)
             return true;
         if (roll(0x1388).remainder <= limit)
             return true;
-        (useEdi ? game.edi : game.esi) = split ? 1 : 0;
         const reg32 pan = pickedPan();
         return playOnly(effect, 0x40, pan, 0x7f);
     };
     {
         const int32_t c = cell();
-        if (!rare(c > 0xc8 && c < 0x13b, 0x1356, 0x12, false))
+        if (!rare(c > 0xc8 && c < 0x13b, 0x1356, 0x12))
             return {};
     }
     {
         const int32_t c = cell();
-        if (!rare((c > 0x168 && c < 0x1bd) || (c > 0x355 && c < 0x3b6), 0x137e, 0x10, true))
+        if (!rare((c > 0x168 && c < 0x1bd) || (c > 0x355 && c < 0x3b6), 0x137e, 0x10))
             return {};
     }
     // Track 1, at the start, on lap 3: a cheer.
@@ -671,18 +683,15 @@ Result sceneryIn(App* app, CPU& cpu, reg32 entryEsp, reg32 entryEsi, reg32 entry
     if (cell() == 0x161 && track() == 4 && guest::at(app, car + 0x638) == 2 && kCheerSpot(app) == 0)
     {
         const reg32 pitch = random() & 0x3f;
-        game.edi = split ? 1 : 0;
         if (!playOnly(0xf, pitch, split ? sidePan : 0, 0x7f))
             return {};
         kCheerSpot.set(app, 1);
     }
     if (cell() == 0x189 && guest::at(app, car + 0x638) == 0xb && track() == 4)
     {
-        game.esi = 0;
         kCheerSpot.set(app, 0);
     }
     // Track 0: two more.
-    game.edi = reg32(cell());
     if (cell() > 0x41 && cell() < 0x55 && track() == 0)
     {
         if (roll(0x1388).remainder > 0x137e)
@@ -692,7 +701,6 @@ Result sceneryIn(App* app, CPU& cpu, reg32 entryEsp, reg32 entryEsi, reg32 entry
                 return {};
         }
     }
-    game.edi = reg32(cell());
     if (cell() > 0x3a7 && cell() < 0x3ac && signedAt(app, car + 0x638) > 0xa && track() == 0)
     {
         if (roll(0x1388).remainder > 0x1374)
@@ -712,11 +720,9 @@ Result sceneryIn(App* app, CPU& cpu, reg32 entryEsp, reg32 entryEsi, reg32 entry
     if (ends() && track() == 3)
     {
         Repeat& call = kRepeats(app, int32_t(player()));
-        game.esi = kRepeats.address(int32_t(player()));
         if (call.times != 0)
         {
             const uint16_t ticks = uint16_t(call.ticks - 1);
-            game.edi = (game.edi & 0xffff0000) | ticks;
             call.ticks = ticks;
             if (ticks == 0)
             {
@@ -751,7 +757,6 @@ Result sceneryIn(App* app, CPU& cpu, reg32 entryEsp, reg32 entryEsi, reg32 entry
         {
             const reg32 volume = roll(0x2d).remainder + 0x50;
             const reg32 pan = pickedPan();
-            game.esi = 3;
             const reg32 effect = roll(3).remainder + 0x11;
             if (!playOnly(effect, 0x40, pan, volume))
                 return {};
@@ -763,7 +768,6 @@ Result sceneryIn(App* app, CPU& cpu, reg32 entryEsp, reg32 entryEsi, reg32 entry
     {
         if (roll(0x1388).remainder > 0x1356 && kBellState(app) == 0)
         {
-            game.edi = reg32(kBellLap(app));
             if (kBellLap(app) <= signedAt(app, car + 0x204))
             {
                 const reg32 pan = headingPan(false);
@@ -788,10 +792,15 @@ Result sceneryIn(App* app, CPU& cpu, reg32 entryEsp, reg32 entryEsi, reg32 entry
 
 }  // namespace
 
-Result scenerySoundsFor(App* app, CPU& cpu, reg32 esp, reg32 esi, reg32 edi, Arithmetic a, reg32 car, reg32 heading)
+}  // namespace world
+
+Result scenerySoundsOf(App* app, CPU& cpu, reg32 esp, world::Arithmetic a, reg32 car, reg32 heading)
 {
-    return sceneryIn(app, cpu, esp, esi, edi, a, car, heading);
+    return world::sceneryIn(app, cpu, esp, a, car, heading);
 }
+
+namespace world
+{
 
 }  // namespace world
 
@@ -799,10 +808,10 @@ using namespace world;
 
 /* 0x415210: car eax's scenery sounds, edx its heading (a pan's).  eax as the
  * code leaves it. */
-void scenerySounds(App* app, CPU& cpu)
+x86::reg32 scenerySounds(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, scenerySoundsFor(app, cpu, e.esp, e.esi, e.edi, arithmeticOf(cpu), e.eax, e.edx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, scenerySoundsOf(app, cpu, e.esp, arithmeticOf(cpu.fenv.rounding), e.eax, e.edx));
 }
 
 }  // namespace port

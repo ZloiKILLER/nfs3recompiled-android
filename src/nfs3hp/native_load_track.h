@@ -4,7 +4,7 @@
 #include "native_guest.h"
 
 /* native_load_track.cpp's typed functions that other files call as C++ (guest::direct), and how
- * the game's code calls each by address (ByAddress, for the check's stand-ins).  Each may call the
+ * the game's code calls each by address.  Each may call the
  * game's other functions by address on `cpu`, and is false or nullopt when the game stopped in
  * one. */
 namespace nfs3hp
@@ -49,104 +49,16 @@ bool writeGhostTo(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 stream, 
 // The game's 0x477b00: the ghost read from the handle `handle`.
 bool readGhostFrom(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 handle);
 
+// The game's 0x41dbc0: the track's textures loaded; false when the game stopped.
+bool trackTexturesLoaded(win32::WinApplication* app, x86::CPU& cpu);
+// The game's 0x477a90: the race's ghost saved; false when the game stopped.
+bool ghostSaved(win32::WinApplication* app, x86::CPU& cpu);
+// The game's 0x478340: the horizon of the track `track` read; what the code leaves in eax.
+std::optional<x86::reg32> horizonRead(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 track);
+// The game's 0x4dcd20: the weather's shapes loaded; false when the game stopped.
+bool weatherLoaded(win32::WinApplication* app, x86::CPU& cpu);
+
 }  // namespace load
-
-namespace guest
-{
-
-// Eax the answer.
-template <>
-struct ByAddress<load::loadSpeeds>
-{
-    template <x86::reg32 Address>
-    static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        return watcomEax(app, cpu, Address, {});
-    }
-};
-
-template <>
-struct ByAddress<load::clearCameras>
-{
-    template <x86::reg32 Address>
-    static bool call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        return watcom(app, cpu, Address, {});
-    }
-};
-
-// Those of one argument in eax, eax the answer.
-struct TrackOneArgument
-{
-    template <x86::reg32 Address>
-    static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 argument)
-    {
-        return watcomEax(app, cpu, Address, {argument});
-    }
-};
-
-template <>
-struct ByAddress<load::loadCameras> : TrackOneArgument
-{
-};
-
-template <>
-struct ByAddress<load::openCache> : TrackOneArgument
-{
-};
-
-template <>
-struct ByAddress<load::trackFile> : TrackOneArgument
-{
-};
-
-// The cache in eax, the name in edx; eax the node.
-template <>
-struct ByAddress<load::findCached>
-{
-    template <x86::reg32 Address>
-    static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 cache,
-                                          x86::reg32 name)
-    {
-        return watcomEax(app, cpu, Address, {cache, name});
-    }
-};
-
-// The cache in eax, the size's address in edx; eax the buffer.
-template <>
-struct ByAddress<load::packedCache>
-{
-    template <x86::reg32 Address>
-    static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 cache,
-                                          x86::reg32 sizeTo)
-    {
-        return watcomEax(app, cpu, Address, {cache, sizeTo});
-    }
-};
-
-// The stream in eax, the offset in edx.
-template <>
-struct ByAddress<load::writeGhostTo>
-{
-    template <x86::reg32 Address>
-    static bool call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 stream, x86::reg32 offset)
-    {
-        return watcom(app, cpu, Address, {stream, offset});
-    }
-};
-
-// The handle in eax.
-template <>
-struct ByAddress<load::readGhostFrom>
-{
-    template <x86::reg32 Address>
-    static bool call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 handle)
-    {
-        return watcom(app, cpu, Address, {handle});
-    }
-};
-
-}  // namespace guest
 }  // namespace nfs3hp
 
 #endif

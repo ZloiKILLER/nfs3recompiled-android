@@ -38,8 +38,7 @@ public:
     static MemMap* findBlock(x86::reg32 memIndex);
 
     /* Every range of guest addresses the game can write, as (start, size):
-     * the image's sections, then each run of allocated blocks.  For
-     * NFS_NATIVE_CHECK, which compares all of it. */
+     * the image's sections, then each run of allocated blocks. */
     static void usedRanges(std::vector<std::pair<x86::reg32, x86::reg32>>& ranges);
     /* The allocated block an address lies in, as (start, size); (0, 0) when
      * none does, a section's address included. */

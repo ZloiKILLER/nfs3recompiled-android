@@ -1,4 +1,6 @@
 #include "native_frontend_tail.h"
+#include "native_collide.h"
+#include "native_trackdata.h"
 #include "native_game.h"
 #include "native_carstate.h"
 #include "native_ea_memory.h"
@@ -16,6 +18,7 @@
 #include "host_threads.h"
 #include "port_snd_stream_calls.h"
 #include "port_sound_effects.h"
+#include "native_render.h"
 #include <nfs3hp.h>
 #include <fpu.h>
 #include <lib/winapp.h>
@@ -23,8 +26,40 @@
 #include <cstdint>
 #include <cstring>
 #include <optional>
+#include "native_guest.h"
 
-/* The last of the game's own logic that was still generated, decompiled:
+namespace nfs3hp
+{
+namespace
+{
+
+/* A call through a pointer or to a function of the game's that has no typed core: Watcom's register
+ * arguments (eax, edx, ebx, ecx in turn) and the stack words as `arguments` have them, through
+ * guest::pointerCall; its eax, and Terminated when the game stopped in it. */
+x86::reg32 callAt(fe::Guest& guest, x86::reg32 target, const fe::Arguments& arguments = fe::Arguments())
+{
+    x86::CPU& cpu = guest.cpu();
+    x86::Args registers;
+    x86::reg32* const into[4] = { &registers.eax, &registers.edx, &registers.ebx, &registers.ecx };
+    for (std::size_t i = 0; i < arguments.registerCount; ++i)
+        *into[i] = arguments.registers[i];
+    const x86::reg32 esp = cpu.esp;
+    for (std::size_t i = arguments.stackCount; i-- > 0;)
+    {
+        cpu.esp -= 4;
+        guest.setDword(cpu.esp, arguments.stack[i]);
+    }
+    const std::optional<x86::reg32> result = guest::pointerCall(guest.app(), cpu, target, registers);
+    if (!result)
+        throw fe::Terminated();
+    cpu.esp = esp;
+    return *result;
+}
+
+}  // namespace
+}  // namespace nfs3hp
+
+/* The last of the game's own logic, decompiled:
  *
  *   a frame        sub_4c48d0: a tick of the race: the countdown's four steps, the task
  *                  lists, the standings (sub_4be3a0 runs a list, sub_4be240 frees a block);
@@ -41,13 +76,13 @@
  *
  * The weather's take the race's random numbers, so every sum is the x87's in the
  * original's order: each fp:: call is an instruction's, its operands in the order the
- * generated code has them, a value that went through a float in memory goes through a
+ * game's code has them, a value that went through a float in memory goes through a
  * float here.  All the game's state stays in guest memory.  What is handed to the game
- * by address lives in the frame, where the generated function had it.
+ * by address lives in the frame, where the game's function had it.
  *
  * Plan step 5: each function a typed core in frontend::tail (native_frontend_tail.h), in a frame
  * of its own where it calls anything (fe::Frame: what it calls runs at the stack addresses it did),
- * and an adapter under the game's name for the calls by address.  A core of this file calls another
+ * and a thunk under the game's name for the calls by address.  A core of this file calls another
  * as C++ (guest::direct), and the typed cores of other files too (fe::direct); the rest of the game
  * still by address. */
 #if defined(__clang__)
@@ -101,7 +136,7 @@ Float doubleAt(const Guest& guest, reg32 address)
     return Float(value);
 }
 
-/* Another thread's turn with the game, where the generated code offers it. */
+/* Another thread's turn with the game, where the game's code offers it. */
 void safepoint(win32::WinApplication* app, x86::CPU& cpu)
 {
     if (app->contextWanted())
@@ -119,8 +154,6 @@ constexpr reg32 kRaceSoundTick = 0x411410;
 // with the eax it leaves.
 constexpr reg32 kAddVectors = 0x4dffb0;
 constexpr reg32 kCarFacingWay = 0x420d60;      // eax a view: nonzero when its car drives against the track
-constexpr reg32 kDrawStreaks = 0x4de700;       // eax a view, edx how many, ebx how many were seen goes there, esi the list
-constexpr reg32 kDrawFlakes = 0x4de070;        // eax a view, edx how many, esi the list
 
 // ---------------------------------------------------------------------------
 // The race's data
@@ -160,7 +193,6 @@ void countdownStep(Guest& guest, x86::CPU& cpu, reg32 effect, std::uint8_t step,
                                            std::uint8_t(kCountdownPan));
     guest.setByte(kCountdownStep, step);
     guest.setDword(kSelectedLook, 3);
-    cpu.ebx = reg32(-1);  // the game's code hands it -1 in ebx too, which it sets before it reads it
     fe::direct<0x477170, frontend::hudx::setDirectional>(guest.app(), cpu, colour, guest.dword(kCountdownText));
 }
 
@@ -204,7 +236,7 @@ x86::reg32 frontend::tail::raceFrame(App* app, CPU& cpu)
                 countdownStep(guest, cpu, 0, 3, kColourThree);
         }
     }
-    guest.call(kClearCarList);
+    fe::direct<kClearCarList, collide::carListCleared>(guest.app(), guest.cpu());
     if ((guest.byte(kClock) & 1) == 0)
     {
         fe::direct<0x4e7630, port::stream::runDueTasks>(app, cpu, cpu.esp - 4, reg32(0));
@@ -217,7 +249,7 @@ x86::reg32 frontend::tail::raceFrame(App* app, CPU& cpu)
     // What the last call leaves in eax: the sound's, or the standings' on the odd ticks.
     const reg32 standings = fe::direct<0x4cde00, frontend::loopb::standingsUpdate>(app, cpu);
     if ((guest.byte(kClock) & 1) == 0)
-        return guest.call(kRaceSoundTick);
+        return callAt(guest, kRaceSoundTick);
     return standings;
 }
 
@@ -249,7 +281,7 @@ x86::reg32 frontend::tail::runTaskList(App* app, CPU& cpu, reg32 list)
         eax = task;
         const reg32 function = guest.dword(task + kTaskFunction);
         if (function != 0)
-            eax = guest.call(function, args({ guest.dword(task + kTaskArgument), i, task, list }));
+            eax = callAt(guest, function, args({ guest.dword(task + kTaskArgument), i, task, list }));
     }
 }
 
@@ -263,8 +295,7 @@ namespace
 constexpr reg32 kEnterCriticalSection = 0x5344b8, kLeaveCriticalSection = 0x534588;  // import slots
 constexpr reg32 kQueueLock = 0x560114;
 
-/* A function of Windows', its words handed: the port's own, called as C++ (native_windows.h); in
- * the check through its import's slot.  Terminated when the game stopped in it, as Guest::call. */
+/* A function of Windows', its words handed: the port's own, called as C++ (native_windows.h).  Terminated when the game stopped in it, as Guest::call. */
 template <reg32 Slot, auto Function, typename... Words>
 reg32 windows(Guest& guest, x86::CPU& cpu, Words... words)
 {
@@ -284,10 +315,9 @@ x86::reg32 frontend::tail::queuesClear(App* app, CPU& cpu)
     windows<kEnterCriticalSection, &host::enterLock>(guest, cpu, guest.dword(kQueueLock));
     fe::direct<kFillZero, ea::clearBytes>(guest.app(), guest.cpu(), 0x7dd070, 0xa0);
     fe::direct<kFillZero, ea::clearBytes>(guest.app(), guest.cpu(), 0x7dd010, 0x60);
-    guest.call(kFillZero, args({ 0x7dd2a0, 0x8c }));
-    guest.call(kFillZero, args({ 0x7dd110, 0x190 }));
-    windows<kLeaveCriticalSection, &host::leaveLock>(guest, cpu, guest.dword(kQueueLock));
-    return guest.eax();
+    fe::direct<kFillZero, ea::clearBytes>(guest.app(), guest.cpu(), 0x7dd2a0, 0x8c);
+    fe::direct<kFillZero, ea::clearBytes>(guest.app(), guest.cpu(), 0x7dd110, 0x190);
+    return windows<kLeaveCriticalSection, &host::leaveLock>(guest, cpu, guest.dword(kQueueLock));
 }
 
 namespace
@@ -435,7 +465,6 @@ x86::reg32 frontend::tail::laneOffset(App* app, CPU& cpu, reg32 node, reg32 lane
     const reg32 least = 0 - guest.dword(record + kNodeLeftEdge) + kEdgeMargin;
     if (sreg32(offset) < sreg32(least))
         offset = least;
-    guest.leaveEdx(least);
     return offset;
 }
 
@@ -466,7 +495,6 @@ x86::reg32 frontend::tail::angleParts(App* app, CPU& cpu, reg32 angle, reg32 sin
     case 0:
     {
         guest.setDword(sineOut, quarterSine(guest, at));
-        guest.leaveEdx(rest);
         const reg32 cosine = quarterSine(guest, rest);
         guest.setDword(cosineOut, cosine);
         return cosine;
@@ -481,7 +509,6 @@ x86::reg32 frontend::tail::angleParts(App* app, CPU& cpu, reg32 angle, reg32 sin
     case 2:
     {
         guest.setDword(sineOut, 0 - quarterSine(guest, at));
-        guest.leaveEdx(rest);
         const reg32 cosine = quarterSine(guest, rest);
         guest.setDword(cosineOut, 0 - cosine);
         return cosine;
@@ -773,7 +800,7 @@ x86::reg32 frontend::tail::weatherScatter(App* app, CPU& cpu, reg32 view)
     const reg32 player = guest.dword(view + kViewPlayer);
     if (guest.dword(kWeatherKind) == 0)
         return view;
-    reg32 eax = guest.call(kCarFacingWay, args({ view }));
+    reg32 eax = *fe::direct<kCarFacingWay, trackdata::carAgainstTrack>(guest.app(), guest.cpu(), view);
     if (eax == 0)
     {
         for (reg32 i = 0;; ++i)
@@ -862,7 +889,6 @@ x86::reg32 frontend::tail::weatherShare(App* app, CPU& cpu, reg32 seen, reg32 pl
     const sreg32 hundredTimes = sreg32(seen * 100);
     const reg32 share = reg32(hundredTimes / sreg32(count));
     guest.setDword(kSharesSeen + player * 4, share);
-    guest.leaveEdx(reg32(hundredTimes % sreg32(count)));
     return share;
 }
 
@@ -880,10 +906,9 @@ x86::reg32 frontend::tail::weatherDropsStep(App* app, CPU& cpu, reg32 view, reg3
     const reg32 sinceLast = guest.dword(kClock) - guest.dword(kLastStep + player * 4);
     if (sreg32(sinceLast) <= 1)
     {
-        guest.leaveEdx(player * 4);
         return sinceLast;
     }
-    const reg32 facing = guest.call(kCarFacingWay, args({ view }));
+    const reg32 facing = *fe::direct<kCarFacingWay, trackdata::carAgainstTrack>(guest.app(), guest.cpu(), view);
     guest.setDword(kLastStep + player * 4, guest.dword(kClock));
     for (reg32 j = 0;; ++j)
     {
@@ -896,9 +921,10 @@ x86::reg32 frontend::tail::weatherDropsStep(App* app, CPU& cpu, reg32 view, reg3
             guest.setDword(timer, left - 1);
     }
     const reg32 places = kDropPlaces + player * kAPlayersDrops;
-    guest.call(kAddVectors, args({ guest.dword(kWeatherCount), places, kWeatherDrift, places }));
+    guest::direct<0x4dffb0, vertices::offsetVectorList<true>>(app, cpu, std::int32_t(guest.dword(kWeatherCount)), places,
+                                                               kWeatherDrift, places);
 
-    reg32 eax = guest.eax();
+    reg32 eax = 0;  // what the vectors' addition left; the upper bits come back only when no drop is walked
     const auto width = [&] { return floatFrom(guest, kWeatherHalfWidth); };
     // fcomp and fnstsw: the word is left in ax.
     const auto compared = [&](const Float& a, const Float& b) {
@@ -930,7 +956,6 @@ x86::reg32 frontend::tail::weatherDropsStep(App* app, CPU& cpu, reg32 view, reg3
         const reg32 at = player * kAPlayersDrops + i * kDropBytes;
         const reg32 drop = kDrops + at;
         const reg32 place = kDropPlaces + at;
-        guest.leaveEdx(place);
         eax = guest.dword(kWeatherKind);
         if (eax == kSnow && guest.byte(drop + kDropFacing) == 0)
         {
@@ -1043,7 +1068,6 @@ x86::reg32 frontend::tail::weatherOnView(App* app, CPU& cpu, reg32 view, reg32 o
     const reg32 list = guest.frame() + kLocalList;
     const reg32 seen = guest.frame() + kLocalSeen;
     guest.setDword(seen, 0);
-    guest.setEsi(list);
     fe::direct<0x4bbe70, frontend::rendd::emptyList>(app, cpu, list);
     if (guest.dword(view) == 0 && guest.dword(kWeatherKind) != 0)
     {
@@ -1065,22 +1089,18 @@ x86::reg32 frontend::tail::weatherOnView(App* app, CPU& cpu, reg32 view, reg32 o
             guest::direct<0x4dd510, weatherViewChange>(app, cpu, guest.dword(view + kViewPlayer));
             if (count != 0)
             {
-                guest.setEsi(list);
-                guest.call(kDrawStreaks, args({ view, reg32(count), seen }));
+                fe::direct<0x4de700, render::streaksDrawn>(app, cpu, view, reg32(count), seen, list);
             }
             guest::direct<0x4dd4c0, weatherShare>(app, cpu, guest.dword(seen), guest.dword(view + kViewPlayer));
         }
         else if (kind == 2 && count != 0)
         {
-            guest.setEsi(list);
-            guest.call(kDrawFlakes, args({ view, reg32(count) }));
+            fe::direct<0x4de070, render::smokeDrawn>(app, cpu, view, reg32(count), list);
         }
-        guest.setEsi(list);
         fe::direct<0x4dbde0, frontend::simc::setView>(app, cpu, view);
     }
     guest.setDword(out, guest.dword(list));
     guest.setDword(out + 4, guest.dword(list + 4));
-    guest.setEsi(list);
     return out;
 }
 
@@ -1097,117 +1117,123 @@ x86::reg32 frontend::tail::blockFree(App* app, CPU& cpu, reg32 block)
 }
 
 // ---------------------------------------------------------------------------
-// The adapters under the game's names: the arguments from the registers, the core in the frame it
+// The thunks under the game's names: the arguments from the registers, the core in the frame it
 // makes
 // ---------------------------------------------------------------------------
 
-void frontend::taskBlockFree(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::taskBlockFree(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4be240", 0, 0, nullptr, 0, 0 };
-    const reg32 block = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return tail::blockFree(app, cpu, block); });
+    const reg32 block = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return tail::blockFree(app, cpu, block); });
 }
 
-void frontend::taskListRun(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::taskListRun(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4be3a0", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx };
-    const reg32 list = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return tail::runTaskList(app, cpu, list); });
+    const reg32 list = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return tail::runTaskList(app, cpu, list); });
 }
 
-void frontend::raceFrameRun(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::raceFrameRun(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4c48d0", 0, 0, nullptr, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return tail::raceFrame(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return tail::raceFrame(app, cpu); });
 }
 
-void frontend::raceQueuesClear(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::raceQueuesClear(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4c7b50", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return tail::queuesClear(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return tail::queuesClear(app, cpu); });
 }
 
-void frontend::trackPlaceNear(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::trackPlaceNear(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4c8470", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 node = cpu.eax, out = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return tail::placeNearNode(app, cpu, node, out); });
+    const reg32 node = args.eax, out = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return tail::placeNearNode(app, cpu, node, out); });
 }
 
-void frontend::trackPlaceAt(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::trackPlaceAt(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4c8550", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx };
-    const reg32 node = cpu.eax, out = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return tail::placeAtNode(app, cpu, node, out); });
+    const reg32 node = args.eax, out = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return tail::placeAtNode(app, cpu, node, out); });
 }
 
-void frontend::trackLaneOffset(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::trackLaneOffset(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4c9a80", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 node = cpu.eax, lane = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return tail::laneOffset(app, cpu, node, lane); });
+    const reg32 node = args.eax, lane = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return tail::laneOffset(app, cpu, node, lane); });
 }
 
-void frontend::weatherSetUp(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::weatherSetUp(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4dcdf0", 0, 0, nullptr, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return tail::weatherStart(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return tail::weatherStart(app, cpu); });
 }
 
-void frontend::weatherScatterAtCut(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::weatherScatterAtCut(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4dd230", 0, 0, nullptr, 0 };
-    const reg32 view = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return tail::weatherScatter(app, cpu, view); });
+    const reg32 view = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return tail::weatherScatter(app, cpu, view); });
 }
 
-void frontend::weatherFadeByTime(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::weatherFadeByTime(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4dd330", 0, 0, nullptr, 0 };
-    const reg32 amount = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return tail::weatherFadeInTime(app, cpu, amount); });
+    const reg32 amount = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return tail::weatherFadeInTime(app, cpu, amount); });
 }
 
-void frontend::weatherFallingAtNode(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::weatherFallingAtNode(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4dd3d0", 0, 0, nullptr, 0 };
-    const reg32 node = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return tail::weatherFallAtNode(app, cpu, node); });
+    const reg32 node = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return tail::weatherFallAtNode(app, cpu, node); });
 }
 
-void frontend::weatherShareSeen(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::weatherShareSeen(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4dd4c0", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi };
-    const reg32 seen = cpu.eax, player = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return tail::weatherShare(app, cpu, seen, player); });
+    const reg32 seen = args.eax, player = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return tail::weatherShare(app, cpu, seen, player); });
 }
 
-void frontend::weatherViewChanged(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::weatherViewChanged(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4dd510", 0, 0, nullptr, 0 };
-    const reg32 player = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return tail::weatherViewChange(app, cpu, player); });
+    const reg32 player = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return tail::weatherViewChange(app, cpu, player); });
 }
 
-void frontend::weatherMoveDrops(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::weatherMoveDrops(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4dd5e0", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 view = cpu.eax, wanted = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return tail::weatherDropsStep(app, cpu, view, wanted); });
+    const reg32 view = args.eax, wanted = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return tail::weatherDropsStep(app, cpu, view, wanted); });
 }
 
-void frontend::weatherPassOverView(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::weatherPassOverView(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4dece0", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx | fe::kRestoreEdi };
-    const reg32 view = cpu.eax, out = cpu.esi;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return tail::weatherOnView(app, cpu, view, out); });
+    const reg32 view = args.eax, out = args.esi;
+    // esi is left on the frame's list, as the original leaves it (the core's frame: 20 + 0x14 bytes, the list 8 in).
+    const reg32 list = cpu.esp - (20 + 0x14) + 8;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
+        const reg32 result = tail::weatherOnView(app, cpu, view, out);
+        args.esi = list;
+        return result;
+    });
 }
 
-void frontend::angleSineCosine(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::angleSineCosine(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4eac60", 0, 0, nullptr, 0, fe::kRestoreEcx };
-    const reg32 angle = cpu.eax, sineOut = cpu.edx, cosineOut = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return tail::angleParts(app, cpu, angle, sineOut, cosineOut); });
+    const reg32 angle = args.eax, sineOut = args.edx, cosineOut = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return tail::angleParts(app, cpu, angle, sineOut, cosineOut); });
 }
 
 }

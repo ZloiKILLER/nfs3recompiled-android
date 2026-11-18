@@ -6,13 +6,20 @@
 #include "native_ea_support.h"
 #include "native_frontend_loada.h"
 #include "native_frontend_neta.h"
+#include "native_frontend_sima.h"
 #include "native_frontend_tail.h"
 #include "native_guest.h"
 #include "native_load_cardb.h"
 #include "native_pursuit.h"
+#include "native_raceload.h"
 #include "native_racestart.h"
 #include "native_watcom.h"
+#include "native_trackdata.h"
 #include "port_fields.h"
+#include "port_menus.h"
+#include "port_snd.h"
+#include "port_snd_calls.h"
+#include "port_snd_speech.h"
 
 #include <cstdint>
 #include <cstring>
@@ -23,10 +30,7 @@
  * a pursuit and the cop's state from frame to frame, the radio's phrases and
  * the speeches of the dispatcher and the cops ("a speeder, red Lamborghini,
  * 150+, heading for the town", "ticket", "arrest", "roadblock", "patrol",
- * "donuts", ...), and the racers' speech banks.  disassemble_nfs3hp.py binds
- * each address to the function of that name here (PURSUIT_NATIVES), and the
- * generated code calls it by name.  tools/game_checks holds each against its
- * generated code (pursuit.inc).
+ * "donuts", ...), and the racers' speech banks.
  *
  * A car's record (0x9a4 bytes and more) as these read it: +8 its progress
  * along the track (the leader's against it, the cop's against what it had),
@@ -66,21 +70,19 @@
  * state), 0x7dd378 the cops' radio's distance.
  *
  * Each is a typed function (its arguments named, its locals C++'s, the guest's
- * memory where it is) under a name of its own, with an adapter under the
- * game's name for the callers still on registers and the dispatch: it takes
+ * memory where it is) under a name of its own, with a thunk under the
+ * game's name for the callers still on registers and the calls through a pointer: it takes
  * the registers, calls the typed function under the caller's registers
- * (adapts: the code keeps them, its argument registers no caller reads) and
- * leaves eax, the x87's stack and the guest's stack as the game's code does
- * -- what the check compares; a typed function gives what
- * the code leaves in eax beside its answer where no caller reads it but the
- * check.  The x87's arithmetic is fp's in the code's order of operands, a
+ * (asThunk: the code keeps them, its argument registers no caller reads) and
+ * leaves eax, the x87's stack and the guest's stack as the game's code does.
+ * The x87's arithmetic is fp's in the code's order of operands, a
  * float kept where the code stores one; a compare's status word in ax as
  * fp::compare has it.  Where a callee is handed a frame's address (a record
  * for the radar, a place, a line of speech, a path) the frame is on the
  * guest's stack at the code's depth (GuestFrame, CallSlot).  The switches go
  * by the targets nfs3.exe's tables hold (0x409be0, 0x40a3f0, 0x40a55c,
  * 0x40aab0).  The other typed files' functions are called as C++ through
- * guest::direct, but where what an adapter here leaves is what the callee
+ * guest::direct, but where what a thunk here leaves is what the callee
  * leaves in eax beyond what its header gives, or where the code hands it words
  * on the guest's stack; every other file's function is called by address, its
  * arguments in registers and on the guest's stack as the code hands them. */
@@ -111,50 +113,31 @@ constexpr reg32 kRaceFrame = 0x7d3684;
 constexpr reg32 kNodeCount = 0x5dd940, kNodes = 0x5dd948;
 // The class records of the pursuit (0x18 bytes), by the car's +0x30.
 constexpr reg32 kClassKind = 0x552274, kClassFlag = 0x552278, kClassKeen = 0x55227c;
-// What is called by address: the game's, the lane votes (0x40de30, its adapter's NFS_CAR_TRACE
-// record), strncpy; and of the typed files' those whose eax an adapter
+// What is called by address: the game's, the lane votes (0x40de30, its thunk's NFS_CAR_TRACE
+// record), strncpy; and of the typed files' those whose eax a thunk
 // here leaves, which their headers give only as whether (a cop near, a node within reach, the cop
 // held, the car driven on), or that the code hands words on the guest's stack (the debug text, the
 // tunnel's test, which takes a copy of the place).  The menu files' (the radar, the places named,
 // the car put on its node and settled, the car ticketed: feCore), memset, strstr and the car's
 // chosen colour are called as C++, the eax they leave given back.
-constexpr reg32 kCopNear = 0x40f050, kInReach = 0x40f000, kResetHeld = 0x404b90, kCopFinish = 0x40de30;
-constexpr reg32 kSpeedLimit = 0x40cd80;
-constexpr reg32 kDebugText = 0x42d520, kMonoPrint = 0x4e08f0;
-constexpr reg32 kSpeechLine = 0x4c85a0;
-constexpr reg32 kRandom = 0x4e0d88, kStrncpy = 0x4e0e30;
+constexpr reg32 kDebugText = 0x42d520;
+constexpr reg32 kStrncpy = 0x4e0e30;
 constexpr reg32 kChop = 0x4dfd56;
-constexpr reg32 kCarColour = 0x439780;
-constexpr reg32 kEndPath = 0x4529a0, kVoiceBankLoad = 0x413750;
-constexpr reg32 kInTunnel = 0x420bf0;
 
 reg16 half(App* app, reg32 a) { return app->getMemory<reg16>(a); }
 sreg32 s(reg32 v) { return sreg32(v); }
 
 
 /* A native_frontend_* file's typed core called as C++ (guest::direct): nothing (false) when the
- * game stopped in it (its calls into the game throw fe::Terminated).  tools/game_checks does not
- * build those files: there it goes by address, through its ByAddress, as the game's code calls it,
- * every register but eax kept.  A reg32 result is the eax the function leaves: eax set to it (in the
- * game too); after any other, eax spoilt there, so that code still reading what the callee left in
- * eax differs there. */
+ * game stopped in it (its calls into the game throw fe::Terminated). */
 template <reg32 Address, auto Core, typename... Args>
 auto feCore(App* app, CPU& cpu, Args... args)
 {
     const auto run = [&] {
-#ifdef NFS_GAME_CHECKS
-        const guest::KeptRegisters kept(cpu);
-        return guest::ByAddress<Core>::template call<Address>(app, cpu, args...);
-#else
         return guest::direct<Address, Core>(app, cpu, args...);
-#endif
     };
     using Result = decltype(run());
-    const auto spoil = [&] {
-#ifdef NFS_GAME_CHECKS
-        cpu.eax = 0x5b0115edu;
-#endif
-    };
+    const auto spoil = [&] {};
     if constexpr (std::is_void_v<Result>)
     {
         try
@@ -174,7 +157,7 @@ auto feCore(App* app, CPU& cpu, Args... args)
         {
             const Result result = run();
             if constexpr (std::is_same_v<Result, x86::reg32>)
-                cpu.eax = result;  // a menu core's result: the eax it leaves, as the call by address does
+                (void)result;  // a menu core's result: the eax it leaves is no longer set (no caller reads it)
             else
                 spoil();
             return cpu.terminate ? std::optional<Result>() : std::optional<Result>(result);
@@ -331,7 +314,7 @@ private:
     const reg32 bytes;
 };
 
-/* An adapter's run of its core: every register but eax as the caller had it after it (the game's
+/* A thunk's run of its core: every register but eax as the caller had it after it (the game's
  * code pops what it pushed; its other registers are its arguments, which no caller reads), eax what
  * the core gives -- a core that gives nothing, or answers only whether the game went on (a bool),
  * leaves eax as it is -- and the return address and `popped` bytes of the caller's words popped.
@@ -346,13 +329,25 @@ struct IsOptional<std::optional<T>> : std::true_type
 {
 };
 
-template <typename Core>
-bool adapts(CPU& cpu, Core&& core, reg32 popped = 0)
+/* The edi the running thunk's caller had: a voice past the 8 takes it for its handle (sayCallSignOf,
+ * saySpeedOf), as the game's code keeps it across the radio's calls. */
+reg32 g_callerEdi = 0;
+
+struct CallerEdi
 {
+    explicit CallerEdi(reg32 edi) : saved(g_callerEdi) { g_callerEdi = edi; }
+    ~CallerEdi() { g_callerEdi = saved; }
+    const reg32 saved;
+};
+
+template <typename Core>
+bool asThunk(CPU& cpu, x86::Args& args, Core&& core, reg32 popped = 0)
+{
+    const CallerEdi callerEdi(args.edi);
     using Result = std::decay_t<decltype(core())>;
+    const reg32 esp = cpu.esp;
     std::optional<reg32> left;
     {
-        const guest::KeptRegisters kept(cpu);
         if constexpr (std::is_void_v<Result>)
             core();
         else if constexpr (std::is_same_v<Result, bool>)
@@ -370,25 +365,60 @@ bool adapts(CPU& cpu, Core&& core, reg32 popped = 0)
         else
             left = reg32(core());
     }
+    cpu.esp = esp;
     if (left)
-        cpu.eax = *left;
+        args.eax = *left;
     cpu.esp += 4 + popped;
     return true;
 }
 
-/* A call by address with `pushed` on the guest's stack (pushed in that order) and `registers` into
- * eax, edx, ebx and ecx in turn (guest::watcom), every register but eax kept and esp back as it was
- * after: eax as the callee leaves it, nullopt when the game stopped. */
-std::optional<reg32> callPushing(App* app, CPU& cpu, reg32 target, std::initializer_list<reg32> registers,
-                                 std::initializer_list<reg32> pushed)
+/* `pushed` on the guest's stack (pushed in that order), esp back as it was after: for a callee that finds
+ * its words there (placeInTunnel).  The result of `call` (the callee, called as C++ with esp at the words). */
+template <typename Call>
+auto callPushing(CPU& cpu, std::initializer_list<reg32> pushed, App* app, Call call)
 {
-    const guest::KeptRegisters kept(cpu);
+    const reg32 esp = cpu.esp;
+    struct Restore
+    {
+        CPU& cpu;
+        reg32 esp;
+        ~Restore() { cpu.esp = esp; }
+    } restore{cpu, esp};
     for (const reg32 word : pushed)
     {
         cpu.esp -= 4;
         put(app, cpu.esp, word);
     }
-    return guest::watcomEax(app, cpu, target, registers);
+    return call();
+}
+
+/* 0x40f050 (aiplan::carInReach) of the car and the distance 0: the eax it leaves, 1 where a cop is near; nullopt
+ * when the game stopped. */
+std::optional<reg32> copNear(App* app, CPU& cpu, reg32 car)
+{
+    const bool near = guest::direct<0x40f050, aiplan::carInReach>(app, cpu, car, 0);
+    if (cpu.terminate)
+        return std::nullopt;
+    return near ? 1u : 0u;
+}
+
+/* 0x40f000 (aiplan::nodeInRun): the eax it leaves, 1 where `node` lies in the run of `run` nodes from `from`;
+ * nullopt when the game stopped. */
+std::optional<reg32> inReach(App* app, CPU& cpu, reg32 node, reg32 from, reg32 run)
+{
+    const bool within = guest::direct<0x40f000, aiplan::nodeInRun>(app, cpu, node, from, run);
+    if (cpu.terminate)
+        return std::nullopt;
+    return within ? 1u : 0u;
+}
+
+/* 0x439780 (port::fields::customColourOf): car `car`'s custom colour's number; nullopt when the game stopped. */
+std::optional<reg32> customColourNumber(App* app, CPU& cpu, reg32 car)
+{
+    const port::Result number = guest::direct<0x439780, port::fields::customColourOf>(app, cpu, cpu.esp - 4, car);
+    if (cpu.terminate || !number)
+        return std::nullopt;
+    return reg32(*number);
 }
 
 /* The car's pursuit class times 3, as the code leaves it in eax (it scales it by 8 for the record). */
@@ -396,75 +426,75 @@ reg32 classTimesThree(App* app, reg32 car) { return at(app, at(app, car + kCarCh
 
 }  // namespace
 
-void raceStartHook(App* app, CPU& cpu);
-void raceEndHook(App* app, CPU& cpu);
-void roadsideTarget(App* app, CPU& cpu);
-void countLaneTime(App* app, CPU& cpu);
-void pulledOverTarget(App* app, CPU& cpu);
-void classSpeedFactor(App* app, CPU& cpu);
-void unitFactor(App* app, CPU& cpu);
-void radarFactor(App* app, CPU& cpu);
-void unitFactorToo(App* app, CPU& cpu);
-void leaderFactor(App* app, CPU& cpu);
-void nodeTargetSpeed(App* app, CPU& cpu);
-void markChased(App* app, CPU& cpu);
-void targetSpeed(App* app, CPU& cpu);
-void targetSpeedOnly(App* app, CPU& cpu);
-void matchChasedSpeed(App* app, CPU& cpu);
-void scoreCloseCops(App* app, CPU& cpu);
-void growLaneTimes(App* app, CPU& cpu);
-void scoreLane(App* app, CPU& cpu);
-void scoreChases(App* app, CPU& cpu);
-void radioChaseCount(App* app, CPU& cpu);
-void scoreSpeeds(App* app, CPU& cpu);
-void alwaysOne(App* app, CPU& cpu);
-void takeOverCars(App* app, CPU& cpu);
-void startReset(App* app, CPU& cpu);
-void checkProgress(App* app, CPU& cpu);
-void copStep(App* app, CPU& cpu);
-void loadRacerBanks(App* app, CPU& cpu);
-void countRadioFrames(App* app, CPU& cpu);
-void radioNoise(App* app, CPU& cpu);
-void sayPhrase(App* app, CPU& cpu);
-void sayCarPhrase(App* app, CPU& cpu);
-void namePhrase(App* app, CPU& cpu);
-void namePhrases(App* app, CPU& cpu);
-void radioFree(App* app, CPU& cpu);
-void radioNothing(App* app, CPU& cpu);
-void quietVoice(App* app, CPU& cpu);
-void sayVoicePhrase(App* app, CPU& cpu);
-void sayCallSign(App* app, CPU& cpu);
-void sayPhraseOnly(App* app, CPU& cpu);
-void sayUnit(App* app, CPU& cpu);
-void sayDescription(App* app, CPU& cpu);
-void radioNothingToo(App* app, CPU& cpu);
-void sayLocation(App* app, CPU& cpu);
-void saySpeed(App* app, CPU& cpu);
-void radioSpotted(App* app, CPU& cpu);
-void radioPursuit(App* app, CPU& cpu);
-void radioLost(App* app, CPU& cpu);
-void radioBackup(App* app, CPU& cpu);
-void radioPatrol(App* app, CPU& cpu);
-void radioRoadblock(App* app, CPU& cpu);
-void radioNothingThree(App* app, CPU& cpu);
-void radioTicket(App* app, CPU& cpu);
-void radioArrest(App* app, CPU& cpu);
-void radioStopped(App* app, CPU& cpu);
-void radioAmbulance(App* app, CPU& cpu);
-void radioSpikes(App* app, CPU& cpu);
-void radioHelp(App* app, CPU& cpu);
-void radioResume(App* app, CPU& cpu);
-void radioAbort(App* app, CPU& cpu);
-void resetOnTrack(App* app, CPU& cpu);
-void copRestart(App* app, CPU& cpu);
-void topSpeedFactor(App* app, CPU& cpu);
-void followChased(App* app, CPU& cpu);
-void raceEndHookToo(App* app, CPU& cpu);
-void raceStartHookToo(App* app, CPU& cpu);
-void followCar(App* app, CPU& cpu);
-void countdownDone(App* app, CPU& cpu);
-void trafficTarget(App* app, CPU& cpu);
-void trafficStep(App* app, CPU& cpu);
+x86::reg32 raceStartHook(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 raceEndHook(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 roadsideTarget(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 countLaneTime(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 pulledOverTarget(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 classSpeedFactor(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 unitFactor(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 radarFactor(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 unitFactorToo(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 leaderFactor(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 nodeTargetSpeed(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 markChased(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 targetSpeed(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 targetSpeedOnly(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 matchChasedSpeed(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 scoreCloseCops(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 growLaneTimes(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 scoreLane(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 scoreChases(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 radioChaseCount(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 scoreSpeeds(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 alwaysOne(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 takeOverCars(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 startReset(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 checkProgress(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 copStep(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 loadRacerBanks(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 countRadioFrames(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 radioNoise(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 sayPhrase(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 sayCarPhrase(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 namePhrase(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 namePhrases(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 radioFree(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 radioNothing(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 quietVoice(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 sayVoicePhrase(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 sayCallSign(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 sayPhraseOnly(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 sayUnit(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 sayDescription(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 radioNothingToo(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 sayLocation(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 saySpeed(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 radioSpotted(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 radioPursuit(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 radioLost(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 radioBackup(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 radioPatrol(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 radioRoadblock(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 radioNothingThree(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 radioTicket(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 radioArrest(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 radioStopped(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 radioAmbulance(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 radioSpikes(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 radioHelp(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 radioResume(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 radioAbort(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 resetOnTrack(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 copRestart(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 topSpeedFactor(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 followChased(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 raceEndHookToo(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 raceStartHookToo(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 followCar(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 countdownDone(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 trafficTarget(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 trafficStep(App* app, x86::CPU& cpu, x86::Args& args);
 
 // The typed functions called before they are written.
 reg32 followChasedCar(App* app, reg32 car);
@@ -474,24 +504,25 @@ std::optional<reg32> resetOnTrackOf(App* app, CPU& cpu, reg32 car, reg32 record)
 /* 0x408ad0, 0x408ae0, 0x40c140, 0x40c150: the pursuit's hooks at the race's
  * start and end (the race's set-up 0x4c45f0 and its end 0x4c4740 call them),
  * empty -- push ebp, mov ebp, esp, pop ebp: nothing but the return. */
-void raceStartHook(App*, CPU& cpu)
+x86::reg32 raceStartHook(App* app, x86::CPU& cpu, x86::Args& args)
 {
     cpu.esp += 4;
+    return args.eax;
 }
 
-void raceEndHook(App* app, CPU& cpu)
+x86::reg32 raceEndHook(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    raceStartHook(app, cpu);
+    return raceStartHook(app, cpu, args);
 }
 
-void raceEndHookToo(App* app, CPU& cpu)
+x86::reg32 raceEndHookToo(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    raceStartHook(app, cpu);
+    return raceStartHook(app, cpu, args);
 }
 
-void raceStartHookToo(App* app, CPU& cpu)
+x86::reg32 raceStartHookToo(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    raceStartHook(app, cpu);
+    return raceStartHook(app, cpu, args);
 }
 
 /* The target speed of the car pulled over at the roadside: 0 where it is in one of its node's outer
@@ -510,9 +541,10 @@ void stopAtRoadside(App* app, reg32 car)
 }
 
 /* 0x408b30: stopAtRoadside for the car eax; every register kept. */
-void roadsideTarget(App* app, CPU& cpu)
+x86::reg32 roadsideTarget(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { stopAtRoadside(app, car); });
+    asThunk(cpu, args, [&, car = args.eax] { stopAtRoadside(app, car); });
+    return args.eax;
 }
 
 /* 150 frames more to the lanes' time of where the car is: the outer lanes' where it is in one of its
@@ -528,13 +560,14 @@ void addLaneTime(App* app, reg32 car)
 
 /* 0x408bd0: addLaneTime for the car eax; eax left as the code leaves it, the node's record where the
  * car is in the left outer lane, else the right outer lane (what it was compared with). */
-void countLaneTime(App* app, CPU& cpu)
+x86::reg32 countLaneTime(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] {
+    asThunk(cpu, args, [&, car = args.eax] {
         addLaneTime(app, car);
         const reg32 n = nodeRecord(app, at(app, car + kCarNode));
         return outerLeft(app, n) == i32(at(app, car + kCarLane)) ? n : reg32(outerRight(app, n));
     });
+    return args.eax;
 }
 
 // A car's side across the road to the road's units (a lane's width 2^15): a double.
@@ -587,14 +620,15 @@ i32 stopForCops(App* app, reg32 car)
 
 /* 0x408c50: stopForCops for the car eax; eax the last place, its ah the flipped byte where the track
  * runs backwards, as the code leaves it. */
-void pulledOverTarget(App* app, CPU& cpu)
+x86::reg32 pulledOverTarget(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] {
+    asThunk(cpu, args, [&, car = args.eax] {
         const reg32 place = reg32(stopForCops(app, car));
         if (gameSettings(app).backwards == 0)
             return place;
         return (place & 0xffff00ffu) | reg32(byte(app, car + kCarTargetSign)) << 8;
     });
+    return args.eax;
 }
 
 // The class factor's: by the chase's kind 0 and 1 (floats), every second and fourth quarter of 512
@@ -650,34 +684,40 @@ std::optional<float> classFactor(App* app, CPU& cpu, reg32 car)
 
 /* 0x408dc0: classFactor of the car eax onto the x87's stack; eax the car where the factor is 1 at once,
  * else the factor's bits, as the code leaves it. */
-void classSpeedFactor(App* app, CPU& cpu)
+x86::reg32 classSpeedFactor(App* app, x86::CPU& cpu, x86::Args& args)
 {
     std::optional<float> factor;
-    const auto left = [&, car = cpu.eax]() -> std::optional<reg32> {
+    const auto left = [&, car = args.eax]() -> std::optional<reg32> {
         factor = classFactor(app, cpu, car);
         if (!factor)
             return std::nullopt;
         return knockoutAlone(app) ? car : floatBits(*factor);
     };
-    if (adapts(cpu, left))
-        cpu.fpu.push(Float(*factor));
+    if (asThunk(cpu, args, left))
+    {
+        args.floatSet = true;
+        args.floatResult = double(Float(*factor));
+    }
+    return args.eax;
 }
 
 /* 0x408f00 and 0x409090: a factor of 1 onto the x87's stack (fld1) -- the targetSpeed's factors the
  * game leaves at 1. */
-void unitFactor(App*, CPU& cpu)
+x86::reg32 unitFactor(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    cpu.fpu.push(Float(1.0));
+    args.floatSet = true;
+    args.floatResult = double(Float(1.0));
     cpu.esp += 4;
+    return args.eax;
 }
 
-void unitFactorToo(App* app, CPU& cpu)
+x86::reg32 unitFactorToo(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    unitFactor(app, cpu);
+    return unitFactor(app, cpu, args);
 }
 
 /* What a typed function gives with what the game's code leaves in eax beside it: no caller of the game's
- * reads that, but the check compares the registers the code leaves. */
+ * reads that. */
 struct FactorLeft
 {
     float factor;
@@ -753,17 +793,21 @@ std::optional<FactorLeft> radarFactorOf(App* app, CPU& cpu, reg32 car)
 }
 
 /* 0x408f10: radarFactorOf the car eax onto the x87's stack, eax as the code leaves it. */
-void radarFactor(App* app, CPU& cpu)
+x86::reg32 radarFactor(App* app, x86::CPU& cpu, x86::Args& args)
 {
     std::optional<FactorLeft> factor;
-    const auto left = [&, car = cpu.eax]() -> std::optional<reg32> {
+    const auto left = [&, car = args.eax]() -> std::optional<reg32> {
         factor = radarFactorOf(app, cpu, car);
         if (!factor)
             return std::nullopt;
         return factor->eax;
     };
-    if (adapts(cpu, left))
-        cpu.fpu.push(Float(factor->factor));
+    if (asThunk(cpu, args, left))
+    {
+        args.floatSet = true;
+        args.floatResult = double(Float(factor->factor));
+    }
+    return args.eax;
 }
 
 // The race's leader and its kind.
@@ -816,14 +860,16 @@ float leaderFactorOf(App* app, reg32 car)
 
 /* 0x4090a0: leaderFactorOf the car eax onto the x87's stack; eax the factor's bits where there is a
  * leader, else the car, as the code leaves it. */
-void leaderFactor(App* app, CPU& cpu)
+x86::reg32 leaderFactor(App* app, x86::CPU& cpu, x86::Args& args)
 {
     float factor = 0;
-    adapts(cpu, [&, car = cpu.eax] {
+    asThunk(cpu, args, [&, car = args.eax] {
         factor = leaderFactorOf(app, car);
         return at(app, kLeader) != 0 ? floatBits(factor) : car;
     });
-    cpu.fpu.push(Float(factor));
+    args.floatSet = true;
+    args.floatResult = double(Float(factor));
+    return args.eax;
 }
 
 /* The car's target speed: its node's (0x40ed40), signed as it goes (the track backwards, the car
@@ -844,9 +890,10 @@ std::optional<reg32> nodeTarget(App* app, CPU& cpu, reg32 car)
 }
 
 /* 0x409290: nodeTarget for the car eax, eax as the code leaves it. */
-void nodeTargetSpeed(App* app, CPU& cpu)
+x86::reg32 nodeTargetSpeed(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { return nodeTarget(app, cpu, car); });
+    asThunk(cpu, args, [&, car = args.eax] { return nodeTarget(app, cpu, car); });
+    return args.eax;
 }
 
 /* The car no longer marked chased (+0x620), but where one of the cops [0x5efa88..], [0x5efd88] of them,
@@ -866,9 +913,10 @@ void releaseChase(App* app, reg32 car)
 }
 
 /* 0x4092f0: releaseChase of the car eax. */
-void markChased(App* app, CPU& cpu)
+x86::reg32 markChased(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { releaseChase(app, car); });
+    asThunk(cpu, args, [&, car = args.eax] { releaseChase(app, car); });
+    return args.eax;
 }
 
 // The computer's speed past which the pace eases it, its offset (doubles); the cops' chase speed
@@ -942,9 +990,10 @@ std::optional<reg32> targetSpeedOf(App* app, CPU& cpu, reg32 car)
 }
 
 /* 0x409330: targetSpeedOf the car eax, eax as the code leaves it. */
-void targetSpeed(App* app, CPU& cpu)
+x86::reg32 targetSpeed(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { return targetSpeedOf(app, cpu, car); });
+    asThunk(cpu, args, [&, car = args.eax] { return targetSpeedOf(app, cpu, car); });
+    return args.eax;
 }
 
 /* targetSpeedOf, from a frame of its own (push ebp, mov ebp, esp). */
@@ -956,9 +1005,10 @@ std::optional<reg32> targetSpeedFramed(App* app, CPU& cpu, reg32 car)
 }
 
 /* 0x4094b0: targetSpeedFramed for the car eax, eax as the code leaves it. */
-void targetSpeedOnly(App* app, CPU& cpu)
+x86::reg32 targetSpeedOnly(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { return targetSpeedFramed(app, cpu, car); });
+    asThunk(cpu, args, [&, car = args.eax] { return targetSpeedFramed(app, cpu, car); });
+    return args.eax;
 }
 
 // The share of the gap a chase of level 2 eases back by (a double).
@@ -1000,9 +1050,10 @@ reg32 matchChased(App* app, reg32 car)
 }
 
 /* 0x4094d0: matchChased for the car eax, eax as the code leaves it. */
-void matchChasedSpeed(App* app, CPU& cpu)
+x86::reg32 matchChasedSpeed(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { return matchChased(app, car); });
+    asThunk(cpu, args, [&, car = args.eax] { return matchChased(app, car); });
+    return args.eax;
 }
 /* For a car of a class keener than 2 with no cop near it (0x40f050): 15 more to each chase's score
  * [0x56ef20] whose car is a cop's, on, and 1 to 9 behind -- but where the chase's level [0x56ec80] is
@@ -1012,7 +1063,7 @@ std::optional<reg32> scoreCloseCopsOf(App* app, CPU& cpu, reg32 car)
     const GuestFrame frame(cpu, 0xc, 0);
     if (keenness(app, car) <= 2)
         return classTimesThree(app, car);
-    const std::optional<reg32> near = guest::watcomEax(app, cpu, kCopNear, {car, 0});
+    const std::optional<reg32> near = copNear(app, cpu, car);
     if (!near)
         return std::nullopt;
     if (*near != 0)
@@ -1033,9 +1084,10 @@ std::optional<reg32> scoreCloseCopsOf(App* app, CPU& cpu, reg32 car)
 }
 
 /* 0x4095d0: scoreCloseCopsOf the car eax, eax as the code leaves it. */
-void scoreCloseCops(App* app, CPU& cpu)
+x86::reg32 scoreCloseCops(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { return scoreCloseCopsOf(app, cpu, car); });
+    asThunk(cpu, args, [&, car = args.eax] { return scoreCloseCopsOf(app, cpu, car); });
+    return args.eax;
 }
 
 // A frame's step of the lanes' times that have begun.
@@ -1050,12 +1102,13 @@ void growLaneTimesBy(App* app)
 }
 
 /* 0x409660: growLaneTimesBy; eax left 22, as the code leaves it. */
-void growLaneTimes(App* app, CPU& cpu)
+x86::reg32 growLaneTimes(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&] {
+    asThunk(cpu, args, [&] {
         growLaneTimesBy(app);
         return kLaneTimeStep;
     });
+    return args.eax;
 }
 
 /* The score of the lane the car will take, 4 nodes on (0x40e160, 0x40e0c0), against its own [+0x638]:
@@ -1068,7 +1121,7 @@ std::optional<reg32> scoreLaneOf(App* app, CPU& cpu, reg32 car)
     const GuestFrame frame(cpu, 0x18, 0);
     if ((byte(app, car + kCarPursuitFlagsHigh) & kFlagAgainst) != 0)
         return car;
-    const std::optional<reg32> near = guest::watcomEax(app, cpu, kCopNear, {car, 0});
+    const std::optional<reg32> near = copNear(app, cpu, car);
     if (!near)
         return std::nullopt;
     if (*near != 0)
@@ -1109,9 +1162,10 @@ std::optional<reg32> scoreLaneOf(App* app, CPU& cpu, reg32 car)
 }
 
 /* 0x4096b0: scoreLaneOf the car eax, eax as the code leaves it. */
-void scoreLane(App* app, CPU& cpu)
+x86::reg32 scoreLane(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { return scoreLaneOf(app, cpu, car); });
+    asThunk(cpu, args, [&, car = args.eax] { return scoreLaneOf(app, cpu, car); });
+    return args.eax;
 }
 
 /* The chases' scores where no cop is near the car (0x40f050): 5 more to [0x56eefc] for each chase
@@ -1121,7 +1175,7 @@ void scoreLane(App* app, CPU& cpu)
 std::optional<reg32> scoreChasesOf(App* app, CPU& cpu, reg32 car)
 {
     const GuestFrame frame(cpu, 0x10, 0);
-    const std::optional<reg32> near = guest::watcomEax(app, cpu, kCopNear, {car, 0});
+    const std::optional<reg32> near = copNear(app, cpu, car);
     if (!near)
         return std::nullopt;
     if (*near != 0)
@@ -1150,9 +1204,10 @@ std::optional<reg32> scoreChasesOf(App* app, CPU& cpu, reg32 car)
 }
 
 /* 0x4097c0: scoreChasesOf the car eax, eax as the code leaves it. */
-void scoreChases(App* app, CPU& cpu)
+x86::reg32 scoreChases(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { return scoreChasesOf(app, cpu, car); });
+    asThunk(cpu, args, [&, car = args.eax] { return scoreChasesOf(app, cpu, car); });
+    return args.eax;
 }
 
 // The debug text's: its row's kind (0x4b) and column (0xf), its chase count's format ("V%d") and a blank.
@@ -1184,19 +1239,18 @@ std::optional<reg32> radioChaseCountOf(App* app, CPU& cpu, reg32 car)
     }
     const reg32 row = at(app, car + kCarIndex) * 6;
     const bool counted = (byte(app, car + kCarPursuitFlagsHigh) & kFlagOnRadio) != 0;
-    const std::optional<reg32> shown =
-        counted ? callPushing(app, cpu, kDebugText, {},
-                              {at(app, car + kCarChaseCount), kChaseCountText, kDebugColumn, row, 1, kDebugKind})
-                : callPushing(app, cpu, kDebugText, {}, {kBlankText, kDebugColumn, row, 1, kDebugKind});
-    if (!shown)
+    // The debug text's call (0x42d520) is an empty function: its words pushed for it are dead.
+    guest::direct<0x42d520, raceload::noHook2>(app, cpu);
+    if (cpu.terminate)
         return std::nullopt;
     return row;
 }
 
 /* 0x409840: radioChaseCountOf the car eax, eax as the code leaves it. */
-void radioChaseCount(App* app, CPU& cpu)
+x86::reg32 radioChaseCount(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { return radioChaseCountOf(app, cpu, car); });
+    asThunk(cpu, args, [&, car = args.eax] { return radioChaseCountOf(app, cpu, car); });
+    return args.eax;
 }
 
 // scoreSpeeds' scales: the speed's two and its offset; the scores' by the speed past the cop's, by the
@@ -1245,15 +1299,17 @@ reg32 scoreSpeedsOf(App* app, reg32 car)
 }
 
 /* 0x409920: scoreSpeedsOf the car eax, eax as the code leaves it. */
-void scoreSpeeds(App* app, CPU& cpu)
+x86::reg32 scoreSpeeds(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { return scoreSpeedsOf(app, car); });
+    asThunk(cpu, args, [&, car = args.eax] { return scoreSpeedsOf(app, car); });
+    return args.eax;
 }
 
 /* 0x409a80: 1 in eax -- the check of a cop's state 3, always done. */
-void alwaysOne(App*, CPU& cpu)
+x86::reg32 alwaysOne(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [] { return 1; });
+    asThunk(cpu, args, [] { return 1; });
+    return args.eax;
 }
 
 // How far behind a car a cop takes it over: 25 nodes, 12 in the rain or snow, halved at night but for a
@@ -1282,7 +1338,7 @@ std::optional<reg32> takeOverCarsOf(App* app, CPU& cpu, reg32 cop)
         const reg32 back = guest::direct<0x40e160, aiplan::nodeAhead>(app, cpu, car, reg32(-behind));
         if (cpu.terminate)
             return std::nullopt;
-        const std::optional<reg32> reach = guest::watcomEax(app, cpu, kInReach, {at(app, cop + kCarNode), back, kTakeOverReach});
+        const std::optional<reg32> reach = inReach(app, cpu, at(app, cop + kCarNode), back, kTakeOverReach);
         if (!reach)
             return std::nullopt;
         left = *reach;
@@ -1298,9 +1354,10 @@ std::optional<reg32> takeOverCarsOf(App* app, CPU& cpu, reg32 cop)
 }
 
 /* 0x409a90: takeOverCarsOf the cop eax, eax as the code leaves it. */
-void takeOverCars(App* app, CPU& cpu)
+x86::reg32 takeOverCars(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, cop = cpu.eax] { return takeOverCarsOf(app, cpu, cop); });
+    asThunk(cpu, args, [&, cop = args.eax] { return takeOverCarsOf(app, cpu, cop); });
+    return args.eax;
 }
 
 /* The cop back to state 1, its record's +0x1c cleared, and the car reset (0x429100) where it may be
@@ -1317,9 +1374,10 @@ std::optional<reg32> startResetOf(App* app, CPU& cpu, reg32 cop)
 }
 
 /* 0x409b40: startResetOf the cop eax, eax as the code leaves it. */
-void startReset(App* app, CPU& cpu)
+x86::reg32 startReset(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, cop = cpu.eax] { return startResetOf(app, cpu, cop); });
+    asThunk(cpu, args, [&, cop = args.eax] { return startResetOf(app, cpu, cop); });
+    return args.eax;
 }
 
 // The race's frames before a car stuck may be reset, and how long it is let stay so.
@@ -1349,9 +1407,10 @@ std::optional<reg32> checkProgressOf(App* app, CPU& cpu, reg32 car)
 }
 
 /* 0x409b70: checkProgressOf the car eax, eax as the code leaves it. */
-void checkProgress(App* app, CPU& cpu)
+x86::reg32 checkProgress(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { return checkProgressOf(app, cpu, car); });
+    asThunk(cpu, args, [&, car = args.eax] { return checkProgressOf(app, cpu, car); });
+    return args.eax;
 }
 // A cop's states (+0x6e0): chasing, taking a car over, at its node's speed, stopped, pulling a car
 // over at the roadside, halted, waiting.
@@ -1385,10 +1444,16 @@ std::optional<reg32> copStepOf(App* app, CPU& cpu, reg32 cop)
         const CallSlot slot(cpu);
         return core(app, cpu, cop);
     };
-    // Another file's, by address, the cop in eax: false where the game stopped.
+    // The car slowed for its class (airace::slowForClassOf), its eax the answer: false where the game stopped.
     reg32 answer = 0;
-    const auto other = [&](reg32 target) {
-        const std::optional<reg32> left = guest::watcomEax(app, cpu, target, {cop});
+    const auto resetHeld = [&] {
+        const std::optional<bool> slowed = guest::direct<0x404b90, airace::slowForClassOf>(app, cpu, cop);
+        answer = slowed.value_or(false) ? 1 : 0;
+        return slowed.has_value();
+    };
+    // The cop's lane votes acted on (0x40de30, sima::laneSteer): its eax the answer; false where the game stopped.
+    const auto finish = [&] {
+        const std::optional<reg32> left = feCore<0x40de30, frontend::sima::laneSteer>(app, cpu, cop);
         answer = left.value_or(0);
         return left.has_value();
     };
@@ -1442,7 +1507,7 @@ std::optional<reg32> copStepOf(App* app, CPU& cpu, reg32 cop)
         [[fallthrough]];
     case kCopChasing:  // 0x409c56
     {
-        if (!own(checkProgressOf) || !other(kResetHeld))
+        if (!own(checkProgressOf) || !resetHeld())
             return std::nullopt;
         if (answer != 0)
             return answer;
@@ -1457,7 +1522,7 @@ std::optional<reg32> copStepOf(App* app, CPU& cpu, reg32 cop)
             || !drive())
             return std::nullopt;
         growLaneTimesBy(app);
-        if (!other(kCopFinish) || !out())
+        if (!finish() || !out())
             return std::nullopt;
         outOrPad(answer, true);
         const std::optional<reg32> taken = own(takeOverCarsOf);
@@ -1469,7 +1534,7 @@ std::optional<reg32> copStepOf(App* app, CPU& cpu, reg32 cop)
     }
     case kCopTakingOver:  // 0x409d4f
     {
-        if (!own(checkProgressOf) || !other(kResetHeld))
+        if (!own(checkProgressOf) || !resetHeld())
             return std::nullopt;
         if (answer != 0)
             return answer;
@@ -1479,7 +1544,7 @@ std::optional<reg32> copStepOf(App* app, CPU& cpu, reg32 cop)
         if (!own(targetSpeedFramed) || !own(scoreChasesOf) || !drive())
             return std::nullopt;
         growLaneTimesBy(app);
-        if (!other(kCopFinish) || !out())
+        if (!finish() || !out())
             return std::nullopt;
         outOrPad(answer, false);
         const std::optional<reg32> taken = own(takeOverCarsOf);
@@ -1490,7 +1555,7 @@ std::optional<reg32> copStepOf(App* app, CPU& cpu, reg32 cop)
         return *taken;
     }
     case kCopAtNodeSpeed:  // 0x409e08
-        if (!own(checkProgressOf) || !steer() || !own(nodeTarget) || !drive() || !other(kCopFinish) || !out())
+        if (!own(checkProgressOf) || !steer() || !own(nodeTarget) || !drive() || !finish() || !out())
             return std::nullopt;
         outOrPad(answer, false);
         // (0x409a80's check, always 1.)
@@ -1498,7 +1563,7 @@ std::optional<reg32> copStepOf(App* app, CPU& cpu, reg32 cop)
         return 1;
     case kCopStopped:  // 0x409e9c
         stopForCops(app, cop);
-        if (!steer() || !other(kCopFinish))
+        if (!steer() || !finish())
             return std::nullopt;
         return noteFrame();
     case kCopPullingOver:  // 0x409ec1
@@ -1507,7 +1572,7 @@ std::optional<reg32> copStepOf(App* app, CPU& cpu, reg32 cop)
             return std::nullopt;
         stopAtRoadside(app, cop);
         addLaneTime(app, cop);
-        if (!other(kCopFinish))
+        if (!finish())
             return std::nullopt;
         if (half(app, cop + kCarRaceStage) != 0)
             break;
@@ -1545,9 +1610,10 @@ std::optional<reg32> copStepOf(App* app, CPU& cpu, reg32 cop)
 }
 
 /* 0x409c00: copStepOf the cop eax, eax as the code leaves it. */
-void copStep(App* app, CPU& cpu)
+x86::reg32 copStep(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, cop = cpu.eax] { return copStepOf(app, cpu, cop); });
+    asThunk(cpu, args, [&, cop = args.eax] { return copStepOf(app, cpu, cop); });
+    return args.eax;
 }
 
 namespace
@@ -1628,13 +1694,15 @@ std::optional<reg32> loadRacerBanksOf(App* app, CPU& cpu, reg32 handedOn)
         if (*police != 0)
             continue;
         copyGuestString(app, path, kSpeechFolder);
-        if (!guest::watcomEax(app, cpu, kEndPath, {path}))
+        guest::direct<0x4529a0, port::menus::pathBackslashed>(app, cpu, path);
+        if (cpu.terminate)
             return std::nullopt;
         const std::optional<reg32> folder = guest::direct<0x4392b0, load::folderOf>(app, cpu, model);
         if (!folder)
             return std::nullopt;
         appendGuestString(app, path, *folder);
-        if (!guest::watcomEax(app, cpu, kEndPath, {path}))
+        guest::direct<0x4529a0, port::menus::pathBackslashed>(app, cpu, path);
+        if (cpu.terminate)
             return std::nullopt;
         appendGuestString(app, path, kBankName);
         appendGuestString(app, path, at(app, gameSettings(app).language * 4 + kLanguageLetters));
@@ -1642,7 +1710,7 @@ std::optional<reg32> loadRacerBanksOf(App* app, CPU& cpu, reg32 handedOn)
         const reg32 playMode = gameSettings(app).playMode;
         if ((index == 0 || index == 1) && playMode == 1)
         {
-            const std::optional<reg32> own = guest::watcomEax(app, cpu, kCarColour, {model});
+            const std::optional<reg32> own = customColourNumber(app, cpu, model);
             const std::optional<reg32> custom = own ? chosenColour(app, cpu, model, index) : std::nullopt;
             if (!custom)
                 return std::nullopt;
@@ -1656,7 +1724,7 @@ std::optional<reg32> loadRacerBanksOf(App* app, CPU& cpu, reg32 handedOn)
         }
         else if (gameSettings(app).localPlayer == index)
         {
-            const std::optional<reg32> own = guest::watcomEax(app, cpu, kCarColour, {model});
+            const std::optional<reg32> own = customColourNumber(app, cpu, model);
             const std::optional<reg32> custom = own ? chosenColour(app, cpu, model, 0) : std::nullopt;
             if (!custom)
                 return std::nullopt;
@@ -1679,19 +1747,25 @@ std::optional<reg32> loadRacerBanksOf(App* app, CPU& cpu, reg32 handedOn)
             if (*pace != 0)
                 handed = kCustomColour;
         }
-        if (!guest::watcomEax(app, cpu, kVoiceBankLoad, {path, handed, bank}))
+        guest::direct<0x413750, port::voiceBankLoaded>(app, cpu, cpu.esp - 4, path, i32(handed), i32(bank));
+        if (cpu.terminate)
             return std::nullopt;
         put(app, i * 4 + kSpeechBanks, bank);
         bank += 1;
-        if (bank == kTooManyBanks && !callPushing(app, cpu, kMonoPrint, {}, {kTooManyText}))
-            return std::nullopt;
+        if (bank == kTooManyBanks)
+        {
+            const std::optional<reg32> printed = guest::direct<0x4e08f0, ea::monoPrinted>(app, cpu, 0u, kTooManyText, guest::Words{});
+            if (!printed)
+                return std::nullopt;
+        }
     }
 }
 
 /* 0x40a010: loadRacerBanksOf; eax as the code leaves it. */
-void loadRacerBanks(App* app, CPU& cpu)
+x86::reg32 loadRacerBanks(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, handedOn = cpu.eax] { return loadRacerBanksOf(app, cpu, handedOn); });
+    asThunk(cpu, args, [&, handedOn = args.eax] { return loadRacerBanksOf(app, cpu, handedOn); });
+    return args.eax;
 }
 
 /* The radio's frames counted: since anyone spoke [0x5524c8], and each of the 8 voices' [0x56ee68] and
@@ -1709,9 +1783,10 @@ void tickRadioFrames(App* app)
 }
 
 /* 0x40a330: tickRadioFrames; every register kept. */
-void countRadioFrames(App* app, CPU& cpu)
+x86::reg32 countRadioFrames(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&] { tickRadioFrames(app); });
+    asThunk(cpu, args, [&] { tickRadioFrames(app); });
+    return args.eax;
 }
 
 namespace
@@ -1720,7 +1795,19 @@ namespace
 /* The game's random number (0x4e0d88); nullopt when the game stopped. */
 std::optional<reg32> randomNumber(App* app, CPU& cpu)
 {
-    return guest::watcomEax(app, cpu, kRandom, {});
+    const reg32 drawn = guest::direct<0x4e0d88, port::nextRandom>(app, cpu);
+    if (cpu.terminate)
+        return std::nullopt;
+    return drawn;
+}
+
+/* The speech's line at `line` said (0x4c85a0): what it leaves in eax; nullopt when the game stopped. */
+std::optional<reg32> sayLine(App* app, CPU& cpu, reg32 line)
+{
+    const port::Result said = guest::direct<0x4c85a0, port::speechLineSaid>(app, cpu, cpu.esp - 4, line);
+    if (cpu.terminate || !said)
+        return std::nullopt;
+    return reg32(*said);
 }
 
 /* The game's random number's remainder by `by`: edx 0 before it, which it keeps, and the remainder of
@@ -1801,22 +1888,23 @@ std::optional<NoiseLeft> radioNoiseOf(App* app, CPU& cpu, reg32 handedOn, reg32 
     put(app, line + kLineMark, kMarkOther);
     put(app, line + kLineVoice, at(app, kNoiseVoice));
     put(app, line + kLinePhrase, phrase);
-    const std::optional<reg32> said = guest::watcomEax(app, cpu, kSpeechLine, {line});
+    const std::optional<reg32> said = sayLine(app, cpu, line);
     if (!said)
         return std::nullopt;
     return NoiseLeft{*said, phrase};
 }
 
 /* 0x40a380: radioNoiseOf for the car ebx, eax handed on, the side edx; eax as the code leaves it. */
-void radioNoise(App* app, CPU& cpu)
+x86::reg32 radioNoise(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const auto left = [&, handedOn = cpu.eax, side = cpu.edx, car = cpu.ebx]() -> std::optional<reg32> {
+    const auto left = [&, handedOn = args.eax, side = args.edx, car = args.ebx]() -> std::optional<reg32> {
         const std::optional<NoiseLeft> noise = radioNoiseOf(app, cpu, handedOn, side, car);
         if (!noise)
             return std::nullopt;
         return noise->eax;
     };
-    adapts(cpu, left);
+    asThunk(cpu, args, left);
+    return args.eax;
 }
 
 /* The phrase said by the car (0x4c85a0), `handedOn` handed on -- by the dispatcher (volume 110,
@@ -1852,15 +1940,16 @@ std::optional<reg32> sayPhraseOf(App* app, CPU& cpu, reg32 handedOn, bool byVoic
     put(app, line + kLineHanded, handedOn);
     put(app, line + kLineMark, phrase == kDispatcherPhrase ? (byVoice ? kMarkVoice : kMarkDispatcher) : kMarkOther);
     put(app, line + kLineCar, car);
-    return guest::watcomEax(app, cpu, kSpeechLine, {line});
+    return sayLine(app, cpu, line);
 }
 
 /* 0x40a410: sayPhraseOf the phrase ebx by the car ecx, eax handed on, by its voice where edx; eax as the
  * code leaves it. */
-void sayPhrase(App* app, CPU& cpu)
+x86::reg32 sayPhrase(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, handedOn = cpu.eax, byVoice = cpu.edx != 0, phrase = cpu.ebx, car = cpu.ecx, side = cpu.esi,
-                 voice = cpu.edi] { return sayPhraseOf(app, cpu, handedOn, byVoice, phrase, car, side, voice); });
+    asThunk(cpu, args, [&, handedOn = args.eax, byVoice = args.edx != 0, phrase = args.ebx, car = args.ecx, side = args.esi,
+                 voice = args.edi] { return sayPhraseOf(app, cpu, handedOn, byVoice, phrase, car, side, voice); });
+    return args.eax;
 }
 
 /* The phrase of the car's own description said (0x4c85a0) with the speech bank's voice [0x571124 + 12
@@ -1897,20 +1986,21 @@ std::optional<reg32> sayCarPhraseOf(App* app, CPU& cpu, reg32 handedOn, bool byV
     put(app, line + kLineHanded, handedOn);
     put(app, line + kLineMark, phrase == kDispatcherPhrase ? (byVoice ? kMarkVoice : kMarkDispatcher) : kMarkOther);
     put(app, line + kLineCar, car);
-    return guest::watcomEax(app, cpu, kSpeechLine, {line});
+    return sayLine(app, cpu, line);
 }
 
 /* 0x40a580: sayCarPhraseOf the phrase ebx by the car ecx, eax handed on, by its voice where edx, the
  * bank on the stack (ret 4); eax as the code leaves it. */
-void sayCarPhrase(App* app, CPU& cpu)
+x86::reg32 sayCarPhrase(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(
-        cpu,
-        [&, handedOn = cpu.eax, byVoice = cpu.edx != 0, phrase = cpu.ebx, car = cpu.ecx, bank = at(app, cpu.esp + 4),
-         keptPhrase = cpu.esi, keptSide = cpu.edi] {
+    asThunk(
+        cpu, args,
+        [&, handedOn = args.eax, byVoice = args.edx != 0, phrase = args.ebx, car = args.ecx, bank = at(app, cpu.esp + 4),
+         keptPhrase = args.esi, keptSide = args.edi] {
             return sayCarPhraseOf(app, cpu, handedOn, byVoice, phrase, car, bank, keptPhrase, keptSide);
         },
         4);
+    return args.eax;
 }
 
 // The radio's phrases' names: 8 bytes each, 7 letters at most.
@@ -1921,13 +2011,18 @@ constexpr reg32 kPhraseNames = 0x56ec90, kPhraseNameLength = 7;
 std::optional<reg32> namePhraseAs(App* app, CPU& cpu, reg32 phrase, reg32 text)
 {
     const GuestFrame frame(cpu, 8, 0);
-    return guest::watcomEax(app, cpu, kStrncpy, {phrase * 8 + kPhraseNames, text, kPhraseNameLength});
+    const reg32 buffer = guest::direct<0x4e0e30, watcom::clib::strncpy>(app, cpu, phrase * 8 + kPhraseNames, text,
+                                                                         kPhraseNameLength);
+    if (cpu.terminate)
+        return std::nullopt;
+    return buffer;
 }
 
 /* 0x40a6d0: namePhraseAs the phrase eax from the text edx; eax as strncpy leaves it. */
-void namePhrase(App* app, CPU& cpu)
+x86::reg32 namePhrase(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, phrase = cpu.eax, text = cpu.edx] { return namePhraseAs(app, cpu, phrase, text); });
+    asThunk(cpu, args, [&, phrase = args.eax, text = args.edx] { return namePhraseAs(app, cpu, phrase, text); });
+    return args.eax;
 }
 
 /* The radio's phrases named at the race's start (ALLU, u24, u31, GO24, 10-4, inPrst, join, resume,
@@ -1960,9 +2055,10 @@ std::optional<reg32> namePhrasesOf(App* app, CPU& cpu)
 }
 
 /* 0x40a6f0: namePhrasesOf; eax as the code leaves it. */
-void namePhrases(App* app, CPU& cpu)
+x86::reg32 namePhrases(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&] { return namePhrasesOf(app, cpu); });
+    asThunk(cpu, args, [&] { return namePhrasesOf(app, cpu); });
+    return args.eax;
 }
 
 // The radio's load past which no message of any weight is said.
@@ -1978,26 +2074,28 @@ reg32 radioFreeFor(App* app, reg32 weight, reg32 car)
 }
 
 /* 0x40a910: radioFreeFor the weight eax and the car edx, in eax. */
-void radioFree(App* app, CPU& cpu)
+x86::reg32 radioFree(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, weight = cpu.eax, car = cpu.edx] { return radioFreeFor(app, weight, car); });
+    asThunk(cpu, args, [&, weight = args.eax, car = args.edx] { return radioFreeFor(app, weight, car); });
+    return args.eax;
 }
 
 /* 0x40a940, 0x40aea0, 0x40b7f0: empty -- the radio's message done, a car's description's hook, and a
  * message of nothing (it pushes ebx and edx too): nothing but the return. */
-void radioNothing(App*, CPU& cpu)
+x86::reg32 radioNothing(App* app, x86::CPU& cpu, x86::Args& args)
 {
     cpu.esp += 4;
+    return args.eax;
 }
 
-void radioNothingToo(App* app, CPU& cpu)
+x86::reg32 radioNothingToo(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    radioNothing(app, cpu);
+    return radioNothing(app, cpu, args);
 }
 
-void radioNothingThree(App* app, CPU& cpu)
+x86::reg32 radioNothingThree(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    radioNothing(app, cpu);
+    return radioNothing(app, cpu, args);
 }
 
 /* 0x40b7f0's: a message of nothing for the cop: nothing at all. */
@@ -2012,12 +2110,13 @@ void quietVoiceOf(App* app, reg32 voice)
 }
 
 /* 0x40a950: quietVoiceOf the voice eax where edx is 1. */
-void quietVoice(App* app, CPU& cpu)
+x86::reg32 quietVoice(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, voice = cpu.eax, quiet = cpu.edx == 1] {
+    asThunk(cpu, args, [&, voice = args.eax, quiet = args.edx == 1] {
         if (quiet)
             quietVoiceOf(app, voice);
     });
+    return args.eax;
 }
 
 // The voice that spoke last.
@@ -2069,9 +2168,10 @@ std::optional<reg32> sayVoicePhraseOf(App* app, CPU& cpu, reg32 car, bool asked)
 }
 
 /* 0x40a970: sayVoicePhraseOf the car eax, asked where edx; eax as the code leaves it. */
-void sayVoicePhrase(App* app, CPU& cpu)
+x86::reg32 sayVoicePhrase(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax, asked = cpu.edx != 0] { return sayVoicePhraseOf(app, cpu, car, asked); });
+    asThunk(cpu, args, [&, car = args.eax, asked = args.edx != 0] { return sayVoicePhraseOf(app, cpu, car, asked); });
+    return args.eax;
 }
 
 // The frames a voice keeps quiet before it gives its call again.
@@ -2088,13 +2188,14 @@ std::optional<reg32> sayCallSignOf(App* app, CPU& cpu, reg32 car)
         return car;
     put(app, at(app, car + kCarVoice) * 4 + kVoiceSpoke, 0);
     const CallSlot slot(cpu);
-    return sayPhraseOf(app, cpu, 0, true, at(app, car + kCarVoice) + kCallSign, car, 0, cpu.edi);
+    return sayPhraseOf(app, cpu, 0, true, at(app, car + kCarVoice) + kCallSign, car, 0, g_callerEdi);
 }
 
 /* 0x40aa20: sayCallSignOf the car eax; eax as the code leaves it. */
-void sayCallSign(App* app, CPU& cpu)
+x86::reg32 sayCallSign(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { return sayCallSignOf(app, cpu, car); });
+    asThunk(cpu, args, [&, car = args.eax] { return sayCallSignOf(app, cpu, car); });
+    return args.eax;
 }
 
 /* The phrase said by the dispatcher, of no car (no voice of the 8: nothing kept in the line).  What
@@ -2107,9 +2208,10 @@ std::optional<reg32> sayPhraseOnlyOf(App* app, CPU& cpu, reg32 phrase)
 }
 
 /* 0x40aa70: sayPhraseOnlyOf the phrase eax; eax as the code leaves it. */
-void sayPhraseOnly(App* app, CPU& cpu)
+x86::reg32 sayPhraseOnly(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, phrase = cpu.eax] { return sayPhraseOnlyOf(app, cpu, phrase); });
+    asThunk(cpu, args, [&, phrase = args.eax] { return sayPhraseOnlyOf(app, cpu, phrase); });
+    return args.eax;
 }
 
 /* The car's unit (its voice + 0x14) said by the dispatcher (nothing kept in the line).  What the code
@@ -2122,9 +2224,10 @@ std::optional<reg32> sayUnitOf(App* app, CPU& cpu, reg32 car)
 }
 
 /* 0x40aa90: sayUnitOf the car eax; eax as the code leaves it. */
-void sayUnit(App* app, CPU& cpu)
+x86::reg32 sayUnit(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { return sayUnitOf(app, cpu, car); });
+    asThunk(cpu, args, [&, car = args.eax] { return sayUnitOf(app, cpu, car); });
+    return args.eax;
 }
 // A "help" pending.
 constexpr reg32 kHelpPending = 0x5524f4;
@@ -2214,9 +2317,10 @@ std::optional<reg32> sayDescriptionOf(App* app, CPU& cpu, reg32 whom, reg32 car,
 }
 
 /* 0x40ab20: sayDescriptionOf the kind ebx about the car edx by whom eax; eax as the code leaves it. */
-void sayDescription(App* app, CPU& cpu)
+x86::reg32 sayDescription(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, whom = cpu.eax, car = cpu.edx, kind = cpu.ebx] { return sayDescriptionOf(app, cpu, whom, car, kind); });
+    asThunk(cpu, args, [&, whom = args.eax, car = args.edx, kind = args.ebx] { return sayDescriptionOf(app, cpu, whom, car, kind); });
+    return args.eax;
 }
 
 // Each voice's last place said and its prefix ("100+"-like).
@@ -2354,9 +2458,10 @@ std::optional<reg32> sayLocationOf(App* app, CPU& cpu, reg32 whom, reg32 car)
 }
 
 /* 0x40aeb0: sayLocationOf the car edx by whom eax; eax as the code leaves it. */
-void sayLocation(App* app, CPU& cpu)
+x86::reg32 sayLocation(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, whom = cpu.eax, car = cpu.edx] { return sayLocationOf(app, cpu, whom, car); });
+    asThunk(cpu, args, [&, whom = args.eax, car = args.edx] { return sayLocationOf(app, cpu, whom, car); });
+    return args.eax;
 }
 // The speeds past which the speed is said (doubles), the phrases "200+", "150+", "100+" and the last.
 constexpr reg32 kSpeedSaid[] = {0x53666c, 0x536674, 0x53667c, 0x536684};
@@ -2376,7 +2481,7 @@ std::optional<reg32> saySpeedOf(App* app, CPU& cpu, reg32 whom, reg32 about, reg
         if (!isAbove(speed, f64(app, kSpeedSaid[k])))
             continue;
         const CallSlot slot(cpu);
-        const std::optional<reg32> said = sayPhraseOf(app, cpu, 0, whom != 0, kSpeedPhrases[k], car, whom, cpu.edi);
+        const std::optional<reg32> said = sayPhraseOf(app, cpu, 0, whom != 0, kSpeedPhrases[k], car, whom, g_callerEdi);
         if (!said)
             return std::nullopt;
         return *said;
@@ -2385,9 +2490,10 @@ std::optional<reg32> saySpeedOf(App* app, CPU& cpu, reg32 whom, reg32 about, reg
 }
 
 /* 0x40b190: saySpeedOf the car edx for the car ebx, by whom eax; eax as the code leaves it. */
-void saySpeed(App* app, CPU& cpu)
+x86::reg32 saySpeed(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, whom = cpu.eax, about = cpu.edx, car = cpu.ebx] { return saySpeedOf(app, cpu, whom, about, car); });
+    asThunk(cpu, args, [&, whom = args.eax, about = args.edx, car = args.ebx] { return saySpeedOf(app, cpu, whom, about, car); });
+    return args.eax;
 }
 
 namespace
@@ -2495,9 +2601,10 @@ std::optional<reg32> radioSpottedOf(App* app, CPU& cpu, reg32 car)
 }
 
 /* 0x40b220: radioSpottedOf the cop eax; eax as the code leaves it. */
-void radioSpotted(App* app, CPU& cpu)
+x86::reg32 radioSpotted(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { return radioSpottedOf(app, cpu, car); });
+    asThunk(cpu, args, [&, car = args.eax] { return radioSpottedOf(app, cpu, car); });
+    return args.eax;
 }
 
 /* A cop's report that it is in pursuit of its chased car (a cop's; the radio free at weight 4): of the
@@ -2545,9 +2652,10 @@ std::optional<reg32> radioPursuitOf(App* app, CPU& cpu, reg32 car)
 }
 
 /* 0x40b330: radioPursuitOf the cop eax; eax as the code leaves it. */
-void radioPursuit(App* app, CPU& cpu)
+x86::reg32 radioPursuit(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { return radioPursuitOf(app, cpu, car); });
+    asThunk(cpu, args, [&, car = args.eax] { return radioPursuitOf(app, cpu, car); });
+    return args.eax;
 }
 
 // The frames a voice keeps quiet before it says it lost the car.
@@ -2581,9 +2689,10 @@ std::optional<reg32> radioLostOf(App* app, CPU& cpu, reg32 car)
 }
 
 /* 0x40b480: radioLostOf the cop eax; eax as the code leaves it. */
-void radioLost(App* app, CPU& cpu)
+x86::reg32 radioLost(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { return radioLostOf(app, cpu, car); });
+    asThunk(cpu, args, [&, car = args.eax] { return radioLostOf(app, cpu, car); });
+    return args.eax;
 }
 
 /* A cop's call for backup on its chased car (a cop's; the radio free at weight 3): its call sign, its
@@ -2627,9 +2736,10 @@ std::optional<reg32> radioBackupOf(App* app, CPU& cpu, reg32 car)
 }
 
 /* 0x40b530: radioBackupOf the cop eax; eax as the code leaves it. */
-void radioBackup(App* app, CPU& cpu)
+x86::reg32 radioBackup(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { return radioBackupOf(app, cpu, car); });
+    asThunk(cpu, args, [&, car = args.eax] { return radioBackupOf(app, cpu, car); });
+    return args.eax;
 }
 
 /* A cop on patrol, the car it chases not a cop's (the radio free at weight 4): no voice last, its call
@@ -2656,9 +2766,10 @@ std::optional<reg32> radioPatrolOf(App* app, CPU& cpu, reg32 car)
 }
 
 /* 0x40b670: radioPatrolOf the cop eax; eax as the code leaves it. */
-void radioPatrol(App* app, CPU& cpu)
+x86::reg32 radioPatrol(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { return radioPatrolOf(app, cpu, car); });
+    asThunk(cpu, args, [&, car = args.eax] { return radioPatrolOf(app, cpu, car); });
+    return args.eax;
 }
 
 /* A roadblock (the radio free at weight 4): no voice last, the call sign, the description of kind 0xf,
@@ -2689,9 +2800,10 @@ std::optional<reg32> radioRoadblockOf(App* app, CPU& cpu, reg32 car)
 }
 
 /* 0x40b720: radioRoadblockOf the cop eax; eax as the code leaves it. */
-void radioRoadblock(App* app, CPU& cpu)
+x86::reg32 radioRoadblock(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { return radioRoadblockOf(app, cpu, car); });
+    asThunk(cpu, args, [&, car = args.eax] { return radioRoadblockOf(app, cpu, car); });
+    return args.eax;
 }
 
 /* A message of the kind 0x1c (a ticket) or 0x1b (an arrest): the radio free at weight 3, the call
@@ -2721,9 +2833,10 @@ std::optional<reg32> radioOfKindOf(App* app, CPU& cpu, reg32 car, reg32 kind)
 
 /* 0x40b860, 0x40b910: radioOfKindOf the cop eax, a ticket (0x1c) or an arrest (0x1b); eax as the code
  * leaves it. */
-void radioOfKind(App* app, CPU& cpu, reg32 kind)
+x86::reg32 radioOfKind(App* app, CPU& cpu, x86::Args& args, reg32 kind)
 {
-    adapts(cpu, [&, car = cpu.eax] { return radioOfKindOf(app, cpu, car, kind); });
+    asThunk(cpu, args, [&, car = args.eax] { return radioOfKindOf(app, cpu, car, kind); });
+    return args.eax;
 }
 
 // The messages' kinds: a ticket, an arrest.
@@ -2742,15 +2855,15 @@ std::optional<reg32> radioArrestOf(App* app, CPU& cpu, reg32 car)
 }
 
 /* 0x40b860: a ticket (kind 0x1c). */
-void radioTicket(App* app, CPU& cpu)
+x86::reg32 radioTicket(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    radioOfKind(app, cpu, kTicketKind);
+    return radioOfKind(app, cpu, args, kTicketKind);
 }
 
 /* 0x40b910: an arrest (kind 0x1b). */
-void radioArrest(App* app, CPU& cpu)
+x86::reg32 radioArrest(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    radioOfKind(app, cpu, kArrestKind);
+    return radioOfKind(app, cpu, args, kArrestKind);
 }
 
 /* The car stopped, `how` (the kinds 0x20, 0x1f -- said by the voice of the car -- and 0x21): the radio
@@ -2783,15 +2896,16 @@ std::optional<StoppedLeft> radioStoppedOf(App* app, CPU& cpu, reg32 car, reg32 h
 }
 
 /* 0x40b9c0: radioStoppedOf the car eax, how edx; eax as the code leaves it. */
-void radioStopped(App* app, CPU& cpu)
+x86::reg32 radioStopped(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const auto left = [&, car = cpu.eax, how = cpu.edx]() -> std::optional<reg32> {
+    const auto left = [&, car = args.eax, how = args.edx]() -> std::optional<reg32> {
         const std::optional<StoppedLeft> stopped = radioStoppedOf(app, cpu, car, how);
         if (!stopped)
             return std::nullopt;
         return stopped->eax;
     };
-    adapts(cpu, left);
+    asThunk(cpu, args, left);
+    return args.eax;
 }
 
 /* An ambulance called (kind 0x22): the radio free at weight 4, the call sign, the voice's reply, the
@@ -2823,9 +2937,10 @@ std::optional<reg32> radioAmbulanceOf(App* app, CPU& cpu, reg32 car)
 }
 
 /* 0x40bac0: radioAmbulanceOf the cop eax; eax as the code leaves it. */
-void radioAmbulance(App* app, CPU& cpu)
+x86::reg32 radioAmbulance(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { return radioAmbulanceOf(app, cpu, car); });
+    asThunk(cpu, args, [&, car = args.eax] { return radioAmbulanceOf(app, cpu, car); });
+    return args.eax;
 }
 
 /* Spikes laid (kind 0x19, now and then 0x1a and the place too): the radio free at weight 4, the call
@@ -2846,9 +2961,10 @@ std::optional<reg32> radioSpikesOf(App* app, CPU& cpu, reg32 car)
 }
 
 /* 0x40bba0: radioSpikesOf the cop eax; eax as the code leaves it. */
-void radioSpikes(App* app, CPU& cpu)
+x86::reg32 radioSpikes(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { return radioSpikesOf(app, cpu, car); });
+    asThunk(cpu, args, [&, car = args.eax] { return radioSpikesOf(app, cpu, car); });
+    return args.eax;
 }
 
 /* A cop's short message of the kind (the radio free at weight 3): the call sign, the voice's reply and
@@ -2866,9 +2982,10 @@ std::optional<reg32> radioShortOf(App* app, CPU& cpu, reg32 car, reg32 kind, boo
 }
 
 /* 0x40bc30, 0x40bca0, 0x40bd00: radioShortOf the cop eax; eax as the code leaves it. */
-void radioShort(App* app, CPU& cpu, reg32 kind, bool place)
+x86::reg32 radioShort(App* app, CPU& cpu, x86::Args& args, reg32 kind, bool place)
 {
-    adapts(cpu, [&, car = cpu.eax] { return radioShortOf(app, cpu, car, kind, place); });
+    asThunk(cpu, args, [&, car = args.eax] { return radioShortOf(app, cpu, car, kind, place); });
+    return args.eax;
 }
 
 // The short messages' kinds: a call for help (with the place), the pursuit resumed, called off.
@@ -2893,21 +3010,21 @@ std::optional<reg32> radioAbortOf(App* app, CPU& cpu, reg32 car)
 }
 
 /* 0x40bc30: a call for help (kind 0x23, with the place). */
-void radioHelp(App* app, CPU& cpu)
+x86::reg32 radioHelp(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    radioShort(app, cpu, kHelpKind, true);
+    return radioShort(app, cpu, args, kHelpKind, true);
 }
 
 /* 0x40bca0: the pursuit resumed (kind 0x1d). */
-void radioResume(App* app, CPU& cpu)
+x86::reg32 radioResume(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    radioShort(app, cpu, kResumeKind, false);
+    return radioShort(app, cpu, args, kResumeKind, false);
 }
 
 /* 0x40bd00: the pursuit called off (kind 0x1e). */
-void radioAbort(App* app, CPU& cpu)
+x86::reg32 radioAbort(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    radioShort(app, cpu, kAbortKind, false);
+    return radioShort(app, cpu, args, kAbortKind, false);
 }
 
 // resetOnTrack's: how far it puts a car at most; the height a car is put back at (a float), its scale
@@ -2955,11 +3072,14 @@ std::optional<reg32> resetOnTrackOf(App* app, CPU& cpu, reg32 car, reg32 record)
     if (!feCore<0x428d60, frontend::loada::carPlaceOnRoad>(app, cpu, car, reg32(target)))
         return std::nullopt;
     float height = f32At(app, kResetHeight);
-    // eax at the call as the code leaves it there, the last word it pushes through it (+0xa0): a
-    // stand-in of the check's hands eax back now and then.
-    const std::optional<reg32> tunnel =
-        callPushing(app, cpu, kInTunnel, {at(app, car + kCarPlaceZ)},
-                    {at(app, car + kCarNode), at(app, car + kCarPlaceZ), at(app, car + kCarHeight), at(app, car + kCarPlace)});
+    // eax at the call as the code leaves it there, the last word it pushes through it (+0xa0).
+    const std::optional<reg32> tunnel = callPushing(
+        cpu, {at(app, car + kCarNode), at(app, car + kCarPlaceZ), at(app, car + kCarHeight), at(app, car + kCarPlace)}, app,
+        [&] {
+            const std::optional<reg32> in = guest::direct<0x420bf0, trackdata::placeInTunnel>(
+                app, cpu, cpu.esp, at(app, cpu.esp + 12));
+            return cpu.terminate ? std::optional<reg32>() : in;
+        });
     if (!tunnel)
         return std::nullopt;
     if (*tunnel != 0)
@@ -2996,9 +3116,10 @@ std::optional<reg32> resetOnTrackOf(App* app, CPU& cpu, reg32 car, reg32 record)
 }
 
 /* 0x40bd80: resetOnTrackOf the car eax by the radar's record edx; eax as the code leaves it. */
-void resetOnTrack(App* app, CPU& cpu)
+x86::reg32 resetOnTrack(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax, record = cpu.edx] { return resetOnTrackOf(app, cpu, car, record); });
+    asThunk(cpu, args, [&, car = args.eax, record = args.edx] { return resetOnTrackOf(app, cpu, car, record); });
+    return args.eax;
 }
 
 // The chases' scores cleared at a cop's start (20 bytes); its marks cleared then, as a word at +0x620:
@@ -3039,13 +3160,14 @@ std::optional<reg32> copRestartOf(App* app, CPU& cpu, reg32 cop)
     }
     if (!guest::direct<0x40ddb0, aiplan::pickLane>(app, cpu, cop))
         return std::nullopt;
-    return guest::watcomEax(app, cpu, kCopFinish, {cop});
+    return feCore<0x40de30, frontend::sima::laneSteer>(app, cpu, cop);
 }
 
 /* 0x40bf50: copRestartOf the cop eax; eax as the code leaves it. */
-void copRestart(App* app, CPU& cpu)
+x86::reg32 copRestart(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, cop = cpu.eax] { return copRestartOf(app, cpu, cop); });
+    asThunk(cpu, args, [&, cop = args.eax] { return copRestartOf(app, cpu, cop); });
+    return args.eax;
 }
 
 // The traffic's top speed (a double).
@@ -3058,10 +3180,12 @@ Float trafficTopSpeed(App* app)
 }
 
 /* 0x40bfe0: trafficTopSpeed onto the x87's stack. */
-void topSpeedFactor(App* app, CPU& cpu)
+x86::reg32 topSpeedFactor(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    cpu.fpu.push(trafficTopSpeed(app));
+    args.floatSet = true;
+    args.floatResult = double(trafficTopSpeed(app));
     cpu.esp += 4;
+    return args.eax;
 }
 
 // followChasedCar's: the target's scale going the other way, the level's scale and offset by the chased
@@ -3114,9 +3238,10 @@ reg32 followChasedCar(App* app, reg32 car)
 }
 
 /* 0x40bff0: followChasedCar for the car eax, eax as the code leaves it. */
-void followChased(App* app, CPU& cpu)
+x86::reg32 followChased(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { return followChasedCar(app, car); });
+    asThunk(cpu, args, [&, car = args.eax] { return followChasedCar(app, car); });
+    return args.eax;
 }
 
 // The speed of the car followed under which a car going backwards follows it backwards (a double).
@@ -3163,9 +3288,10 @@ std::optional<reg32> followCarOf(App* app, CPU& cpu, reg32 car)
 }
 
 /* 0x40c160: followCarOf the car eax; eax as the code leaves it. */
-void followCar(App* app, CPU& cpu)
+x86::reg32 followCar(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { return followCarOf(app, cpu, car); });
+    asThunk(cpu, args, [&, car = args.eax] { return followCarOf(app, cpu, car); });
+    return args.eax;
 }
 
 // The race's frame from which the countdowns run; the cars still in, the cars out.
@@ -3197,9 +3323,10 @@ std::optional<bool> countdownDoneOf(App* app, CPU& cpu, reg32 car)
 }
 
 /* 0x40c210: countdownDoneOf the car eax, 1 or 0 in eax. */
-void countdownDone(App* app, CPU& cpu)
+x86::reg32 countdownDone(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { return countdownDoneOf(app, cpu, car); });
+    asThunk(cpu, args, [&, car = args.eax] { return countdownDoneOf(app, cpu, car); });
+    return args.eax;
 }
 
 /* The traffic's car's target speed: its node's (0x40ed40) + 1, no more than the traffic's top speed,
@@ -3232,9 +3359,10 @@ std::optional<reg32> trafficTargetOf(App* app, CPU& cpu, reg32 car)
 }
 
 /* 0x40c270: trafficTargetOf the car eax; eax as the code leaves it. */
-void trafficTarget(App* app, CPU& cpu)
+x86::reg32 trafficTarget(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { return trafficTargetOf(app, cpu, car); });
+    asThunk(cpu, args, [&, car = args.eax] { return trafficTargetOf(app, cpu, car); });
+    return args.eax;
 }
 
 // The traffic's random numbers: the state, the last full product, the multiplier.
@@ -3295,13 +3423,16 @@ std::optional<reg32> trafficStepOf(App* app, CPU& cpu, reg32 car)
     else
         putFloat(app, car + kCarSpeedAbs, float(-speed));
     put(app, kTrafficRandomFull, full);
-    return guest::watcomEax(app, cpu, kSpeedLimit, {car});
+    if (!guest::direct<0x40cd80, aiplan::putOnTrack>(app, cpu, car))
+        return std::nullopt;
+    return car;  // (the car, as 0x40cd80 leaves it)
 }
 
 /* 0x40c2f0: trafficStepOf the car eax; eax as the code leaves it. */
-void trafficStep(App* app, CPU& cpu)
+x86::reg32 trafficStep(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { return trafficStepOf(app, cpu, car); });
+    asThunk(cpu, args, [&, car = args.eax] { return trafficStepOf(app, cpu, car); });
+    return args.eax;
 }
 
 }  // namespace pursuit

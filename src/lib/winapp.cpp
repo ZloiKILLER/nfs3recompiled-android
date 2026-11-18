@@ -40,8 +40,11 @@ void WinApplication::traceNewCalls()
     s_traceApi = 2;
 }
 
-void WinApplication::traceCall(const Method& method, x86::reg32 address)
+void WinApplication::traceCall(x86::reg32 address)
 {
+    const auto it = m_methods.find(address - 0x400000);
+    static const Method none;
+    const Method& method = it != m_methods.end() ? it->second : none;
     const unsigned thread = unsigned(SDL_GetCurrentThreadID());
     if (s_traceApi != 2)
     {
@@ -219,7 +222,7 @@ void WinApplication::registerMethod(x86::reg32 pointer, Method method)
 {
     NFS2_ASSERT(m_methods.find(pointer-0x400000) == m_methods.end());
     m_methods[pointer-0x400000] = method;
-    /* And into the page table dynamic_call reads, while there is room in its
+    /* And into the page table callAddress reads, while there is room in its
      * 16-bit places; one past that is found in the map instead. */
     const x86::reg32 offset = pointer - kMethodBase;
     if (offset < kMethodSpan && m_methodList.size() <= 0xffff)
@@ -239,23 +242,10 @@ void WinApplication::replaceMethod(x86::reg32 pointer, Method method)
     registerMethod(pointer, std::move(method));
 }
 
-void WinApplication::dynamicCallElsewhere(x86::reg32 address, x86::CPU& cpu)
+ThunkPtr WinApplication::thunkElsewhere(x86::reg32 address) const
 {
-    std::unordered_map<x86::reg32, Method>::const_iterator it = m_methods.find(address - 0x400000);
-    if (it == m_methods.end())
-    {
-        /* Running the miss used to read the method pointer straight out of
-         * end(), which libc++ represents as a null node -- a SIGSEGV at offset
-         * 0x30 naming neither the caller nor the address it wanted.  Skipping
-         * the call leaves the guest registers as the caller left them, which
-         * is survivable; the crash was not. */
-        reportMissingMethod(address);
-        return;
-    }
-    const Method& m = it->second;
-    if (traceApi())
-        traceCall(m, address);
-    m(this, cpu);
+    const auto it = m_methods.find(address - 0x400000);
+    return it == m_methods.end() ? nullptr : it->second.thunk;
 }
 
 void WinApplication::reportMissingMethod(x86::reg32 address)
@@ -315,14 +305,14 @@ int WinApplication::runCallback(x86::CPU& cpu, x86::reg32 entryPoint, x86::reg32
 int WinApplication::runOn(x86::CPU& cpu, const MemMap& threadStorage, const MemMap& threadStack,
                           x86::reg32 entryPoint, x86::reg32 parameter, bool threadLock)
 {
-    cpu.init(threadStorage.getBlockStart(), entryPoint);
-    getMemory<Mutex*>(cpu.efs + 8) = threadLock ? m_executionContext : nullptr;
+    cpu.init(threadStorage.getBlockStart());
+    getMemory<Mutex*>(cpu.threadBlock + 8) = threadLock ? m_executionContext : nullptr;
     LockContext ctx(*this, cpu);
     cpu.esp = threadStack.getBlockStart() + threadStack.getBlockSize() - 8;
     getMemory<x86::reg32>(cpu.esp + 4) = parameter;
-    getMemory<x86::reg32>(cpu.esp) = cpu.ip;
-    dynamic_call(entryPoint, cpu);
-    return int(cpu.eax);
+    getMemory<x86::reg32>(cpu.esp) = entryPoint;  // the return address's slot
+    x86::Args args;
+    return int(callAddress(entryPoint, cpu, args));
 }
 
 /* KeepContext's count: while it is above zero, this thread neither hands the
@@ -347,7 +337,7 @@ void WinApplication::lockContext(const x86::CPU& cpu)
     {
         return;
     }
-    Mutex* executionContext = getMemory<Mutex*>(cpu.efs + 8);
+    Mutex* executionContext = getMemory<Mutex*>(cpu.threadBlock + 8);
     NFS2_ASSERT(executionContext);
     if (executionContext)
     {
@@ -392,7 +382,7 @@ void WinApplication::yieldContext(const x86::CPU& cpu)
     {
         return;
     }
-    Mutex* executionContext = getMemory<Mutex*>(cpu.efs + 8);
+    Mutex* executionContext = getMemory<Mutex*>(cpu.threadBlock + 8);
     if (!executionContext || !contextWanted()
         || SDL_GetTicksNS() - m_contextWantedSince.load(std::memory_order_relaxed) < kSliceNs)
     {
@@ -430,7 +420,7 @@ void WinApplication::unlockContext(const x86::CPU& cpu)
     {
         return;
     }
-    Mutex* executionContext = getMemory<Mutex*>(cpu.efs + 8);
+    Mutex* executionContext = getMemory<Mutex*>(cpu.threadBlock + 8);
     NFS2_ASSERT(executionContext);
     if (executionContext)
     {
@@ -440,11 +430,11 @@ void WinApplication::unlockContext(const x86::CPU& cpu)
 
 void WinApplication::unmarkContext(const x86::CPU& cpu)
 {
-    Mutex* executionContext = getMemory<Mutex*>(cpu.efs + 8);
+    Mutex* executionContext = getMemory<Mutex*>(cpu.threadBlock + 8);
     if (executionContext)
     {
         executionContext->unlock();
-        getMemory<Mutex*>(cpu.efs + 8) = nullptr;
+        getMemory<Mutex*>(cpu.threadBlock + 8) = nullptr;
     }
     else
     {

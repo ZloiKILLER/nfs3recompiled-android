@@ -13,10 +13,14 @@
 #include <initializer_list>
 #include <optional>
 
-/* EA's memory manager and its memmove.  disassemble_nfs3hp.py binds each
- * address to the function of that name here (EA_MEMORY_NATIVES), and the
- * generated code calls it by name.  tools/game_checks holds each against its
- * generated code.
+/* The esp a guest call's scope began with put back at its end: what guest::EspKept did of it (the other
+ * registers are the thunks' args now). */
+namespace
+{
+using nfs3hp::guest::EspKept;
+}  // namespace
+
+/* EA's memory manager and its memmove.
  *
  * The manager is EA's cmn\memstd.c (its messages name creatememclass,
  * getfreememclass, reservememadr and purgememadr).  Memory is handed out of
@@ -54,18 +58,17 @@
  * Its memmove (0x4ea4f0) copies backwards where the copy overlaps its source
  * from above, and otherwise by the forward copy (0x5033e5, mix::copy).
  *
- * Each is a typed function under a name of its own, with an adapter under the
- * game's name for the callers still on registers and the dispatch: it leaves
+ * Each is a typed function under a name of its own, with a thunk under the
+ * game's name for the callers still on registers and the calls through a pointer: it leaves
  * eax, and the registers the code does not keep, as the code leaves them.
  * This file's own are called as C++ (reservememadr and purgememadr too), and
  * so are the locks made and freed (native_ea_threads.h's, guest::direct).
  * Error (0x401010), the game's fill (0x4e070c), sprintf (0x4df690), the
  * forward copy and the critical sections' Windows functions are called by
  * address, their registers kept
- * (KeptRegisters), at the depth the code calls them from: Error hands
+ * (EspKept), at the depth the code calls them from: Error hands
  * vsprintf its arguments' address, and creatememclass's names are made in its
- * frame on the guest's stack, where sprintf's stand-in logs the frame's words
- * past its arguments.  The free list's walks and the copies are host loops
+ * frame on the guest's stack.  The free list's walks and the copies are host loops
  * over the guest's memory. */
 namespace nfs3hp
 {
@@ -172,31 +175,6 @@ reg32 nameLength(App* app, reg32 name)
     return reg32(std::strlen(reinterpret_cast<const char*>(&app->getMemory<reg8>(name)))) + 1;
 }
 
-/* The registers a callee by address keeps as the code has them, put back after it. */
-class KeptRegisters
-{
-public:
-    explicit KeptRegisters(CPU& cpu)
-        : cpu_(cpu), ebx_(cpu.ebx), ecx_(cpu.ecx), edx_(cpu.edx), esi_(cpu.esi), edi_(cpu.edi), ebp_(cpu.ebp),
-          esp_(cpu.esp)
-    {
-    }
-    ~KeptRegisters()
-    {
-        cpu_.ebx = ebx_;
-        cpu_.ecx = ecx_;
-        cpu_.edx = edx_;
-        cpu_.esi = esi_;
-        cpu_.edi = edi_;
-        cpu_.ebp = ebp_;
-        cpu_.esp = esp_;
-    }
-
-private:
-    CPU& cpu_;
-    reg32 ebx_, ecx_, edx_, esi_, edi_, ebp_, esp_;
-};
-
 /* The code's depth on the guest's stack under esp on entry: `pushed` bytes of registers (and a
  * call's return address slot), then `bytes` of its frame; esp under them while it lasts. */
 class GuestFrame
@@ -227,52 +205,37 @@ bool error(App* app, CPU& cpu, reg32 function, reg32 line, std::initializer_list
     return !cpu.terminate;
 }
 
-/* `bytes` at `address` cleared by the game's fill -- by address: where it leaves eax (past what it
- * cleared) reaches the code's exit, which ea::clearBytes does not give back. */
+/* `bytes` at `address` cleared by the game's fill (none of the callers' exits takes what it leaves:
+ * each sets eax after it). */
 bool clear(App* app, CPU& cpu, reg32 address, reg32 bytes)
 {
-    const KeptRegisters kept(cpu);
-    cpu.eax = address;
-    cpu.edx = bytes;
-    return guest::call(app, cpu, kFillZero);
+    guest::direct<kFillZero, ea::clearBytes>(app, cpu, address, bytes);
+    return !cpu.terminate;
 }
 
 /* sprintf of `format` with `name` into `buffer`, at esp as it is. */
 bool print(App* app, CPU& cpu, reg32 buffer, reg32 format, reg32 name)
 {
-    const KeptRegisters kept(cpu);
     guest::direct<0x4df690, watcom::clib::sprintf>(app, cpu, buffer, format, guest::Words({name}));
     return !cpu.terminate;
 }
 
 /* EnterCriticalSection or LeaveCriticalSection (`Function`, the import's slot `Slot`) on `lock`:
- * the port's own, called as C++ (native_windows.h); in the check through the slot, stdcall.
- * Windows' functions keep ebx, esi, edi and ebp; edx, which reservememadr does not keep, is handed
- * over as the code has it there (`edx`) and what the function leaves in it given back there. */
+ * the port's own, called as C++ (native_windows.h), stdcall.
+ * What it leaves in edx (reservememadr does not keep edx) is nobody's. */
 template <reg32 Slot, auto Function>
-bool section(App* app, CPU& cpu, reg32 lock, reg32& edx)
+bool section(App* app, CPU& cpu, reg32 lock)
 {
-    const KeptRegisters kept(cpu);
-    cpu.edx = edx;
-    if (!guest::windows<Slot, Function>(app, cpu, lock))
-        return false;
-    edx = cpu.edx;
-    return true;
+    return guest::windows<Slot, Function>(app, cpu, lock).has_value();
 }
 
-/* The memmove's forward copy: `count` bytes from `from` to `to`, ecx kept on the stack over it as
- * the code keeps it.  What it leaves in eax, edx and ebx the memmove leaves. */
+/* The memmove's forward copy (native_mix.cpp's, no typed function: by address): `count` bytes from
+ * `from` to `to`, ecx kept on the stack over it as the code keeps it.  It leaves eax and edx past
+ * the bytes and ebx 0, which the memmove leaves (its thunk). */
 bool forwardCopy(App* app, CPU& cpu, reg32 to, reg32 from, reg32 count)
 {
     const GuestFrame frame(cpu, 4, 0);
-    const reg32 kept = cpu.ecx;
-    cpu.eax = to;
-    cpu.edx = from;
-    cpu.ebx = count;
-    if (!guest::call(app, cpu, kForwardCopy))
-        return false;
-    cpu.ecx = kept;
-    return true;
+    return guest::pointerCall(app, cpu, kForwardCopy, {to, from, count}).has_value();
 }
 
 /* Whether a copy of `count` bytes from `from` to `to` lands on its source from above. */
@@ -526,8 +489,6 @@ std::optional<reg32> createClass(App* app, CPU& cpu, reg32 index, reg32 name, re
     const Neighbours neighbours = linkFree(app, header, freeBlock);
     if (asked.locked)
     {
-        // eax as the code has it at the call, which the lock maker's stand-in may leave.
-        cpu.eax = listLeft(app, neighbours.after, freeBlock);
         const std::optional<reg32> lock = guest::direct<0x4eb2e0, ea::newLock>(app, cpu);
         if (!lock)
             return std::nullopt;
@@ -586,13 +547,13 @@ std::optional<reg32> reserveBlock(App* app, CPU& cpu, reg32 name, reg32 size, re
     const reg32 cls = classOf(app, flags);
     left = {flags, 0};
     if (const reg32 lock = at(app, cls + kClassLock);
-        lock != 0 && !section<kEnterCriticalSection, &host::enterLock>(app, cpu, lock, left.edx))
+        lock != 0 && !section<kEnterCriticalSection, &host::enterLock>(app, cpu, lock))
         return std::nullopt;
     if (sreg32(size) < 0)
     {
         if (const reg32 lock = at(app, cls + kClassLock);
             lock != 0
-            && !section<kLeaveCriticalSection, &host::leaveLock>(app, cpu, lock, left.edx))
+            && !section<kLeaveCriticalSection, &host::leaveLock>(app, cpu, lock))
             return std::nullopt;
         if (at(app, kReportErrors) != 0)
         {
@@ -629,7 +590,7 @@ std::optional<reg32> reserveBlock(App* app, CPU& cpu, reg32 name, reg32 size, re
         {
             reg32 held = at(app, cls + kClassLock);
             if (held != 0
-                && !section<kLeaveCriticalSection, &host::leaveLock>(app, cpu, held, held))
+                && !section<kLeaveCriticalSection, &host::leaveLock>(app, cpu, held))
                 return std::nullopt;
             left = {kFileName, name};
             if (!error(app, cpu, kReserveName, kOutOfMemoryLine,
@@ -675,7 +636,7 @@ std::optional<reg32> reserveBlock(App* app, CPU& cpu, reg32 name, reg32 size, re
         result = block + kBlockHeader;
     }
     if (const reg32 lock = at(app, cls + kClassLock);
-        lock != 0 && !section<kLeaveCriticalSection, &host::leaveLock>(app, cpu, lock, left.edx))
+        lock != 0 && !section<kLeaveCriticalSection, &host::leaveLock>(app, cpu, lock))
         return std::nullopt;
     return result;
 }
@@ -700,10 +661,8 @@ std::optional<reg32> purgeBlock(App* app, CPU& cpu, reg32 body)
             return std::nullopt;
         return 0;
     }
-    // Every register is kept here: what the Windows functions leave in edx is nobody's.
-    reg32 scratch = 0;
     if (const reg32 lock = at(app, cls + kClassLock);
-        lock != 0 && !section<kEnterCriticalSection, &host::enterLock>(app, cpu, lock, scratch))
+        lock != 0 && !section<kEnterCriticalSection, &host::enterLock>(app, cpu, lock))
         return std::nullopt;
     reg32 merged = block;
     reg32 before = at(app, block + kBlockPrevious);
@@ -729,7 +688,7 @@ std::optional<reg32> purgeBlock(App* app, CPU& cpu, reg32 body)
     }
     linkFree(app, cls, merged);
     if (const reg32 lock = at(app, cls + kClassLock);
-        lock != 0 && !section<kLeaveCriticalSection, &host::leaveLock>(app, cpu, lock, scratch))
+        lock != 0 && !section<kLeaveCriticalSection, &host::leaveLock>(app, cpu, lock))
         return std::nullopt;
     return 1;
 }
@@ -785,172 +744,193 @@ bool moveMemory(App* app, CPU& cpu, reg32 to, reg32 from, reg32 count)
     return true;
 }
 
-void findFreeBlock(App* app, CPU& cpu);
-void findLargestFreeBlock(App* app, CPU& cpu);
-void linkFreeBlock(App* app, CPU& cpu);
-void unlinkFreeBlock(App* app, CPU& cpu);
-void clearMemClasses(App* app, CPU& cpu);
-void markMemBlock(App* app, CPU& cpu);
-void memClassOverhead(App* app, CPU& cpu);
-void memBlockOverhead(App* app, CPU& cpu);
-void creatememclass(App* app, CPU& cpu);
-void releasememclass(App* app, CPU& cpu);
-void getfreememclass(App* app, CPU& cpu);
-void largestmem(App* app, CPU& cpu);
-void largestmemclass(App* app, CPU& cpu);
-void memBlockSize(App* app, CPU& cpu);
-void memBlockName(App* app, CPU& cpu);
-void memBlockFlags(App* app, CPU& cpu);
-void reservememadr(App* app, CPU& cpu);
-void purgememadr(App* app, CPU& cpu);
-void purgememclass(App* app, CPU& cpu);
-void reservememStdcall(App* app, CPU& cpu);
-void purgememStdcall(App* app, CPU& cpu);
-void memmove(App* app, CPU& cpu);
+x86::reg32 findFreeBlock(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 findLargestFreeBlock(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 linkFreeBlock(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 unlinkFreeBlock(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 clearMemClasses(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 markMemBlock(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 memClassOverhead(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 memBlockOverhead(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 creatememclass(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 releasememclass(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 getfreememclass(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 largestmem(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 largestmemclass(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 memBlockSize(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 memBlockName(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 memBlockFlags(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 reservememadr(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 purgememadr(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 purgememclass(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 reservememStdcall(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 purgememStdcall(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 memmove(App* app, CPU& cpu, x86::Args& args);
 
 /* 0x4e1000: firstFreeBlock of class eax, edx bytes, from the end for ebx not 0. */
-void findFreeBlock(App* app, CPU& cpu)
+x86::reg32 findFreeBlock(App* app, CPU& cpu, x86::Args& args)
 {
-    cpu.eax = firstFreeBlock(app, cpu.eax, i32(cpu.edx), cpu.ebx != 0);
+    args.eax = firstFreeBlock(app, args.eax, i32(args.edx), args.ebx != 0);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4e1030: largestFreeBlock of class eax, edx bytes, from the end for ebx not 0: edx left its
  * size, ebx (from the end) the size of the sentinel the walk stopped at. */
-void findLargestFreeBlock(App* app, CPU& cpu)
+x86::reg32 findLargestFreeBlock(App* app, CPU& cpu, x86::Args& args)
 {
-    const bool fromEnd = cpu.ebx != 0;
-    const LargestFree largest = largestFreeBlock(app, cpu.eax, cpu.edx, fromEnd);
-    cpu.eax = largest.block;
-    cpu.edx = reg32(largest.size);
+    const bool fromEnd = args.ebx != 0;
+    const LargestFree largest = largestFreeBlock(app, args.eax, args.edx, fromEnd);
+    args.eax = largest.block;
+    args.edx = reg32(largest.size);
     if (fromEnd)
-        cpu.ebx = at(app, largest.stop + kBlockSize);
+        args.ebx = at(app, largest.stop + kBlockSize);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4e1080: linkFree of block edx into class eax: eax left the block after it in the list, its
  * second byte the block's flags' high byte; edx the one before. */
-void linkFreeBlock(App* app, CPU& cpu)
+x86::reg32 linkFreeBlock(App* app, CPU& cpu, x86::Args& args)
 {
-    const reg32 block = cpu.edx;
-    const Neighbours neighbours = linkFree(app, cpu.eax, block);
-    cpu.eax = listLeft(app, neighbours.after, block);
-    cpu.edx = neighbours.before;
+    const reg32 block = args.edx;
+    const Neighbours neighbours = linkFree(app, args.eax, block);
+    args.eax = listLeft(app, neighbours.after, block);
+    args.edx = neighbours.before;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4e10e0: unlinkFree of block edx (eax, its class, not looked at): eax left the block before it
  * in the list, its second byte the block's flags' high byte. */
-void unlinkFreeBlock(App* app, CPU& cpu)
+x86::reg32 unlinkFreeBlock(App* app, CPU& cpu, x86::Args& args)
 {
-    const reg32 block = cpu.edx;
+    const reg32 block = args.edx;
     const reg32 before = unlinkFree(app, block);
-    cpu.eax = listLeft(app, before, block);
+    args.eax = listLeft(app, before, block);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4e1100: the class table cleared; 1.  No callers in the game. */
-void clearMemClasses(App* app, CPU& cpu)
+x86::reg32 clearMemClasses(App* app, CPU& cpu, x86::Args& args)
 {
-    if (!clear(app, cpu, kClasses, 0x10 * 4))
-        return;
-    cpu.eax = 1;
+    if (const EspKept kept(cpu); !clear(app, cpu, kClasses, 0x10 * 4))
+        return args.eax;
+    args.eax = 1;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4e1120: markBlock of block eax, flags the first stack word, size ebx, ecx bytes of the
  * class's, name edx, the blocks before and after the second and third: eax its bytes, edx past
  * them, ebx the file the flags have it take (else the size), ecx the name's bytes (else the
  * flags); the three words taken off. */
-void markMemBlock(App* app, CPU& cpu)
+x86::reg32 markMemBlock(App* app, CPU& cpu, x86::Args& args)
 {
-    const reg32 block = cpu.eax, size = cpu.ebx, bytesOfClass = cpu.ecx, name = cpu.edx;
+    const reg32 block = args.eax, size = args.ebx, bytesOfClass = args.ecx, name = args.edx;
     const reg32 flags = at(app, cpu.esp + 4), before = at(app, cpu.esp + 8), after = at(app, cpu.esp + 0xc);
     const reg32 bytes = markBlock(app, block, flags, size, bytesOfClass, name, before, after);
-    cpu.eax = bytes;
-    cpu.edx = block + bytes;
+    args.eax = bytes;
+    args.edx = block + bytes;
     if (flags & kWhere)
-        cpu.ebx = at(app, kCalledFile);
-    cpu.ecx = name != 0 && (flags & kNamed) ? bytes - kBlockHeader - size - bytesOfClass : flags;
+        args.ebx = at(app, kCalledFile);
+    args.ecx = name != 0 && (flags & kNamed) ? bytes - kBlockHeader - size - bytesOfClass : flags;
     cpu.esp += 4 + 0xc;
+    return args.eax;
 }
 
 /* 0x4e11e0: classBytes of the class eax names. */
-void memClassOverhead(App* app, CPU& cpu)
+x86::reg32 memClassOverhead(App* app, CPU& cpu, x86::Args& args)
 {
-    cpu.eax = classBytes(app, cpu.eax);
+    args.eax = classBytes(app, args.eax);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4e11f0: blockBytes of a block of class edx named eax; edx left the class. */
-void memBlockOverhead(App* app, CPU& cpu)
+x86::reg32 memBlockOverhead(App* app, CPU& cpu, x86::Args& args)
 {
-    const reg32 flags = cpu.edx;
-    cpu.eax = blockBytes(app, cpu.eax, flags);
-    cpu.edx = classOf(app, flags);
+    const reg32 flags = args.edx;
+    args.eax = blockBytes(app, args.eax, flags);
+    args.edx = classOf(app, flags);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4e1230: createClass of class eax named edx over the ecx bytes at ebx, the stack's eight words
  * what it asks (ClassAsked): eax the free block's size, ebx the file HIGH's mark takes (else 0),
  * ecx and edx as Made; for a class out of range, edx the error's line if one was reported.  The
  * eight words taken off. */
-void creatememclass(App* app, CPU& cpu)
+x86::reg32 creatememclass(App* app, CPU& cpu, x86::Args& args)
 {
-    const reg32 index = cpu.eax, name = cpu.edx, start = cpu.ebx, bytes = cpu.ecx;
+    const reg32 index = args.eax, name = args.edx, start = args.ebx, bytes = args.ecx;
     const auto word = [&](reg32 i) { return at(app, cpu.esp + 4 + 4 * i); };
     const ClassAsked asked = {word(0),      word(1),      word(2),      word(3) != 0,
                               word(4) != 0, word(5) != 0, word(6) != 0, word(7)};
     Made made = {};
-    const std::optional<reg32> freeBytes = createClass(app, cpu, index, name, start, bytes, asked, made);
+    std::optional<reg32> freeBytes;
+    {
+        const EspKept kept(cpu);
+        freeBytes = createClass(app, cpu, index, name, start, bytes, asked, made);
+    }
     if (!freeBytes)
-        return;
-    cpu.eax = *freeBytes;
+        return args.eax;
+    args.eax = *freeBytes;
     if (sreg32(index) < 0 || sreg32(index) >= 0x10)
     {
         if (at(app, kReportErrors) != 0)
-            cpu.edx = kCreateLine;
+            args.edx = kCreateLine;
     }
     else
     {
-        cpu.ebx = asked.where ? at(app, kCalledFile) : 0;
-        cpu.ecx = made.highMark;
-        cpu.edx = made.before;
+        args.ebx = asked.where ? at(app, kCalledFile) : 0;
+        args.ecx = made.highMark;
+        args.edx = made.before;
     }
     cpu.esp += 4 + 0x20;
+    return args.eax;
 }
 
 /* 0x4e14b0: releaseClass of class eax; 1.  No callers in the game. */
-void releasememclass(App* app, CPU& cpu)
+x86::reg32 releasememclass(App* app, CPU& cpu, x86::Args& args)
 {
-    if (!releaseClass(app, cpu, cpu.eax))
-        return;
-    cpu.eax = 1;
+    if (const EspKept kept(cpu); !releaseClass(app, cpu, args.eax))
+        return args.eax;
+    args.eax = 1;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4e1500: freeClass.  No callers in the game. */
-void getfreememclass(App* app, CPU& cpu)
+x86::reg32 getfreememclass(App* app, CPU& cpu, x86::Args& args)
 {
-    const std::optional<reg32> index = freeClass(app, cpu);
+    std::optional<reg32> index;
+    {
+        const EspKept kept(cpu);
+        index = freeClass(app, cpu);
+    }
     if (!index)
-        return;
-    cpu.eax = *index;
+        return args.eax;
+    args.eax = *index;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4e1580: largestFree of the default class. */
-void largestmem(App* app, CPU& cpu)
+x86::reg32 largestmem(App* app, CPU& cpu, x86::Args& args)
 {
-    cpu.eax = largestFree(app, classOf(app, at(app, kDefaultClass)));
+    args.eax = largestFree(app, classOf(app, at(app, kDefaultClass)));
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4e15b0: largestFree of class eax. */
-void largestmemclass(App* app, CPU& cpu)
+x86::reg32 largestmemclass(App* app, CPU& cpu, x86::Args& args)
 {
-    cpu.eax = largestFree(app, classOf(app, cpu.eax));
+    args.eax = largestFree(app, classOf(app, args.eax));
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4e15d0: the size asked for of the block whose body is at `body`. */
@@ -960,10 +940,11 @@ reg32 askedSize(App* app, reg32 body)
 }
 
 /* 0x4e15d0: askedSize of the block at eax. */
-void memBlockSize(App* app, CPU& cpu)
+x86::reg32 memBlockSize(App* app, CPU& cpu, x86::Args& args)
 {
-    cpu.eax = askedSize(app, cpu.eax);
+    args.eax = askedSize(app, args.eax);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4e15e0: the name of the block at eax, past its body and its class's bytes; 0 for one not
@@ -975,90 +956,161 @@ reg32 blockNameOf(App* app, reg32 body)
     return (flags & kNamed) ? classBytes(app, flags) + body + at(app, block + kBlockSize) : 0;
 }
 
-void memBlockName(App* app, CPU& cpu)
+x86::reg32 memBlockName(App* app, CPU& cpu, x86::Args& args)
 {
-    cpu.eax = blockNameOf(app, cpu.eax);
+    args.eax = blockNameOf(app, args.eax);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4e1610: the flags of the block at eax.  No callers in the game. */
-void memBlockFlags(App* app, CPU& cpu)
+x86::reg32 memBlockFlags(App* app, CPU& cpu, x86::Args& args)
 {
-    cpu.eax = half(app, cpu.eax - kBlockHeader + kBlockFlags);
+    args.eax = half(app, args.eax - kBlockHeader + kBlockFlags);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4e1620: reserveBlock of edx bytes named eax, flags ebx; ebx and edx as ReserveLeft. */
-void reservememadr(App* app, CPU& cpu)
+x86::reg32 reservememadr(App* app, CPU& cpu, x86::Args& args)
 {
     ReserveLeft left = {};
-    const std::optional<reg32> body = reserveBlock(app, cpu, cpu.eax, cpu.edx, cpu.ebx, left);
+    std::optional<reg32> body;
+    {
+        const EspKept kept(cpu);
+        body = reserveBlock(app, cpu, args.eax, args.edx, args.ebx, left);
+    }
     if (!body)
-        return;
-    cpu.eax = *body;
-    cpu.ebx = left.ebx;
-    cpu.edx = left.edx;
+        return args.eax;
+    args.eax = *body;
+    args.ebx = left.ebx;
+    args.edx = left.edx;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4e1890: purgeBlock of the body at eax. */
-void purgememadr(App* app, CPU& cpu)
+x86::reg32 purgememadr(App* app, CPU& cpu, x86::Args& args)
 {
-    const std::optional<reg32> answer = purgeBlock(app, cpu, cpu.eax);
+    std::optional<reg32> answer;
+    {
+        const EspKept kept(cpu);
+        answer = purgeBlock(app, cpu, args.eax);
+    }
     if (!answer)
-        return;
-    cpu.eax = *answer;
+        return args.eax;
+    args.eax = *answer;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4e1990: purgeClass of class eax: eax the last block's answer, or the class's number for none.
  * No callers in the game. */
-void purgememclass(App* app, CPU& cpu)
+x86::reg32 purgememclass(App* app, CPU& cpu, x86::Args& args)
 {
-    const reg32 index = cpu.eax & kClassNibble;
+    const reg32 index = args.eax & kClassNibble;
     reg32 answer = index;
-    if (!purgeClass(app, cpu, index, answer))
-        return;
-    cpu.eax = answer;
+    if (const EspKept kept(cpu); !purgeClass(app, cpu, index, answer))
+        return args.eax;
+    args.eax = answer;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4e19d0: reserveDefault of the stack word's bytes; edx as reservememadr leaves it; stdcall. */
-void reservememStdcall(App* app, CPU& cpu)
+x86::reg32 reservememStdcall(App* app, CPU& cpu, x86::Args& args)
 {
     ReserveLeft left = {};
-    const std::optional<reg32> body = reserveDefault(app, cpu, at(app, cpu.esp + 4), left);
+    std::optional<reg32> body;
+    {
+        const EspKept kept(cpu);
+        body = reserveDefault(app, cpu, at(app, cpu.esp + 4), left);
+    }
     if (!body)
-        return;
-    cpu.eax = *body;
-    cpu.edx = left.edx;
+        return args.eax;
+    args.eax = *body;
+    args.edx = left.edx;
     cpu.esp += 4 + 4;
+    return args.eax;
 }
 
 /* 0x4e19f0: purgeDefault of the stack word's body; stdcall. */
-void purgememStdcall(App* app, CPU& cpu)
+x86::reg32 purgememStdcall(App* app, CPU& cpu, x86::Args& args)
 {
-    const std::optional<reg32> answer = purgeDefault(app, cpu, at(app, cpu.esp + 4));
+    std::optional<reg32> answer;
+    {
+        const EspKept kept(cpu);
+        answer = purgeDefault(app, cpu, at(app, cpu.esp + 4));
+    }
     if (!answer)
-        return;
-    cpu.eax = *answer;
+        return args.eax;
+    args.eax = *answer;
     cpu.esp += 4 + 4;
+    return args.eax;
 }
 
 /* 0x4ea4f0: moveMemory of ebx bytes from eax to edx: backwards, eax and edx left where they were
- * and ebx all ones (the count run past 0); forwards, the three as the forward copy leaves them. */
-void memmove(App* app, CPU& cpu)
+ * and ebx all ones (the count run past 0); forwards, the three as the forward copy leaves them --
+ * eax past the bytes copied to, edx past those copied from, ebx 0. */
+x86::reg32 memmove(App* app, CPU& cpu, x86::Args& args)
 {
-    const reg32 from = cpu.eax, to = cpu.edx, count = cpu.ebx;
+    const reg32 from = args.eax, to = args.edx, count = args.ebx;
     if (!moveMemory(app, cpu, to, from, count))
-        return;
+        return args.eax;
     if (overlapsFromAbove(to, from, count))
     {
-        cpu.eax = from;
-        cpu.edx = to;
-        cpu.ebx = 0xffffffff;
+        args.eax = from;
+        args.edx = to;
+        args.ebx = 0xffffffff;
+    }
+    else
+    {
+        args.eax = to + count;
+        args.edx = from + count;
+        args.ebx = 0;
     }
     cpu.esp += 4;
+    return args.eax;
+}
+
+/* 0x4e19d0's and 0x4e19f0's typed cores (native_ea_memory.h): as their thunks run them. */
+reg32 defaultLargest(App* app)
+{
+    return largestFree(app, classOf(app, at(app, kDefaultClass)));
+}
+
+reg32 freeLinked(App* app, reg32 cls, reg32 block)
+{
+    const Neighbours neighbours = linkFree(app, cls, block);
+    return listLeft(app, neighbours.after, block);
+}
+
+reg32 freeUnlinked(App* app, reg32 cls, reg32 block)
+{
+    (void)cls;  // not looked at
+    return listLeft(app, unlinkFree(app, block), block);
+}
+
+reg32 blockOverhead(App* app, reg32 name, reg32 flags)
+{
+    return blockBytes(app, name, flags);
+}
+
+reg32 blockMarked(App* app, reg32 block, reg32 name, reg32 size, reg32 bytesOfClass, reg32 flags, reg32 before,
+                  reg32 after)
+{
+    return markBlock(app, block, flags, size, bytesOfClass, name, before, after);
+}
+
+std::optional<reg32> defaultReserved(App* app, CPU& cpu, reg32 size)
+{
+    ReserveLeft left = {};
+    return reserveDefault(app, cpu, size, left);
+}
+
+std::optional<reg32> defaultPurged(App* app, CPU& cpu, reg32 body)
+{
+    return purgeDefault(app, cpu, body);
 }
 
 }  // namespace ea

@@ -23,7 +23,7 @@ extern win32::Library* s_registry;
 /* What the natives hand out to be called, where the DLL's code was. */
 namespace nfs3hp
 {
-void THRASH_modemessage(win32::WinApplication* app, x86::CPU& cpu);  // 0xa84360
+x86::reg32 THRASH_modemessage(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);  // 0xa84360
 }
 
 #endif /* !VOODOO2A_H_ */

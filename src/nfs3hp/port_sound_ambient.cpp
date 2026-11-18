@@ -1,4 +1,8 @@
 #include "port_snd_3d.h"
+#include "native_aiplan.h"
+#include "native_track.h"
+#include "port_snd_voices.h"
+#include "port_sound_effects.h"
 
 #include <cstdint>
 
@@ -64,8 +68,9 @@ constexpr Var<int32_t> kKept0{0x570dd4}, kKept1{0x570dd8};
 constexpr Var<int32_t> kClock{0x7d3684};
 constexpr Table<Slot> kSlots{0x570de8};
 constexpr Var<double> kPlaceScale{0x536930}, kUnit{0x536938};
-// What it calls of the game's.
+// What it calls: the game's functions with no typed one yet (by address), the sound rewrites (as C++).
 constexpr reg32 kAmbientWanted = 0x41bc20, kAnimationPlace = 0x40f6d0;
+constexpr reg32 kSlotStop = 0x416f60, kSlotEffect = 0x416fc0, kSoundStatus = 0x4e8fd0;
 
 /* The code's signed shift towards 0 by 16. */
 int32_t shiftedTowardZero(int32_t n) { return n < 0 ? int32_t(uint32_t(n) + 0xffff) >> 16 : n >> 16; }
@@ -90,13 +95,22 @@ float unitsAsFloat(App* app, int32_t whole)
 }
 
 template <class Real>
-Result trackSoundsIn(App* app, CPU& cpu, reg32 entryEsp, reg32 entryEsi, reg32 entryEdi, int32_t player)
+Result trackSoundsIn(App* app, CPU& cpu, reg32 entryEsp, int32_t player)
 {
     // Six pushes, a frame of 0xd8 with ebp 0x82 below the pushes.
     const reg32 pushed = entryEsp - 6 * 4;
     const reg32 b = pushed - 0x82, below = pushed - 0xd8;
-    const HeldEbp ebp(cpu, b);
-    Calls game{app, cpu, below, entryEsi, entryEdi};
+    Calls game{app, cpu, below};
+    const auto slotStop = [&](int32_t slot) {
+        game.atCall();
+        return bool(guest::direct<kSlotStop, slotStopped>(app, cpu, below - 4, slot));
+    };
+    // Slot `slot`'s effect at `volume` and `pan`, the pitch 0x40 times `ecx` (16.16).
+    const auto slotEffect = [&](reg32 slot, int32_t effect, reg32 ecx, reg32 volume, reg32 pan) {
+        game.atCall();
+        return bool(guest::direct<kSlotEffect, slotEffectPlayed>(app, cpu, below - 4 - 3 * 4, int32_t(slot), effect,
+                                                                 ecx, 0x40u, volume, pan, reg32(player << 5)));
+    };
     // The animation place's outputs, where the code has them.
     const reg32 placeAt = b + 0x2e, lapAt = b + 0x3e, lapsAt = b + 0x3a;
     const reg32 entries = b - 0x56;
@@ -107,9 +121,7 @@ Result trackSoundsIn(App* app, CPU& cpu, reg32 entryEsp, reg32 entryEsi, reg32 e
     const reg32 table = kSoundTable(app);
     if (table == 0)
         return player;
-    reg32 wanted;
-    if (!game(kAmbientWanted, {}, {}, wanted))
-        return {};
+    const reg32 wanted = guest::direct<kAmbientWanted, track::ambientPlays>(app, cpu) ? 1u : 0u;
     if (wanted == 0)
         return 0;
     const int32_t count = 2;
@@ -140,9 +152,10 @@ Result trackSoundsIn(App* app, CPU& cpu, reg32 entryEsp, reg32 entryEsi, reg32 e
                     // Its place (0x40f6d0's, at this tick), how near.
                     reg32 time = reg32(kClock(app));
                     time = (time & ~0xffu) | (uint8_t(time) & 0xfe);
-                    game.esi = reg32(int32_t(rec.range));
-                    if (!game(kAnimationPlace, {cursor, 1, time + reg32(int32_t(rec.clock)), placeAt},
-                              {lapAt, lapsAt}))
+                    game.atCall();
+                    if (!guest::direct<kAnimationPlace, aiplan::placeAt>(app, cpu, cursor, 1u,
+                                                                         int32_t(time + reg32(int32_t(rec.clock))), placeAt,
+                                                                         lapAt, lapsAt))
                         return {};
                     const int32_t x = int32_t(guest::at(app, placeAt)), y = int32_t(guest::at(app, placeAt + 4)),
                                   z = int32_t(guest::at(app, placeAt + 8));
@@ -192,7 +205,6 @@ Result trackSoundsIn(App* app, CPU& cpu, reg32 entryEsp, reg32 entryEsi, reg32 e
                 ++soundIndex;
             }
             cursor += app->getMemory<uint16_t>(cursor);
-            game.edi = cursor;
         }
     }
     // Kept in the slots they had.
@@ -210,17 +222,15 @@ Result trackSoundsIn(App* app, CPU& cpu, reg32 entryEsp, reg32 entryEsi, reg32 e
     {
         const Candidate& entry = candidate(i);
         const int32_t slot = i + (player != 0 ? 0x22 : 0x14);
-        game.esi = entries + 0x20 * reg32(i);
         if (int32_t(entry.distance) >= int32_t(kFar))
         {
-            if (!game(slotStop, {reg32(slot)}))
+            if (!slotStop(slot))
                 return {};
             continue;
         }
         // The object's sound: its range (a word), its effect, its stretch.
         const SoundObject& rec = object(entry.index);
         const reg32 recAt = kSoundTable(app) + reg32(entry.index) * 18;
-        game.edi = recAt;
         const int32_t reachedBy = shiftedTowardZero(entry.distance);
         const int32_t range2 = imul(rec.range, rec.range);
         const int32_t outside = range2 - imul(reachedBy, reachedBy);
@@ -232,8 +242,9 @@ Result trackSoundsIn(App* app, CPU& cpu, reg32 entryEsp, reg32 entryEsi, reg32 e
             return {};
         // Its direction: from its place a tick on, to its own.
         reg32 time = reg32(kClock(app)) - 0x20 + reg32(int32_t(rec.clock));
-        game.esi = entries + 0x20 * reg32(i);
-        if (!game(kAnimationPlace, {entry.object, 1, time, placeAt}, {lapAt, lapsAt}))
+        game.atCall();
+        if (!guest::direct<kAnimationPlace, aiplan::placeAt>(app, cpu, entry.object, 1u, int32_t(time), placeAt, lapAt,
+                                                             lapsAt))
             return {};
         // Its move since a tick before, the direction the track's ahead is taken along.
         const reg32 moveAt = b + 0x22;
@@ -249,8 +260,7 @@ Result trackSoundsIn(App* app, CPU& cpu, reg32 entryEsp, reg32 entryEsi, reg32 e
         const int32_t pan = *angle;
         // Plays at the volume, ecx its ahead unless silent.
         const auto play = [&](reg32 slotNumber, int32_t effect) {
-            return game(slotEffect, {slotNumber, reg32(effect), 0x40, volume != 0 ? reg32(*ahead) : 0},
-                        {reg32(volume), reg32(pan), reg32(player << 5)});
+            return slotEffect(slotNumber, effect, volume != 0 ? reg32(*ahead) : 0, reg32(volume), reg32(pan));
         };
         const int32_t lap = entry.lap, laps = entry.laps;
         const int32_t playing = kSlots(app, slot).effect;
@@ -258,15 +268,14 @@ Result trackSoundsIn(App* app, CPU& cpu, reg32 entryEsp, reg32 entryEsi, reg32 e
         if (playing == rec.startEffect || playing == rec.tailEffect)
         {
             // The slot already playing one of its other effects: on with it.
-            reg32 status;
-            if (!game(SNDstatus, {reg32(kSlots(app, slot).sound)}, {}, status))
+            game.atCall();
+            const Result status =
+                guest::direct<kSoundStatus, soundStatus>(app, cpu, below - 4, reg32(kSlots(app, slot).sound));
+            if (!status)
                 return {};
-            if (status == 0)
+            if (*status == 0)
             {
-                game.edi = reg32(pan);
-                if (!game(slotEffect,
-                          {reg32(i + 0x14), reg32(kSlots(app, slot).effect), 0x40, reg32(*ahead)},
-                          {reg32(volume), reg32(pan), reg32(player << 5)}))
+                if (!slotEffect(reg32(i + 0x14), kSlots(app, slot).effect, reg32(*ahead), reg32(volume), reg32(pan)))
                     return {};
                 continue;
             }
@@ -339,7 +348,7 @@ Result trackSoundsIn(App* app, CPU& cpu, reg32 entryEsp, reg32 entryEsi, reg32 e
         // (Even after a lap's call the code goes on here, with the level as it was.)
         if (level < 0)
         {
-            if (!game(slotStop, {reg32(slot)}))
+            if (!slotStop(slot))
                 return {};
             continue;
         }
@@ -351,9 +360,9 @@ Result trackSoundsIn(App* app, CPU& cpu, reg32 entryEsp, reg32 entryEsi, reg32 e
 
 }  // namespace
 
-Result trackSoundsFor(App* app, CPU& cpu, reg32 esp, reg32 esi, reg32 edi, Arithmetic a, int32_t player)
+Result trackSoundsFor(App* app, CPU& cpu, reg32 esp, Arithmetic a, int32_t player)
 {
-    return withArithmetic(a, [&](auto real) { return trackSoundsIn<decltype(real)>(app, cpu, esp, esi, edi, player); });
+    return withArithmetic(a, [&](auto real) { return trackSoundsIn<decltype(real)>(app, cpu, esp, player); });
 }
 
 }  // namespace world
@@ -363,10 +372,10 @@ using namespace world;
 /* 0x410e30: player eax's track sounds.  eax as the code leaves it: the count
  * of objects it played (2), the player's own where it has none to play, 0 if
  * the track has none wanted. */
-void trackSounds(App* app, CPU& cpu)
+x86::reg32 trackSounds(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, trackSoundsFor(app, cpu, e.esp, e.esi, e.edi, arithmeticOf(cpu), int32_t(e.eax)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, trackSoundsFor(app, cpu, e.esp, arithmeticOf(cpu.fenv.rounding), int32_t(e.eax)));
 }
 
 }  // namespace port

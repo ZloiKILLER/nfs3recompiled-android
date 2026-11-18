@@ -4,40 +4,40 @@
 
 namespace nfs3hp
 {
-void THRASH_about(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_clearwindow(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_clip(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_drawline(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_drawlinemesh(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_drawlinestrip(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_drawpoint(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_drawpointmesh(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_drawpointstrip(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_drawquad(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_drawquadmesh(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_drawtri(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_drawtrifan(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_drawtrimesh(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_drawtristrip(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_flushwindow(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_idle(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_init(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_is(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_lockwindow(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_pageflip(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_readrect(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_restore(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_selectdisplay(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_setstate(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_settexture(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_setvideomode(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_sync(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_talloc(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_treset(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_tupdate(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_unlockwindow(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_window(win32::WinApplication* app, x86::CPU& cpu);
-void THRASH_writerect(win32::WinApplication* app, x86::CPU& cpu);
+x86::reg32 THRASH_about(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_clearwindow(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_clip(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_drawline(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_drawlinemesh(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_drawlinestrip(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_drawpoint(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_drawpointmesh(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_drawpointstrip(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_drawquad(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_drawquadmesh(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_drawtri(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_drawtrifan(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_drawtrimesh(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_drawtristrip(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_flushwindow(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_idle(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_init(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_is(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_lockwindow(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_pageflip(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_readrect(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_restore(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_selectdisplay(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_setstate(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_settexture(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_setvideomode(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_sync(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_talloc(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_treset(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_tupdate(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_unlockwindow(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_window(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 THRASH_writerect(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
 }
 
 namespace voodoo2a

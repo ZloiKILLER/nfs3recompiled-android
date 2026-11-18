@@ -1,6 +1,7 @@
 #ifndef NFS3HP_PORT_OBJ3D_H
 #define NFS3HP_PORT_OBJ3D_H
 
+#include "native_guest.h"
 #include "port.h"
 
 /* The menus' 3D object, rewritten (port.h says how): the obj3d widget that
@@ -11,9 +12,9 @@
  * object turned by the clock or dragged by the mouse, its lights' flares,
  * its rectangle on the screen, the logo's quad.
  *
- * Each function is a typed core under its own name and an adapter under the
- * game's, which disassemble_nfs3hp.py binds to the game's address
- * (PORT_OBJ3D_NATIVES): the adapter takes the arguments from the registers
+ * Each function is a typed core under its own name and a thunk under the
+ * game's, which is bound to the game's address
+ * (PORT_OBJ3D_NATIVES): the thunk takes the arguments from the registers
  * and the stack and gives back what Watcom's convention promises the caller
  * -- the result in eax (what the game's code leaves there), every other
  * register as it was, a stdcall's stack words taken off -- but where a
@@ -23,7 +24,7 @@
  * from where the game's code had its stack.
  *
  * The x87's arithmetic is the game's to the bit: each product and sum through
- * cpu.fpu, in the order and with the operands the code has, under the control
+ * fp::, in the order and with the operands the code has, under the control
  * word as it is; a value stored as a float where the code stores one. */
 namespace nfs3hp
 {
@@ -103,44 +104,49 @@ Result makeTextureOf(App* app, CPU& cpu, reg32 esp, reg32 item);
 Result drawLogoOf(App* app, CPU& cpu, reg32 esp, reg32 texture, int32_t x, int32_t y, int32_t width, int32_t height,
                   uint32_t colour);
 
-/* ---- The adapters, under the game's names ---- */
+/* ---- The thunks, under the game's names ---- */
 
-void carVivPath(App* app, CPU& cpu);        // 0x439360
-void flareQuad(App* app, CPU& cpu);         // 0x465eb0
-void lightPlaced(App* app, CPU& cpu);       // 0x466330
-void headlightGlare(App* app, CPU& cpu);    // 0x4663a0
-void taillightGlare(App* app, CPU& cpu);    // 0x466580
-void objectLights(App* app, CPU& cpu);      // 0x466740
-void objectDragged(App* app, CPU& cpu);     // 0x4667d0
-void objectBounds(App* app, CPU& cpu);      // 0x4668b0
-void objectDraw(App* app, CPU& cpu);        // 0x466cf0
-void objectKeyed(App* app, CPU& cpu);       // 0x4675b0
-void objectPassed(App* app, CPU& cpu);      // 0x4675d0
-void objectReleased(App* app, CPU& cpu);    // 0x467650
-void objectOpened(App* app, CPU& cpu);      // 0x467700
-void objectClosed(App* app, CPU& cpu);      // 0x467930
-void resetLoader(App* app, CPU& cpu);       // 0x467ac0
-void genericVivPath(App* app, CPU& cpu);    // 0x467bc0
-void genericModelName(App* app, CPU& cpu);  // 0x467be0
-void trackVivPath(App* app, CPU& cpu);      // 0x467c00
-void trackModelName(App* app, CPU& cpu);    // 0x467c20
-void chooseFiles(App* app, CPU& cpu);       // 0x467c40
-void readPrehead(App* app, CPU& cpu);       // 0x467ea0
-void readHead(App* app, CPU& cpu);          // 0x467ef0
-void readModel(App* app, CPU& cpu);         // 0x468010
-void readTexture(App* app, CPU& cpu);       // 0x468170
-void readShapes(App* app, CPU& cpu);        // 0x4682c0
-void takeModel(App* app, CPU& cpu);         // 0x468410
-void fadeIn(App* app, CPU& cpu);            // 0x468580
-void fadeOut(App* app, CPU& cpu);           // 0x4685e0
-void wantedChanged(App* app, CPU& cpu);     // 0x468670
-void runLoader(App* app, CPU& cpu);         // 0x468860
-void carColour(App* app, CPU& cpu);         // 0x468da0
-void makeTexture(App* app, CPU& cpu);       // 0x468f00
-void drawLogo(App* app, CPU& cpu);          // 0x4d79b0
+x86::reg32 carVivPath(App* app, CPU& cpu, x86::Args& args);        // 0x439360
+x86::reg32 flareQuad(App* app, CPU& cpu, x86::Args& args);         // 0x465eb0
+x86::reg32 lightPlaced(App* app, CPU& cpu, x86::Args& args);       // 0x466330
+x86::reg32 headlightGlare(App* app, CPU& cpu, x86::Args& args);    // 0x4663a0
+x86::reg32 taillightGlare(App* app, CPU& cpu, x86::Args& args);    // 0x466580
+x86::reg32 objectLights(App* app, CPU& cpu, x86::Args& args);      // 0x466740
+x86::reg32 objectDragged(App* app, CPU& cpu, x86::Args& args);     // 0x4667d0
+x86::reg32 objectBounds(App* app, CPU& cpu, x86::Args& args);      // 0x4668b0
+x86::reg32 objectDraw(App* app, CPU& cpu, x86::Args& args);        // 0x466cf0
+x86::reg32 objectKeyed(App* app, CPU& cpu, x86::Args& args);       // 0x4675b0
+x86::reg32 objectPassed(App* app, CPU& cpu, x86::Args& args);      // 0x4675d0
+x86::reg32 objectReleased(App* app, CPU& cpu, x86::Args& args);    // 0x467650
+x86::reg32 objectOpened(App* app, CPU& cpu, x86::Args& args);      // 0x467700
+x86::reg32 objectClosed(App* app, CPU& cpu, x86::Args& args);      // 0x467930
+x86::reg32 resetLoader(App* app, CPU& cpu, x86::Args& args);       // 0x467ac0
+x86::reg32 genericVivPath(App* app, CPU& cpu, x86::Args& args);    // 0x467bc0
+x86::reg32 genericModelName(App* app, CPU& cpu, x86::Args& args);  // 0x467be0
+x86::reg32 trackVivPath(App* app, CPU& cpu, x86::Args& args);      // 0x467c00
+x86::reg32 trackModelName(App* app, CPU& cpu, x86::Args& args);    // 0x467c20
+x86::reg32 chooseFiles(App* app, CPU& cpu, x86::Args& args);       // 0x467c40
+x86::reg32 readPrehead(App* app, CPU& cpu, x86::Args& args);       // 0x467ea0
+x86::reg32 readHead(App* app, CPU& cpu, x86::Args& args);          // 0x467ef0
+x86::reg32 readModel(App* app, CPU& cpu, x86::Args& args);         // 0x468010
+x86::reg32 readTexture(App* app, CPU& cpu, x86::Args& args);       // 0x468170
+x86::reg32 readShapes(App* app, CPU& cpu, x86::Args& args);        // 0x4682c0
+x86::reg32 takeModel(App* app, CPU& cpu, x86::Args& args);         // 0x468410
+x86::reg32 fadeIn(App* app, CPU& cpu, x86::Args& args);            // 0x468580
+x86::reg32 fadeOut(App* app, CPU& cpu, x86::Args& args);           // 0x4685e0
+x86::reg32 wantedChanged(App* app, CPU& cpu, x86::Args& args);     // 0x468670
+x86::reg32 runLoader(App* app, CPU& cpu, x86::Args& args);         // 0x468860
+x86::reg32 carColour(App* app, CPU& cpu, x86::Args& args);         // 0x468da0
+x86::reg32 makeTexture(App* app, CPU& cpu, x86::Args& args);       // 0x468f00
+x86::reg32 drawLogo(App* app, CPU& cpu, x86::Args& args);          // 0x4d79b0
 
 }  // namespace obj3d
 }  // namespace port
+
+namespace guest
+{
+
+}  // namespace guest
 }  // namespace nfs3hp
 
 #endif

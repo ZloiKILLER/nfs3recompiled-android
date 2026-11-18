@@ -11,10 +11,9 @@
  * car's colours (carclrselect) and the car records' colours they show and
  * set, with what they draw a field's text and its cursor with.
  *
- * Each is an adapter under the game's function's name, which
- * disassemble_nfs3hp.py binds to its address (PORT_FIELDS_NATIVES); the
- * generated code calls it by name, the widget table (0x557a84) and the other
- * natives through the address. */
+ * Each is a thunk under the game's function's name, which
+ * the game's code calls by name; the widget table (0x557a84) and the other
+ * natives call it through the address. */
 namespace nfs3hp
 {
 namespace port
@@ -23,133 +22,134 @@ namespace fields
 {
 
 /* ---- The car records' colours ---- */
-void carColourCount(App* app, CPU& cpu);          // 0x439760
-void carCustomColour(App* app, CPU& cpu);         // 0x439780
-void carColour(App* app, CPU& cpu);               // 0x439790
-void carColourName(App* app, CPU& cpu);           // 0x4397c0
-void setCarColour(App* app, CPU& cpu);            // 0x4397d0
-void carColourRgb(App* app, CPU& cpu);            // 0x439810
-void setCarCustomColour(App* app, CPU& cpu);      // 0x4398c0
-void carText(App* app, CPU& cpu);                 // 0x439ab0
-void saveCarColours(App* app, CPU& cpu);          // 0x43b7f0
-void wheelFromCarColour(App* app, CPU& cpu);      // 0x43dbe0
-void wheelForPlayer(App* app, CPU& cpu);          // 0x43dd50
-void refreshCustomColours(App* app, CPU& cpu);    // 0x472360
+x86::reg32 carColourCount(App* app, CPU& cpu, x86::Args& args);          // 0x439760
+x86::reg32 carCustomColour(App* app, CPU& cpu, x86::Args& args);         // 0x439780
+x86::reg32 carColour(App* app, CPU& cpu, x86::Args& args);               // 0x439790
+x86::reg32 carColourName(App* app, CPU& cpu, x86::Args& args);           // 0x4397c0
+x86::reg32 setCarColour(App* app, CPU& cpu, x86::Args& args);            // 0x4397d0
+x86::reg32 carColourRgb(App* app, CPU& cpu, x86::Args& args);            // 0x439810
+x86::reg32 setCarCustomColour(App* app, CPU& cpu, x86::Args& args);      // 0x4398c0
+x86::reg32 carText(App* app, CPU& cpu, x86::Args& args);                 // 0x439ab0
+x86::reg32 saveCarColours(App* app, CPU& cpu, x86::Args& args);          // 0x43b7f0
+x86::reg32 wheelFromCarColour(App* app, CPU& cpu, x86::Args& args);      // 0x43dbe0
+x86::reg32 wheelForPlayer(App* app, CPU& cpu, x86::Args& args);          // 0x43dd50
+x86::reg32 refreshCustomColours(App* app, CPU& cpu, x86::Args& args);    // 0x472360
 
 /* ---- A field's text and cursor ---- */
-void setCursorColour(App* app, CPU& cpu);         // 0x4513e0
-void drawFieldText(App* app, CPU& cpu);           // 0x4515e0
-void drawFieldLine(App* app, CPU& cpu);           // 0x452220
-void drawSpacedText(App* app, CPU& cpu);          // 0x4522c0
-void drawCursorText3d(App* app, CPU& cpu);        // 0x4d11f0
-void drawCursor(App* app, CPU& cpu);              // 0x4da560
-void drawCursorText(App* app, CPU& cpu);          // 0x4da8c0
+x86::reg32 setCursorColour(App* app, CPU& cpu, x86::Args& args);         // 0x4513e0
+x86::reg32 drawFieldText(App* app, CPU& cpu, x86::Args& args);           // 0x4515e0
+x86::reg32 drawFieldLine(App* app, CPU& cpu, x86::Args& args);           // 0x452220
+x86::reg32 drawSpacedText(App* app, CPU& cpu, x86::Args& args);          // 0x4522c0
+x86::reg32 drawCursorText3d(App* app, CPU& cpu, x86::Args& args);        // 0x4d11f0
+x86::reg32 drawCursor(App* app, CPU& cpu, x86::Args& args);              // 0x4da560
+x86::reg32 drawCursorText(App* app, CPU& cpu, x86::Args& args);          // 0x4da8c0
 
 /* ---- The car's colours (carclrselect) ---- */
-void colourListWidth(App* app, CPU& cpu);         // 0x4569a0
-void colourListRefresh(App* app, CPU& cpu);       // 0x456a20
-void drawColourLine(App* app, CPU& cpu);          // 0x456b50
-void drawColourList(App* app, CPU& cpu);          // 0x456ce0
-void colourListShown(App* app, CPU& cpu);         // 0x456ea0
-void pointAtColour(App* app, CPU& cpu);           // 0x456f10
-void openColourList(App* app, CPU& cpu);          // 0x456f50
-void closeColourList(App* app, CPU& cpu);         // 0x456f70
-void chooseColour(App* app, CPU& cpu);            // 0x456f90
-void colourListKey(App* app, CPU& cpu);           // 0x457030
-void layoutColourList(App* app, CPU& cpu);        // 0x4571e0
-void colourListHidden(App* app, CPU& cpu);        // 0x457250
-void drawFrameAt(App* app, CPU& cpu);             // 0x4d8aa0
+x86::reg32 colourListWidth(App* app, CPU& cpu, x86::Args& args);         // 0x4569a0
+x86::reg32 colourListRefresh(App* app, CPU& cpu, x86::Args& args);       // 0x456a20
+x86::reg32 drawColourLine(App* app, CPU& cpu, x86::Args& args);          // 0x456b50
+x86::reg32 drawColourList(App* app, CPU& cpu, x86::Args& args);          // 0x456ce0
+x86::reg32 colourListShown(App* app, CPU& cpu, x86::Args& args);         // 0x456ea0
+x86::reg32 pointAtColour(App* app, CPU& cpu, x86::Args& args);           // 0x456f10
+x86::reg32 openColourList(App* app, CPU& cpu, x86::Args& args);          // 0x456f50
+x86::reg32 closeColourList(App* app, CPU& cpu, x86::Args& args);         // 0x456f70
+x86::reg32 chooseColour(App* app, CPU& cpu, x86::Args& args);            // 0x456f90
+x86::reg32 colourListKey(App* app, CPU& cpu, x86::Args& args);           // 0x457030
+x86::reg32 layoutColourList(App* app, CPU& cpu, x86::Args& args);        // 0x4571e0
+x86::reg32 colourListHidden(App* app, CPU& cpu, x86::Args& args);        // 0x457250
+x86::reg32 drawFrameAt(App* app, CPU& cpu, x86::Args& args);             // 0x4d8aa0
 
 /* ---- The fields typed into ---- */
-void editKey(App* app, CPU& cpu);                 // 0x457ae0
-void drawIntField(App* app, CPU& cpu);            // 0x457c40
-void intRangeMessage(App* app, CPU& cpu);         // 0x457df0
-void intFieldKey(App* app, CPU& cpu);             // 0x457e30
-void layoutIntField(App* app, CPU& cpu);          // 0x457f70
-void intFieldShown(App* app, CPU& cpu);           // 0x458010
-void intFieldHidden(App* app, CPU& cpu);          // 0x458050
-void bindIntField(App* app, CPU& cpu);            // 0x458080
-void drawStringField(App* app, CPU& cpu);         // 0x4580b0
-void stringFieldKey(App* app, CPU& cpu);          // 0x4581f0
-void layoutStringField(App* app, CPU& cpu);       // 0x458340
-void stringFieldShown(App* app, CPU& cpu);        // 0x4583b0
-void stringFieldHidden(App* app, CPU& cpu);       // 0x458410
-void drawCharField(App* app, CPU& cpu);           // 0x458480
-void charRangeMessage(App* app, CPU& cpu);        // 0x458640
-void charFieldKey(App* app, CPU& cpu);            // 0x458690
-void layoutCharField(App* app, CPU& cpu);         // 0x4587e0
-void charFieldShown(App* app, CPU& cpu);          // 0x4588a0
-void charFieldHidden(App* app, CPU& cpu);         // 0x4588e0
-void bindCharField(App* app, CPU& cpu);           // 0x458910
-void drawFloatField(App* app, CPU& cpu);          // 0x458940
-void floatRangeMessage(App* app, CPU& cpu);       // 0x458b20
-void floatFieldKey(App* app, CPU& cpu);           // 0x458b80
-void layoutFloatField(App* app, CPU& cpu);        // 0x458ce0
-void floatFieldShown(App* app, CPU& cpu);         // 0x458d90
-void floatFieldHidden(App* app, CPU& cpu);        // 0x458dd0
-void bindFloatField(App* app, CPU& cpu);          // 0x458e00
-void drawFixedField(App* app, CPU& cpu);          // 0x458e30
-void fixedRangeMessage(App* app, CPU& cpu);       // 0x459020
-void fixedFieldKey(App* app, CPU& cpu);           // 0x459090
-void layoutFixedField(App* app, CPU& cpu);        // 0x459210
-void fixedFieldShown(App* app, CPU& cpu);         // 0x4592b0
-void fixedFieldHidden(App* app, CPU& cpu);        // 0x4592f0
-void bindFixedField(App* app, CPU& cpu);          // 0x459320
+x86::reg32 editKey(App* app, CPU& cpu, x86::Args& args);                 // 0x457ae0
+x86::reg32 drawIntField(App* app, CPU& cpu, x86::Args& args);            // 0x457c40
+x86::reg32 intRangeMessage(App* app, CPU& cpu, x86::Args& args);         // 0x457df0
+x86::reg32 intFieldKey(App* app, CPU& cpu, x86::Args& args);             // 0x457e30
+x86::reg32 layoutIntField(App* app, CPU& cpu, x86::Args& args);          // 0x457f70
+x86::reg32 intFieldShown(App* app, CPU& cpu, x86::Args& args);           // 0x458010
+x86::reg32 intFieldHidden(App* app, CPU& cpu, x86::Args& args);          // 0x458050
+x86::reg32 bindIntField(App* app, CPU& cpu, x86::Args& args);            // 0x458080
+x86::reg32 drawStringField(App* app, CPU& cpu, x86::Args& args);         // 0x4580b0
+x86::reg32 stringFieldKey(App* app, CPU& cpu, x86::Args& args);          // 0x4581f0
+x86::reg32 layoutStringField(App* app, CPU& cpu, x86::Args& args);       // 0x458340
+x86::reg32 stringFieldShown(App* app, CPU& cpu, x86::Args& args);        // 0x4583b0
+x86::reg32 stringFieldHidden(App* app, CPU& cpu, x86::Args& args);       // 0x458410
+x86::reg32 drawCharField(App* app, CPU& cpu, x86::Args& args);           // 0x458480
+x86::reg32 charRangeMessage(App* app, CPU& cpu, x86::Args& args);        // 0x458640
+x86::reg32 charFieldKey(App* app, CPU& cpu, x86::Args& args);            // 0x458690
+x86::reg32 layoutCharField(App* app, CPU& cpu, x86::Args& args);         // 0x4587e0
+x86::reg32 charFieldShown(App* app, CPU& cpu, x86::Args& args);          // 0x4588a0
+x86::reg32 charFieldHidden(App* app, CPU& cpu, x86::Args& args);         // 0x4588e0
+x86::reg32 bindCharField(App* app, CPU& cpu, x86::Args& args);           // 0x458910
+x86::reg32 drawFloatField(App* app, CPU& cpu, x86::Args& args);          // 0x458940
+x86::reg32 floatRangeMessage(App* app, CPU& cpu, x86::Args& args);       // 0x458b20
+x86::reg32 floatFieldKey(App* app, CPU& cpu, x86::Args& args);           // 0x458b80
+x86::reg32 layoutFloatField(App* app, CPU& cpu, x86::Args& args);        // 0x458ce0
+x86::reg32 floatFieldShown(App* app, CPU& cpu, x86::Args& args);         // 0x458d90
+x86::reg32 floatFieldHidden(App* app, CPU& cpu, x86::Args& args);        // 0x458dd0
+x86::reg32 bindFloatField(App* app, CPU& cpu, x86::Args& args);          // 0x458e00
+x86::reg32 drawFixedField(App* app, CPU& cpu, x86::Args& args);          // 0x458e30
+x86::reg32 fixedRangeMessage(App* app, CPU& cpu, x86::Args& args);       // 0x459020
+x86::reg32 fixedFieldKey(App* app, CPU& cpu, x86::Args& args);           // 0x459090
+x86::reg32 layoutFixedField(App* app, CPU& cpu, x86::Args& args);        // 0x459210
+x86::reg32 fixedFieldShown(App* app, CPU& cpu, x86::Args& args);         // 0x4592b0
+x86::reg32 fixedFieldHidden(App* app, CPU& cpu, x86::Args& args);        // 0x4592f0
+x86::reg32 bindFixedField(App* app, CPU& cpu, x86::Args& args);          // 0x459320
 
 /* ---- The list of lines (List) ---- */
-void drawListBox(App* app, CPU& cpu);             // 0x465500
-void pointAtListBoxLine(App* app, CPU& cpu);      // 0x465880
-void listBoxDown(App* app, CPU& cpu);             // 0x4658f0
-void listBoxUp(App* app, CPU& cpu);               // 0x465950
-void listBoxPartAt(App* app, CPU& cpu);           // 0x4659a0
-void listBoxArrowAt(App* app, CPU& cpu);          // 0x465a10
-void listBoxKey(App* app, CPU& cpu);              // 0x465a30
-void layoutListBox(App* app, CPU& cpu);           // 0x465ba0
-void listBoxShown(App* app, CPU& cpu);            // 0x465c10
-void listBoxHidden(App* app, CPU& cpu);           // 0x465c60
-void listBoxChooseAt(App* app, CPU& cpu);         // 0x465ca0
-void drawShadedTriangle(App* app, CPU& cpu);      // 0x4d8570
+x86::reg32 drawListBox(App* app, CPU& cpu, x86::Args& args);             // 0x465500
+x86::reg32 pointAtListBoxLine(App* app, CPU& cpu, x86::Args& args);      // 0x465880
+x86::reg32 listBoxDown(App* app, CPU& cpu, x86::Args& args);             // 0x4658f0
+x86::reg32 listBoxUp(App* app, CPU& cpu, x86::Args& args);               // 0x465950
+x86::reg32 listBoxPartAt(App* app, CPU& cpu, x86::Args& args);           // 0x4659a0
+x86::reg32 listBoxArrowAt(App* app, CPU& cpu, x86::Args& args);          // 0x465a10
+x86::reg32 listBoxKey(App* app, CPU& cpu, x86::Args& args);              // 0x465a30
+x86::reg32 layoutListBox(App* app, CPU& cpu, x86::Args& args);           // 0x465ba0
+x86::reg32 listBoxShown(App* app, CPU& cpu, x86::Args& args);            // 0x465c10
+x86::reg32 listBoxHidden(App* app, CPU& cpu, x86::Args& args);           // 0x465c60
+x86::reg32 listBoxChooseAt(App* app, CPU& cpu, x86::Args& args);         // 0x465ca0
+x86::reg32 drawShadedTriangle(App* app, CPU& cpu, x86::Args& args);      // 0x4d8570
 
 /* ---- The sliders ---- */
-void sliderPartSizes(App* app, CPU& cpu);         // 0x469080
-void sliderPartUnderPointer(App* app, CPU& cpu);  // 0x4692c0
-void sliderThumbPlace(App* app, CPU& cpu);        // 0x469340
-void snapToStep(App* app, CPU& cpu);              // 0x4693c0
-void setSliderValue(App* app, CPU& cpu);          // 0x469480
-void setSliderStep(App* app, CPU& cpu);           // 0x469530
-void dragSliderTo(App* app, CPU& cpu);            // 0x469590
-void drawSlider(App* app, CPU& cpu);              // 0x469680
-void trackSlider(App* app, CPU& cpu);             // 0x46a5f0
-void sliderKey(App* app, CPU& cpu);               // 0x46a860
-void placeSliderParts(App* app, CPU& cpu);        // 0x46a980
-void setUpSlider(App* app, CPU& cpu);             // 0x46ab10
-void sliderBox(App* app, CPU& cpu);               // 0x46abb0
-void twoAxisThumbPlace(App* app, CPU& cpu);       // 0x46ac40
-void setTwoAxisValue(App* app, CPU& cpu);         // 0x46add0
-void setTwoAxisStep(App* app, CPU& cpu);          // 0x46afe0
-void dragTwoAxisTo(App* app, CPU& cpu);           // 0x46b040
-void drawTwoAxis(App* app, CPU& cpu);             // 0x46b3a0
-void trackTwoAxis(App* app, CPU& cpu);            // 0x46c320
-void twoAxisKey(App* app, CPU& cpu);              // 0x46c4a0
-void placeTwoAxisParts(App* app, CPU& cpu);       // 0x46c640
-void setUpTwoAxis(App* app, CPU& cpu);            // 0x46c820
-void twoAxisBox(App* app, CPU& cpu);              // 0x46c8b0
-void sliderSetValue(App* app, CPU& cpu);          // 0x46c950
-void sliderDraw(App* app, CPU& cpu);              // 0x46cae0
-void sliderWidgetKey(App* app, CPU& cpu);         // 0x46cb80
-void sliderWidgetLayout(App* app, CPU& cpu);      // 0x46cbe0
-void sliderWidgetHidden(App* app, CPU& cpu);      // 0x46cc10
-void sliderWidgetShown(App* app, CPU& cpu);       // 0x46cc50
-void sliderShape(App* app, CPU& cpu);             // 0x4d5e40
+x86::reg32 sliderPartSizes(App* app, CPU& cpu, x86::Args& args);         // 0x469080
+x86::reg32 sliderPartUnderPointer(App* app, CPU& cpu, x86::Args& args);  // 0x4692c0
+x86::reg32 sliderThumbPlace(App* app, CPU& cpu, x86::Args& args);        // 0x469340
+x86::reg32 snapToStep(App* app, CPU& cpu, x86::Args& args);              // 0x4693c0
+x86::reg32 setSliderValue(App* app, CPU& cpu, x86::Args& args);          // 0x469480
+x86::reg32 setSliderStep(App* app, CPU& cpu, x86::Args& args);           // 0x469530
+x86::reg32 dragSliderTo(App* app, CPU& cpu, x86::Args& args);            // 0x469590
+x86::reg32 drawSlider(App* app, CPU& cpu, x86::Args& args);              // 0x469680
+x86::reg32 trackSlider(App* app, CPU& cpu, x86::Args& args);             // 0x46a5f0
+x86::reg32 sliderKey(App* app, CPU& cpu, x86::Args& args);               // 0x46a860
+x86::reg32 placeSliderParts(App* app, CPU& cpu, x86::Args& args);        // 0x46a980
+x86::reg32 setUpSlider(App* app, CPU& cpu, x86::Args& args);             // 0x46ab10
+x86::reg32 sliderBox(App* app, CPU& cpu, x86::Args& args);               // 0x46abb0
+x86::reg32 twoAxisThumbPlace(App* app, CPU& cpu, x86::Args& args);       // 0x46ac40
+x86::reg32 setTwoAxisValue(App* app, CPU& cpu, x86::Args& args);         // 0x46add0
+x86::reg32 setTwoAxisStep(App* app, CPU& cpu, x86::Args& args);          // 0x46afe0
+x86::reg32 dragTwoAxisTo(App* app, CPU& cpu, x86::Args& args);           // 0x46b040
+x86::reg32 drawTwoAxis(App* app, CPU& cpu, x86::Args& args);             // 0x46b3a0
+x86::reg32 trackTwoAxis(App* app, CPU& cpu, x86::Args& args);            // 0x46c320
+x86::reg32 twoAxisKey(App* app, CPU& cpu, x86::Args& args);              // 0x46c4a0
+x86::reg32 placeTwoAxisParts(App* app, CPU& cpu, x86::Args& args);       // 0x46c640
+x86::reg32 setUpTwoAxis(App* app, CPU& cpu, x86::Args& args);            // 0x46c820
+x86::reg32 twoAxisBox(App* app, CPU& cpu, x86::Args& args);              // 0x46c8b0
+x86::reg32 sliderSetValue(App* app, CPU& cpu, x86::Args& args);          // 0x46c950
+x86::reg32 sliderDraw(App* app, CPU& cpu, x86::Args& args);              // 0x46cae0
+x86::reg32 sliderWidgetKey(App* app, CPU& cpu, x86::Args& args);         // 0x46cb80
+x86::reg32 sliderWidgetLayout(App* app, CPU& cpu, x86::Args& args);      // 0x46cbe0
+x86::reg32 sliderWidgetHidden(App* app, CPU& cpu, x86::Args& args);      // 0x46cc10
+x86::reg32 sliderWidgetShown(App* app, CPU& cpu, x86::Args& args);       // 0x46cc50
+x86::reg32 sliderShape(App* app, CPU& cpu, x86::Args& args);             // 0x4d5e40
 
-/* The typed cores the menus call as C++ (guest::direct), and how the game's code calls each by address
- * (ByAddress below, for the checks' stand-ins).  A Result is nullopt when the game stopped in a call.  A core's
- * `esp` is the frame base its adapter hands it: the game's esp on entry, at the return address.  A caller
+/* The typed cores the menus call as C++ (guest::direct), and how the game's code calls each by address.  A Result is nullopt when the game stopped in a call.  A core's
+ * `esp` is the frame base its thunk hands it: the game's esp on entry, at the return address.  A caller
  * through guest::direct passes cpu.esp - 4 - 4 * N, N the stack words the game's call pushes: the esp the
- * adapter hands it, so the core's frame lies where the game's does; by address the call makes it. */
+ * thunk hands it, so the core's frame lies where the game's does; by address the call makes it. */
 
 // The game's 0x439760: how many colours car `car` has, its custom one counted; esp the frame base.
 Result colourCount(App* app, CPU& cpu, reg32 esp, reg32 car);
+// The game's 0x439780: car `car`'s custom colour's number; esp the frame base.
+Result customColourOf(App* app, CPU& cpu, reg32 esp, reg32 car);
 // The game's 0x439790: the colour player `player` chose for car `car`, -1 for no player; esp the frame base.
 Result chosenColour(App* app, CPU& cpu, reg32 esp, reg32 car, int32_t player);
 // The game's 0x4397d0: car `car`'s colour for player `player` set to `colour` and saved; esp the frame base.
@@ -167,6 +167,10 @@ Result sliderSetValueOf(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 value, 
 Result sliderDrawOf(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 hot);
 // The game's 0x472360: the custom colours taken into the settings (`eax` back where they are kept); esp the frame base.
 Result customColoursRefreshed(App* app, CPU& cpu, reg32 esp, reg32 eax);
+// The game's 0x439810 (stdcall 0xc): colour `colour` of car `car` -- its custom one, the player's, for the last -- its
+// four bytes to `out0` to `out3`: 0, or -1 past them; esp the frame base.
+Result carColourBytes(App* app, CPU& cpu, reg32 esp, reg32 car, int32_t colour, int32_t player, reg32 out0, reg32 out1,
+                      reg32 out2, reg32 out3);
 // The game's 0x4d8570: the triangle x0, y0; x1, y1; the corner whose x is at `x2At` (its stack argument's place,
 // which the function rewrites on a race's pause screens) and y2; its colours c0..c2; esp the frame base.
 Result triangle(App* app, CPU& cpu, reg32 esp, int32_t x0, int32_t y0, int32_t x1, int32_t y1, reg32 x2At,
@@ -177,145 +181,6 @@ Result triangle(App* app, CPU& cpu, reg32 esp, int32_t x0, int32_t y0, int32_t x
 
 namespace guest
 {
-
-// The car in eax; the count in eax.
-template <>
-struct ByAddress<port::fields::colourCount>
-{
-    template <x86::reg32 Address>
-    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, x86::reg32 car)
-    {
-        return watcomEax(app, cpu, Address, {car});
-    }
-};
-
-// The car in eax, the player in edx; the colour in eax.
-template <>
-struct ByAddress<port::fields::chosenColour>
-{
-    template <x86::reg32 Address>
-    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, x86::reg32 car,
-                             std::int32_t player)
-    {
-        return watcomEax(app, cpu, Address, {car, x86::reg32(player)});
-    }
-};
-
-// The car in eax, the player in edx, the colour in ebx; eax back.
-template <>
-struct ByAddress<port::fields::colourSet>
-{
-    template <x86::reg32 Address>
-    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, x86::reg32 car,
-                             std::int32_t player, std::int32_t colour)
-    {
-        return watcomEax(app, cpu, Address, {car, x86::reg32(player), x86::reg32(colour)});
-    }
-};
-
-// Stdcall: the car in eax, the player in edx, b0 in ebx, b1 in ecx; b2 and b3 pushed (ret 8); eax back.
-template <>
-struct ByAddress<port::fields::customColourSet>
-{
-    template <x86::reg32 Address>
-    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, x86::reg32 car,
-                             std::int32_t player, std::uint8_t b0, std::uint8_t b1, std::uint8_t b2, std::uint8_t b3)
-    {
-        const KeptRegisters kept(cpu);
-        cpu.eax = car;
-        cpu.edx = x86::reg32(player);
-        cpu.ebx = b0;
-        cpu.ecx = b1;
-        if (!guest::call(app, cpu, Address, {b2, b3}))
-            return std::nullopt;
-        return std::int32_t(cpu.eax);
-    }
-};
-
-// The car in eax, the number in edx; the text in eax.
-template <>
-struct ByAddress<port::fields::carTextOf>
-{
-    template <x86::reg32 Address>
-    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, x86::reg32 car, std::int32_t n)
-    {
-        return watcomEax(app, cpu, Address, {car, x86::reg32(n)});
-    }
-};
-
-// The item in eax; eax back.
-template <>
-struct ByAddress<port::fields::listRefreshed>
-{
-    template <x86::reg32 Address>
-    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, x86::reg32 item)
-    {
-        return watcomEax(app, cpu, Address, {item});
-    }
-};
-
-// Stdcall: the item in eax; the value and the axis pushed (ret 8); eax back.
-template <>
-struct ByAddress<port::fields::sliderSetValueOf>
-{
-    template <x86::reg32 Address>
-    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, x86::reg32 item, x86::reg32 value,
-                             x86::reg32 axis)
-    {
-        const KeptRegisters kept(cpu);
-        cpu.eax = item;
-        if (!guest::call(app, cpu, Address, {value, axis}))
-            return std::nullopt;
-        return std::int32_t(cpu.eax);
-    }
-};
-
-// The item in eax, `hot` in edx; eax back.
-template <>
-struct ByAddress<port::fields::sliderDrawOf>
-{
-    template <x86::reg32 Address>
-    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, x86::reg32 item, x86::reg32 hot)
-    {
-        return watcomEax(app, cpu, Address, {item, hot});
-    }
-};
-
-// `eax` in eax; eax back.
-template <>
-struct ByAddress<port::fields::customColoursRefreshed>
-{
-    template <x86::reg32 Address>
-    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, x86::reg32 eax)
-    {
-        return watcomEax(app, cpu, Address, {eax});
-    }
-};
-
-// Stdcall: x0 in eax, y0 in edx, x1 in ebx, y1 in ecx; the word at `x2At`, y2 and the three colours pushed
-// (ret 0x14); what the function leaves in the first one's place written back to `x2At`, where the core writes it;
-// eax back.
-template <>
-struct ByAddress<port::fields::triangle>
-{
-    template <x86::reg32 Address>
-    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, std::int32_t x0, std::int32_t y0,
-                             std::int32_t x1, std::int32_t y1, x86::reg32 x2At, std::int32_t y2, x86::reg32 c0,
-                             x86::reg32 c1, x86::reg32 c2)
-    {
-        const KeptRegisters kept(cpu);
-        const x86::reg32 pushed = cpu.esp - 4 * 5;
-        cpu.eax = x86::reg32(x0);
-        cpu.edx = x86::reg32(y0);
-        cpu.ebx = x86::reg32(x1);
-        cpu.ecx = x86::reg32(y1);
-        const bool went = guest::call(app, cpu, Address, {guest::at(app, x2At), x86::reg32(y2), c0, c1, c2});
-        guest::put(app, x2At, guest::at(app, pushed));
-        if (!went)
-            return std::nullopt;
-        return std::int32_t(cpu.eax);
-    }
-};
 
 }  // namespace guest
 }  // namespace nfs3hp

@@ -1,4 +1,4 @@
-#include "native_guest.h"
+#include "native_mix.h"
 #include <algorithm>
 #include <cstring>
 #include <utility>
@@ -7,9 +7,6 @@
  * accumulator into the output, interpolating, decoding EA's XA ADPCM -- and the
  * memmove's forward copy.  The game has these written for MMX; here they are
  * ordinary loops over 16-bit samples that give the same samples to the bit.
- * disassemble_nfs3hp.py binds each address to the function of that name here
- * (MIX_NATIVES), the generated code calls it by name, and tools/game_checks holds
- * each against the game's code.
  *
  * Their counts run as the x86's did, signed and at least once where its loops
  * did.  What a block's 8-bit samples get in their low bytes is what the last
@@ -168,7 +165,7 @@ struct Weights
 /* 0x51f5dd: a mono block of 8-bit samples into the stereo accumulator, at
  * the two volumes', four frames at a time, then one at a time; cdecl (volumes,
  * count, source, accumulator). */
-void addMono8(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 addMono8(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     const Volumes left(app, argument(app, cpu, 0)), right(app, argument(app, cpu, 0) + 8);
     reg32 count = argument(app, cpu, 1), source = argument(app, cpu, 2), target = argument(app, cpu, 3);
@@ -210,11 +207,12 @@ void addMono8(win32::WinApplication* app, x86::CPU& cpu)
         } while (more);
     }
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x51f6c7: a stereo block of 8-bit samples into the accumulator, the same
  * way, four frames, then one; cdecl (volume, count, source, accumulator). */
-void addStereo8(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 addStereo8(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     const Volumes volume(app, argument(app, cpu, 0));
     reg32 count = argument(app, cpu, 1), source = argument(app, cpu, 2), target = argument(app, cpu, 3);
@@ -259,12 +257,13 @@ void addStereo8(win32::WinApplication* app, x86::CPU& cpu)
         } while (more);
     }
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x51f7ad: a mono block of 16-bit samples into the stereo accumulator at the
  * two volumes', four frames at a time, then one; cdecl (volumes, count,
  * source, accumulator). */
-void addMono16(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 addMono16(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     const Volumes left(app, argument(app, cpu, 0)), right(app, argument(app, cpu, 0) + 8);
     reg32 count = argument(app, cpu, 1), source = argument(app, cpu, 2), target = argument(app, cpu, 3);
@@ -303,12 +302,13 @@ void addMono16(win32::WinApplication* app, x86::CPU& cpu)
         } while (more);
     }
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x51f897: a stereo block of 16-bit samples into the accumulator at its
  * volume, eight frames at a time, then one; cdecl (volume, count, source,
  * accumulator). */
-void addStereo16(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 addStereo16(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     const Volumes volume(app, argument(app, cpu, 0));
     reg32 count = argument(app, cpu, 1), source = argument(app, cpu, 2), target = argument(app, cpu, 3);
@@ -342,12 +342,13 @@ void addStereo16(win32::WinApplication* app, x86::CPU& cpu)
         } while (more);
     }
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x520830: the accumulator's frames, left and right added with saturation,
  * into 8-bit unsigned mono, last frame first; cdecl (count, accumulator,
  * output). */
-void outputMono8(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 outputMono8(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     reg32 count = argument(app, cpu, 0);
     const reg32 source = argument(app, cpu, 1), target = argument(app, cpu, 2);
@@ -360,12 +361,13 @@ void outputMono8(win32::WinApplication* app, x86::CPU& cpu)
         count -= 1;
     } while (more);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x520870: the accumulator doubled with saturation into 8-bit unsigned
  * stereo -- the high bytes, the sign flipped by 0x56ad00's -- 32 bytes at a time
  * from the end; cdecl (frames, accumulator, output). */
-void outputStereo8(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 outputStereo8(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     reg32 count = argument(app, cpu, 0) << 1;
     const reg32 source = argument(app, cpu, 1), target = argument(app, cpu, 2);
@@ -384,11 +386,12 @@ void outputStereo8(win32::WinApplication* app, x86::CPU& cpu)
         count -= 0x20;
     } while (more);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x520920: the accumulator doubled with saturation into 16-bit stereo, 64
  * bytes at a time from the end; cdecl (frames, accumulator, output). */
-void outputStereo16(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 outputStereo16(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     reg32 count = argument(app, cpu, 0) << 2;
     const reg32 source = argument(app, cpu, 1), target = argument(app, cpu, 2);
@@ -404,28 +407,31 @@ void outputStereo16(win32::WinApplication* app, x86::CPU& cpu)
         count -= 0x40;
     } while (more);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x5209a0: the accumulator cleared; cdecl (accumulator, dwords). */
-void clear(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 clear(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     const sreg32 count = sreg32(argument(app, cpu, 1));
     const reg32 target = argument(app, cpu, 0);
     for (sreg32 i = 0; i < count; ++i)
         put(app, target + 4 * reg32(i), 0);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x520a00: what the game's mixing ends with, to give the MMX registers back. */
-void finished(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 finished(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     NFS2_USE(app);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x520a10: the accumulator's frames, left and right added with saturation,
  * into 16-bit mono, last frame first; cdecl (count, accumulator, output). */
-void outputMono16(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 outputMono16(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     reg32 count = argument(app, cpu, 0);
     const reg32 source = argument(app, cpu, 1), target = argument(app, cpu, 2);
@@ -438,6 +444,7 @@ void outputMono16(win32::WinApplication* app, x86::CPU& cpu)
         count -= 1;
     } while (more);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* The interpolators' arguments: cdecl (frames, source, output, the whole
@@ -446,19 +453,20 @@ void outputMono16(win32::WinApplication* app, x86::CPU& cpu)
 struct Interpolation
 {
     win32::WinApplication* app;
-    const x86::CPU& cpu;
+    reg32 wholeAt, fractionAt;
     reg32 count, source, target, stepWhole, stepFraction, fraction, whole;
 
-    Interpolation(win32::WinApplication* app, const x86::CPU& cpu)
+    Interpolation(win32::WinApplication* app, const Interpolate& a)
         : app(app)
-        , cpu(cpu)
-        , count(argument(app, cpu, 0))
-        , source(argument(app, cpu, 1))
-        , target(argument(app, cpu, 2))
-        , stepWhole(argument(app, cpu, 5))
-        , stepFraction(argument(app, cpu, 6))
-        , fraction(at(app, argument(app, cpu, 4)))
-        , whole(at(app, argument(app, cpu, 3)))
+        , wholeAt(a.wholeAt)
+        , fractionAt(a.fractionAt)
+        , count(a.count)
+        , source(a.source)
+        , target(a.target)
+        , stepWhole(a.stepWhole)
+        , stepFraction(a.stepFraction)
+        , fraction(at(app, a.fractionAt))
+        , whole(at(app, a.wholeAt))
     {
     }
     /* A frame on: the output on, the count down. */
@@ -472,16 +480,23 @@ struct Interpolation
     /* The positions back where the arguments point. */
     void end()
     {
-        put(app, argument(app, cpu, 4), fraction);
-        put(app, argument(app, cpu, 3), whole);
+        put(app, fractionAt, fraction);
+        put(app, wholeAt, whole);
     }
 };
 
+/* An interpolator's words where its cdecl caller pushed them. */
+Interpolate interpolateWords(win32::WinApplication* app, const x86::CPU& cpu)
+{
+    return {argument(app, cpu, 0), argument(app, cpu, 1), argument(app, cpu, 2), argument(app, cpu, 3),
+            argument(app, cpu, 4), argument(app, cpu, 5), argument(app, cpu, 6)};
+}
+
 /* 0x5270f0: 8-bit mono interpolated between a frame and the next, by the
  * position's fraction, into 8 bits. */
-void interpolateMono8(win32::WinApplication* app, x86::CPU& cpu)
+void interpolatedMono8(win32::WinApplication* app, const Interpolate& a)
 {
-    Interpolation s(app, cpu);
+    Interpolation s(app, a);
     Weights weights = Weights::of(s.fraction);
     const Weights by = Weights::byStep(s.stepFraction);
     reg32 last = 0;
@@ -495,14 +510,13 @@ void interpolateMono8(win32::WinApplication* app, x86::CPU& cpu)
         step(s.fraction, s.whole, s.stepFraction, s.stepWhole);
     } while (s.next(1));
     s.end();
-    cpu.esp += 4;
 }
 
 /* 0x527170: 8-bit stereo, the same, into 8 bits with signed saturation; a
  * dword written for each two bytes, as the game's code does. */
-void interpolateStereo8(win32::WinApplication* app, x86::CPU& cpu)
+void interpolatedStereo8(win32::WinApplication* app, const Interpolate& a)
 {
-    Interpolation s(app, cpu);
+    Interpolation s(app, a);
     Weights weights = Weights::of(s.fraction);
     const Weights by = Weights::byStep(s.stepFraction);
     reg8 last[4] = {};
@@ -524,13 +538,12 @@ void interpolateStereo8(win32::WinApplication* app, x86::CPU& cpu)
         step(s.fraction, s.whole, s.stepFraction, s.stepWhole);
     } while (s.next(2));
     s.end();
-    cpu.esp += 4;
 }
 
 /* 0x527210: 16-bit mono, the same, truncated into 16 bits. */
-void interpolateMono16(win32::WinApplication* app, x86::CPU& cpu)
+void interpolatedMono16(win32::WinApplication* app, const Interpolate& a)
 {
-    Interpolation s(app, cpu);
+    Interpolation s(app, a);
     Weights weights = Weights::of(s.fraction);
     const Weights by = Weights::byStep(s.stepFraction);
     do
@@ -542,13 +555,12 @@ void interpolateMono16(win32::WinApplication* app, x86::CPU& cpu)
         step(s.fraction, s.whole, s.stepFraction, s.stepWhole);
     } while (s.next(2));
     s.end();
-    cpu.esp += 4;
 }
 
 /* 0x527290: 16-bit stereo, the same, into 16 bits with signed saturation. */
-void interpolateStereo16(win32::WinApplication* app, x86::CPU& cpu)
+void interpolatedStereo16(win32::WinApplication* app, const Interpolate& a)
 {
-    Interpolation s(app, cpu);
+    Interpolation s(app, a);
     Weights weights = Weights::of(s.fraction);
     const Weights by = Weights::byStep(s.stepFraction);
     do
@@ -562,16 +574,14 @@ void interpolateStereo16(win32::WinApplication* app, x86::CPU& cpu)
         step(s.fraction, s.whole, s.stepFraction, s.stepWhole);
     } while (s.next(4));
     s.end();
-    cpu.esp += 4;
 }
 
 /* 0x52d1a0: mono XA -- [+0] samples, whole blocks of 28 of 15 bytes each from
  * [+8], a header's filter and shift then 14 bytes of nibbles -- into 16-bit
  * samples, two to a dword, from [+0xc]; the last two samples, the filter's
  * history, kept in [+4].  cdecl (the decoder's state). */
-void xaMono(win32::WinApplication* app, x86::CPU& cpu)
+void xaMonoDecoded(win32::WinApplication* app, reg32 state)
 {
-    const reg32 state = argument(app, cpu, 0);
     reg32 source = at(app, state + 8), target = at(app, state + 0xc);
     const reg32 history = at(app, state + 4);
     sreg16 older = sreg16(reg16(history)), newer = sreg16(reg16(history >> 16));
@@ -602,15 +612,13 @@ void xaMono(win32::WinApplication* app, x86::CPU& cpu)
     }
     put(app, state + 4, reg32(reg16(older)) | reg32(reg16(newer)) << 16);
     put(app, state + 0xc, target);
-    cpu.esp += 4;
 }
 
 /* 0x52d250: stereo XA -- 30-byte blocks of 28 frames from [+0xc], a header
  * for each side then their nibbles interleaved -- into 16-bit frames from
  * [+0x10]; the history in [+4] and [+8].  cdecl (the decoder's state). */
-void xaStereo(win32::WinApplication* app, x86::CPU& cpu)
+void xaStereoDecoded(win32::WinApplication* app, reg32 state)
 {
-    const reg32 state = argument(app, cpu, 0);
     reg32 source = at(app, state + 0xc), target = at(app, state + 0x10);
     reg32 history[2] = {at(app, state + 4), at(app, state + 8)};
     while (greater(at(app, state), 0))
@@ -651,7 +659,50 @@ void xaStereo(win32::WinApplication* app, x86::CPU& cpu)
     put(app, state + 4, history[0]);
     put(app, state + 8, history[1]);
     put(app, state + 0x10, target);
+}
+
+/* Their entries, the game's cdecl calls: the words where the caller pushed
+ * them, the return address popped. */
+x86::reg32 interpolateMono8(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+{
+    interpolatedMono8(app, interpolateWords(app, cpu));
     cpu.esp += 4;
+    return args.eax;
+}
+
+x86::reg32 interpolateStereo8(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+{
+    interpolatedStereo8(app, interpolateWords(app, cpu));
+    cpu.esp += 4;
+    return args.eax;
+}
+
+x86::reg32 interpolateMono16(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+{
+    interpolatedMono16(app, interpolateWords(app, cpu));
+    cpu.esp += 4;
+    return args.eax;
+}
+
+x86::reg32 interpolateStereo16(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+{
+    interpolatedStereo16(app, interpolateWords(app, cpu));
+    cpu.esp += 4;
+    return args.eax;
+}
+
+x86::reg32 xaMono(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+{
+    xaMonoDecoded(app, argument(app, cpu, 0));
+    cpu.esp += 4;
+    return args.eax;
+}
+
+x86::reg32 xaStereo(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+{
+    xaStereoDecoded(app, argument(app, cpu, 0));
+    cpu.esp += 4;
+    return args.eax;
 }
 
 namespace
@@ -659,30 +710,32 @@ namespace
 
 /* The memmove's forward copy, eax to, edx from, ebx bytes, eax, edx and ebx left
  * past them as the game's code leaves them. */
-void copyForward(win32::WinApplication* app, x86::CPU& cpu)
+void copyForward(win32::WinApplication* app, x86::Args& args)
 {
-    const reg32 bytes = cpu.ebx;
-    std::memmove(&app->getMemory<reg8>(cpu.eax), &app->getMemory<reg8>(cpu.edx), bytes);
-    cpu.eax += bytes;
-    cpu.edx += bytes;
-    cpu.ebx = 0;
+    const reg32 bytes = args.ebx;
+    std::memmove(&app->getMemory<reg8>(args.eax), &app->getMemory<reg8>(args.edx), bytes);
+    args.eax += bytes;
+    args.edx += bytes;
+    args.ebx = 0;
 }
 
 }  // namespace
 
 /* 0x5033e5: the memmove's forward copy, eax to, edx from, ebx bytes. */
-void copy(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 copy(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    copyForward(app, cpu);
+    copyForward(app, args);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x5033e4: the same, eax from and edx to (xchg first). */
-void copySwapped(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 copySwapped(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    std::swap(cpu.eax, cpu.edx);
-    copyForward(app, cpu);
+    std::swap(args.eax, args.edx);
+    copyForward(app, args);
     cpu.esp += 4;
+    return args.eax;
 }
 
 }  // namespace mix

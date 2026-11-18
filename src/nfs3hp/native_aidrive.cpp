@@ -8,11 +8,15 @@
 #include "native_frontend_simd.h"
 #include "native_game.h"
 #include "native_guest.h"
+#include "native_handling.h"
 #include "native_pursuit.h"
 #include "native_racestart.h"
 #include "native_trackdata.h"
 #include "native_vertices.h"
 #include "native_watcom.h"
+#include "port_conv.h"
+#include "port_hud.h"
+#include "port_sound_calls.h"
 
 #include <cstdint>
 #include <cstring>
@@ -33,10 +37,7 @@
  * that integrates its forces, the coast after the finish, the ride along with
  * the car it follows, and the per-frame step of every car the computer
  * drives (aiStep, which the car's physics calls, physics::carPhysics, where
- * its +0x200 has 2).  disassemble_nfs3hp.py
- * binds each address to the function of that name here (AIDRIVE_NATIVES), and
- * the generated code calls it by name.  tools/game_checks holds each against
- * its generated code (aidrive.inc).
+ * its +0x200 has 2).  The game's code calls each function here by name.
  *
  * What these read of a car's record (0x9ac bytes, 0x5e1120 on): +0x1c its
  * slice on the track, +0x88 whether it is a ghost driven by its target, +0x89,
@@ -65,8 +66,8 @@
  * reverse's end and whether it reverses, +0x7d8 how long it has been stuck.
  *
  * Each is a typed function under a name of its own (the car, the cop, the slice as
- * parameters, C++ locals, a result), with an adapter under the game's name for
- * the callers still on registers and the dispatch: it takes the registers,
+ * parameters, C++ locals, a result), with a thunk under the game's name for
+ * the callers still on registers and for the calls by address: it takes the registers,
  * calls the core and leaves eax, the x87's stack and the registers the code
  * pushed as the game's code does -- eax often what a core says the code leaves
  * there (a compare's status word in ax, a callee's eax), which no caller reads.
@@ -77,7 +78,7 @@
  * depth (GuestFrame, atDepth), and so does a core whose own callee is.  The two
  * switches go by the targets nfs3.exe's tables hold (0x404d14, 0x405714).
  * The other typed files' functions are called as C++ through guest::direct,
- * but where what an adapter here leaves is what the callee leaves in a register
+ * but where what a thunk here leaves is what the callee leaves in a register
  * beyond what its header gives.  Every other function of the game's is called
  * by address, its arguments in registers and on the guest's stack as the code
  * hands them, the two of the AI that the port has as decompiled C++ (0x4064f0,
@@ -123,18 +124,13 @@ constexpr reg32 kSeed = 0x554f10, kProduct = 0x554f14, kMultiplier = 0x554f18;
 // speed's damping, the force and turn handed to the step (three floats).
 constexpr reg32 kStep = 0x56ec58, kSubsteps = 0x56ec78, kHeadingError = 0x56ec60, kDamping = 0x56ec68;
 constexpr reg32 kPush = 0x56ec6c, kPushY = 0x56ec70, kPushZ = 0x56ec74;
-// What is called by address: the cops' sounds, the lane votes (0x40de30, its adapter's
-// NFS_CAR_TRACE record); and of the typed files' those whose registers an adapter here leaves,
+// What is called by address: the cops' sounds, the lane votes (0x40de30, its thunk's
+// NFS_CAR_TRACE record); and of the typed files' those whose registers a thunk here leaves,
 // which their headers do not give: the car at rest settled, the dot product where its eax is read
 // after it.  The menu files' -- the opponents' pull and heading, the distance of two cars, a matrix
 // transposed, the sirens, a turn skipped (native_frontend_sim*.cpp) -- are called as C++ (feCore),
 // the eax they leave put back; so are chop and the fill (guest::direct).
-constexpr reg32 kCopEffect = 0x418c30, kCarFlagTest = 0x4127b0;
-constexpr reg32 kSettleAtRest = 0x4aa8e7, kChop = 0x4dfd56;
-constexpr reg32 kDot = 0x4e01f0;
-// A traffic car's step, by address: what it gives is its eax, which its header's countdownDoneOf
-// gives only as whether.
-constexpr reg32 kTrafficStep = 0x40c210;
+constexpr reg32 kChop = 0x4dfd56;
 
 // A car's fields, as the header has them.
 constexpr reg32 kCarSlice = 0x1c, kCarNose = 0xd8, kCarMoving = 0x168, kCarKind = 0x200,
@@ -150,9 +146,6 @@ constexpr reg8 kAiOnRoad = 2, kAiOnRoadExtra = 4;
 // A car's: held (+0x89), its speed (+0xa4), its life as traffic (+0x650), the human it is near
 // (+0x6d8), the speed it wants (+0x7b0).
 constexpr reg32 kCarHeld = 0x89, kCarSpeed = 0xa4, kCarLife = 0x650, kCarNearHuman = 0x6d8, kCarSpeedWanted = 0x7b0;
-// A traffic car placed, a cop placed at the start: by address, for takeOff leaves the eax they
-// leave, which their headers do not give.
-constexpr reg32 kTrafficPlaced = 0x40c590, kCopPlaced = 0x4029c0;
 // +0x621's: going against the race's way.
 constexpr reg8 kAi2Against = 0x10;
 // +0x710's: the siren on, the bust's grace.
@@ -203,46 +196,18 @@ reg32 statusInto(reg32 eax, const Float& a, const Float& b)
     return (eax & 0xffff0000) | fp::compare(a, b);
 }
 
-void push(App* app, CPU& cpu, reg32 value)
-{
-    cpu.esp -= 4;
-    put(app, cpu.esp, value);
-}
-
 reg16 half(App* app, reg32 a) { return app->getMemory<reg16>(a); }
 
-/* A call by address: the return address's slot, and esp as the callee leaves it.  False when the
- * game stopped in it. */
-bool byAddress(App* app, CPU& cpu, reg32 target)
-{
-    cpu.esp -= 4;
-    app->dynamic_call(target, cpu);
-    return !cpu.terminate;
-}
-
 /* A native_frontend_* file's typed core called as C++ (guest::direct): nothing (false) when the
- * game stopped in it (its calls into the game throw fe::Terminated).  tools/game_checks does not
- * build those files: there it goes by address, through its ByAddress, as the game's code calls it,
- * every register but eax kept.  A reg32 result is the eax the function leaves: eax set to it (in the
- * game too); after any other, eax spoilt there, so that code still reading what the callee left in
- * eax differs there. */
+ * game stopped in it (its calls into the game throw fe::Terminated), every register but eax kept.  A reg32 result is the eax the function leaves: eax set to it. */
 template <reg32 Address, auto Core, typename... Args>
 auto feCore(App* app, CPU& cpu, Args... args)
 {
     const auto run = [&] {
-#ifdef NFS_GAME_CHECKS
-        const guest::KeptRegisters kept(cpu);
-        return guest::ByAddress<Core>::template call<Address>(app, cpu, args...);
-#else
         return guest::direct<Address, Core>(app, cpu, args...);
-#endif
     };
     using Result = decltype(run());
-    const auto spoil = [&] {
-#ifdef NFS_GAME_CHECKS
-        cpu.eax = 0x5b0115edu;
-#endif
-    };
+    const auto spoil = [&] {};
     if constexpr (std::is_void_v<Result>)
     {
         try
@@ -262,7 +227,7 @@ auto feCore(App* app, CPU& cpu, Args... args)
         {
             const Result result = run();
             if constexpr (std::is_same_v<Result, x86::reg32>)
-                cpu.eax = result;  // a menu core's result: the eax it leaves, as the call by address does
+                (void)result;  // a menu core's result: the eax it leaves is no longer set (no caller reads it)
             else
                 spoil();
             return cpu.terminate ? std::optional<Result>() : std::optional<Result>(result);
@@ -278,16 +243,6 @@ auto feCore(App* app, CPU& cpu, Args... args)
 Float f32(App* app, reg32 a) { return Float(app->getMemory<float>(a)); }
 Float f64(App* app, reg32 a) { return Float(app->getMemory<double>(a)); }
 
-/* A call by address of the game's, eax handed over: eax as the callee leaves it, nullopt when
- * the game stopped in it. */
-std::optional<reg32> call(App* app, CPU& cpu, reg32 target, reg32 eax)
-{
-    cpu.eax = eax;
-    if (!byAddress(app, cpu, target))
-        return std::nullopt;
-    return cpu.eax;
-}
-
 /* 0x4e01f0 (vertices::dotProduct): the dot product of the vectors at a and b; nullopt when the
  * game stopped. */
 std::optional<Float> dot(App* app, CPU& cpu, reg32 a, reg32 b)
@@ -298,17 +253,21 @@ std::optional<Float> dot(App* app, CPU& cpu, reg32 a, reg32 b)
     return Float(product);
 }
 
-/* 0x4e01f0 by address, off the x87's stack: where the eax it leaves is read after it (its header
- * gives none; the check's row for it models what it leaves). */
-std::optional<Float> dotLeavingEax(App* app, CPU& cpu, reg32 a, reg32 b)
+/* 0x4e01f0, where the eax and edx it leaves are read after it (it leaves them as it was handed
+ * them). */
+struct DotLeft
 {
-    cpu.eax = a;
-    cpu.edx = b;
-    if (!byAddress(app, cpu, kDot))
+    Float product;
+    reg32 eax;  // the eax it leaves
+    reg32 edx;  // and the edx
+};
+
+std::optional<DotLeft> dotLeavingEax(App* app, CPU& cpu, reg32 a, reg32 b)
+{
+    const std::optional<Float> product = dot(app, cpu, a, b);
+    if (!product)
         return std::nullopt;
-    const Float product = cpu.fpu.st(0);
-    cpu.fpu.pop();
-    return product;
+    return DotLeft{*product, a, b};
 }
 
 /* 0x4965b0 (sima's): the distance from the place at a to the place at d; the eax it leaves to
@@ -373,17 +332,17 @@ private:
     const reg32 base;
 };
 
-/* An adapter's run of its core: every register but eax as the caller had it after it (the game's
+/* A thunk's run of its core: every register but eax as the caller had it after it (the game's
  * code pops what it pushed; its other registers are its arguments, which no caller reads), eax
  * what the core says the code leaves there -- a core that answers only whether the game went on
  * leaves eax as it is -- and the return address and `popped` bytes of the caller's words popped.
  * False when the game stopped. */
 template <typename Core>
-bool adapts(CPU& cpu, Core&& core, reg32 popped = 0)
+bool asThunk(CPU& cpu, x86::Args& args, Core&& core, reg32 popped = 0)
 {
+    const reg32 esp = cpu.esp;
     std::optional<reg32> left;
     {
-        const guest::KeptRegisters kept(cpu);
         const auto result = core();
         if constexpr (std::is_same_v<std::decay_t<decltype(result)>, bool>)
         {
@@ -397,8 +356,9 @@ bool adapts(CPU& cpu, Core&& core, reg32 popped = 0)
             left = reg32(*result);
         }
     }
+    cpu.esp = esp;
     if (left)
-        cpu.eax = *left;
+        args.eax = *left;
     cpu.esp += 4 + popped;
     return true;
 }
@@ -515,52 +475,52 @@ std::optional<Float> pullOf(App* app, CPU& cpu, reg32 car)
 
 }  // namespace
 
-void copStartPlace(App* app, CPU& cpu);
-void callRoadblock(App* app, CPU& cpu);
-void sirenSwitch(App* app, CPU& cpu);
-void watchRacers(App* app, CPU& cpu);
-void jumpBehindLeader(App* app, CPU& cpu);
-void clockRacers(App* app, CPU& cpu);
-void startPursuit(App* app, CPU& cpu);
-void bustCheck(App* app, CPU& cpu);
-void pursuitStep(App* app, CPU& cpu);
-void dropPursuit(App* app, CPU& cpu);
-void copDriver(App* app, CPU& cpu);
-void nearCar(App* app, CPU& cpu);
-void nearHuman(App* app, CPU& cpu);
-void humanNearSlice(App* app, CPU& cpu);
-void trafficUnwatched(App* app, CPU& cpu);
-void trafficStart(App* app, CPU& cpu);
-void trafficStop(App* app, CPU& cpu);
-void extraCarStep(App* app, CPU& cpu);
-void setDrivingConstants(App* app, CPU& cpu);
-void drivingNothing(App* app, CPU& cpu);
-void setReverse(App* app, CPU& cpu);
-void reverseCheck(App* app, CPU& cpu);
-void reverseWhenSlow(App* app, CPU& cpu);
-void reverseWhenTipped(App* app, CPU& cpu);
-void engineRevs(App* app, CPU& cpu);
-void brakeForce(App* app, CPU& cpu);
-void speedAlongRoad(App* app, CPU& cpu);
-void laneError(App* app, CPU& cpu);
-void glideAlongRoad(App* app, CPU& cpu);
-void lookAheadSlice(App* app, CPU& cpu);
-void sidewaysToRoad(App* app, CPU& cpu);
-void towardTarget(App* app, CPU& cpu);
-void towardTargetAhead(App* app, CPU& cpu);
-void towardSlice(App* app, CPU& cpu);
-void towardSliceSlowing(App* app, CPU& cpu);
-void towardLane(App* app, CPU& cpu);
-void wayToGo(App* app, CPU& cpu);
-void integrate(App* app, CPU& cpu);
-void coastAfterFinish(App* app, CPU& cpu);
-void steerOnRoad(App* app, CPU& cpu);
-void steerReversing(App* app, CPU& cpu);
-void steerOffRoad(App* app, CPU& cpu);
-void rideWithTarget(App* app, CPU& cpu);
-void aiPhysics(App* app, CPU& cpu);
-void easeLane(App* app, CPU& cpu);
-void aiStep(App* app, CPU& cpu);
+x86::reg32 copStartPlace(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 callRoadblock(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 sirenSwitch(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 watchRacers(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 jumpBehindLeader(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 clockRacers(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 startPursuit(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 bustCheck(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 pursuitStep(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 dropPursuit(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 copDriver(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 nearCar(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 nearHuman(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 humanNearSlice(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 trafficUnwatched(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 trafficStart(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 trafficStop(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 extraCarStep(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 setDrivingConstants(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 drivingNothing(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 setReverse(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 reverseCheck(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 reverseWhenSlow(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 reverseWhenTipped(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 engineRevs(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 brakeForce(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 speedAlongRoad(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 laneError(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 glideAlongRoad(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 lookAheadSlice(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 sidewaysToRoad(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 towardTarget(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 towardTargetAhead(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 towardSlice(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 towardSliceSlowing(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 towardLane(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 wayToGo(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 integrate(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 coastAfterFinish(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 steerOnRoad(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 steerReversing(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 steerOffRoad(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rideWithTarget(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 aiPhysics(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 easeLane(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 aiStep(App* app, x86::CPU& cpu, x86::Args& args);
 
 // The start's slices behind the start: two, three for the fifth cop on.  A slice's record's
 // lanes (+0x13, the low nibble) and its right width (+0x1b).  The place's across by the width
@@ -579,12 +539,15 @@ bool gridPlace(App* app, CPU& cpu, reg32 index, reg32 slice, reg32 place)
     return !cpu.terminate;
 }
 
+/* The up's integer of a cop's start place, what placeCopAtStart's code leaves in eax. */
+reg32 startUp(App* app) { return reg32(fp::toInteger<i32>(f32(app, kStartUp))); }
+
 /* 0x404d30: cop's start (Hot Pursuit): found among the cops ([kCops], [kCopCount]) at index i,
  * its slice ([+0x1c]) is the start's (0, or the grid's first place's run backwards, worked out in
  * the code's frame), and the slice two behind it (three for the fifth cop on) goes to `sliceOut`;
  * its place `placeOut`: across by the slice's right width times its lanes, all of it, mirrored,
  * half of it or half of it mirrored by i % 4 (the table at 0x404d14); up 0x8000 and ahead 98304
- * whether found or not.  eax left the up's integer; false when the game stopped. */
+ * whether found or not.  False when the game stopped (the thunk leaves eax the up's integer). */
 bool placeCopAtStart(App* app, CPU& cpu, reg32 cop, reg32 sliceOut, reg32 placeOut)
 {
     const GuestFrame frame(cpu, kCopStartPushed, kCopStartFrame);
@@ -626,18 +589,20 @@ bool placeCopAtStart(App* app, CPU& cpu, reg32 cop, reg32 sliceOut, reg32 placeO
     }
     const reg32 ahead = reg32(fp::toInteger<i32>(f32(app, kStartAhead)));
     put(app, placeOut + 8, ahead);
-    const reg32 up = reg32(fp::toInteger<i32>(f32(app, kStartUp)));
-    put(app, placeOut + 4, up);
-    cpu.eax = up;
+    put(app, placeOut + 4, startUp(app));
     return true;
 }
 
 /* Cop eax, the slice to [edx], the place to [ebx]. */
-void copStartPlace(App* app, CPU& cpu)
+x86::reg32 copStartPlace(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, cop = cpu.eax, slice = cpu.edx, place = cpu.ebx] {
-        return placeCopAtStart(app, cpu, cop, slice, place);
+    asThunk(cpu, args, [&, cop = args.eax, slice = args.edx, place = args.ebx] {
+        if (!placeCopAtStart(app, cpu, cop, slice, place))
+            return false;
+        args.eax = startUp(app);
+        return true;
     });
+    return args.eax;
 }
 
 // A player's cop's roadblock button (+0x512) and its press held (+0x513), its player (+0x1f0),
@@ -700,19 +665,20 @@ std::optional<reg32> callRoadblockFor(App* app, CPU& cpu, reg32 cop)
     }
     if (gameSettings(app).localPlayer == at(app, cop + kCarPlayer) || i32(gameSettings(app).playMode) <= 1)
     {
-        const auto played = call(app, cpu, kCopEffect, sound);
-        if (!played)
+        const port::Result played = guest::direct<0x418c30, port::copEffectPlayed>(app, cpu, cpu.esp - 4, i32(sound));
+        if (cpu.terminate || !played)
             return std::nullopt;
-        left = *played;
+        left = reg32(*played);
     }
     putByte(app, cop + kCarRoadblockHeld, 1);
     return left;
 }
 
 /* Cop eax. */
-void callRoadblock(App* app, CPU& cpu)
+x86::reg32 callRoadblock(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, cop = cpu.eax] { return callRoadblockFor(app, cpu, cop); });
+    asThunk(cpu, args, [&, cop = args.eax] { return callRoadblockFor(app, cpu, cop); });
+    return args.eax;
 }
 
 /* 0x404f80: a player's cop's siren switched by its button ([+0x50e]), once a press ([+0x620]
@@ -742,23 +708,27 @@ void switchSiren(App* app, reg32 cop)
 }
 
 /* Cop eax; the registers its code changes are popped. */
-void sirenSwitch(App* app, CPU& cpu)
+x86::reg32 sirenSwitch(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    switchSiren(app, cpu.eax);
+    switchSiren(app, args.eax);
     cpu.esp += 4;
+    return args.eax;
 }
 
 // The map's kinds of a racer: busted, finished, as it is, near, the nearest, the one chased.
 constexpr reg32 kMapBusted = 1, kMapFinished = 2, kMapRacer = 3, kMapNear = 4, kMapNearest = 5, kMapChased = 7;
 // A gap no racer's is.  The map's label set (port::hud::labelTextSet).
 constexpr i32 kNoGap = 0x186a0;
-constexpr reg32 kMapLabel = 0x485180;
 
 /* 0x485180: racer `index` (its record) on player's map as `kind`.  What it leaves in eax, nullopt
  * when the game stopped. */
 std::optional<reg32> showOnMap(App* app, CPU& cpu, reg32 player, reg32 index, reg32 kind, reg32 racer)
 {
-    return guest::watcomEax(app, cpu, kMapLabel, {player, index, kind, racer});
+    const std::optional<reg32> shown =
+        guest::direct<0x485180, port::hud::labelTextSetOf>(app, cpu, cpu.esp - 4, player, index, kind, racer);
+    if (cpu.terminate)
+        return std::nullopt;
+    return shown;
 }
 
 /* 0x404ff0: cop watches the racers ([kRacers]): the nearest of them within 50 slices (the gap,
@@ -853,9 +823,10 @@ std::optional<reg32> watchRacersFor(App* app, CPU& cpu, reg32 cop)
 }
 
 /* Cop eax. */
-void watchRacers(App* app, CPU& cpu)
+x86::reg32 watchRacers(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, cop = cpu.eax] { return watchRacersFor(app, cpu, cop); });
+    asThunk(cpu, args, [&, cop = args.eax] { return watchRacersFor(app, cpu, cop); });
+    return args.eax;
 }
 
 // A racer's place in the race (+0x2bc); none better than this.  The frames after which the cop
@@ -906,9 +877,10 @@ std::optional<reg32> jumpBehind(App* app, CPU& cpu, reg32 cop, bool putBack)
 }
 
 /* Cop eax, whether to put it back edx. */
-void jumpBehindLeader(App* app, CPU& cpu)
+x86::reg32 jumpBehindLeader(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, cop = cpu.eax, putBack = cpu.edx != 0] { return jumpBehind(app, cpu, cop, putBack); });
+    asThunk(cpu, args, [&, cop = args.eax, putBack = args.edx != 0] { return jumpBehind(app, cpu, cop, putBack); });
+    return args.eax;
 }
 
 /* 0x40ed40 (aiplan::trafficSpeed): slice's speed; nullopt when the game stopped. */
@@ -961,9 +933,10 @@ std::optional<reg32> clockRacersFor(App* app, CPU& cpu, reg32 cop)
 }
 
 /* Cop eax. */
-void clockRacers(App* app, CPU& cpu)
+x86::reg32 clockRacers(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, cop = cpu.eax] { return clockRacersFor(app, cpu, cop); });
+    asThunk(cpu, args, [&, cop = args.eax] { return clockRacersFor(app, cpu, cop); });
+    return args.eax;
 }
 
 /* 0x4018b0 (stdcall, its fourth on the stack): a pursuit joined -- `how`, the cop, the racer, 0.
@@ -971,10 +944,7 @@ void clockRacers(App* app, CPU& cpu)
  * eax, which airace::joinPursuitOf gives only as whether it joined. */
 std::optional<reg32> joinPursuit(App* app, CPU& cpu, reg32 how, reg32 cop, reg32 racer)
 {
-    cpu.edx = cop;
-    cpu.ebx = racer;
-    push(app, cpu, 0);
-    return call(app, cpu, kJoinPursuit, how);
+    return guest::direct<0x4018b0, airace::joinPursuitLeaving>(app, cpu, how, cop, racer, 0.0f);
 }
 
 /* 0x4053b0: a cop with its siren on and no one to chase starts after the racer nearest it
@@ -994,9 +964,10 @@ std::optional<reg32> startChase(App* app, CPU& cpu, reg32 cop)
 }
 
 /* Cop eax. */
-void startPursuit(App* app, CPU& cpu)
+x86::reg32 startPursuit(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, cop = cpu.eax] { return startChase(app, cpu, cop); });
+    asThunk(cpu, args, [&, cop = args.eax] { return startChase(app, cpu, cop); });
+    return args.eax;
 }
 
 /* Whether the car cop chases ([+0x624]) is at its own car's end: a human's in state 7, a
@@ -1047,8 +1018,7 @@ std::optional<bool> busts(App* app, CPU& cpu, reg32 cop)
         }
         else
         {
-            if (!call(app, cpu, kCarFlagTest, cop))
-                return std::nullopt;
+            // (0x4127b0 only compares the car's flags, which no caller tests.)
             put(app, cop + kCarGraceEnd, at(app, kRaceFrame) + kGraceFrames);
             putByte(app, cop + kCarCopFlags, byte(app, cop + kCarCopFlags) | kCopGrace);
         }
@@ -1060,9 +1030,10 @@ std::optional<bool> busts(App* app, CPU& cpu, reg32 cop)
 }
 
 /* Cop eax; eax 1 for the bust. */
-void bustCheck(App* app, CPU& cpu)
+x86::reg32 bustCheck(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, cop = cpu.eax] { return busts(app, cpu, cop); });
+    asThunk(cpu, args, [&, cop = args.eax] { return busts(app, cpu, cop); });
+    return args.eax;
 }
 
 /* 0x405630: a pursuit's step: with the siren on, the car chased within 300 and not finished,
@@ -1087,9 +1058,10 @@ std::optional<bool> chaseStep(App* app, CPU& cpu, reg32 cop)
 }
 
 /* Cop eax; eax 1 for a bust. */
-void pursuitStep(App* app, CPU& cpu)
+x86::reg32 pursuitStep(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, cop = cpu.eax] { return chaseStep(app, cpu, cop); });
+    asThunk(cpu, args, [&, cop = args.eax] { return chaseStep(app, cpu, cop); });
+    return args.eax;
 }
 
 /* 0x4056e0: car's pursuit dropped: the computer no longer drives it ([+0x200] 2), its state 2
@@ -1108,9 +1080,10 @@ std::optional<reg32> dropChase(App* app, CPU& cpu, reg32 car)
 }
 
 /* Car eax. */
-void dropPursuit(App* app, CPU& cpu)
+x86::reg32 dropPursuit(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { return dropChase(app, cpu, car); });
+    asThunk(cpu, args, [&, car = args.eax] { return dropChase(app, cpu, car); });
+    return args.eax;
 }
 
 // A cop's states (+0x6e0) by the code's table of targets (0x405714): the start (and any past 7),
@@ -1124,13 +1097,6 @@ constexpr reg32 kCopStateRacing = 2, kCopStatePatrol = 3, kCopStateChasing = 4, 
 constexpr reg32 kCarCopTimer = 0x6ec, kCopOutFrames = 0x140, kPursuitKept = 0x2c;
 // Upright enough (a double) and slow enough (a double) to leave the race's end.
 constexpr reg32 kCopUpright = 0x5361cc, kCopSlow = 0x5361d4;
-// The cops' and the lanes' functions of the other parts the cop's driver calls by address, each
-// handed the car, where it leaves the eax they leave, which their headers do not give: the lanes
-// done (the game's), a car's three slices, a pursuit's say (airace::isPulledOver gives whether,
-// where the code leaves its eax), a cop stopping by, a bust's end.  The others are called as C++.
-constexpr reg32 kThreeSlices = 0x40e350, kLanesDone = 0x40de30, kPursuitSay = 0x401500, kCopStopsBy = 0x401e40,
-                kBustEnd = 0x401fb0;
-
 /* 0x405740: a cop's driver, by its state [+0x6e0] through the table at 0x405714: 0 the start (3
  * for a cop, its chase cleared; 2 else); 1 driving; 2 a racer's driving (with the lanes' votes, or
  * the three slices), 6 with 0x140 frames once the pursuit's say says so; 3 patrolling and 4
@@ -1143,13 +1109,29 @@ constexpr reg32 kThreeSlices = 0x40e350, kLanesDone = 0x40de30, kPursuitSay = 0x
 std::optional<reg32> driveCop(App* app, CPU& cpu, reg32 cop)
 {
     std::optional<reg32> left = cop;
-    // The calls by address of the car's, in order, eax the car; the last one's eax kept.
-    const auto calls = [&](std::initializer_list<reg32> targets) {
-        for (const reg32 target : targets)
-            if (!(left = call(app, cpu, target, cop)))
-                return false;
+    // The calls of the car's that leave their eax: a car's three slices, a pursuit's say, a cop stopping
+    // by, a bust's end; false when the game stopped.
+    const auto slicesLeaving = [&] {
+        left = guest::direct<0x40e350, aiplan::findCarSlicesLeaving>(app, cpu, cop);
+        return !cpu.terminate;
+    };
+    const auto sayLeaving = [&] {
+        left = guest::direct<0x401500, airace::pulledOverOf>(app, cpu, cop);
+        return !cpu.terminate;
+    };
+    const auto stopsByLeaving = [&] {
+        left = guest::direct<0x401e40, airace::copStopsByLeaving>(app, cpu, cop);
+        return left.has_value();
+    };
+    const auto bustEndLeaving = [&] {
+        const std::optional<bool> over = guest::direct<0x401fb0, airace::stopOverOf>(app, cpu, cop);
+        if (!over)
+            return false;
+        left = *over ? 1u : 0u;
         return true;
     };
+    // The cop's lane votes acted on (0x40de30): its eax kept; false when the game stopped.
+    const auto lanesDone = [&] { return bool(left = feCore<0x40de30, frontend::sima::laneSteer>(app, cpu, cop)); };
     // Those called as C++: the race's leader, a car's three slices, the cop stopped, the roadside
     // target and a lane's time counted; false when the game stopped.
     const auto raceLeader = [&] {
@@ -1182,8 +1164,8 @@ std::optional<reg32> driveCop(App* app, CPU& cpu, reg32 cop)
             put(app, cop + kCarCopState, kCopStateRacing);
         break;
     case kCopDriving:
-        // The three slices by address: its eax is what the code leaves.
-        if (!raceLeader() || !calls({kThreeSlices}))
+        // The three slices: its eax is what the code leaves.
+        if (!raceLeader() || !slicesLeaving())
             return std::nullopt;
         break;
     case kCopRacing:
@@ -1196,12 +1178,12 @@ std::optional<reg32> driveCop(App* app, CPU& cpu, reg32 cop)
                 || !guest::direct<0x40ddb0, aiplan::pickLane>(app, cpu, cop))
                 return std::nullopt;
             guest::direct<0x409660, pursuit::growLaneTimesBy>(app, cpu);
-            if (cpu.terminate || !calls({kLanesDone}))
+            if (cpu.terminate || !lanesDone())
                 return std::nullopt;
         }
         else if (!threeSlices())
             return std::nullopt;
-        if (!calls({kPursuitSay}))
+        if (!sayLeaving())
             return std::nullopt;
         if (*left != 0)
         {
@@ -1229,7 +1211,7 @@ std::optional<reg32> driveCop(App* app, CPU& cpu, reg32 cop)
         if (*bust)
         {
             put(app, cop + kCarCopState, kCopStateBust);
-            if (!calls({kCopStopsBy}))
+            if (!stopsByLeaving())
                 return std::nullopt;
         }
         if (at(app, cop + kCarChased) == 0)
@@ -1240,7 +1222,7 @@ std::optional<reg32> driveCop(App* app, CPU& cpu, reg32 cop)
         if (!raceLeader())
             return std::nullopt;
         put(app, cop + kCarSpeedWanted, 0);
-        if (!copStopped() || !calls({kBustEnd}))
+        if (!copStopped() || !bustEndLeaving())
             return std::nullopt;
         if (*left != 0)
             put(app, cop + kCarCopState, kCopStatePatrol);
@@ -1253,7 +1235,7 @@ std::optional<reg32> driveCop(App* app, CPU& cpu, reg32 cop)
         if (cpu.terminate)
             return std::nullopt;
         guest::direct<0x408bd0, pursuit::addLaneTime>(app, cpu, cop);
-        if (cpu.terminate || !calls({kLanesDone}))
+        if (cpu.terminate || !lanesDone())
             return std::nullopt;
         if (half(app, cop + kCarStage) != 0)
             break;
@@ -1307,9 +1289,10 @@ std::optional<reg32> driveCop(App* app, CPU& cpu, reg32 cop)
 }
 
 /* Cop eax. */
-void copDriver(App* app, CPU& cpu)
+x86::reg32 copDriver(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, cop = cpu.eax] { return driveCop(app, cpu, cop); });
+    asThunk(cpu, args, [&, cop = args.eax] { return driveCop(app, cpu, cop); });
+    return args.eax;
 }
 
 // How near counts: the smaller gap's share (a float, a quarter) and the reach (a float, 366).
@@ -1337,10 +1320,11 @@ bool nearPlace(App* app, reg32 place, reg32 car)
 }
 
 /* The place eax, car edx; eax 1 near. */
-void nearCar(App* app, CPU& cpu)
+x86::reg32 nearCar(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    cpu.eax = nearPlace(app, cpu.eax, cpu.edx) ? 1 : 0;
+    args.eax = nearPlace(app, args.eax, args.edx) ? 1 : 0;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x405af0: the first human's car ([kHumans]) near car's place (nearPlace), or 0.  The code
@@ -1357,10 +1341,11 @@ reg32 humanNear(App* app, reg32 car)
 }
 
 /* Car eax. */
-void nearHuman(App* app, CPU& cpu)
+x86::reg32 nearHuman(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    cpu.eax = humanNear(app, cpu.eax);
+    args.eax = humanNear(app, args.eax);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x405c80: the first human's car within 50 slices of `slice` (either way), or 0; nullopt when
@@ -1380,9 +1365,10 @@ std::optional<reg32> humanNearSliceOf(App* app, CPU& cpu, reg32 slice)
 }
 
 /* Slice eax. */
-void humanNearSlice(App* app, CPU& cpu)
+x86::reg32 humanNearSlice(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, slice = cpu.eax] { return humanNearSliceOf(app, cpu, slice); });
+    asThunk(cpu, args, [&, slice = args.eax] { return humanNearSliceOf(app, cpu, slice); });
+    return args.eax;
 }
 
 /* 0x405cd0: whether traffic car (on the road, [+0x620] 2) is out of every human's sight: not
@@ -1401,10 +1387,11 @@ bool unwatched(App* app, reg32 car)
 }
 
 /* Car eax; eax 1 unwatched. */
-void trafficUnwatched(App* app, CPU& cpu)
+x86::reg32 trafficUnwatched(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    cpu.eax = unwatched(app, cpu.eax) ? 1 : 0;
+    args.eax = unwatched(app, args.eax) ? 1 : 0;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x40eed0 (aiplan::trackTuningDistance): traffic's life; nullopt when the game stopped. */
@@ -1440,14 +1427,15 @@ std::optional<reg32> bringOn(App* app, CPU& cpu, reg32 car)
 }
 
 /* Car eax; eax its life with ah the flags' byte, as the code leaves it. */
-void trafficStart(App* app, CPU& cpu)
+x86::reg32 trafficStart(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax]() -> std::optional<reg32> {
+    asThunk(cpu, args, [&, car = args.eax]() -> std::optional<reg32> {
         const auto life = bringOn(app, cpu, car);
         if (!life)
             return std::nullopt;
         return (*life & 0xffff00ff) | reg32(byte(app, car + kCarAiFlags)) << 8;
     });
+    return args.eax;
 }
 
 /* 0x405dc0: extra car leaves the road: one fewer extra car, off the road ([+0x620] 4 cleared),
@@ -1464,20 +1452,21 @@ std::optional<reg32> takeOff(App* app, CPU& cpu, reg32 car)
     reg32 left = (car & 0xffff00ff) | reg32(flags) << 8;
     if ((kind & kKindTraffic) != 0)
     {
-        const auto placed = call(app, cpu, kTrafficPlaced, car);
+        const std::optional<reg32> placed = guest::direct<0x40c590, aiplan::placeTraffic>(app, cpu, car);
         if (!placed)
             return std::nullopt;
         left = *placed;
     }
     if ((byte(app, car + kCarKind) & kKindCop) != 0)
-        return call(app, cpu, kCopPlaced, car);
+        return guest::direct<0x4029c0, airace::placeCopAtStartLeaving>(app, cpu, car);
     return left;
 }
 
 /* Car eax. */
-void trafficStop(App* app, CPU& cpu)
+x86::reg32 trafficStop(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { return takeOff(app, cpu, car); });
+    asThunk(cpu, args, [&, car = args.eax] { return takeOff(app, cpu, car); });
+    return args.eax;
 }
 
 /* 0x405e20: an extra car's step: a traffic car's (0x40c210), a cop's (the always-one rule,
@@ -1486,7 +1475,12 @@ std::optional<reg32> stepExtraCar(App* app, CPU& cpu, reg32 car)
 {
     const reg8 kind = byte(app, car + kCarKind);
     if ((kind & kKindTraffic) != 0)
-        return call(app, cpu, kTrafficStep, car);
+    {
+        const std::optional<bool> done = guest::direct<0x40c210, pursuit::countdownDoneOf>(app, cpu, car);
+        if (!done)
+            return std::nullopt;
+        return *done ? 1u : 0u;
+    }
     if ((kind & kKindCop) != 0)
     {
         const reg32 one = guest::direct<0x402c70, airace::alwaysOneOf>(app, cpu);
@@ -1497,9 +1491,10 @@ std::optional<reg32> stepExtraCar(App* app, CPU& cpu, reg32 car)
     return 0;
 }
 
-void extraCarStep(App* app, CPU& cpu)
+x86::reg32 extraCarStep(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { return stepExtraCar(app, cpu, car); });
+    asThunk(cpu, args, [&, car = args.eax] { return stepExtraCar(app, cpu, car); });
+    return args.eax;
 }
 
 /* 0x405e60: the AI's tuning, set as a race starts: the steering's gains and limits
@@ -1523,17 +1518,19 @@ void tuneDriving(App* app)
 }
 
 /* eax left the last value stored; the code's other registers are popped. */
-void setDrivingConstants(App* app, CPU& cpu)
+x86::reg32 setDrivingConstants(App* app, x86::CPU& cpu, x86::Args& args)
 {
     tuneDriving(app);
-    cpu.eax = std::end(kDrivingConstants)[-1][1];
+    args.eax = std::end(kDrivingConstants)[-1][1];
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x405fb0: an empty hook. */
-void drivingNothing(App*, CPU& cpu)
+x86::reg32 drivingNothing(App* app, x86::CPU& cpu, x86::Args& args)
 {
     cpu.esp += 4;
+    return args.eax;
 }
 
 // setReversing's: on, off, and (any other) turned over.
@@ -1586,10 +1583,11 @@ reg32 setReversing(App* app, reg32 car, reg32 how, reg32 frames)
 }
 
 /* Car eax, how edx, frames ebx; eax left the car. */
-void setReverse(App* app, CPU& cpu)
+x86::reg32 setReverse(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    setReversing(app, cpu.eax, cpu.edx, cpu.ebx);
+    setReversing(app, args.eax, args.edx, args.ebx);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4060d0: car's reverse ended where it is timed and its time is up (setReversing off); while
@@ -1608,10 +1606,11 @@ void reverseCheckFor(App* app, reg32 car)
 }
 
 /* Car eax; the registers setReversing's code changes are popped. */
-void reverseCheck(App* app, CPU& cpu)
+x86::reg32 reverseCheck(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    reverseCheckFor(app, cpu.eax);
+    reverseCheckFor(app, args.eax);
     cpu.esp += 4;
+    return args.eax;
 }
 
 // The speed under which a car counts as stuck (doubles: 10 and, for the tipped test, its own),
@@ -1637,51 +1636,60 @@ bool reverseIfSlow(App* app, reg32 car)
 
 /* Car eax; eax left with the compare's status word in its low word where it was made and the
  * reverse not turned over. */
-void reverseWhenSlow(App* app, CPU& cpu)
+x86::reg32 reverseWhenSlow(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const reg32 car = cpu.eax;
+    const reg32 car = args.eax;
     if (!reverseIfSlow(app, car) && moving(app, car))
-        cpu.eax = statusInto(car, f32(app, car + kCarSpeedSize), f64(app, kStuckSpeed));
+        args.eax = statusInto(car, f32(app, car + kCarSpeedSize), f64(app, kStuckSpeed));
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x406160: as reverseIfSlow, where its nose also points down past -0.5: its dot product with
  * the vector `down` (0x4e01f0).  False when the game stopped; eax and edx left as the code leaves
  * them (the compares' status words in ax, setReversing's edx). */
-bool reverseIfTipped(App* app, CPU& cpu, reg32 car, reg32 down)
+struct TippedLeft
+{
+    reg32 eax;
+    std::optional<reg32> edx;  // changed only where the reverse was turned over
+};
+
+std::optional<TippedLeft> reverseTippedLeaving(App* app, CPU& cpu, reg32 car, reg32 down)
 {
     if (!moving(app, car))
-        return true;
+        return TippedLeft{car, std::nullopt};
     const Float speed = f32(app, car + kCarSpeedSize);
     if (!below(speed, f64(app, kTippedSpeed)))
-    {
-        cpu.eax = statusInto(car, speed, f64(app, kTippedSpeed));
-        return true;
-    }
+        return TippedLeft{statusInto(car, speed, f64(app, kTippedSpeed)), std::nullopt};
     // By address: the compare's status word goes into the eax the dot product leaves.
     const auto nose = dotLeavingEax(app, cpu, car + kCarNose, down);
     if (!nose)
-        return false;
-    if (!below(*nose, f64(app, kTippedDown)))
-    {
-        cpu.eax = statusInto(cpu.eax, *nose, f64(app, kTippedDown));
-        return true;
-    }
-    cpu.eax = car;
-    cpu.edx = setReversing(app, car, kReverseTurnOver, kStuckFrames);
-    return true;
+        return std::nullopt;
+    if (!below(nose->product, f64(app, kTippedDown)))
+        return TippedLeft{statusInto(nose->eax, nose->product, f64(app, kTippedDown)), nose->edx};
+    return TippedLeft{car, setReversing(app, car, kReverseTurnOver, kStuckFrames)};
+}
+
+bool reverseIfTipped(App* app, CPU& cpu, reg32 car, reg32 down)
+{
+    return reverseTippedLeaving(app, cpu, car, down).has_value();
 }
 
 /* Car eax, the vector edx. */
-void reverseWhenTipped(App* app, CPU& cpu)
+x86::reg32 reverseWhenTipped(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const reg32 ebx = cpu.ebx, ecx = cpu.ecx, ebp = cpu.ebp;
-    if (!reverseIfTipped(app, cpu, cpu.eax, cpu.edx))
-        return;
-    cpu.ebx = ebx;
-    cpu.ecx = ecx;
-    cpu.ebp = ebp;
+    const reg32 ebx = args.ebx, ecx = args.ecx, ebp = args.ebp;
+    const auto left = reverseTippedLeaving(app, cpu, args.eax, args.edx);
+    if (!left)
+        return args.eax;
+    args.eax = left->eax;
+    if (left->edx)
+        args.edx = *left->edx;
+    args.ebx = ebx;
+    args.ecx = ecx;
+    args.ebp = ebp;
     cpu.esp += 4;
+    return args.eax;
 }
 
 // The engine's: past the slice's speed by this (a double, 10) it aims high; the aims by the top
@@ -1804,9 +1812,10 @@ std::optional<reg32> runEngine(App* app, CPU& cpu, reg32 car, reg32 noGear)
 }
 
 /* Car eax. */
-void engineRevs(App* app, CPU& cpu)
+x86::reg32 engineRevs(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax, noGear = cpu.ebx] { return runEngine(app, cpu, car, noGear); });
+    asThunk(cpu, args, [&, car = args.eax, noGear = args.ebx] { return runEngine(app, cpu, car, noGear); });
+    return args.eax;
 }
 
 // The brake's: none where its size is under this (a double, 0.5); doubled (a double, 2) for a cop
@@ -1855,18 +1864,19 @@ std::optional<float> brakeOf(App* app, CPU& cpu, reg32 car, float shortfall)
 
 /* Car eax, the shortfall on the stack (ret 4); the brake onto the x87's stack.  eax the brake's
  * bits, or where it brakes already as the code's compares leave it. */
-void brakeForce(App* app, CPU& cpu)
+x86::reg32 brakeForce(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const reg32 car = cpu.eax;
+    const reg32 car = args.eax;
     const float shortfall = app->getMemory<float>(cpu.esp + 4);
-    adapts(
-        cpu,
+    asThunk(
+        cpu, args,
         [&]() -> std::optional<reg32> {
             const bool already = brakesAlready(app, car, shortfall);
             const auto brake = brakeOf(app, cpu, car, shortfall);
             if (!brake)
                 return std::nullopt;
-            cpu.fpu.push(Float(*brake));
+            args.floatSet = true;
+            args.floatResult = double(Float(*brake));
             if (!already)
                 return floatBits(*brake);
             const reg32 left = below(Float(0.0), Float(shortfall)) ? floatBits(shortfall)
@@ -1874,6 +1884,7 @@ void brakeForce(App* app, CPU& cpu)
             return statusInto(left, Float(sizeOf(shortfall)), f64(app, kNoBrakeUnder));
         },
         4);
+    return args.eax;
 }
 
 /* Whether car goes against the race's way: its +0x621 0x10, turned over on a race run backwards. */
@@ -1933,9 +1944,10 @@ std::optional<reg32> runAlongRoad(App* app, CPU& cpu, reg32 car)
 }
 
 /* Car eax. */
-void speedAlongRoad(App* app, CPU& cpu)
+x86::reg32 speedAlongRoad(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { return runAlongRoad(app, cpu, car); });
+    asThunk(cpu, args, [&, car = args.eax] { return runAlongRoad(app, cpu, car); });
+    return args.eax;
 }
 
 // The lane's error's scale (a double).
@@ -1949,16 +1961,17 @@ Float laneErrorOf(App* app, reg32 car)
 }
 
 /* Car eax; the error onto the x87's stack. */
-void laneError(App* app, CPU& cpu)
+x86::reg32 laneError(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    cpu.fpu.push(laneErrorOf(app, cpu.eax));
+    args.floatSet = true;
+    args.floatResult = double(laneErrorOf(app, args.eax));
     cpu.esp += 4;
+    return args.eax;
 }
 
 // A car's: its spin (+0xe4), a ghost's way (+0x621 0x10).
 constexpr reg32 kCarSpin = 0xe4;
 // The car's way against the race's, handed on as it glides.
-constexpr reg32 kGlideOn = 0x4a0980;
 constexpr reg32 kGlidePushed = 0x18, kGlideFrame = 0x20;
 
 /* 0x4068a0: the computer's car glides along the road, its speed set rather than driven (when a
@@ -1984,13 +1997,18 @@ std::optional<reg32> glide(App* app, CPU& cpu, reg32 car)
     put(app, car + kCarSpin + 4, 0);
     put(app, car + kCarSpin + 8, 0);
     put(app, car + kCarForwardSpeed, floatBits(float(f32(app, car + kCarSpeedAlong))));
-    return guest::watcomEax(app, cpu, kGlideOn, {car, againstRace(app, car) ? 1u : 0u});
+    const std::optional<port::conv::Left> left =
+        guest::direct<0x4a0980, port::conv::frameFromRoad>(app, cpu, car, againstRace(app, car) ? 1u : 0u);
+    if (!left)
+        return std::nullopt;
+    return left->eax;
 }
 
 /* Car eax; eax as 0x4a0980 leaves it. */
-void glideAlongRoad(App* app, CPU& cpu)
+x86::reg32 glideAlongRoad(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { return glide(app, cpu, car); });
+    asThunk(cpu, args, [&, car = args.eax] { return glide(app, cpu, car); });
+    return args.eax;
 }
 
 /* 0x406980: the slice car looks ahead to: the slice its pace gives -- that one on the track's
@@ -2035,9 +2053,10 @@ std::optional<reg32> lookAhead(App* app, CPU& cpu, reg32 car)
 }
 
 /* Car eax; eax the slice. */
-void lookAheadSlice(App* app, CPU& cpu)
+x86::reg32 lookAheadSlice(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { return lookAhead(app, cpu, car); });
+    asThunk(cpu, args, [&, car = args.eax] { return lookAhead(app, cpu, car); });
+    return args.eax;
 }
 
 // The slice's right's scale (a double, 1/65536).
@@ -2048,7 +2067,7 @@ constexpr reg32 kSidewaysPushed = 0xc, kSidewaysFrame = 0x10;
 /* 0x406a80: car's speed across the road two slices on: its speed's vector (+0xa4) dotted with the
  * slice's right (by 512 and 1/65536), the right in the code's frame (handed to the dot product).
  * nullopt when the game stopped. */
-std::optional<Float> sidewaysSpeed(App* app, CPU& cpu, reg32 car)
+std::optional<DotLeft> sidewaysSpeed(App* app, CPU& cpu, reg32 car)
 {
     const GuestFrame frame(cpu, kSidewaysPushed, kSidewaysFrame);
     const auto slice = sliceAhead(app, cpu, car, 2);
@@ -2065,36 +2084,40 @@ std::optional<Float> sidewaysSpeed(App* app, CPU& cpu, reg32 car)
 }
 
 /* Car eax; the speed onto the x87's stack, eax as the dot product leaves it. */
-void sidewaysToRoad(App* app, CPU& cpu)
+x86::reg32 sidewaysToRoad(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] {
+    asThunk(cpu, args, [&, car = args.eax] {
         const auto speed = sidewaysSpeed(app, cpu, car);
         if (!speed)
             return false;
-        cpu.fpu.push(*speed);
+        args.eax = speed->eax;
+        args.floatSet = true;
+        args.floatResult = double(speed->product);
         return true;
     });
+    return args.eax;
 }
 
 /* The pushes of the ways' code (ebx, ecx, edx, edi, ebp), the frames below them. */
 constexpr reg32 kWayPushed = 0x14, kTowardTargetFrame = 0x10, kTowardAheadFrame = 0x1c, kTowardSliceFrame = 0x2c,
                 kTowardSlowingFrame = 0x30;
 
-/* A way's adapter: car eax, the way to [esi].  The code leaves eax the way's address and esi past
+/* A way's thunk: car eax, the way to [esi].  The code leaves eax the way's address and esi past
  * its own copy in its frame (`copied` under the pushes), the registers it pushed as they were (a
  * callee's no matter).  The x86's direction flag is clear, as Watcom's code keeps it: movsd
  * steps up. */
 template <bool (*Way)(App*, CPU&, reg32, reg32)>
-void wayAdapter(App* app, CPU& cpu, reg32 copied)
+x86::reg32 wayThunk(App* app, CPU& cpu, x86::Args& args, reg32 copied)
 {
-    const reg32 car = cpu.eax, out = cpu.esi, esp = cpu.esp;
-    const bool went = adapts(cpu, [&]() -> std::optional<reg32> {
+    const reg32 car = args.eax, out = args.esi, esp = cpu.esp;
+    const bool went = asThunk(cpu, args, [&]() -> std::optional<reg32> {
         if (!Way(app, cpu, car, out))
             return std::nullopt;
         return out;
     });
     if (went)
-        cpu.esi = esp - kWayPushed - copied + 12;
+        args.esi = esp - kWayPushed - copied + 12;
+    return args.eax;
 }
 
 /* 0x406b00: the way from car to the car it chases ([+0x624]), to `out`; whose offset it takes up
@@ -2110,9 +2133,9 @@ bool wayToChased(App* app, CPU& cpu, reg32 car, reg32 out)
     return true;
 }
 
-void towardTarget(App* app, CPU& cpu)
+x86::reg32 towardTarget(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    wayAdapter<wayToChased>(app, cpu, kTowardTargetFrame);
+    return wayThunk<wayToChased>(app, cpu, args, kTowardTargetFrame);
 }
 
 // The share of the chased car's speed it is ahead by (a float, 0.4).
@@ -2136,9 +2159,9 @@ bool wayToChasedAhead(App* app, CPU& cpu, reg32 car, reg32 out)
     return true;
 }
 
-void towardTargetAhead(App* app, CPU& cpu)
+x86::reg32 towardTargetAhead(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    wayAdapter<wayToChasedAhead>(app, cpu, kTowardAheadFrame);
+    return wayThunk<wayToChasedAhead>(app, cpu, args, kTowardAheadFrame);
 }
 
 /* A slice's point (16.16 integers at the slice's record) by `scale` into `to`, three floats --
@@ -2168,9 +2191,9 @@ bool wayToSlice(App* app, CPU& cpu, reg32 car, reg32 out)
     return true;
 }
 
-void towardSlice(App* app, CPU& cpu)
+x86::reg32 towardSlice(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    wayAdapter<wayToSlice>(app, cpu, kTowardSliceFrame);
+    return wayThunk<wayToSlice>(app, cpu, args, kTowardSliceFrame);
 }
 
 /* 0x406c90: the way from car to its slice's point, to `out`; the speed it wants ([+0x7b0]) 32 by
@@ -2189,9 +2212,9 @@ bool wayToSliceSlowing(App* app, CPU& cpu, reg32 car, reg32 out)
     return true;
 }
 
-void towardSliceSlowing(App* app, CPU& cpu)
+x86::reg32 towardSliceSlowing(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    wayAdapter<wayToSliceSlowing>(app, cpu, kTowardSlowingFrame);
+    return wayThunk<wayToSliceSlowing>(app, cpu, args, kTowardSlowingFrame);
 }
 
 // The lane's point's scale (a double), the slices where the track's kind 0 keeps left, and by
@@ -2226,9 +2249,9 @@ bool wayToLane(App* app, CPU& cpu, reg32 car, reg32 out)
     return true;
 }
 
-void towardLane(App* app, CPU& cpu)
+x86::reg32 towardLane(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    wayAdapter<wayToLane>(app, cpu, kTowardLaneFrame);
+    return wayThunk<wayToLane>(app, cpu, args, kTowardLaneFrame);
 }
 
 // A car's: a cop's flags' second byte (+0x711: 2 leading), how long it has been stuck (+0x7d8).
@@ -2346,9 +2369,9 @@ bool wayToGoFor(App* app, CPU& cpu, reg32 car, reg32 out)
 }
 
 /* Car eax, the way to [esi]. */
-void wayToGo(App* app, CPU& cpu)
+x86::reg32 wayToGo(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    wayAdapter<wayToGoFor>(app, cpu, kWayToGoFrame);
+    return wayThunk<wayToGoFor>(app, cpu, args, kWayToGoFrame);
 }
 
 // A car's: the force in its axes (+0x4e0), the step's acceleration (+0x2e8) and spin's change
@@ -2436,9 +2459,10 @@ std::optional<reg32> integrateStep(App* app, CPU& cpu, reg32 car)
 }
 
 /* Car eax. */
-void integrate(App* app, CPU& cpu)
+x86::reg32 integrate(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { return integrateStep(app, cpu, car); });
+    asThunk(cpu, args, [&, car = args.eax] { return integrateStep(app, cpu, car); });
+    return args.eax;
 }
 
 /* The size of a float the code's other way: fldz; fcomp; ja -- the value itself where 0 is at
@@ -2524,12 +2548,13 @@ bool coast(App* app, reg32 car)
 
 /* Car eax; eax left 0x18 past its speed in its axes where it coasted, as the code's products
  * leave it. */
-void coastAfterFinish(App* app, CPU& cpu)
+x86::reg32 coastAfterFinish(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const reg32 car = cpu.eax;
+    const reg32 car = args.eax;
     if (coast(app, car))
-        cpu.eax = car + kCarAcross + 0x18;
+        args.eax = car + kCarAcross + 0x18;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* The clamps the steering's code inlines (fst; fcomp; jbe and the like): the x87's value at most
@@ -2601,7 +2626,7 @@ std::optional<reg32> steerOn(App* app, CPU& cpu, reg32 car)
     const auto sideways = atDepth(cpu, [&] { return sidewaysSpeed(app, cpu, car); });
     if (!sideways)
         return std::nullopt;
-    const float across = float(*sideways);
+    const float across = float(sideways->product);
     const float one = 1.0f;
 
     // The yaw wanted: the heading's, cut.
@@ -2723,9 +2748,10 @@ std::optional<reg32> steerOn(App* app, CPU& cpu, reg32 car)
 }
 
 /* Car eax. */
-void steerOnRoad(App* app, CPU& cpu)
+x86::reg32 steerOnRoad(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { return steerOn(app, cpu, car); });
+    asThunk(cpu, args, [&, car = args.eax] { return steerOn(app, cpu, car); });
+    return args.eax;
 }
 
 // The backwards steering's tuning (setDrivingConstants): the side's limit, the across's limit and
@@ -2831,9 +2857,10 @@ std::optional<reg32> steerBack(App* app, CPU& cpu, reg32 car)
 }
 
 /* Car eax. */
-void steerReversing(App* app, CPU& cpu)
+x86::reg32 steerReversing(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { return steerBack(app, cpu, car); });
+    asThunk(cpu, args, [&, car = args.eax] { return steerBack(app, cpu, car); });
+    return args.eax;
 }
 
 // The off-road steering's tuning (setDrivingConstants): the side's limit, the across's limit and
@@ -2989,9 +3016,10 @@ std::optional<reg32> steerOff(App* app, CPU& cpu, reg32 car)
 }
 
 /* Car eax. */
-void steerOffRoad(App* app, CPU& cpu)
+x86::reg32 steerOffRoad(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { return steerOff(app, cpu, car); });
+    asThunk(cpu, args, [&, car = args.eax] { return steerOff(app, cpu, car); });
+    return args.eax;
 }
 
 // A car's: its +8, its axes (+0xc0, nine floats), +0x204 and +0x208, its track's place (+0xc,
@@ -3036,9 +3064,10 @@ std::optional<reg32> rideWith(App* app, CPU& cpu, reg32 car)
 }
 
 /* Car eax. */
-void rideWithTarget(App* app, CPU& cpu)
+x86::reg32 rideWithTarget(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { return rideWith(app, cpu, car); });
+    asThunk(cpu, args, [&, car = args.eax] { return rideWith(app, cpu, car); });
+    return args.eax;
 }
 
 /* 0x408870: the lane's offset car eases to ([+0x7c8]) a step toward the one it wants ([+0x7b4]),
@@ -3063,10 +3092,11 @@ reg32 easeLaneBy(App* app, reg32 car, float step)
 }
 
 /* Car eax, the step on the stack (ret 4). */
-void easeLane(App* app, CPU& cpu)
+x86::reg32 easeLane(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    cpu.eax = easeLaneBy(app, cpu.eax, app->getMemory<float>(cpu.esp + 4));
+    args.eax = easeLaneBy(app, args.eax, app->getMemory<float>(cpu.esp + 4));
     cpu.esp += 8;
+    return args.eax;
 }
 
 // The step's: a car's turn skipped (0x4be1a0, its kind 0x20 and the car's first word), the step's
@@ -3109,7 +3139,7 @@ std::optional<reg32> runPhysics(App* app, CPU& cpu, reg32 car, reg32 noGear)
     if (half(app, car + kCarStage) != 0)
         return car;
     if (i32(at(app, car + kCarLie)) < kTippedBits)
-        return call(app, cpu, kSettleAtRest, car);
+        return guest::direct<0x4aa8e7, handling::settleCar>(app, cpu, car);
     if (racerOut(app, car))
     {
         coast(app, car);
@@ -3168,9 +3198,10 @@ std::optional<reg32> runPhysics(App* app, CPU& cpu, reg32 car, reg32 noGear)
 }
 
 /* Car eax; ebx the engine's gear where none comes nearer, as the caller's code leaves it. */
-void aiPhysics(App* app, CPU& cpu)
+x86::reg32 aiPhysics(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax, noGear = cpu.ebx] { return runPhysics(app, cpu, car, noGear); });
+    asThunk(cpu, args, [&, car = args.eax, noGear = args.ebx] { return runPhysics(app, cpu, car, noGear); });
+    return args.eax;
 }
 
 /* 0x4088f0: the computer's car's step, each frame: nothing while 0x4be1a0 says so or it is off the
@@ -3206,7 +3237,7 @@ std::optional<reg32> stepCar(App* app, CPU& cpu, reg32 car)
         put(app, car + kCarRevs,
             i32(at(app, performance + kPerformanceIdle) + kRevsDown) < i32(revs) ? revs - kRevsDown
                                                                                  : at(app, performance + kPerformanceIdle));
-        return call(app, cpu, kSettleAtRest, car);
+        return guest::direct<0x4aa8e7, handling::settleCar>(app, cpu, car);
     }
     const reg32 move = at(app, kCarsMove);
     put(app, car + kCarStepAcceleration, 0);
@@ -3240,9 +3271,10 @@ std::optional<reg32> stepCar(App* app, CPU& cpu, reg32 car)
 }
 
 /* Car eax. */
-void aiStep(App* app, CPU& cpu)
+x86::reg32 aiStep(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { return stepCar(app, cpu, car); });
+    asThunk(cpu, args, [&, car = args.eax] { return stepCar(app, cpu, car); });
+    return args.eax;
 }
 
 }  // namespace aidrive

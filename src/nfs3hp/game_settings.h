@@ -10,7 +10,7 @@
  * whole or in stretches into saves, replays and ghosts.  The block also holds
  * the race's setup and the race's cast, so not all of it is a preference.
  *
- * This is a view of the data where the game has it: generated code still
+ * This is a view of the data where the game has it: code that reads it by address still
  * shares it (the network's and the replays' functions above all, sub_477fd0,
  * sub_4dece0), the game's functions get addresses in it, cars keep theirs of
  * a RaceEntry, and the menu lists' table (0x5563e8) points at 66 fields.
@@ -171,7 +171,7 @@ struct GameSettings
     x86::reg32 useLights;
     x86::reg32 viewDistance;  // 0 Full .. 3 Close
     x86::reg32 skyDetail;  // 1 no sky dome pieces, 2 no sky's rest
-    x86::reg32 effectsLevel;  // 0 all, 1 the major ones, 2 none; generated sub_4dece0 reads it
+    x86::reg32 effectsLevel;  // 0 all, 1 the major ones, 2 none; sub_4dece0 reads it
     x86::reg32 projectedText;  // sub_4483a0/sub_448330's choice; the projected text item
     union
     {

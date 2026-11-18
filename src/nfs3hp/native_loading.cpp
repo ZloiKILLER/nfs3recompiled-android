@@ -3,6 +3,7 @@
 #include "native_ea_support.h"
 #include "native_guest.h"
 #include "native_load_track.h"
+#include "native_loading.h"
 #include "native_thrash.h"
 #include <lib/memmap.h>
 #include <SDL3/SDL.h>
@@ -13,28 +14,27 @@
 #include <utility>
 #include <vector>
 
-/* Native stand-ins for the loading of the game's data, entered from the top of
- * the generated functions (tools/apply_native_loading.py) as the vertex loops
+/* Native functions for the loading of the game's data, as the vertex loops
  * are (native_vertices.cpp):
  *
  *   - EA's RefPack decoder (sub_5102a4), behind every .qfs and every packed
  *     file the game reads: the track's textures, the sky, the HUD, the menus.
- *     The generated code moves each byte of its output as a loop of its own
- *     (rep movsb, one emulated step per byte);
+ *     The game's code moves each byte of its output as a loop of its own
+ *     (rep movsb, one step per byte);
  *   - an FCE model turned into the game's polygon records (sub_49cfa0);
  *   - a track's FRD file read into its blocks (sub_419c20 with its readers
  *     sub_419bf0, sub_419bc0, sub_4198e0 and sub_419ab0).
  *
  * The formats are the ones OpenNFS reads (FRD, FCE, FSH/QFS); the layouts in
  * memory are the game's own, which nothing but the game reads, so each of
- * these does what its generated function does, in the same order, to the same
- * bytes.  Memory, registers and flags come out as the generated code leaves
+ * these does what the game's function does, in the same order, to the same
+ * bytes.  Memory, registers and flags come out as the game's code leaves
  * them -- the flags it computes, which are not PF and AF, and only where an
  * instruction's flags may be read (an xor before a ret leaves the cmp's
  * before it) -- and only the stack
- * below the returned esp is not written.  The calls the generated code makes
+ * below the returned esp is not written.  The calls the game's code makes
  * to the rest of the game (the file opened, the game's heap) are made the same
- * way, through dynamic_call.
+ * way, through a pointer (app->callAddress).
  */
 namespace nfs3hp
 {
@@ -77,64 +77,12 @@ inline void ret(x86::CPU& cpu, x86::reg32 pop = 0)
     cpu.esp += 4 + pop;
 }
 
-/* The flags as the generated code sets them (cpu.h's set_szp and clear_co):
- * test, or, and and xor clear CF and OF; cmp works out all four. */
-inline void logicFlags(x86::CPU& cpu, x86::reg32 value)
-{
-    cpu.flags.cf = 0;
-    cpu.flags.of = 0;
-    cpu.flags.zf = !value;
-    cpu.flags.sf = value >> 31;
-}
-
-inline void compareFlags(x86::CPU& cpu, x86::reg32 a, x86::reg32 b)
-{
-    const x86::reg32 result = a - b;
-    cpu.flags.cf = a < b;
-    cpu.flags.of = ((a >> 31) != (result >> 31)) && ((a >> 31) != (b >> 31));
-    cpu.flags.zf = !result;
-    cpu.flags.sf = result >> 31;
-}
-
-inline void compareFlags8(x86::CPU& cpu, x86::reg8 a, x86::reg8 b)
-{
-    const x86::reg8 result = x86::reg8(a - b);
-    cpu.flags.cf = a < b;
-    cpu.flags.of = ((a >> 7) != (result >> 7)) && ((a >> 7) != (b >> 7));
-    cpu.flags.zf = !result;
-    cpu.flags.sf = result >> 7;
-}
-
 /* The registers a function pushes as it starts and pops as it returns, esp
  * with them. */
 struct Saved
 {
     x86::reg32 ebx, ecx, edx, esi, edi, ebp, esp;
-    explicit Saved(const x86::CPU& cpu)
-        : ebx(cpu.ebx), ecx(cpu.ecx), edx(cpu.edx), esi(cpu.esi), edi(cpu.edi), ebp(cpu.ebp), esp(cpu.esp)
-    {
-    }
-    void restore(x86::CPU& cpu) const
-    {
-        cpu.ebx = ebx;
-        cpu.ecx = ecx;
-        cpu.edx = edx;
-        cpu.esi = esi;
-        cpu.edi = edi;
-        cpu.ebp = ebp;
-        cpu.esp = esp;
-    }
 };
-
-/* A call as the generated code makes one: a slot for the return address, then
- * the callee.  False when the game is shutting down, as the generated code
- * then returns at once. */
-bool call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 address)
-{
-    cpu.esp -= 4;
-    app->dynamic_call(address, cpu);
-    return !cpu.terminate;
-}
 
 /* rep movsb forward: the same as memmove unless the destination starts inside
  * the source, where each byte read may be one just written (a run repeated). */
@@ -179,35 +127,33 @@ inline void moveDwords(x86::reg8* m, x86::reg32 to, x86::reg32 from, x86::reg32 
  * Returns the unpacked size from the header in eax.  ebx is left on the stop
  * code (or after the header), edx holds the doubleword read there; ecx, esi,
  * edi and ebp are the caller's again. */
-void refpackNative(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 refpackNative(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     x86::reg8* m = memoryOf(app);
-    const x86::reg32 source = cpu.eax;
+    const x86::reg32 source = args.eax;
     if (source == 0)
     {
         // or ebx, ebx; je
-        cpu.eax = 0;
-        cpu.ebx = 0;
-        logicFlags(cpu, 0);
+        args.eax = 0;
+        args.ebx = 0;
         ret(cpu);
-        return;
+        return args.eax;
     }
     x86::reg32 at = source + 2;
     if (m[source] & 1)
         at += 3;
     const x86::reg32 size = x86::reg32(m[at]) << 16 | x86::reg32(m[at + 1]) << 8 | m[at + 2];
     at += 3;
-    if (cpu.ebx == 0)
+    if (args.ebx == 0)
     {
         // cmp ecx, 0; je
-        cpu.eax = size;
-        cpu.ebx = at;
-        compareFlags(cpu, 0, 0);
+        args.eax = size;
+        args.ebx = at;
         ret(cpu);
-        return;
+        return args.eax;
     }
 
-    x86::reg32 out = cpu.edx;
+    x86::reg32 out = args.edx;
     for (;;)
     {
         const x86::reg32 b0 = m[at];
@@ -266,14 +212,14 @@ void refpackNative(win32::WinApplication* app, x86::CPU& cpu)
         {
             // the stop code, with its 0-3 literals: cmp dl, 0xfc; jae
             moveBytes(m, out, at + 1, b0 & 3);
-            compareFlags8(cpu, x86::reg8(b0), 0xfc);
             break;
         }
     }
-    cpu.eax = size;
-    cpu.ebx = at;
-    cpu.edx = read32(m, at);
+    args.eax = size;
+    args.ebx = at;
+    args.edx = read32(m, at);
     ret(cpu);
+    return args.eax;
 }
 
 /* ------------------------------------------------------------------------
@@ -290,24 +236,23 @@ void refpackNative(win32::WinApplication* app, x86::CPU& cpu)
  * +0x1c, U at +0x20 and V at +0x2c.  A record is 0x84 bytes; the records
  * and a word a vertex come from the game's heap (sub_4e1620), and their
  * address goes over the header's first doubleword.  Returns the FCE in eax. */
-void fceRecordsNative(win32::WinApplication* app, x86::CPU& cpu)
+std::optional<x86::reg32> modelReadyOf(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 fce)
 {
     x86::reg8* m = memoryOf(app);
-    const Saved saved(cpu);
+    const x86::reg32 savedEsp = cpu.esp;
     const x86::reg32 entryEsp = cpu.esp;
-    const x86::reg32 fce = cpu.eax;
     const x86::reg32 data = fce + 0x1f04;
-    const x86::reg32 frame = entryEsp - 0x18;  // ebp after six pushes
+    const x86::reg32 frame = entryEsp - 0x18;  // the frame after six pushes
     const x86::reg32 size = read32(m, fce + 4) * 0x84 + read32(m, fce + 8) * 4;
 
     write32(m, frame - 0x10, data);
-    cpu.ebp = frame;
     cpu.esp = frame - 0x14;
-    cpu.ecx = fce;
-    cpu.esi = data;
     const std::optional<x86::reg32> reserved = guest::direct<0x4e1620, ea::reserved>(app, cpu, 0x53c60cu, size, 0u);
     if (!reserved || cpu.terminate)
-        return;
+    {
+        cpu.esp = savedEsp;
+        return std::nullopt;
+    }
     const x86::reg32 records = *reserved;
     m = memoryOf(app);
     write32(m, fce, records);
@@ -348,10 +293,19 @@ void fceRecordsNative(win32::WinApplication* app, x86::CPU& cpu)
             record += 0x84;
         }
     }
-    compareFlags(cpu, part, read32(m, fce + 0xf8));  // cmp ebx, [ecx + 0xf8]; jge
-    saved.restore(cpu);
-    cpu.eax = fce;
+    cpu.esp = savedEsp;
+    return fce;
+}
+
+/* sub_49cfa0 as a call through a pointer reaches it: the FCE at eax. */
+x86::reg32 fceRecordsNative(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+{
+    const std::optional<x86::reg32> model = modelReadyOf(app, cpu, args.eax);
+    if (!model)
+        return args.eax;
+    args.eax = *model;
     ret(cpu);
+    return args.eax;
 }
 
 /* ------------------------------------------------------------------------
@@ -456,24 +410,24 @@ struct FrdReader
     }
 };
 
-void frdNative(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frdNative(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Saved saved(cpu);
+    const Saved saved{args.ebx, args.ecx, args.edx, args.esi, args.edi, args.ebp, cpu.esp};
     const x86::reg32 frame = cpu.esp - 0x18;  // ebp after six pushes
-    cpu.ebp = frame;
+    args.ebp = frame;
     cpu.esp = frame - 0x24;
 
     // The file's name (sub_41d8a0, "%s...%s.frd"), and the file (sub_4e0ec0).
     const std::optional<x86::reg32> name = guest::direct<0x41d8a0, load::trackFile>(app, cpu, 0x536c64u);
     if (!name || cpu.terminate)
-        return;
+        return args.eax;
     const std::optional<x86::reg32> loaded = guest::direct<0x4e0ec0, ea::loadWhole>(app, cpu, *name, 0x10u);
     if (!loaded || cpu.terminate)
-        return;
-    cpu.eax = *loaded;
+        return args.eax;
+    args.eax = *loaded;
     FrdReader r{app, memoryOf(app)};
-    write32(r.m, 0x5dd078, cpu.eax);
-    write32(r.m, 0x5dd07c, cpu.eax);
+    write32(r.m, 0x5dd078, args.eax);
+    write32(r.m, 0x5dd07c, args.eax);
 
     // The header: 28 bytes the game has no use for, then the last block's number.
     r.read(frame - 0x18, 4);
@@ -571,30 +525,31 @@ void frdNative(win32::WinApplication* app, x86::CPU& cpu)
         r.objects(last + 0x57c);
     }
     r.objects(0x5dd070);
-    cpu.eax = r.lights();
+    args.eax = r.lights();
 
     // The file freed (sub_4e1890).
     const x86::reg32 file = r.word(0x5dd07c);
-    cpu.ebx = file;
+    args.ebx = file;
     if (file != 0)
     {
-        cpu.eax = file;
-        cpu.ecx = last;
-        cpu.edx = block;
-        cpu.esi = piece;
-        cpu.edi = edi;
+        args.eax = file;
+        args.ecx = last;
+        args.edx = block;
+        args.esi = piece;
+        args.edi = edi;
         cpu.esp = frame - 0x24;
         const std::optional<x86::reg32> purged = guest::direct<0x4e1890, ea::purgeBlock>(app, cpu, file);
         if (!purged || cpu.terminate)
-            return;
-        cpu.eax = *purged;
+            return args.eax;
+        args.eax = *purged;
     }
     else
     {
-        logicFlags(cpu, 0);  // test ebx, ebx
     }
-    saved.restore(cpu);
+    args.ebp = saved.ebp;
+    cpu.esp = saved.esp;
     ret(cpu);
+    return args.eax;
 }
 
 }
@@ -603,15 +558,17 @@ namespace loader
 {
 
 /* sub_5102a4: EA's RefPack decoder. */
-void refpack(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 refpack(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    refpackNative(app, cpu);
+    refpackNative(app, cpu, args);
+    return args.eax;
 }
 
 /* sub_49cfa0: an FCE model turned into the game's polygon records. */
-void fceRecords(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 fceRecords(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    fceRecordsNative(app, cpu);
+    fceRecordsNative(app, cpu, args);
+    return args.eax;
 }
 
 }
@@ -703,12 +660,18 @@ void extendNeighbours(win32::WinApplication* app)
 namespace loader
 {
 
-/* sub_419c20: a track's FRD read into its blocks, the lists of what each block sees made longer. */
-void frd(win32::WinApplication* app, x86::CPU& cpu)
+std::optional<x86::reg32> fceModelReady(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 fce)
 {
-    frdNative(app, cpu);
+    return modelReadyOf(app, cpu, fce);
+}
+
+/* sub_419c20: a track's FRD read into its blocks, the lists of what each block sees made longer. */
+x86::reg32 frd(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+{
+    frdNative(app, cpu, args);
     if (!cpu.terminate)
         extendNeighbours(app);
+    return args.eax;
 }
 
 }

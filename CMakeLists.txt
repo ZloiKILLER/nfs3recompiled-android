@@ -15,14 +15,10 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # options
-option(WITH_MMX "The checks' game code: MMX registers, cpuid and rdtsc on the CPU" OFF)
 option(NFS_TRACE_MSG "Trace the win32 message pump to the log" OFF)
 option(NFS2_ASSERT_TRAP "Make NFS2_ASSERT a hard trap (debugger break) instead of logging and continuing" OFF)
 
 # add compile definitions based on options
-if(WITH_MMX)
-    add_compile_definitions(WITH_MMX)
-endif()
 if(NFS2_ASSERT_TRAP)
     add_compile_definitions(NFS2_ASSERT_TRAP)
 endif()
@@ -41,16 +37,15 @@ endif()
 
 # Warning policy is per target, not global:
 #   nfs_core  -- hand-written runtime, warnings are errors.
-#   nfs3hp -- ~85 MB of machine-generated disassembly that no human
-#     edits and the generator re-emits from scratch; it trips thousands of
-#     truncation/conversion warnings by construction, so -Werror there would
-#     only mean nobody can build.  Warnings stay on, they just do not fail.
-# -fno-strict-aliasing is global and mandatory: the generated code reaches guest
+#   nfs3hp -- the game: C++ over the game's data at its own addresses, with
+#     thousands of truncation/conversion warnings from that data's integer
+#     widths; warnings stay on, they just do not fail.
+# -fno-strict-aliasing is global and mandatory: the game's code reaches the game's
 # memory through reinterpret_cast of a flat byte array.
 if (MSVC)
     add_compile_options(/W4)
-    # C4201 unnamed unions and C4458 shadowing are inherent to the x86::CPU
-    # register layout in include/cpu.h; suppress rather than reshape the struct.
+    # C4201 unnamed unions and C4458 shadowing: the bit-field unions of
+    # include/fpu.h's FloatEnv and the win32 structures.
     #   C4127 constant conditional -- inherent to the NFS2_ASSERT macro.
     #   C4702 unreachable code -- for the Glide renderer's texture upload,
     #     gone since; kept, as no desktop build says what else may need it.
@@ -116,9 +111,11 @@ else()
     set(SDL3_MAIN_TARGET "")
 endif()
 
-file(GLOB NFS3HP_DISASM_SOURCES
+# The game's data (its memory image) and the tables that register the port's functions at the
+# game's addresses (src/nfs3hp/disassembly).
+file(GLOB NFS3HP_DISASM_SOURCES CONFIGURE_DEPENDS
      "${NFS_ROOT_DIR}/src/nfs3hp/disassembly/*.cpp")
-file(GLOB NFS3HP_DISASM_HEADERS
+file(GLOB NFS3HP_DISASM_HEADERS CONFIGURE_DEPENDS
      "${NFS_ROOT_DIR}/src/nfs3hp/disassembly/*.h")
 
 # ---------------------------------------------------------------------------
@@ -160,7 +157,7 @@ function(add_game_exe name)
         list(APPEND GAME_SOURCES ${MAD_SOURCES})
     endif()
 
-    # pick the hardcoded disasm set for this game
+    # the game's data and its function tables
     if(name STREQUAL "nfs3hp")
         set(DISASM_SOURCES ${NFS3HP_DISASM_SOURCES})
         set(DISASM_HEADERS ${NFS3HP_DISASM_HEADERS})
@@ -193,11 +190,8 @@ function(add_game_exe name)
         add_executable(${name} ${GAME_SOURCES} ${DISASM_SOURCES} ${DISASM_HEADERS})
     endif()
     set_source_files_properties(${DISASM_HEADERS} PROPERTIES HEADER_FILE_ONLY TRUE)
-    # The generated code has no use for C++ exceptions, and they cost it its
-    # speed: every call gets a cleanup path that runs x86::Local's destructor,
-    # which keeps the registers the function holds alive across the call and
-    # in memory (include/cpu.h).  Nothing in it throws or catches; an exception
-    # from the port's own code could only ever have ended the game anyway.
+    # The game's data and function tables have no use for C++ exceptions:
+    # nothing in them throws or catches.
     if(NOT MSVC)
         set_property(SOURCE ${DISASM_SOURCES} APPEND PROPERTY COMPILE_OPTIONS -fno-exceptions)
         # A function that can run off its end without returning a value is
@@ -211,9 +205,6 @@ function(add_game_exe name)
         ${NFS_ROOT_DIR}/decomp/mad/src
         ${NFS_ROOT_DIR}/include)
     target_link_libraries(${name} PRIVATE ${SDL3_MAIN_TARGET} nfs_core ${SDL3_LIB_TARGET} ${NFS_GL_LIBS})
-    if(WITH_MMX)
-        target_compile_definitions(${name} PRIVATE WITH_MMX)
-    endif()
 endfunction()
 
 add_game_exe(nfs3hp)

@@ -18,8 +18,7 @@
  * screen, advgrph; the sliders come from menu_data.cpp.  The pause menu's
  * graphics, psgraph, had them too until the user took them off (2026-11-13).
  *
- * The game's handlers of that screen are left as they are, held against
- * its code by the checks.  What these sliders need runs after each of them, put
+ * The game's handlers of that screen are left as they are.  What these sliders need runs after each of them, put
  * in their place in the table of methods as the application is built: as the
  * screen opens the sliders are found and set, on each pass of the menu loop what
  * they show goes to the final blit, so the picture follows the finger, and as it
@@ -171,24 +170,27 @@ void closed(App* app, reg32 menu, const char* cancel)
     std::fill(std::begin(s_sliders), std::end(s_sliders), 0);
 }
 
-void advancedEnter(App* app, CPU& cpu)
+x86::reg32 advancedEnter(App* app, CPU& cpu, x86::Args& args)
 {
-    const reg32 menu = cpu.eax;
-    frontend::advancedOnEnter(app, cpu);
+    const reg32 menu = args.eax;
+    frontend::advancedOnEnter(app, cpu, args);
     opened(app, menu);
+    return args.eax;
 }
 
-void advancedFrame(App* app, CPU& cpu)
+x86::reg32 advancedFrame(App* app, CPU& cpu, x86::Args& args)
 {
-    frontend::advancedOnFrame(app, cpu);
+    frontend::advancedOnFrame(app, cpu, args);
     followSliders(app);
+    return args.eax;
 }
 
-void advancedExit(App* app, CPU& cpu)
+x86::reg32 advancedExit(App* app, CPU& cpu, x86::Args& args)
 {
-    const reg32 menu = cpu.eax;
-    frontend::advancedOnExit(app, cpu);
+    const reg32 menu = args.eax;
+    frontend::advancedOnExit(app, cpu, args);
     closed(app, menu, "CANCEL_ADVGRAPHICS_OPTIONS");
+    return args.eax;
 }
 
 }

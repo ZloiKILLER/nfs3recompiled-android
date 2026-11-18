@@ -1,5 +1,8 @@
 #include "game_settings.h"
+#include "native_frontend_loada.h"
+#include "native_watcom.h"
 #include "port_snd_speech.h"
+#include "port_sound_calls.h"
 
 #include <cstdint>
 #include <utility>
@@ -12,11 +15,12 @@
  * the code builds them, on its stack, with its inlined strcpy and strcat and
  * sprintf.
  *
- * Before the last car's bank the checks' stand-ins log ebx and ecx at the
- * track's name (they take four registers), which are whatever the code has in
- * them there -- the loads before leave them, and the names' strcat sets ecx --
- * so those two follow the code through its calls (cpu's).  What is not
- * rewritten yet is called as the game's code calls it. */
+ * At the track's name, before the last car's bank, ebx and ecx are whatever the
+ * code has in them -- the loads before leave them, the names' strcat sets ecx, a
+ * bank's load ebx -- so those two follow the code (`ebx`, `ecx`, from ebx as
+ * the code is entered) into what has no typed function yet, called by its
+ * address as the game's code calls it.  The banks' loads and the sprintf are
+ * called as C++. */
 namespace nfs3hp
 {
 namespace port
@@ -25,7 +29,7 @@ namespace port
 namespace
 {
 
-constexpr reg32 kLoadBank = 0x410b50, kCarBank = 0x4138e0, kLoadingBar = 0x4a33d0, kSprintf = 0x4df690;
+constexpr reg32 kLoadBank = 0x410b50, kCarBank = 0x4138e0, kSprintf = 0x4df690;
 constexpr reg32 kPathEnd = 0x4529a0, kTrackName = 0x4392b0;
 constexpr reg32 kAudioDir = 0x7a2ab4, kCarsDir = 0x7a28b4;
 constexpr reg32 kUnitNamesAt = 0x41296c;   // 7 words in the code: the units' names
@@ -33,26 +37,24 @@ constexpr Var<int32_t> kSurround{0x5525a4};
 constexpr Var<uint8_t> kRaceFlags{0x55eb2e}, kRaceFlagsMore{0x55eb2f};
 constexpr reg32 kRacerSize = 0x6c;  // the racers' records, the model first
 
-/* The game's inlined strcpy of `from` to `to`: esi is left where the copy
- * stopped reading, which the callees that follow may see. */
-void copyName(App* app, CPU& cpu, reg32 to, reg32 from)
+/* A typed core's answer as the code has it in eax: false when the game stopped. */
+bool took(const Result& result, reg32& eax)
 {
-    reg32 length = 0;
-    while (load<uint8_t>(app, from + length) != 0)
-        ++length;
-    copyText(app, to, from);
-    cpu.esi = from + length + (length & 1);
+    if (!result)
+        return false;
+    eax = reg32(*result);
+    return true;
 }
 
-/* Its strcat: ecx is left past the end of the name it ran along (the length
- * and 2 under 0), then the copy. */
-void appendName(App* app, CPU& cpu, reg32 to, reg32 from)
+/* The game's inlined strcat: what it leaves in ecx, past the end of the name it ran along
+ * (the length and 2 under 0), then the copy. */
+reg32 appendName(App* app, reg32 to, reg32 from)
 {
     reg32 length = 0;
     while (load<uint8_t>(app, to + length) != 0)
         ++length;
-    cpu.ecx = reg32(-2 - int32_t(length));
-    copyName(app, cpu, to + length, from);
+    copyText(app, to + length, from);
+    return reg32(-2 - int32_t(length));
 }
 
 /* The bank file's ending for car model `model` (as the menus number them). */
@@ -76,72 +78,61 @@ int32_t modelOf(App* app, int32_t racer)
 
 }  // namespace
 
-/* 0x413bc0's: the race's banks loaded.  eax as the code leaves it: the
- * loading bar's, after the last. */
-static Result raceBanksLoaded(App* app, CPU& cpu, reg32 esp)
+/* 0x413bc0's: the race's banks loaded; `ebx` as the code is entered.  eax as
+ * the code leaves it: the loading bar's, after the last. */
+static Result raceBanksLoaded(App* app, CPU& cpu, reg32 esp, reg32 ebx)
 {
+    // The six registers the game's code pushes first lie in its frame (where the units' names it reads past the
+    // seven run into them): its depth kept, their values not written.
     const reg32 frame = esp - 6 * 4;
-    // The registers the game's code pushes first lie in its frame, where the
-    // units' names it reads past the seven run into them.
-    store<reg32>(app, frame, cpu.ebp);
-    store<reg32>(app, frame + 4, cpu.edi);
-    store<reg32>(app, frame + 8, cpu.esi);
-    store<reg32>(app, frame + 12, cpu.edx);
-    store<reg32>(app, frame + 16, cpu.ecx);
-    store<reg32>(app, frame + 20, cpu.ebx);
     // The code keeps ebp at a base in its frame, its locals at offsets from it.
     const reg32 b = frame - 0x9a;
-    const HeldEbp ebp(cpu, b);
     const reg32 name = b - 0x4a, units = b + 0x1a, unitNames = b + 0x7e, sp = frame - 0xe4;
-    reg32 r = 0;
+    reg32 r = 0, ecx = 0;
+    // What has no typed function yet, by its address: ebx and ecx as the code has them.
     const auto game = [&](reg32 target, reg32 eax, reg32 edx, std::initializer_list<reg32> stack = {}) {
-        return callGame(app, cpu, sp, target, Args{eax, edx, cpu.ebx, cpu.ecx}, stack, r);
+        return pointerGame(app, cpu, sp, target, Args{eax, edx, ebx, ecx}, stack, r);
     };
-    const auto copy = [&](reg32 from) {
-        copyName(app, cpu, name, from);
-        cpu.edi = name;
-    };
-    const auto append = [&](reg32 from) {
-        appendName(app, cpu, name, from);
-        cpu.edi = name;
-    };
+    const auto copy = [&](reg32 from) { copyText(app, name, from); };
+    const auto append = [&](reg32 from) { ecx = appendName(app, name, from); };
     // The bank `name` names loaded into slot `slot`; the loading bar turned.
     const auto loadBank = [&](reg32 slot) {
-        cpu.edi = name;
-        cpu.ebx = 0;
-        return game(kLoadBank, name, slot);
+        ebx = 0;
+        cpu.esp = sp;
+        return took(guest::direct<kLoadBank, bankLoaded>(app, cpu, sp - 4, name, int32_t(slot), 0u, name), r);
     };
-    const auto bar = [&]() { return game(kLoadingBar, r, 0); };
+    // The loading bar turned (0x4a33d0): its eax into r, every other register kept.
+    const auto bar = [&]() {
+        cpu.esp = sp;
+        r = guest::direct<0x4a33d0, frontend::loada::stopCheck>(app, cpu);
+        return !cpu.terminate;
+    };
+    const auto sprintf = [&](reg32 format, reg32 folder, reg32 value) {
+        cpu.esp = sp;
+        r = guest::direct<kSprintf, watcom::clib::sprintf>(app, cpu, name, format, guest::Words{folder, value});
+        return !cpu.terminate;
+    };
     // The car of model `model` from its archive ("<cars><model name>\" and the bank's
     // file), loaded into slot `slot`.
     const auto carArchive = [&](int32_t model, reg32 slot) {
         copy(kCarsDir);
         if (!game(kPathEnd, name, reg32(model)))
             return false;
-        cpu.edi = name;
         if (!game(kTrackName, reg32(model), reg32(model)))
             return false;
-        cpu.esi = r;
         append(r);
-        cpu.esi = 0x536ac0;
-        cpu.edi = name;
         if (!game(kPathEnd, name, slot))
             return false;
         append(0x536ac0);
-        return game(kCarBank, name, slot);
+        cpu.esp = sp;
+        return took(guest::direct<kCarBank, carBankLoaded>(app, cpu, sp - 4, name, int32_t(slot)), r);
     };
     // The units' names, the folder of the units in use.
     for (reg32 i = 0; i < 7; ++i)
         store<reg32>(app, unitNames + 4 * i, load<reg32>(app, kUnitNamesAt + 4 * i));
-    cpu.ecx = 0;
-    cpu.esi = kUnitNamesAt + 28;
-    cpu.edi = unitNames + 28;
     const reg32 unit = reg32(gameSettings(app).language);
     if (unit <= 5)
-    {
-        copyName(app, cpu, units, kSpeechUnitFolders[unit]);
-        cpu.edi = units;
-    }
+        copyText(app, units, kSpeechUnitFolders[unit]);
     int32_t other;
     if (gameSettings(app).playMode == 1)
     {
@@ -171,7 +162,7 @@ static Result raceBanksLoaded(App* app, CPU& cpu, reg32 esp)
         {
             copy(kAudioDir);
             const reg32 cop = reg32(gameSettings(app).cheatTrack) + 0x32;
-            cpu.ecx = cop;
+            ecx = cop;
             reg32 ending;
             if (model == 0x25b)
                 ending = 0x536ac8;
@@ -198,10 +189,8 @@ static Result raceBanksLoaded(App* app, CPU& cpu, reg32 esp)
         // The pursuit: the cops' sounds and their radio.
         copy(kAudioDir);
         append(kSurround(app) != 0 ? 0x536ae8 : 0x536af0);
-        cpu.esi = units;
         if (!loadBank(5) || !bar())
             return {};
-        cpu.esi = units;
         copy(units);
         append(0x536af8);
         if (!loadBank(8) || !bar())
@@ -210,14 +199,12 @@ static Result raceBanksLoaded(App* app, CPU& cpu, reg32 esp)
     // The crashes, the race's voices.
     copy(kAudioDir);
     append(kSurround(app) != 0 ? 0x536b00 : 0x536b08);
-    cpu.esi = units;
     if (!loadBank(2) || !bar())
         return {};
     const reg32 voiceUnit = reg32(gameSettings(app).language);
     copy(units);
     append(0x536b0c);
     append(load<reg32>(app, unitNames + voiceUnit * 4));
-    cpu.esi = units;
     if (!loadBank(6) || !bar())
         return {};
     copy(units);
@@ -229,7 +216,7 @@ static Result raceBanksLoaded(App* app, CPU& cpu, reg32 esp)
     const int32_t track = gameSettings(app).track;
     if (track < 9)
     {
-        if (!game(kSprintf, 0, 0, {name, kSurround(app) != 0 ? 0x536b14u : 0x536b20u, kAudioDir, reg32(track)}))
+        if (!sprintf(kSurround(app) != 0 ? 0x536b14u : 0x536b20u, kAudioDir, reg32(track)))
             return {};
         reg32 more = 0;
         if (gameSettings(app).weather != 0 && gameSettings(app).night != 0)
@@ -239,14 +226,10 @@ static Result raceBanksLoaded(App* app, CPU& cpu, reg32 esp)
         else if (gameSettings(app).night != 0)
             more = 0x536b34;
         if (more != 0)
-        {
-            cpu.esi = more;
             append(more);
-        }
     }
-    else if (!game(kSprintf, 0, 0, {name, 0x536b38, kAudioDir, reg32(track)}))
+    else if (!sprintf(0x536b38, kAudioDir, reg32(track)))
         return {};
-    cpu.esi = kAudioDir;
     if (!loadBank(3) || !bar())
         return {};
     copy(kAudioDir);
@@ -265,7 +248,7 @@ static Result raceBanksLoaded(App* app, CPU& cpu, reg32 esp)
             folder = units;
             value = reg32(number % 4);
         }
-        return game(kSprintf, 0, 0, {name, format, folder, value}) && loadBank(slot) && bar();
+        return sprintf(format, folder, value) && loadBank(slot) && bar();
     };
     const uint8_t mode = kRaceFlags(app);
     if (((mode & 0x10) != 0 || (mode & 0x20) != 0) && gameSettings(app).raceType == 3)
@@ -275,7 +258,6 @@ static Result raceBanksLoaded(App* app, CPU& cpu, reg32 esp)
             return {};
         return int32_t(r);
     }
-    cpu.esi = units;
     copy(units);
     append(0x536b7c);
     if (!loadBank(0xa) || !bar())
@@ -298,10 +280,10 @@ static Result raceBanksLoaded(App* app, CPU& cpu, reg32 esp)
 }
 
 /* 0x413bc0: the race's banks loaded. */
-void raceBanksLoad(App* app, CPU& cpu)
+x86::reg32 raceBanksLoad(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, raceBanksLoaded(app, cpu, e.esp));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, raceBanksLoaded(app, cpu, e.esp, e.ebx));
 }
 
 }  // namespace port

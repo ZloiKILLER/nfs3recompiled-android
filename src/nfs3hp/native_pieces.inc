@@ -1,5 +1,5 @@
 // Addresses that are no function of their own, though the disassembly takes them
-// for one: a stub each that stops the game with its address, no code generated.
+// for one: a stub each that stops the game with its address, no code of its own.
 // tools/audit_dead.py reports these as reachable, by what the sources name: their
 // addresses, or those of the natives they are pieces of.
 //
@@ -12,7 +12,7 @@ DEAD(0x4a3050)
 DEAD(0x4ca480)
 DEAD(0x512dd0)
 
-// Pieces of functions native whole, which do not jump into generated code:
+// Pieces of functions native whole, which do not jump into other code:
 // 0x4f80b4's x87 exp
 DEAD(0x4f80b6)
 DEAD(0x4f80e5)
@@ -38,7 +38,7 @@ DEAD(0x52468f)
 DEAD(0x5247ab)
 
 // Watcom's hooks to save and restore the FPU, which sub_4ff59c stores at 0x56acf0 and
-// 0x56acf4: nothing reads the slots, and the generated bodies stopped the game too.
+// 0x56acf4: nothing reads the slots.
 DEAD(0x4ff590)
 DEAD(0x4ff598)
 

@@ -59,34 +59,38 @@ x86::reg32 word(win32::WinApplication* app, x86::reg32 address)
     return app->getMemory<x86::reg32>(address);
 }
 
-using guest::call;
 using guest::put;
 
-/* The heap's lock taken, or given back: false when the game stopped. */
-bool lock(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 slot)
+/* The heap's lock taken, or given back, through its pointer: false when the game stopped; what the
+ * call leaves in eax into `eax`, if asked, which is as it was for no lock. */
+bool lock(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 slot, x86::reg32* eax = nullptr)
 {
-    return slot == 0 || call(app, cpu, word(app, slot));
+    if (slot == 0)
+        return true;
+    const auto left = guest::pointerCall(app, cpu, word(app, slot), {});
+    if (!left)
+        return false;
+    if (eax != nullptr)
+        *eax = *left;
+    return true;
 }
 
 /* The runtime's VirtualAlloc and VirtualFree, their words handed: the port's own, called as C++
- * (native_windows.h); in the checks through the slot the heap names, the game's import's or
- * voodoo2a's.  False when the game stopped; eax what it gave back. */
+ * (native_windows.h).  What it gave back; nullopt when the game stopped. */
 template <typename... Words>
-bool virtualAlloc(win32::WinApplication* app, x86::CPU& cpu, const WatcomHeap& h, Words... words)
+std::optional<x86::reg32> virtualAlloc(win32::WinApplication* app, x86::CPU& cpu, const WatcomHeap& h, Words... words)
 {
-    const auto done = h.virtualAlloc == kGameVirtualAlloc
+    return h.virtualAlloc == kGameVirtualAlloc
         ? guest::windows<kGameVirtualAlloc, &host::virtualAlloc>(app, cpu, words...)
         : guest::windows<kVoodoo2aVirtualAlloc, &host::virtualAlloc>(app, cpu, words...);
-    return done.has_value();
 }
 
 template <typename... Words>
-bool virtualFree(win32::WinApplication* app, x86::CPU& cpu, const WatcomHeap& h, Words... words)
+std::optional<x86::reg32> virtualFree(win32::WinApplication* app, x86::CPU& cpu, const WatcomHeap& h, Words... words)
 {
-    const auto done = h.virtualFree == kGameVirtualFree
+    return h.virtualFree == kGameVirtualFree
         ? guest::windows<kGameVirtualFree, &host::virtualFree>(app, cpu, words...)
         : guest::windows<kVoodoo2aVirtualFree, &host::virtualFree>(app, cpu, words...);
-    return done.has_value();
 }
 
 }  // namespace
@@ -331,9 +335,10 @@ bool adjust(win32::WinApplication* app, const WatcomHeap& h, x86::reg32& amount)
 bool giveBack(win32::WinApplication* app, x86::CPU& cpu, const WatcomHeap& h, x86::reg32 heap, x86::reg32& result)
 {
     const x86::reg32 after = word(app, heap + 8);
-    if (!virtualFree(app, cpu, h, heap, 0, 0x8000))  // MEM_RELEASE
+    const auto freed = virtualFree(app, cpu, h, heap, 0, 0x8000);  // MEM_RELEASE
+    if (!freed)
         return false;
-    if (cpu.eax == 0)
+    if (*freed == 0)
     {
         result = 0xffffffff;
         return true;
@@ -398,9 +403,10 @@ bool create(win32::WinApplication* app, x86::CPU& cpu, const WatcomHeap& h, x86:
     result = 0;
     if (word(app, h.enabled) == 0 || word(app, h.brk) == 0xfffffffe || !adjust(app, h, amount))
         return true;
-    if (!virtualAlloc(app, cpu, h, 0, amount, 0x1000, 0x40))  // MEM_COMMIT, PAGE_EXECUTE_READWRITE
+    const auto made = virtualAlloc(app, cpu, h, 0, amount, 0x1000, 0x40);  // MEM_COMMIT, PAGE_EXECUTE_READWRITE
+    if (!made)
         return false;
-    const x86::reg32 heap = cpu.eax;
+    const x86::reg32 heap = *made;
     if (heap == 0 || amount - 4 > amount || amount - 4 < 0x38)
         return true;
     put(app, heap, amount - 4);
@@ -423,11 +429,13 @@ bool expand(win32::WinApplication* app, x86::CPU& cpu, const WatcomHeap& h, x86:
 /* _nfree (game 0x4f79f0, voodoo2a sub_a86da0): the miniheap that holds the
  * block found -- the last free's, those beside it; the rover's, those beside
  * it; then all of them -- and the block given back to it. */
-bool free(win32::WinApplication* app, x86::CPU& cpu, const WatcomHeap& h, x86::reg32 pointer)
+bool free(win32::WinApplication* app, x86::CPU& cpu, const WatcomHeap& h, x86::reg32 pointer, x86::reg32* eax)
 {
+    if (eax != nullptr)
+        *eax = pointer;  // the block, which the caller's code hands in eax
     if (pointer == 0)
         return true;
-    if (!lock(app, cpu, h.access))
+    if (!lock(app, cpu, h.access, eax))
         return false;
     auto holds = [app, pointer](x86::reg32 heap) {
         return heap != 0 && heap <= pointer && word(app, heap) + heap > pointer;
@@ -458,7 +466,7 @@ bool free(win32::WinApplication* app, x86::CPU& cpu, const WatcomHeap& h, x86::r
             put(app, h.largestBefore, word(app, heap + 0x14));
         app->getMemory<x86::reg8>(h.clean) = 0;
     }
-    return lock(app, cpu, h.release);
+    return lock(app, cpu, h.release, eax);
 }
 
 /* _nmalloc (game 0x4f7900, voodoo2a sub_a86cb0): from the rover's miniheap on,

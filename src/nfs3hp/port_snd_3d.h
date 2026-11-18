@@ -1,7 +1,9 @@
 #ifndef NFS3HP_PORT_SND_3D_H
 #define NFS3HP_PORT_SND_3D_H
 
+#include "native_vertices.h"
 #include "port_snd.h"
+#include "port_sound_calls.h"
 
 #include <cmath>
 #include <cstdint>
@@ -18,36 +20,15 @@
  * more, and the port's x87 then works in double.  The functions here are
  * written once for either, as templates on the type the arithmetic is done in
  * (float or double), and entered with the Arithmetic that the control word at
- * the call asks for -- the race's, in the game; both, in the checks. */
+ * the call asks for -- the race's.  The
+ * thunks read it off the x87 (port_sound_calls.h's arithmeticOf) and hand it
+ * on. */
 namespace nfs3hp
 {
 namespace port
 {
-// The sound rewrites this group calls, as the game's code calls their addresses
-// (port_sound_effects.cpp, port_snd_voices.cpp): 0x4182b0, 0x417080, 0x416f60,
-// 0x416fc0, 0x4e8f28, 0x4e8fd0, 0x4e9420 and 0x4e95fc.
-void playEffect(App* app, CPU& cpu);
-void slotPlay(App* app, CPU& cpu);
-void slotStop(App* app, CPU& cpu);
-void slotEffect(App* app, CPU& cpu);
-void SNDangle(App* app, CPU& cpu);
-void SNDstatus(App* app, CPU& cpu);
-void SNDautovol(App* app, CPU& cpu);
-void SNDvol(App* app, CPU& cpu);
-
 namespace world
 {
-
-enum class Arithmetic
-{
-    Double,
-    Single
-};
-
-inline Arithmetic arithmeticOf(const CPU& cpu)
-{
-    return cpu.fpu.rounding == x86::FPU::kRoundNone ? Arithmetic::Double : Arithmetic::Single;
-}
 
 template <class Real>
 constexpr Arithmetic arithmeticFor()
@@ -114,16 +95,13 @@ inline float floatAt(App* app, reg32 at) { return app->getMemory<float>(at); }
 inline Vec3 vectorAt(App* app, reg32 at) { return {floatAt(app, at), floatAt(app, at + 4), floatAt(app, at + 8)}; }
 
 /* The game's dot product of the floats at `a` and `b` (0x4e01f0, vertices'),
- * not rewritten yet: called as the game's code does, and its result -- left on
- * the x87's stack -- taken from there.  The double is the x87's value as the
- * dot left it (a float's in the race). */
+ * called as C++ from `esp`, where the game's code calls it.  The double is the
+ * x87's value as the dot leaves it (a float's in the race). */
 inline bool gameDot(App* app, CPU& cpu, reg32 esp, reg32 a, reg32 b, double& result)
 {
-    if (!callGame(app, cpu, esp, 0x4e01f0, {a, b}))
-        return false;
-    result = double(cpu.fpu.st(0));
-    cpu.fpu.pop();
-    return true;
+    cpu.esp = esp;
+    result = guest::direct<0x4e01f0, vertices::dotProduct>(app, cpu, a, b);
+    return !cpu.terminate;
 }
 
 /* The code's 16.16 division -- cdq; idiv; the remainder shifted up 16 and
@@ -138,42 +116,26 @@ inline int32_t fixedQuotient(int32_t n, int32_t by)
     return int32_t(uint32_t(fraction) + (uint32_t(whole) << 16));
 }
 
-/* A call of the game's code from a rewrite whose original keeps esi and edi
- * in use: they are what the original has there, for the game's code below to
- * read where it reads what it never set (port.h).  `esp` is the code's before
- * the call.  The registers of `Args` are the original's as well, all four:
- * a stand-in of the checks may give back the eax it was called with. */
+/* A call of the game's code that has no typed function yet, by its address,
+ * from a rewrite: `esp` is the code's before the call.  The registers of
+ * `Args` are the original's, all four. */
 struct Calls
 {
     App* app;
     CPU& cpu;
     reg32 esp;
-    reg32 esi, edi;
     bool operator()(reg32 target, Args a, std::initializer_list<reg32> stack, reg32& result)
     {
-        cpu.esi = esi;
-        cpu.edi = edi;
-        return callGame(app, cpu, esp, target, a, stack, result);
+        return pointerGame(app, cpu, esp, target, a, stack, result);
     }
     bool operator()(reg32 target, Args a, std::initializer_list<reg32> stack = {})
     {
         reg32 ignored;
         return (*this)(target, a, stack, ignored);
     }
-    // Another rewrite's adapter (port_sound_effects.cpp, port_snd_voices.cpp), as
-    // the game's code calls its address: run as C++, so that the checks hold it
-    // against the game's own code and not against a stand-in.
-    bool operator()(guest::Native target, Args a, std::initializer_list<reg32> stack, reg32& result)
-    {
-        cpu.esi = esi;
-        cpu.edi = edi;
-        return callGame(app, cpu, esp, target, a, stack, result);
-    }
-    bool operator()(guest::Native target, Args a, std::initializer_list<reg32> stack = {})
-    {
-        reg32 ignored;
-        return (*this)(target, a, stack, ignored);
-    }
+    /* esp into the cpu as the game's code has it at a call, for a typed core
+     * called as C++ in its place (guest::direct). */
+    void atCall() { cpu.esp = esp; }
 };
 
 // The game's state the sound's space is in.
@@ -201,9 +163,8 @@ Result angleToPlace(App* app, CPU& cpu, reg32 esp, Arithmetic a, reg32 listener,
  * less the listener's own. */
 Result aheadAlongTrack(App* app, CPU& cpu, reg32 esp, Arithmetic a, const Vec3& place, reg32 direction);
 
-/* 0x410e30: player `player`'s track sounds, esi and edi as the code has them on
- * entering (port_sound_ambient.cpp). */
-Result trackSoundsFor(App* app, CPU& cpu, reg32 esp, reg32 esi, reg32 edi, Arithmetic a, int32_t player);
+/* 0x410e30: player `player`'s track sounds (port_sound_ambient.cpp). */
+Result trackSoundsFor(App* app, CPU& cpu, reg32 esp, Arithmetic a, int32_t player);
 
 }  // namespace world
 }  // namespace port

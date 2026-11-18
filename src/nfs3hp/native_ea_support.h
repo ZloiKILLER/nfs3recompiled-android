@@ -4,7 +4,7 @@
 #include "native_guest.h"
 
 /* native_ea_support.cpp's typed functions that other files call as C++ (guest::direct), and how the
- * game's code calls each by address (ByAddress, for the check's stand-ins).  Each may call the
+ * game's code calls each by address.  Each may call the
  * game's other functions by address on `cpu`, and is nullopt when the game stopped in one.  EA's
  * trace (0x4e08f0) is not one: its format's arguments follow it on the stack, as many as it asks. */
 namespace nfs3hp
@@ -40,6 +40,21 @@ inline std::optional<bool> vivFileFound(win32::WinApplication* app, x86::CPU& cp
         return std::nullopt;
     return search->found;
 }
+// The game's 0x4e0980: EA's trace at column `column` and row `row` (the cursor moved there, if they
+// are on the page), printf's way, `format` with `words` -- while the trace's level is 2 or more,
+// under the trace's lock: what the code leaves in eax (`eax` as it is handed with the trace off).
+std::optional<x86::reg32> monoPrintedAt(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 eax, x86::reg32 column,
+                                        x86::reg32 row, x86::reg32 format, guest::Words words);
+// The game's 0x4e08f0: EA's trace, printf's way, `format` with `words`, while the trace's level is 2 or more:
+// what the code leaves in eax (`eax` as it is handed with the trace off).
+std::optional<x86::reg32> monoPrinted(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 eax, x86::reg32 format,
+                                      guest::Words words);
+// The game's 0x4e0ca0: the monitor's page cleared under the trace's lock, while the trace's level is
+// 2 or more: what the code leaves in eax (`eax` as it is handed with the trace off).
+std::optional<x86::reg32> monoCleared(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 eax);
+// The game's 0x4e0d50: the attribute the monitor's text is written in, `attribute`'s low byte: eax
+// as it is handed (`attribute`).
+x86::reg32 monoAttributeSet(win32::WinApplication* app, x86::reg32 attribute);
 // The game's 0x4e0dee: the random numbers seeded from `seed`: the last word.
 x86::reg32 randomSeeded(win32::WinApplication* app, x86::reg32 seed);
 // The game's 0x4e0e60: whether the file named `name` is there.
@@ -54,104 +69,6 @@ std::optional<x86::reg32> loadQuietly(win32::WinApplication* app, x86::CPU& cpu,
 
 namespace guest
 {
-
-// Nothing it reads (its words are the caller's to push and take off).
-template <>
-struct ByAddress<ea::traceOff>
-{
-    template <x86::reg32 Address>
-    static void call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        watcom(app, cpu, Address, {});
-    }
-};
-
-// The name in eax, the FILE's address in edx; the block back in eax.
-template <>
-struct ByAddress<ea::vivOpened>
-{
-    template <x86::reg32 Address>
-    static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 name, x86::reg32 file)
-    {
-        return watcomEax(app, cpu, Address, {name, file});
-    }
-};
-
-// The block in eax, the FILE's address in edx; eax back.
-template <>
-struct ByAddress<ea::vivClosed>
-{
-    template <x86::reg32 Address>
-    static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 block, x86::reg32 file)
-    {
-        return watcomEax(app, cpu, Address, {block, file});
-    }
-};
-
-// The header in eax, the name in edx, the two addresses in ebx and ecx; found where eax is not the
-// header (it is the size's top byte then, never a header's address).
-template <>
-struct ByAddress<ea::vivFileFound>
-{
-    template <x86::reg32 Address>
-    static std::optional<bool> call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 header, x86::reg32 path,
-                                    x86::reg32 offsetTo, x86::reg32 sizeTo)
-    {
-        const std::optional<x86::reg32> left = watcomEax(app, cpu, Address, {header, path, offsetTo, sizeTo});
-        if (!left)
-            return std::nullopt;
-        return *left != header;
-    }
-};
-
-// The seed in eax; the last word back in eax.
-template <>
-struct ByAddress<ea::randomSeeded>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 seed)
-    {
-        return watcomEax(app, cpu, Address, {seed}).value_or(0);
-    }
-};
-
-// The name in eax; eax 1 if it is there, else 0.
-template <>
-struct ByAddress<ea::fileThere>
-{
-    template <x86::reg32 Address>
-    static std::optional<bool> call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 name)
-    {
-        const std::optional<x86::reg32> there = watcomEax(app, cpu, Address, {name});
-        if (!there)
-            return std::nullopt;
-        return *there != 0;
-    }
-};
-
-// The name in eax, the flags in edx; the block back in eax.
-template <>
-struct ByAddress<ea::loadWhole>
-{
-    template <x86::reg32 Address>
-    static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 name,
-                                          x86::reg32 flags)
-    {
-        return watcomEax(app, cpu, Address, {name, flags});
-    }
-};
-
-// The name in eax, the flags in edx; the block back in eax.
-template <>
-struct ByAddress<ea::loadQuietly>
-{
-    template <x86::reg32 Address>
-    static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 name,
-                                          x86::reg32 flags)
-    {
-        return watcomEax(app, cpu, Address, {name, flags});
-    }
-};
 
 }  // namespace guest
 }  // namespace nfs3hp

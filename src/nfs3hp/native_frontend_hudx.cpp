@@ -2,15 +2,45 @@
 #include "game_settings.h"
 #include "native_carstate.h"
 #include "native_frontend.h"
+#include "native_watcom.h"
 #include "native_frontend_hudr.h"
 #include "native_frontend_hudz.h"
 #include "port_hud.h"
+#include "port_text.h"
+#include "native_render.h"
 #include <nfs3hp.h>
 #include <fpu.h>
 #include <cstring>
 
+/* The thunks defined below under their qualified names. */
+namespace nfs3hp
+{
+namespace frontend
+{
+x86::reg32 textLookClearLights(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 textLookSetFlat(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 textLookSetDirectional(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 textLookAddLight(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 textLookSetTexture(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 hudClearRebuildFlag(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 hudToggleShown(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 hudToggleRearView(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 hudRebuildView(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 hudGroupClearCount(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 hudGroupDropLast(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 hudRefreshPane(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 hudStepZoom(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 hudVectorLength(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 hudSurfaceReset(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 hudSurfaceTakeVertices(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 hudTextToRightEdge(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 hudFontSurfacesBegin(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 hudCharacterDrop(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+}
+}
+
 /* The race HUD's small functions, decompiled: what src/nfs3hp/port_hud.cpp and
- * the race's generated code call by address.
+ * the race's the game's code call by address.
  *
  *   the 3D letters' looks   the records the race's big messages are drawn with
  *                           (native_render.cpp reads them), which the HUD sets
@@ -27,7 +57,7 @@
  * with them.
  *
  * Plan step 5: each function a typed core in frontend::hudx (native_frontend_hudx.h), in a frame of
- * its own where the game's function has one, and an adapter under the game's name for the calls by
+ * its own where the game's function has one, and a thunk under the game's name for the calls by
  * address.  A core of this file calls another, and those of the HUD's other files done so
  * (native_frontend_hudr.cpp, _hudz.cpp), as C++ (guest::direct), and the typed cores of other files
  * too (fe::direct); the rest of the game still by address. */
@@ -42,6 +72,50 @@ using fe::Guest;
 using x86::Float;
 using x86::reg32;
 using x86::sreg32;
+
+/* Guest::call as a call through guest::pointerCall: `arguments`' registers in eax, edx, ebx and ecx, `esi` in esi,
+ * its stack words pushed in order, esp back after; Terminated when the game stopped in it.  `floatResult`, when given,
+ * takes the float the callee gives back. */
+inline reg32 callAt(Guest& guest, reg32 function, const fe::Arguments& arguments = fe::Arguments(), reg32 esi = 0,
+                    double* floatResult = nullptr)
+{
+    x86::CPU& cpu = guest.cpu();
+    x86::Args registers;
+    reg32* const into[4] = { &registers.eax, &registers.edx, &registers.ebx, &registers.ecx };
+    for (std::size_t i = 0; i < arguments.registerCount; ++i)
+        *into[i] = arguments.registers[i];
+    registers.esi = esi;
+    const reg32 esp = cpu.esp;
+    for (std::size_t i = arguments.stackCount; i-- > 0;)
+    {
+        cpu.esp -= 4;
+        guest.setDword(cpu.esp, arguments.stack[i]);
+    }
+    const std::optional<reg32> result = guest::pointerCall(guest.app(), cpu, function, registers);
+    if (!result)
+        throw fe::Terminated();
+    cpu.esp = esp;
+    if (floatResult)
+        *floatResult = registers.floatResult;  // what the callee leaves on the x87's top, as a float result
+    return *result;
+}
+
+/* fild, fld and sub_4dfd56 with fistp (fe::FloatMath's) as plain values: no x87 behind them. */
+class FloatMath
+{
+public:
+    explicit FloatMath(Guest& guest) : m_guest(guest) {}
+    static Float integer(std::int32_t value) { return Float(sreg32(value)); }
+    Float load(reg32 address) const { return Float(m_guest.floatAt(address)); }
+    std::int32_t truncated(const Float& value)
+    {
+        const double chopped = guest::direct<0x4dfd56, watcom::clib::chop>(m_guest.app(), m_guest.cpu(), double(value));
+        return fp::toInteger<sreg32>(chopped);  // fistp
+    }
+
+private:
+    Guest& m_guest;
+};
 
 /* ---------------------------------------------------------------------------
  * The 3D letters' looks
@@ -122,7 +196,6 @@ x86::reg32 frontend::hudx::setFlat(App* app, CPU& cpu, reg32 first, reg32 second
     const fe::Frame frame(guest, cpu, 12);
     const reg32 number = guest.dword(kSelectedLook);
     const reg32 look = lookAt(number);
-    guest.leaveEdx(number);
     if (!lookUsable(guest, number, look))
         return look;
     guest.setDword(look + kLookKind, kFlat);
@@ -141,7 +214,6 @@ x86::reg32 frontend::hudx::setDirectional(App* app, CPU& cpu, reg32 colour, reg3
     const fe::Frame frame(guest, cpu, 8);
     const reg32 number = guest.dword(kSelectedLook);
     const reg32 look = lookAt(number);
-    guest.leaveEbx(number);
     if (!lookUsable(guest, number, look))
         return look;
     guest.setDword(look + kLookKind, kDirectional);
@@ -160,8 +232,6 @@ x86::reg32 frontend::hudx::addLight(App* app, CPU& cpu, reg32 first, reg32 posit
     const reg32 look = lookAt(number);
     if (!lookUsable(guest, number, look))
     {
-        guest.leaveEdx(number);
-        guest.leaveEcx(kNoLookForLight);
         return kNoLookForLight;
     }
     guest.setDword(look + kLookKind, kLit);
@@ -170,8 +240,6 @@ x86::reg32 frontend::hudx::addLight(App* app, CPU& cpu, reg32 first, reg32 posit
         ++index;
     if (index == kLightCount)
     {
-        guest.leaveEdx(look + (kLightCount - 1) * kLightBytes);
-        guest.leaveEcx(kLightsFull);
         return kLightsFull;
     }
     const reg32 light = look + kLookLights + index * kLightBytes;
@@ -185,9 +253,6 @@ x86::reg32 frontend::hudx::addLight(App* app, CPU& cpu, reg32 first, reg32 posit
     const reg32 countAgain = guest.dword(look + kLookLightCountAgain) + 1;
     guest.setDword(look + kLookLightCount, count);
     guest.setDword(look + kLookLightCountAgain, countAgain);
-    guest.leaveEbx(count);
-    guest.leaveEcx(index);
-    guest.leaveEdx(index * kLightBytes);
     return index;
 }
 
@@ -218,7 +283,6 @@ constexpr reg32 kCarFlags = 0x200;                 // byte
 constexpr std::uint8_t kCarIsCop = 0x20;
 constexpr reg32 kSetPane = 0x4844c0;               // eax a view
 constexpr reg32 kElements = 23;
-constexpr reg32 kRebuildBand = 0x4800a0;           // eax a view
 constexpr reg32 kZoomStepped = 0x48ea20;           // eax a view, edx the step
 
 constexpr reg32 kPaneResults = 0x7925d0;           // by view: what sub_481f90 gave
@@ -262,28 +326,30 @@ x86::reg32 frontend::hudx::toggleShown(App* app, CPU& cpu, reg32 view)
         const bool split = gameSettings(guest).playMode == 1;
         guest.setDword(kPaneUp, 1);
         if (split)
-            fe::direct<0x4844c0, port::hud::hudPaneSetOf>(app, cpu, cpu.esp - 4,
-                                                          port::Args{ 1 - view, cpu.edx, cpu.ebx, cpu.ecx });
+            fe::direct<0x4844c0, port::hud::hudPaneSetOf>(app, cpu, cpu.esp - 4, port::Args{ 1 - view, 0, 0, 0 });
     }
     else
     {
         toggle(shown);
     }
-    return reg32(*fe::direct<0x4844c0, port::hud::hudPaneSetOf>(app, cpu, cpu.esp - 4,
-                                                                 port::Args{ view, cpu.edx, cpu.ebx, cpu.ecx }));
+    return reg32(*fe::direct<0x4844c0, port::hud::hudPaneSetOf>(app, cpu, cpu.esp - 4, port::Args{ view, 0, 0, 0 }));
 }
 
 /* sub_484450: the rear-view mirror on or off, in a race of one view only. */
 x86::reg32 frontend::hudx::toggleRearView(App* app, CPU& cpu)
 {
+    return toggleRearViewKeeping(app, cpu, 0);
+}
+
+x86::reg32 frontend::hudx::toggleRearViewKeeping(App* app, CPU& cpu, reg32 eax)
+{
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 8);
     if (gameSettings(guest).playMode == 1 || gameSettings(guest).replayMode != 0)
-        return guest.eax();
+        return eax;
     const reg32 cop = copOfView(guest, cpu, 0);
     toggle(gameSettings(guest).hudOf(0, cop).rearView);
-    // By address: the function goes out with ebx, ecx, esi and edi as sub_4844c0 leaves them.
-    return guest.call(kSetPane, args({ 0 }));
+    return reg32(*fe::direct<0x4844c0, port::hud::hudPaneSetOf>(app, cpu, cpu.esp - 4, port::Args{ 0, 0, 0, 0 }));
 }
 
 /* sub_485640: a view's pane, its elements and its band made afresh. */
@@ -291,10 +357,10 @@ x86::reg32 frontend::hudx::rebuildView(App* app, CPU& cpu, reg32 view)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 16);
-    fe::direct<0x4844c0, port::hud::hudPaneSetOf>(app, cpu, cpu.esp - 4, port::Args{ view, cpu.edx, cpu.ebx, cpu.ecx });
+    fe::direct<0x4844c0, port::hud::hudPaneSetOf>(app, cpu, cpu.esp - 4, port::Args{ view, 0, 0, 0 });
     for (reg32 element = 0; element < kElements; ++element)
         guest::direct<0x4853c0, hudr::rebuildElement>(app, cpu, view, element);
-    return guest.call(kRebuildBand, args({ view }));
+    return *fe::direct<0x4800a0, render::hudBandBuilt>(app, cpu, view);
 }
 
 /* sub_48ccf0: where a view's map pane is now, and from that which colour its
@@ -319,9 +385,9 @@ x86::reg32 frontend::hudx::stepZoom(App* app, CPU& cpu, reg32 step)
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 12);
     // By address: the function goes out with the ebx, esi and edi sub_48ea20 leaves.
-    reg32 result = guest.call(kZoomStepped, args({ 0, step }));
+    reg32 result = callAt(guest, kZoomStepped, args({ 0, step }));
     if (gameSettings(guest).playMode == 1)
-        result = guest.call(kZoomStepped, args({ 1, step }));
+        result = callAt(guest, kZoomStepped, args({ 1, step }));
     return result;
 }
 
@@ -374,7 +440,6 @@ x86::reg32 frontend::hudx::takeVertices(App* app, CPU& cpu, reg32 surface, reg32
 {
     Guest guest(app, cpu);
     guest.setDword(first, surface + kSurfaceVertices + guest.dword(surface + kSurfaceVertexCount) * kVertexBytes);
-    guest.leaveEdx(pairs * 2);
     guest.setDword(surface + kSurfaceVertexCount, guest.dword(surface + kSurfaceVertexCount) + pairs * 2);
     return surface;
 }
@@ -400,20 +465,18 @@ constexpr reg32 kFontCharacters = 0xe0;
 /* sub_4d10e0: a text ending at x, at the y in ebx.  The width comes off the
  * x87's stack into the sum; what kDrawText leaves there is dropped.  Both by
  * address: the drawing's y is the ebx the width's call leaves, and this
- * function leaves the registers as the drawing does (the menu check's world
- * has both clobber them; port_text's keep them). */
+ * function leaves the registers as the drawing does. */
 x86::reg32 frontend::hudx::drawTextToRightEdge(App* app, CPU& cpu, reg32 text, reg32 right, reg32 y)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 16);
-    guest.leaveEbx(y);  // kDrawText's y, as the caller hands it
-    guest.call(kTextWidthOverhang, args({ text }));
-    const Float width = guest.fpu().pop();
-    fe::X87 x87(guest);
-    const std::int32_t left = x87.truncated(fp::sub(Float(sreg32(right)), width));
-    guest.call(kDrawText, args({ text, reg32(left) }));
-    guest.fpu().pop();
-    return guest.eax();
+    const auto measured = fe::direct<0x4d1480, port::text::textMeasuredWithOverhang>(app, cpu, cpu.esp - 4, text);
+    const Float width = measured->value;
+    FloatMath math(guest);
+    const std::int32_t left = math.truncated(fp::sub(Float(sreg32(right)), width));
+    // The drawing's y is the ebx the caller hands.
+    const auto drawn = fe::direct<0x4d1000, port::text::textDrawn>(app, cpu, cpu.esp - 4, text, left, std::int32_t(y));
+    return drawn->eax;
 }
 
 /* sub_4d1310: the two fonts' surfaces begun, each with its own texture. */
@@ -432,8 +495,8 @@ x86::reg32 frontend::hudx::characterDrop(App* app, CPU& cpu, reg32 code)
     const std::uint8_t character = std::uint8_t(code);
     const reg32 at = kCharacterDrops + character + guest.dword(kFont) * kFontCharacters;
     const Float drop = Float(sreg32(std::int8_t(guest.byte(at))));
-    fe::X87 x87(guest);
-    return reg32(x87.truncated(fp::mul(drop, Float(guest.floatAt(kCharacterSize)))));
+    FloatMath math(guest);
+    return reg32(math.truncated(fp::mul(drop, Float(guest.floatAt(kCharacterSize)))));
 }
 
 /* sub_484220: as a race ends, the flag that has the HUD's defaults rebuild it taken down. */
@@ -462,7 +525,7 @@ x86::reg32 frontend::hudx::groupDropLast(App* app, CPU& cpu, reg32 group)
     return offset;
 }
 
-/* sub_497590 (stdcall 8): the length of the vector x, y on the stack (its adapter leaves it on the
+/* sub_497590 (stdcall 8): the length of the vector x, y on the stack (its thunk leaves it on the
  * x87's stack).  eax comes back as it went: the function saves it. */
 double frontend::hudx::vectorLength(App* app, CPU& cpu, reg32 xBits, reg32 yBits)
 {
@@ -482,140 +545,141 @@ double frontend::hudx::vectorLength(App* app, CPU& cpu, reg32 xBits, reg32 yBits
  * Under the game's addresses
  * ------------------------------------------------------------------------- */
 
-void frontend::textLookClearLights(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::textLookClearLights(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_474d50", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return hudx::clearLights(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return hudx::clearLights(app, cpu); });
 }
 
-void frontend::textLookSetFlat(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::textLookSetFlat(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_477070", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEsi };
-    const reg32 first = cpu.eax, second = cpu.edx, third = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return hudx::setFlat(app, cpu, first, second, third); });
+    const reg32 first = args.eax, second = args.edx, third = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return hudx::setFlat(app, cpu, first, second, third); });
 }
 
-void frontend::textLookSetDirectional(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::textLookSetDirectional(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_477170", 0, 0, nullptr, 0, fe::kRestoreEcx };
-    const reg32 colour = cpu.eax, direction = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return hudx::setDirectional(app, cpu, colour, direction); });
+    const reg32 colour = args.eax, direction = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return hudx::setDirectional(app, cpu, colour, direction); });
 }
 
-void frontend::textLookAddLight(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::textLookAddLight(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4771c0", 0, 0, nullptr, 0, fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 first = cpu.eax, position = cpu.edx, third = cpu.ebx, second = cpu.ecx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return hudx::addLight(app, cpu, first, position, third, second); });
+    const reg32 first = args.eax, position = args.edx, third = args.ebx, second = args.ecx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return hudx::addLight(app, cpu, first, position, third, second); });
 }
 
-void frontend::textLookSetTexture(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::textLookSetTexture(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_477470", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEdx };
-    const reg32 texture = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return hudx::setTexture(app, cpu, texture); });
+    const reg32 texture = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return hudx::setTexture(app, cpu, texture); });
 }
 
-void frontend::hudClearRebuildFlag(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::hudClearRebuildFlag(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_484220", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) {
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
         hudx::clearRebuildFlag(app, cpu);
-        return cpu.eax;
+        return args.eax;
     });
 }
 
-void frontend::hudToggleShown(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::hudToggleShown(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_484260", 0, 0, nullptr, 0 };
-    const reg32 view = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return hudx::toggleShown(app, cpu, view); });
+    const reg32 view = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return hudx::toggleShown(app, cpu, view); });
 }
 
-void frontend::hudToggleRearView(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::hudToggleRearView(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_484450", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return hudx::toggleRearView(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return hudx::toggleRearViewKeeping(app, cpu, args.eax); });
 }
 
-void frontend::hudRebuildView(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::hudRebuildView(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_485640", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx };
-    const reg32 view = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return hudx::rebuildView(app, cpu, view); });
+    const reg32 view = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return hudx::rebuildView(app, cpu, view); });
 }
 
-void frontend::hudGroupClearCount(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::hudGroupClearCount(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_487340", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    const reg32 group = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return hudx::groupClearCount(app, cpu, group); });
+    const reg32 group = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return hudx::groupClearCount(app, cpu, group); });
 }
 
-void frontend::hudGroupDropLast(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::hudGroupDropLast(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4873c0", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEdx };
-    const reg32 group = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return hudx::groupDropLast(app, cpu, group); });
+    const reg32 group = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return hudx::groupDropLast(app, cpu, group); });
 }
 
-void frontend::hudRefreshPane(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::hudRefreshPane(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_48ccf0", 0, 0, nullptr, 0,
                           fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx | fe::kRestoreEdi };
-    const reg32 view = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return hudx::refreshPane(app, cpu, view); });
+    const reg32 view = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return hudx::refreshPane(app, cpu, view); });
 }
 
-void frontend::hudStepZoom(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::hudStepZoom(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_48eb60", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEdx };
-    const reg32 step = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return hudx::stepZoom(app, cpu, step); });
+    const reg32 step = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return hudx::stepZoom(app, cpu, step); });
 }
 
-void frontend::hudVectorLength(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::hudVectorLength(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_497590", 8, 0, nullptr, 0, 0 };
     const reg32 x = app->getMemory<reg32>(cpu.esp + 4), y = app->getMemory<reg32>(cpu.esp + 8);
-    fe::runWhole(app, cpu, site, [&](Guest&) {
-        cpu.fpu.push(x86::Float(hudx::vectorLength(app, cpu, x, y)));
-        return cpu.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
+        args.floatSet = true;
+        args.floatResult = double(hudx::vectorLength(app, cpu, x, y));
+        return args.eax;
     });
 }
 
-void frontend::hudSurfaceReset(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::hudSurfaceReset(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_49bef0", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEdx };
-    const reg32 surface = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return hudx::resetSurface(app, cpu, surface); });
+    const reg32 surface = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return hudx::resetSurface(app, cpu, surface); });
 }
 
-void frontend::hudSurfaceTakeVertices(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::hudSurfaceTakeVertices(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_49bf40", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEsi };
-    const reg32 surface = cpu.eax, pairs = cpu.edx, first = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return hudx::takeVertices(app, cpu, surface, pairs, first); });
+    const reg32 surface = args.eax, pairs = args.edx, first = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return hudx::takeVertices(app, cpu, surface, pairs, first); });
 }
 
-void frontend::hudTextToRightEdge(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::hudTextToRightEdge(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4d10e0", 0, 0, nullptr, 0, fe::kRestoreEcx };
-    const reg32 text = cpu.eax, right = cpu.edx, y = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return hudx::drawTextToRightEdge(app, cpu, text, right, y); });
+    const reg32 text = args.eax, right = args.edx, y = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return hudx::drawTextToRightEdge(app, cpu, text, right, y); });
 }
 
-void frontend::hudFontSurfacesBegin(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::hudFontSurfacesBegin(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4d1310", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return hudx::beginFontSurfaces(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return hudx::beginFontSurfaces(app, cpu); });
 }
 
-void frontend::hudCharacterDrop(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::hudCharacterDrop(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4d14f0", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEdx };
-    const reg32 character = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return hudx::characterDrop(app, cpu, character); });
+    const reg32 character = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return hudx::characterDrop(app, cpu, character); });
 }
 
 }

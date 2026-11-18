@@ -14,14 +14,10 @@
  *
  *     guest::windows<kCreateFileA, &host::createFile>(app, cpu, name, access, ...)
  *
- * The words are what the game's code pushes, in its order.  In the game each becomes the
+ * The words are what the game's code pushes, in its order.  Each becomes the
  * function's parameter as win32::Wrapper makes it of the same word on the stack (an address a
  * pointer into the game's memory, 0 a null one), and the function is called; what it gives back is
- * eax.  In tools/game_checks (NFS_GAME_CHECKS) the call goes through the import's slot as the
- * game's code makes it (stdcall: the words pushed, the callee takes them off), for the check's
- * stand-in.  The slot's address at the call is what the check reads (generate.py,
- * named_addresses).  Either way nullopt when the game stopped in it (ExitProcess, a stand-in's
- * end). */
+ * eax.  nullopt when the game stopped in it (ExitProcess). */
 namespace nfs3hp
 {
 namespace guest
@@ -66,13 +62,16 @@ template <typename R, typename... T>
 struct WindowsFunction<R (*)(win32::WinApplication*, x86::CPU&, T...)>
 {
     template <R (*Fn)(win32::WinApplication*, x86::CPU&, T...), typename... W>
-    static void call(win32::WinApplication* app, x86::CPU& cpu, W... words)
+    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, W... words)
     {
         static_assert(sizeof...(T) == sizeof...(W), "every word the Windows function takes");
         if constexpr (std::is_void_v<R>)
+        {
             Fn(app, cpu, WindowsWord<T>::of(app, x86::reg32(words))...);
+            return 0;
+        }
         else
-            cpu.eax = x86::reg32(Fn(app, cpu, WindowsWord<T>::of(app, x86::reg32(words))...));
+            return x86::reg32(Fn(app, cpu, WindowsWord<T>::of(app, x86::reg32(words))...));
     }
 };
 
@@ -83,13 +82,16 @@ template <typename R, typename... T>
 struct WindowsFunction<R (*)(win32::WinApplication*, T...)>
 {
     template <R (*Fn)(win32::WinApplication*, T...), typename... W>
-    static void call(win32::WinApplication* app, x86::CPU& cpu, W... words)
+    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, W... words)
     {
         static_assert(sizeof...(T) == sizeof...(W), "every word the host function takes");
         if constexpr (std::is_void_v<R>)
+        {
             Fn(app, WindowsWord<T>::of(app, x86::reg32(words))...);
+            return 0;
+        }
         else
-            cpu.eax = x86::reg32(Fn(app, WindowsWord<T>::of(app, x86::reg32(words))...));
+            return x86::reg32(Fn(app, WindowsWord<T>::of(app, x86::reg32(words))...));
     }
 };
 
@@ -97,44 +99,55 @@ template <typename R, typename... T>
 struct WindowsFunction<R (*)(T...)>
 {
     template <R (*Fn)(T...), typename... W>
-    static void call(win32::WinApplication* app, x86::CPU& cpu, W... words)
+    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, W... words)
     {
         static_assert(sizeof...(T) == sizeof...(W), "every word the host function takes");
         if constexpr (std::is_void_v<R>)
+        {
             Fn(WindowsWord<T>::of(app, x86::reg32(words))...);
+            return 0;
+        }
         else
-            cpu.eax = x86::reg32(Fn(WindowsWord<T>::of(app, x86::reg32(words))...));
+            return x86::reg32(Fn(WindowsWord<T>::of(app, x86::reg32(words))...));
     }
 };
 
 template <x86::reg32 Slot, auto Fn, typename... W>
 inline std::optional<x86::reg32> windows(win32::WinApplication* app, x86::CPU& cpu, W... words)
 {
-#ifdef NFS_GAME_CHECKS
-    if (!call(app, cpu, at(app, Slot), {x86::reg32(words)...}))
-        return std::nullopt;
-#else
-    WindowsFunction<decltype(Fn)>::template call<Fn>(app, cpu, words...);
+    const x86::reg32 eax = WindowsFunction<decltype(Fn)>::template call<Fn>(app, cpu, words...);
     if (cpu.terminate)
         return std::nullopt;
-#endif
-    return cpu.eax;
+    return eax;
+}
+
+template <typename F>
+struct ReturnsVoid;
+template <typename R, typename... T>
+struct ReturnsVoid<R (*)(T...)> : std::is_void<R>
+{
+};
+
+/* guest::windows where the code goes on with eax after a function that gives nothing back: `eax`,
+ * what it has there at the call. */
+template <x86::reg32 Slot, auto Fn, typename... W>
+inline std::optional<x86::reg32> windowsKeeping(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 eax, W... words)
+{
+    const x86::reg32 r = WindowsFunction<decltype(Fn)>::template call<Fn>(app, cpu, words...);
+    if (cpu.terminate)
+        return std::nullopt;
+    return ReturnsVoid<decltype(Fn)>::value ? eax : r;
 }
 
 /* A Windows function the game's code calls through its import thunk (a jmp to the slot):
- * guest::windows, but in the check by the thunk's address, which the checks stand in for. */
+ * guest::windows. */
 template <x86::reg32 Thunk, auto Fn, typename... W>
 inline std::optional<x86::reg32> thunked(win32::WinApplication* app, x86::CPU& cpu, W... words)
 {
-#ifdef NFS_GAME_CHECKS
-    if (!call(app, cpu, Thunk, {x86::reg32(words)...}))
-        return std::nullopt;
-#else
-    WindowsFunction<decltype(Fn)>::template call<Fn>(app, cpu, words...);
+    const x86::reg32 eax = WindowsFunction<decltype(Fn)>::template call<Fn>(app, cpu, words...);
     if (cpu.terminate)
         return std::nullopt;
-#endif
-    return cpu.eax;
+    return eax;
 }
 
 /* A call of Windows the port answers with its own host code (src/nfs3hp/host_*.h, plan step 6),
@@ -142,53 +155,37 @@ inline std::optional<x86::reg32> thunked(win32::WinApplication* app, x86::CPU& c
  *
  *     guest::host<kGetTickCount>(app, cpu, {}, [&] { return host::ticks(); })
  *
- * In the game `body` runs and what it gives back, if anything, is eax.  In tools/game_checks
- * (NFS_GAME_CHECKS) the call goes through the import's slot with the game's words, as the code it
- * stands for made it, for the check's stand-in; `body` is never instantiated there, so the host
- * code need not be in the check's build.  hostThunk: the same by the import thunk's address.
- * nullopt when the game stopped in it. */
+ * `body` runs and what it gives back, if anything, is eax.  hostThunk: the same for a call
+ * through the import thunk's address.  nullopt when the game stopped in it. */
 template <typename Body>
 inline std::optional<x86::reg32> hostBody(x86::CPU& cpu, Body& body)
 {
+    x86::reg32 eax = 0;
     if constexpr (std::is_void_v<decltype(body())>)
         body();
     else
-        cpu.eax = x86::reg32(body());
+        eax = x86::reg32(body());
     if (cpu.terminate)
         return std::nullopt;
-    return cpu.eax;
+    return eax;
 }
 
 template <x86::reg32 Slot, typename Body>
 inline std::optional<x86::reg32> host(win32::WinApplication* app, x86::CPU& cpu,
                                       std::initializer_list<x86::reg32> words, Body&& body)
 {
-#ifdef NFS_GAME_CHECKS
-    (void)body;
-    if (!call(app, cpu, at(app, Slot), words))
-        return std::nullopt;
-    return cpu.eax;
-#else
     (void)app;
     (void)words;
     return hostBody(cpu, body);
-#endif
 }
 
 template <x86::reg32 Thunk, typename Body>
 inline std::optional<x86::reg32> hostThunk(win32::WinApplication* app, x86::CPU& cpu,
                                            std::initializer_list<x86::reg32> words, Body&& body)
 {
-#ifdef NFS_GAME_CHECKS
-    (void)body;
-    if (!call(app, cpu, Thunk, words))
-        return std::nullopt;
-    return cpu.eax;
-#else
     (void)app;
     (void)words;
     return hostBody(cpu, body);
-#endif
 }
 
 template <typename F>
@@ -198,14 +195,17 @@ template <typename R, typename Owner, typename... T>
 struct WindowsMethod<R (Owner::*)(win32::WinApplication*, x86::CPU&, T...)>
 {
     template <R (Owner::*Fn)(win32::WinApplication*, x86::CPU&, T...), typename... W>
-    static void call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 object, W... words)
+    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 object, W... words)
     {
         static_assert(sizeof...(T) == sizeof...(W), "every word the method takes, after the object");
         Owner* const owner = &app->getMemory<Owner>(object);
         if constexpr (std::is_void_v<R>)
+        {
             (owner->*Fn)(app, cpu, WindowsWord<T>::of(app, x86::reg32(words))...);
+            return 0;
+        }
         else
-            cpu.eax = x86::reg32((owner->*Fn)(app, cpu, WindowsWord<T>::of(app, x86::reg32(words))...));
+            return x86::reg32((owner->*Fn)(app, cpu, WindowsWord<T>::of(app, x86::reg32(words))...));
     }
 };
 
@@ -214,26 +214,23 @@ struct WindowsMethod<R (Owner::*)(win32::WinApplication*, x86::CPU&, T...)>
  *
  *     guest::method<0x18, &win32::IDirectDraw2::CreateSurface>(app, cpu, object, words...)
  *
- * In the game, where the object's table has that very method there (what dynamic_call would
- * call is Method's Wrapper), the method is called as C++ on the object, as Wrapper calls it;
- * anywhere else -- another object's table, the check -- the call goes through the table as the
+ * Where the object's table has that very method there (what a call through it
+ * would call is Method's Wrapper), the method is called as C++ on the object, as Wrapper calls it;
+ * anywhere else -- another object's table -- the call goes through the table as the
  * game's code makes it (stdcall: the object, then the words). */
 template <x86::reg32 Offset, auto Method, typename... W>
 inline std::optional<x86::reg32> method(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 object, W... words)
 {
     const x86::reg32 target = at(app, at(app, object) + Offset);
-#ifndef NFS_GAME_CHECKS
-    if (object != 0 && app->methodAt(target) == &win32::Wrapper<decltype(Method), Method>::stdcall)
+    if (object != 0 && app->thunkAt(target) == &win32::Wrapper<decltype(Method), Method>::stdcall)
     {
-        WindowsMethod<decltype(Method)>::template call<Method>(app, cpu, object, words...);
+        const x86::reg32 eax = WindowsMethod<decltype(Method)>::template call<Method>(app, cpu, object, words...);
         if (cpu.terminate)
             return std::nullopt;
-        return cpu.eax;
+        return eax;
     }
-#endif
-    if (!call(app, cpu, target, {object, x86::reg32(words)...}))
-        return std::nullopt;
-    return cpu.eax;
+    x86::Args args;
+    return pointerCall(app, cpu, target, args, {object, x86::reg32(words)...});
 }
 
 }  // namespace guest

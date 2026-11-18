@@ -4,7 +4,7 @@
 #include "native_guest.h"
 
 /* native_controls_queue.cpp's typed functions that other files call as C++ (guest::direct), and how
- * the game's code calls each by address (ByAddress, for the check's stand-ins).  Each may call the
+ * the game's code calls each by address.  Each may call the
  * game's other functions by address on `cpu`, and is false or nullopt when the game stopped in one. */
 namespace nfs3hp
 {
@@ -29,60 +29,26 @@ std::optional<x86::reg32> sendInput(win32::WinApplication* app, x86::CPU& cpu, x
 // else 0.
 Answered queuePlayerInput(win32::WinApplication* app, x86::reg32 player, x86::reg32 actions);
 
+// The game's 0x48f6a0: player's frame of the race's controls taken; eax as the code leaves it.
+x86::reg32 carControlsTaken(win32::WinApplication* app, x86::reg32 player);
+// The game's 0x48f7b0: whether function key `key` is held (`edge` 0) or was pressed this frame (`edge` nonzero).
+x86::reg32 functionKeyHeld(win32::WinApplication* app, x86::reg32 key, x86::reg32 edge);
+// The game's 0x48f820: function key `key` held; eax as the code leaves it.
+x86::reg32 functionKeyHeldDown(win32::WinApplication* app, x86::reg32 key);
+// The game's 0x48f8d0: whether key `key` is down (`edge` 0) or was pressed this frame (`edge` nonzero).
+x86::reg32 keyDownNow(win32::WinApplication* app, x86::reg32 key, x86::reg32 edge);
+// The game's 0x4c67a0: frame `frame` taken from the queue; eax as the code leaves it.
+x86::reg32 queuedFrameTaken(win32::WinApplication* app, x86::reg32 frame);
+// The game's 0x4c6840: player's taken controls copied to `to`; the bytes copied.
+x86::reg32 controlsCopied(win32::WinApplication* app, x86::reg32 player, x86::reg32 to);
+// The game's 0x4c6970: the frame the players meet at.
+x86::reg32 framesMet(win32::WinApplication* app);
+// The game's 0x4c69a0: how many frames were taken from the queue.
+x86::reg32 framesTakenCount(win32::WinApplication* app);
+// The game's 0x4c6a40: the queue's delays set; eax as the code leaves it.
+x86::reg32 queueDelaysSet(win32::WinApplication* app);
+
 }  // namespace controls
-
-namespace guest
-{
-
-// The choice in al, the count in edx; the choice back in al.
-template <>
-struct ByAddress<controls::stepChoice>
-{
-    template <x86::reg32 Address>
-    static x86::reg8 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg8 choice, x86::reg32 count)
-    {
-        return x86::reg8(watcomEax(app, cpu, Address, {choice, count}).value_or(0));
-    }
-};
-
-// The choice in al; the choice back in al.
-template <>
-struct ByAddress<controls::stepChoiceOfThree>
-{
-    template <x86::reg32 Address>
-    static x86::reg8 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg8 choice)
-    {
-        return x86::reg8(watcomEax(app, cpu, Address, {choice}).value_or(0));
-    }
-};
-
-// The four bytes' address in eax; eax back.
-template <>
-struct ByAddress<controls::sendInput>
-{
-    template <x86::reg32 Address>
-    static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 actions)
-    {
-        return watcomEax(app, cpu, Address, {actions});
-    }
-};
-
-// The player in eax, the four bytes' address in edx; eax and edx back.
-template <>
-struct ByAddress<controls::queuePlayerInput>
-{
-    template <x86::reg32 Address>
-    static controls::Answered call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 player, x86::reg32 actions)
-    {
-        const KeptRegisters kept(cpu);
-        cpu.eax = player;
-        cpu.edx = actions;
-        guest::call(app, cpu, Address);
-        return controls::Answered{cpu.eax, cpu.edx};
-    }
-};
-
-}  // namespace guest
 }  // namespace nfs3hp
 
 #endif

@@ -1,10 +1,15 @@
 #include "native_frontend_sima.h"
+#include "port_conv.h"
+#include "native_racestart.h"
+#include "native_carstate.h"
 #include "game_settings.h"
 #include "native_aiplan.h"
 #include "native_ea_memory.h"
 #include "native_frontend.h"
+#include "native_frontend_fx.h"
 #include "native_frontend_simc.h"
 #include "native_frontend_simd.h"
+#include "native_frontend_hudr.h"
 #include "native_frontend_hudx.h"
 #include "native_frontend_tail.h"
 #include "native_trackdata.h"
@@ -14,7 +19,7 @@
 #include <nfs3hp.h>
 #include <cstring>
 
-/* The simulation's generated code that was left under 0x4a0aa0, decompiled:
+/* The simulation's code that was left under 0x4a0aa0, decompiled:
  *
  *   the opponents    the pull of an engine at its speed (sub_4064f0), how far the
  *                    way a driver wants to go is from the way it points
@@ -41,7 +46,7 @@
  *
  * Plan step 5: each function a typed core in frontend::sima (native_frontend_sima.h), in
  * a frame of its own (fe::Frame: what it calls runs at the stack addresses it did), and an
- * adapter under the game's name for the calls by address.  A core of the simulation's files
+ * thunk under the game's name for the calls by address.  A core of the simulation's files
  * calls another as C++ (guest::direct), and the typed cores of other files too (fe::direct);
  * the rest of the game still by address. */
 #if defined(__clang__)
@@ -54,7 +59,7 @@ namespace nfs3hp
 {
 
 /* NFS_CAR_TRACE's records of a driver's lane votes (native_vertices.cpp). */
-bool aiVotes(win32::WinApplication* app, x86::CPU& cpu);
+bool aiVotes(win32::WinApplication* app, x86::CPU& cpu, const x86::Args& registers);
 
 namespace
 {
@@ -194,7 +199,7 @@ constexpr reg32 kNearestSpot = 0x423d90;
 constexpr reg32 kSetCameraMode = 0x4238b0, kSetForcedMode = 0x423960, kSwitchCamera = 0x422610, kModeInCycle = 0x423ab0;
 constexpr reg32 kAnimationPlaying = 0x40fac0, kPathEndPose = 0x40f8d0;
 constexpr reg32 kScaleVectors = 0x4e0050, kAddVectors = 0x4dffb0;
-constexpr reg32 kAttachCameras = 0x4215c0, kRebuildHudElement = 0x4853c0;
+constexpr reg32 kAttachCameras = 0x4215c0;
 constexpr reg32 kMemmove = 0x4ea4f0;
 constexpr reg32 kNodeGap = 0x40e120;
 constexpr reg32 kCarNodeNow = 0x49fe70, kCarHeightOverRoad = 0x4a00d0, kCarLowestPoint = 0x4a0440, kClearRespawn = 0x4294c0;
@@ -210,18 +215,12 @@ x86::reg32 frontend::sima::laneSteer(App* app, CPU& cpu, reg32 car)
 {
     Guest guest(app, cpu);
     const fe::Frame locals(guest, cpu, 8);
-    guest.call(kSumLaneVotes, args({ car }));
-    return guest.call(kSteerToLane, args({ car }));
+    fe::direct<kSumLaneVotes, aiplan::takeLane>(guest.app(), guest.cpu(), car);
+    fe::direct<kSteerToLane, aiplan::steerForLane>(guest.app(), guest.cpu(), car);
+    return car;  // eax as the thunk of 0x40daf0 leaves it: the car it was handed
 }
 
 /* sub_4064f0: the pull of an opponent's engine at its speed, onto the x87. */
-x86::reg32 frontend::sima::enginePull(App* app, CPU& cpu, reg32 car)
-{
-    const FloatLeft left = enginePullOf(app, cpu, car);
-    cpu.fpu.push(Float(left.value));
-    return left.eax;
-}
-
 frontend::sima::FloatLeft frontend::sima::enginePullOf(App* app, CPU& cpu, reg32 car)
 {
     Guest guest(app, cpu);
@@ -307,13 +306,15 @@ x86::reg32 frontend::sima::headingError(App* app, CPU& cpu, reg32 car)
         : fp::add(fp::mul(Float(sreg32(planned + 0x200)), doubleAt(guest, kTurnsPerNegative)), doubleAt(guest, kHalfTurn));
     guest.setFloat(kWanted, float(wanted));
 
-    guest.setEsi(frame);
-    guest.call(kWayToGo, args({ car }));
-    x86::FPU& fpu = guest.fpu();
-    fpu.push(floatFrom(guest, frame + kLocalAlong));
-    fpu.push(floatFrom(guest, frame + kLocalAcross));
-    const reg32 eax = guest.call(kArcTangent);
-    const Float way = fp::mul(fpu.take(), doubleAt(guest, kTurnsPerRadian));
+    x86::Args toGo;
+    toGo.esi = frame;
+    fx::callAt(guest, kWayToGo, args({ car }), &toGo);
+    x86::Args arc;
+    arc.floatIn[1] = floatFrom(guest, frame + kLocalAlong);
+    arc.floatIn[0] = floatFrom(guest, frame + kLocalAcross);
+    arc.floatsIn = 2;
+    const reg32 eax = fx::callAt(guest, kArcTangent, fe::Arguments(), &arc);
+    const Float way = fp::mul(arc.floatResult, doubleAt(guest, kTurnsPerRadian));
     guest.setFloat(kWay, float(way));
     if (jumpsAbove(fp::compare(0.0, way)))
         guest.setFloat(kWay, float(fp::add(1.0, way)));
@@ -340,9 +341,9 @@ namespace
 /* Whether the road's bits at either of two nodes have gone (sub_423fe0). */
 bool roadBroken(Guest& guest, reg32 cameraNode, reg32 carNode)
 {
-    if (guest.call(kRoadBitsBroken, args({ guest.word(slice(guest, cameraNode) + kSliceFlags) })) != 0)
+    if (carstate::roadBitsGone(guest.word(slice(guest, cameraNode) + kSliceFlags)))
         return true;
-    return guest.call(kRoadBitsBroken, args({ guest.word(slice(guest, carNode) + kSliceFlags) })) != 0;
+    return carstate::roadBitsGone(guest.word(slice(guest, carNode) + kSliceFlags));
 }
 
 /* The race not yet under way on the screen, or its cameras frozen. */
@@ -373,7 +374,7 @@ LaneView laneView(x86::CPU& cpu, Guest& guest, reg32 camera, reg32 sideField, re
     {
         guest.setDword(camera + sideField, sreg32(guest.dword(guest.dword(camera + kCameraCar) + kCarDamage)) < 7 ? 0 : 1);
     }
-    const reg32 surface = guest.call(kLanePosition, args({ place, ints, guest.dword(camera + sideField) }));
+    const reg32 surface = fe::direct<kLanePosition, trackdata::laneNodePlaced>(guest.app(), guest.cpu(), place, ints, guest.dword(camera + sideField));
     const Float scale = doubleAt(guest, scaleAt);
     const Float x = fp::mul(integerFrom(guest, ints), scale);
     const Float y = fp::mul(integerFrom(guest, ints + 4), scale);
@@ -422,7 +423,7 @@ x86::reg32 frontend::sima::cameraBesideRoad(App* app, CPU& cpu, reg32 camera)
     }
     guest::direct<0x424fd0, simd::cameraMoveTowards>(app, cpu, camera, frame + kLocalSpot, guest.dword(camera + kCameraOwn110));
     guest.setDword(camera + kCameraSurface, view.surface);
-    guest.call(kLookAtTarget, args({ camera, camera + kCameraX }));
+    fe::direct<kLookAtTarget, carstate::cameraLookedAt>(guest.app(), guest.cpu(), camera, camera + kCameraX);
     return guest::direct<0x424f30, simd::cameraEaseTurn>(app, cpu, camera);
 }
 
@@ -443,7 +444,7 @@ x86::reg32 frontend::sima::cameraOverRoad(App* app, CPU& cpu, reg32 camera)
     guest::direct<0x425b40, simd::cameraGlideTowards>(app, cpu, camera, frame + kLocalSpot, guest.dword(camera + kCameraOwn110),
                                                       guest.dword(camera + kCameraOwn114));
     guest.setDword(camera + kCameraSurface, view.surface);
-    guest.call(kLookAtTarget, args({ camera, camera + kCameraX }));
+    fe::direct<kLookAtTarget, carstate::cameraLookedAt>(guest.app(), guest.cpu(), camera, camera + kCameraX);
     return guest::direct<0x424f30, simd::cameraEaseTurn>(app, cpu, camera);
 }
 
@@ -464,10 +465,10 @@ x86::reg32 frontend::sima::cameraNearestSpot(App* app, CPU& cpu, reg32 camera)
     constexpr reg32 kLeastZoomBits = 0x3f333333, kFollowBits = 0x40c00000;
 
     const reg32 frame = guest.frame();
-    const reg32 spot = guest.call(kNearestSpot, args({ guest.dword(camera + kCameraView) }));
+    const reg32 spot = *fe::direct<kNearestSpot, carstate::spotNearestTo>(guest.app(), guest.cpu(), guest.dword(camera + kCameraView));
     if (spot == reg32(-1))
     {
-        guest.call(kSetCameraMode, args({ guest.dword(camera + kCameraView), kModeBesideRoad }));
+        fe::direct<kSetCameraMode, carstate::cameraModePut>(guest.app(), guest.cpu(), guest.dword(camera + kCameraView), kModeBesideRoad);
         return guest::direct<0x426450, cameraStep>(app, cpu, kModeBesideRoad, guest.dword(camera + kCameraView));
     }
     const reg32 record = guest.dword(kSpots) + spot * kSpotBytes;
@@ -481,7 +482,7 @@ x86::reg32 frontend::sima::cameraNearestSpot(App* app, CPU& cpu, reg32 camera)
         guest.setDword(camera + kCameraTargetCar, guest.dword(camera + kCameraCar));
         guest.setDword(camera + kCameraLooking, 1);
         copyDwords(guest, camera + kCameraMatrix, kIdentity, 9);
-        guest.call(kLookAtTarget, args({ camera, camera + kCameraX }));
+        fe::direct<kLookAtTarget, carstate::cameraLookedAt>(guest.app(), guest.cpu(), camera, camera + kCameraX);
     }
     else
     {
@@ -514,10 +515,10 @@ namespace
  * cycle's first. */
 reg32 switchToChosenMode(Guest& guest, reg32 camera)
 {
-    const reg32 inCycle = guest.call(kModeInCycle, args({ gameSettings(guest).cameraMode[guest.dword(camera + kCameraView)] }));
+    const bool inCycle = fe::direct<kModeInCycle, carstate::modeInTheCycle>(guest.app(), guest.cpu(), gameSettings(guest).cameraMode[guest.dword(camera + kCameraView)]);
     const reg32 view = guest.dword(camera + kCameraView);
-    const reg32 mode = inCycle != 0 ? gameSettings(guest).cameraMode[view] : guest.dword(kFirstCycleMode);
-    return guest.call(kSwitchCamera, args({ mode, view }));
+    const reg32 mode = inCycle ? gameSettings(guest).cameraMode[view] : guest.dword(kFirstCycleMode);
+    return *fe::direct<kSwitchCamera, carstate::cameraSwitched>(guest.app(), guest.cpu(), mode, view);
 }
 
 }  // namespace
@@ -554,7 +555,7 @@ x86::reg32 frontend::sima::cameraPlayPath(App* app, CPU& cpu, reg32 camera)
 
     fe::direct<0x40f940, aiplan::stepAnimation>(app, cpu, guest.dword(camera + kAnimation), frame + kLocalStepPlace,
                                                  frame + kLocalStepMatrix);
-    if (guest.call(kAnimationPlaying, args({ guest.dword(camera + kAnimation) })) == 0)
+    if (!fe::direct<kAnimationPlaying, aiplan::animationOn>(guest.app(), guest.cpu(), guest.dword(camera + kAnimation)))
     {
         fe::direct<0x40f460, aiplan::endAnimation>(app, cpu, guest.dword(camera + kAnimation));
         guest.setDword(camera + kAnimation, kNone);
@@ -608,7 +609,7 @@ namespace
 void pathEndPoseAsFloats(Guest& guest, reg32 path, reg32 placeInts, reg32 matrixInts, reg32 place, reg32 matrix)
 {
     constexpr reg32 kScale = 0x536f1c;
-    guest.call(kPathEndPose, args({ path, 2, 1, placeInts }, { matrixInts }));
+    fe::direct<kPathEndPose, aiplan::endPose>(guest.app(), guest.cpu(), path, 1, placeInts, matrixInts);
     const Float scale = doubleAt(guest, kScale);
     for (reg32 i = 0; i < 3; ++i)
         guest.setFloat(place + 4 * i, float(fp::mul(integerFrom(guest, placeInts + 4 * i), scale)));
@@ -651,7 +652,7 @@ x86::reg32 frontend::sima::cameraEndPath(App* app, CPU& cpu, reg32 camera)
     {
         fe::direct<0x40f940, aiplan::stepAnimation>(app, cpu, guest.dword(camera + kAnimation), frame + kLocalPlace,
                                                      frame + kLocalMatrix);
-        if (guest.call(kAnimationPlaying, args({ guest.dword(camera + kAnimation) })) == 0)
+        if (!fe::direct<kAnimationPlaying, aiplan::animationOn>(guest.app(), guest.cpu(), guest.dword(camera + kAnimation)))
         {
             fe::direct<0x40f460, aiplan::endAnimation>(app, cpu, guest.dword(camera + kAnimation));
             guest.setDword(camera + kAnimation, kNone);
@@ -667,12 +668,12 @@ x86::reg32 frontend::sima::cameraEndPath(App* app, CPU& cpu, reg32 camera)
                     if ((flags & kCarDone) || !(flags & kCarRacing))
                         continue;
                     gameSettings(guest).viewedPlayer = reg32(place);
-                    guest.call(kAttachCameras, args({ 0, reg32(place) }));
+                    fe::direct<kAttachCameras, carstate::camerasAttached>(guest.app(), guest.cpu(), 0, reg32(place));
                     fe::direct<0x485640, hudx::rebuildView>(app, cpu, 0);
                     if (guest.dword(kPaneCopied) == 0)
                     {
                         // By address: it leaves edx and ebx, which the calls after it hand on.
-                        guest.call(kMemmove, args({ SETTINGS_ADDRESS(hud), SETTINGS_ADDRESS(hud[6]), kPaneBytes }));
+                        fe::direct<0x4ea4f0, ea::moveMemory>(app, cpu, SETTINGS_ADDRESS(hud[6]), SETTINGS_ADDRESS(hud), kPaneBytes);
                         guest.setDword(kPaneCopied, 1);
                     }
                     gameSettings(guest).hud[0].rects[17].leftBits = 0;
@@ -681,10 +682,10 @@ x86::reg32 frontend::sima::cameraEndPath(App* app, CPU& cpu, reg32 camera)
                     gameSettings(guest).hud[0].rects[17].bottomBits = kOneBits;
                     gameSettings(guest).hud[0].mapStyle = 2;
                     gameSettings(guest).hud[0].mapScaleBits = kOneBits;
-                    // By address: it leaves edx, which the call below hands on.
-                    guest.call(kRebuildHudElement, args({ 0, kElementMap }));
+                    fe::direct<0x4853c0, frontend::hudr::rebuildElement>(app, cpu, 0u, kElementMap);
+                    // (0x4844c0 pushes edx, ebx and ecx and sets them before it reads them: only eax is its.)
                     return reg32(*fe::direct<0x4844c0, port::hud::hudPaneSetOf>(
-                        app, cpu, cpu.esp - 4, port::Args{ 0, cpu.edx, cpu.ebx, cpu.ecx }));
+                        app, cpu, cpu.esp - 4, port::Args{ 0, 0, 0, 0 }));
                 }
                 return reg32(place);
             }
@@ -692,8 +693,7 @@ x86::reg32 frontend::sima::cameraEndPath(App* app, CPU& cpu, reg32 camera)
                                 frame + kLocalPlace, frame + kLocalMatrix);
         }
     }
-    // By address: what it leaves in eax is this function's.
-    const reg32 result = guest.call(kAddVectors, args({ 1, guest.dword(camera + kCameraCar) + kCarX, frame + kLocalPlace, camera + kCameraX }));
+    const reg32 result = fe::direct<0x4dffb0, vertices::offsetVectorsEax<true>>(app, cpu, 1, guest.dword(camera + kCameraCar) + kCarX, frame + kLocalPlace, camera + kCameraX);
     copyDwords(guest, camera + kCameraMatrix, frame + kLocalMatrix, 9);
     return result;
 }
@@ -860,7 +860,7 @@ x86::reg32 frontend::sima::cameraWaitThenHandOn(App* app, CPU& cpu, reg32 camera
         return camera;
     if (sreg32(guest.dword(camera + kTime)) > kOneBits)
     {
-        guest.call(kSetCameraMode, args({ guest.dword(camera + kCameraView), next }));
+        fe::direct<kSetCameraMode, carstate::cameraModePut>(guest.app(), guest.cpu(), guest.dword(camera + kCameraView), next);
         return guest::direct<0x426450, cameraStep>(app, cpu, guest.dword(camera + kNextMode), guest.dword(camera + kCameraView));
     }
     const reg32 result = guest::direct<0x426450, cameraStep>(app, cpu, next, guest.dword(camera + kCameraView));
@@ -881,7 +881,7 @@ x86::reg32 frontend::sima::cameraBackFromWait(App* app, CPU& cpu, reg32 view)
     if (mode != kWaitMode)
         return mode;
     const reg32 waiting = guest.dword(kWaitCameras + view * 4);
-    guest.call(kSetCameraMode, args({ view, guest.dword(waiting + kCameraOwn11c) }));
+    fe::direct<kSetCameraMode, carstate::cameraModePut>(guest.app(), guest.cpu(), view, guest.dword(waiting + kCameraOwn11c));
     const reg32 camera = guest.dword(kCameraNow + view * 4);
     return guest::direct<0x426450, cameraStep>(app, cpu, camera != 0 ? guest.dword(camera) : 0, view);
 }
@@ -900,11 +900,10 @@ x86::reg32 frontend::sima::cameraStep(App* app, CPU& cpu, reg32 mode, reg32 view
     const reg32 camera = guest.dword(kCamerasOfModes + mode * 8 + view * 4);
     const reg32 prepared = guest::direct<0x426370, simd::cameraPrepare>(app, cpu, camera, view, mode);
     const reg32 row = mode - 1;
-    guest.leaveEdx(row);
     if (row > 0x17 || kStepOfMode[row] == 0)
         return prepared;
     // Through the jump table: by address.
-    return guest.call(kStepOfMode[row], args({ camera }));
+    return fx::callAt(guest, kStepOfMode[row], args({ camera }));
 }
 
 /* sub_426560: the mode a view's car forces now: the attract's, a wreck's, a finish's,
@@ -948,13 +947,13 @@ x86::reg32 frontend::sima::forcedMode(App* app, CPU& cpu, reg32 view)
         mode = kModeOffTrack;
         guest::direct<0x426310, cameraBackFromWait>(app, cpu, view);
     }
-    const reg32 result = guest.call(kSetForcedMode, args({ view, mode }));
+    const reg32 result = *fe::direct<kSetForcedMode, carstate::overrideModePut>(guest.app(), guest.cpu(), view, mode);
     if (forcedBefore != kModeOffTrack || mode != 0)
         return result;
     const reg32 camera = guest.dword(nowAt);
     const reg32 back = camera != 0 ? guest.dword(camera) : 0;
-    guest.call(kSetCameraMode, args({ view, kModeOffTrack }));
-    return guest.call(kSwitchCamera, args({ back, view }));
+    fe::direct<kSetCameraMode, carstate::cameraModePut>(guest.app(), guest.cpu(), view, kModeOffTrack);
+    return *fe::direct<kSwitchCamera, carstate::cameraSwitched>(guest.app(), guest.cpu(), back, view);
 }
 
 /* sub_426680: every view's camera stepped; a car at the end of its race first given
@@ -980,7 +979,7 @@ x86::reg32 frontend::sima::camerasStep(App* app, CPU& cpu)
         const reg32 onPath = mode == kPathMode || mode == kEndMode ? guest.dword(camera + kCameraOwn11c) : 0;
         if ((guest.byte(car + kCarFlags) & kCarRacing) && guest.dword(car + kCarRaceState) == kRaceOver && onPath == 0)
         {
-            guest.call(kSwitchCamera, args({ kEndMode, view }));
+            fe::direct<kSwitchCamera, carstate::cameraSwitched>(guest.app(), guest.cpu(), kEndMode, view);
             const reg32 ending = guest.dword(kCameraNow + view * 4);
             guest.setDword(ending + kCameraOwn11c, 1);
             const reg32 animation = guest.dword(ending + kCameraOwn118);
@@ -1007,13 +1006,6 @@ x86::reg32 frontend::sima::camerasStep(App* app, CPU& cpu)
 
 /* sub_4965b0: the distance between two points, eax and edx, without a root: the
  * longest way and a quarter of each other's, onto the x87. */
-x86::reg32 frontend::sima::quickDistance(App* app, CPU& cpu, reg32 a, reg32 b)
-{
-    const FloatLeft left = quickDistanceOf(app, cpu, a, b);
-    cpu.fpu.push(Float(left.value));
-    return left.eax;
-}
-
 frontend::sima::FloatLeft frontend::sima::quickDistanceOf(App* app, CPU& cpu, reg32 a, reg32 b)
 {
     Guest guest(app, cpu);
@@ -1034,11 +1026,6 @@ frontend::sima::FloatLeft frontend::sima::quickDistanceOf(App* app, CPU& cpu, re
 
 /* sub_4967e0: a length in the plane without a root, of two sizes on the stack: the
  * larger and a share of the smaller, the share by how near the smaller comes. */
-void frontend::sima::planarLength(App* app, CPU& cpu, reg32 aBits, reg32 bBits)
-{
-    cpu.fpu.push(Float(planarLengthOf(app, cpu, aBits, bBits)));
-}
-
 double frontend::sima::planarLengthOf(App* app, CPU& cpu, reg32 aBits, reg32 bBits)
 {
     Guest guest(app, cpu);
@@ -1195,8 +1182,7 @@ x86::reg32 frontend::sima::carOntoRoad(App* app, CPU& cpu, reg32 car)
         if (jumpsAbove(fp::compare(Float(pastSize), Float(mostSize))))
             most = past;
     }
-    // By address: what it leaves in eax is this function's.
-    const reg32 result = guest.call(kScaleVectors, args({ 1, normal }, { bitsOf(most), normal }));
+    const reg32 result = fe::direct<0x4e0050, vertices::scaleVectorsEax>(app, cpu, 1, normal, most, normal);
     guest.setFloat(car + kCarX, float(fp::add(floatFrom(guest, normal), floatFrom(guest, car + kCarX))));
     guest.setFloat(car + kCarY, float(fp::add(floatFrom(guest, normal + 4), floatFrom(guest, car + kCarY))));
     guest.setFloat(car + kCarZ, float(fp::add(floatFrom(guest, normal + 8), floatFrom(guest, car + kCarZ))));
@@ -1291,12 +1277,10 @@ x86::reg32 frontend::sima::carNearPlayers(App* app, CPU& cpu, reg32 car)
     else if (guest.byte(car + kCarAsleep) != 0)
     {
         guest.setByte(car + kCarAsleep, 0);
-        guest.call(kCarNodeNow, args({ car }));
+        fe::direct<kCarNodeNow, port::conv::carNodeNow>(guest.app(), guest.cpu(), car);
         guest::direct<0x49ffa0, carTrackFrame>(app, cpu, car);
         guest::direct<0x4a0140, carOntoRoad>(app, cpu, car);
-        guest.call(kCarHeightOverRoad, args({ car }));
-        x86::FPU& fpu = guest.fpu();
-        const Float over = fpu.take();
+        const Float over = fe::direct<kCarHeightOverRoad, port::conv::carHeightOverRoad>(guest.app(), guest.cpu(), car)->st0;
         guest.setDword(car + kCarSurface, 1);
         guest.setDword(car + kCarTiltA, 0);
         guest.setDword(car + kCarTiltB, 0);
@@ -1304,11 +1288,11 @@ x86::reg32 frontend::sima::carNearPlayers(App* app, CPU& cpu, reg32 car)
         const Float raised = fp::add(over, floatFrom(guest, car + kCarHalfHeight));
         guest.setDword(car + kCarSurfaceKind, guest.dword(car + kCarSurface));
         guest.setFloat(car + kCarY, float(raised));
-        guest.call(kCarLowestPoint, args({ car }));
-        const Float under = fpu.take();
+        const Float under = fe::direct<kCarLowestPoint, port::conv::carLowestPoint>(guest.app(), guest.cpu(), car)->st0;
         guest.setDword(car + kCarUnder, 0);
         guest.setFloat(car + kCarY, float(fp::sub(floatFrom(guest, car + kCarY), under)));
-        eax = guest.call(kClearRespawn, args({ car }));
+        fe::direct<kClearRespawn, racestart::clearRespawnOf>(guest.app(), guest.cpu(), car);
+        eax = car;  // as the thunk of 0x4294c0 leaves it
     }
     guest.setByte(car + kCarAsleep, 0);
     return eax;
@@ -1339,7 +1323,7 @@ x86::reg32 frontend::sima::carTrackEnvironment(App* app, CPU& cpu, reg32 car)
     reg32 eax = guest::direct<0x4a0580, carNearPlayers>(app, cpu, car);
     if (guest.dword(car + kCarStopped) != 0 && guest.dword(car + kCarMoving) == 0)
         return eax;
-    eax = guest.call(kCarNodeNow, args({ car }));
+    eax = fe::direct<kCarNodeNow, port::conv::carNodeNow>(guest.app(), guest.cpu(), car)->eax;
     if (guest.word(car + kCarWantsFrame) != 0)
         eax = guest::direct<0x49ffa0, carTrackFrame>(app, cpu, car);
     if (guest.byte(car + kCarAsleep) == 0)
@@ -1358,77 +1342,82 @@ x86::reg32 frontend::sima::nodeGap(App* app, CPU& cpu, reg32 node, reg32 from)
     Guest guest(app, cpu);
     const fe::Frame locals(guest, cpu, 4);
     // By address: it leaves edx (the track's count) for this function's callers, which restores nothing.
-    return guest.call(kNodeGap, args({ node, from }));
+    return reg32(fe::direct<kNodeGap, aiplan::nodesBetween>(guest.app(), guest.cpu(), node, from));
 }
 
 // ---------------------------------------------------------------------------
-// As the generated functions stood: their frames, what they restore
+// As the game's functions stood: their frames, what they restore
 // ---------------------------------------------------------------------------
 
 /* sub_40de30: an opponent's lane votes added up and acted on. */
-void frontend::simLaneSteer(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::simLaneSteer(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    if (aiVotes(app, cpu))
-        return;
+    if (aiVotes(app, cpu, args))
+        return args.eax;
     static fe::Site site{ "sub_40de30", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    const reg32 car = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return sima::laneSteer(app, cpu, car); });
+    const reg32 car = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return sima::laneSteer(app, cpu, car); });
 }
 
-void frontend::simEnginePull(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::simEnginePull(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4064f0", 0, 0, nullptr, 0 };
-    const reg32 car = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return sima::enginePull(app, cpu, car); });
+    const reg32 car = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
+        const sima::FloatLeft left = sima::enginePullOf(app, cpu, car);
+        args.floatSet = true;
+        args.floatResult = left.value;
+        return left.eax;
+    });
 }
 
-void frontend::simHeadingError(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::simHeadingError(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4070c0", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEdx | fe::kRestoreEsi };
-    const reg32 car = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return sima::headingError(app, cpu, car); });
+    const reg32 car = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return sima::headingError(app, cpu, car); });
 }
 
-void frontend::simCameraBesideRoad(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::simCameraBesideRoad(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_425060", 0, 0, nullptr, 0 };
-    const reg32 camera = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return sima::cameraBesideRoad(app, cpu, camera); });
+    const reg32 camera = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return sima::cameraBesideRoad(app, cpu, camera); });
 }
 
-void frontend::simCameraNearestSpot(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::simCameraNearestSpot(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4251f0", 0, 0, nullptr, 0 };
-    const reg32 camera = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return sima::cameraNearestSpot(app, cpu, camera); });
+    const reg32 camera = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return sima::cameraNearestSpot(app, cpu, camera); });
 }
 
-void frontend::simCameraPlayPath(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::simCameraPlayPath(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4253d0", 0, 0, nullptr, 0 };
-    const reg32 camera = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return sima::cameraPlayPath(app, cpu, camera); });
+    const reg32 camera = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return sima::cameraPlayPath(app, cpu, camera); });
 }
 
-void frontend::simCameraEndPath(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::simCameraEndPath(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_425640", 0, 0, nullptr, 0 };
-    const reg32 camera = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return sima::cameraEndPath(app, cpu, camera); });
+    const reg32 camera = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return sima::cameraEndPath(app, cpu, camera); });
 }
 
-void frontend::simCameraOverRoad(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::simCameraOverRoad(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_425bf0", 0, 0, nullptr, 0 };
-    const reg32 camera = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return sima::cameraOverRoad(app, cpu, camera); });
+    const reg32 camera = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return sima::cameraOverRoad(app, cpu, camera); });
 }
 
-void frontend::simCameraFlyover(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::simCameraFlyover(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_425d50", 0, 0, nullptr, 0 };
-    const reg32 camera = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return sima::cameraFlyover(app, cpu, camera); });
+    const reg32 camera = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return sima::cameraFlyover(app, cpu, camera); });
 }
 
 /* sub_426290: mode 20's step: nothing, eax as it came. */
@@ -1437,113 +1426,120 @@ x86::reg32 frontend::sima::cameraStill(App*, CPU&, reg32 camera)
     return camera;
 }
 
-void frontend::simCameraStill(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::simCameraStill(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    cpu.eax = sima::cameraStill(app, cpu, cpu.eax);
+    args.eax = sima::cameraStill(app, cpu, args.eax);
     cpu.esp += 4;
+    return args.eax;
 }
 
-void frontend::simCameraWaitThenHandOn(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::simCameraWaitThenHandOn(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4262a0", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx };
-    const reg32 camera = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return sima::cameraWaitThenHandOn(app, cpu, camera); });
+    const reg32 camera = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return sima::cameraWaitThenHandOn(app, cpu, camera); });
 }
 
-void frontend::simCameraBackFromWait(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::simCameraBackFromWait(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_426310", 0, 0, nullptr, 0,
                           fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx | fe::kRestoreEsi };
-    const reg32 view = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return sima::cameraBackFromWait(app, cpu, view); });
+    const reg32 view = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return sima::cameraBackFromWait(app, cpu, view); });
 }
 
-void frontend::simCameraStep(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::simCameraStep(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_426450", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi };
-    const reg32 mode = cpu.eax, view = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return sima::cameraStep(app, cpu, mode, view); });
+    const reg32 mode = args.eax, view = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return sima::cameraStep(app, cpu, mode, view); });
 }
 
-void frontend::simCameraForcedMode(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::simCameraForcedMode(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_426560", 0, 0, nullptr, 0 };
-    const reg32 view = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return sima::forcedMode(app, cpu, view); });
+    const reg32 view = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return sima::forcedMode(app, cpu, view); });
 }
 
-void frontend::simCamerasStep(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::simCamerasStep(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_426680", 0, 0, nullptr, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return sima::camerasStep(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return sima::camerasStep(app, cpu); });
 }
 
-void frontend::simQuickDistance(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::simQuickDistance(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4965b0", 0, 0, nullptr, 0 };
-    const reg32 a = cpu.eax, b = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return sima::quickDistance(app, cpu, a, b); });
+    const reg32 a = args.eax, b = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
+        const sima::FloatLeft left = sima::quickDistanceOf(app, cpu, a, b);
+        args.floatSet = true;
+        args.floatResult = left.value;
+        return left.eax;
+    });
 }
 
-void frontend::simPlanarLength(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::simPlanarLength(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4967e0", 8, 0, nullptr, 0 };
     const reg32 a = app->getMemory<reg32>(cpu.esp + 4), b = app->getMemory<reg32>(cpu.esp + 8);
-    const reg32 eax = cpu.eax;  // it pushes eax too
-    fe::runWhole(app, cpu, site, [&](Guest&) {
-        sima::planarLength(app, cpu, a, b);
+    const reg32 eax = args.eax;  // it pushes eax too
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
+        args.floatSet = true;
+        args.floatResult = sima::planarLengthOf(app, cpu, a, b);
         return eax;
     });
 }
 
-void frontend::simCarTiltedOver(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::simCarTiltedOver(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_49fde0", 0, 0, nullptr, 0 };
-    const reg32 car = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return sima::carTiltedOver(app, cpu, car); });
+    const reg32 car = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return sima::carTiltedOver(app, cpu, car); });
 }
 
-void frontend::simSliceHeading(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::simSliceHeading(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_49fee0", 0, 0, nullptr, 0 };
-    const reg32 index = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return sima::sliceHeading(app, cpu, index); });
+    const reg32 index = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return sima::sliceHeading(app, cpu, index); });
 }
 
-void frontend::simCarTrackFrame(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::simCarTrackFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_49ffa0", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEdx | fe::kRestoreEsi };
-    const reg32 car = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return sima::carTrackFrame(app, cpu, car); });
+    const reg32 car = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return sima::carTrackFrame(app, cpu, car); });
 }
 
-void frontend::simNodeGap(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::simNodeGap(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4a00c0", 0, 0, nullptr, 0, 0 };
-    const reg32 node = cpu.eax, from = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return sima::nodeGap(app, cpu, node, from); });
+    const reg32 node = args.eax, from = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return sima::nodeGap(app, cpu, node, from); });
 }
 
-void frontend::simCarOntoRoad(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::simCarOntoRoad(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4a0140", 0, 0, nullptr, 0 };
-    const reg32 car = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return sima::carOntoRoad(app, cpu, car); });
+    const reg32 car = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return sima::carOntoRoad(app, cpu, car); });
 }
 
-void frontend::simCarNearPlayers(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::simCarNearPlayers(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4a0580", 0, 0, nullptr, 0,
                           fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx | fe::kRestoreEsi };
-    const reg32 car = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return sima::carNearPlayers(app, cpu, car); });
+    const reg32 car = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return sima::carNearPlayers(app, cpu, car); });
 }
 
-void frontend::simCarTrackEnvironment(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::simCarTrackEnvironment(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4a08c0", 0, 0, nullptr, 0 };
-    const reg32 car = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return sima::carTrackEnvironment(app, cpu, car); });
+    const reg32 car = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return sima::carTrackEnvironment(app, cpu, car); });
 }
 
 }

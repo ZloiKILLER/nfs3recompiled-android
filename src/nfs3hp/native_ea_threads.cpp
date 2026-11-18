@@ -1,5 +1,6 @@
 #include "native_ea_files.h"
 #include "native_ea_threads.h"
+#include "native_frontend_simd.h"
 #include "native_game.h"
 #include "native_guest.h"
 #include "native_watcom.h"
@@ -12,12 +13,17 @@
 #include <cstring>
 #include <optional>
 
+/* The esp a guest call's scope began with put back at its end: what guest::EspKept did of it (the other
+ * registers are the thunks' args now). */
+namespace
+{
+using nfs3hp::guest::EspKept;
+}  // namespace
+
 /* EA's threads, events, timers and locks: win\threads.c of EA's platform
  * library over Win32 -- and the small neighbours the linker left with it (the
  * rotation matrices, a random fraction, DirectDraw's surface lock flag, the
- * machine's memory).  disassemble_nfs3hp.py binds each address to the
- * function of that name here (EA_THREADS_NATIVES), and the generated code
- * calls it by name.  tools/game_checks holds each against its generated code.
+ * machine's memory).  The game's code calls each by the name it has here.
  *
  * Threads: set up the first time any of them is asked for (0x9ef5b8 1), with
  * the main thread's id (0x9ef5b4), a real handle of it duplicated (0x9ef5b0)
@@ -37,13 +43,12 @@
  * list at 0x564a64, grown by [0x564a60] records at a time (32 at first; as
  * many as the pages allocated hold after).
  *
- * Each is a typed function under a name of its own, with an adapter under the
+ * Each is a typed function under a name of its own, with a thunk under the
  * game's name for the callers still on registers and the dispatch: it leaves
  * the registers and the x87's stack as the game's code does.  Win32 is called
  * through the imports' slots; other files' typed functions (a vector made a
  * unit long, Windows' pages got) as C++ (guest::direct, their headers); the
- * game's other functions -- and those of
- * this file that tools/game_checks stands in for (the main thread asked, a
+ * game's other functions -- and those of this file (the main thread asked, a
  * sleep, a lock made and freed, DirectDraw's lock) -- by address, with their
  * arguments in the registers and on the guest's stack as the code hands them
  * over; a core keeps the registers its code pushes and pops around them
@@ -101,7 +106,6 @@ constexpr reg32 kSameAccess = 2, kCreateSuspended = 4, kAlertable = 1;
 constexpr reg32 kMemoryStatusBytes = 0x20, kTotalPhys = 8;
 // What is called by address.
 constexpr reg32 kEaRandom = 0x4e0d88;
-constexpr reg32 kSineCosine = 0x4ea970;
 constexpr reg32 kIsThreadAt = 0x4df930;
 constexpr reg32 kThreadStart = 0x4df730;
 // The imports' slots.
@@ -115,38 +119,14 @@ constexpr reg32 kPulseEvent = 0x5345a4, kResetEvent = 0x5345b8, kResumeThread = 
 constexpr reg32 kSetEvent = 0x5345e8, kSetLastError = 0x5345f4, kSetThreadPriority = 0x5345fc;
 constexpr reg32 kSleepEx = 0x534604, kTerminateThread = 0x534608, kWaitForMultipleObjectsEx = 0x534630;
 
-// The registers Kept keeps.
-constexpr unsigned kKeepEax = 1, kKeepEbx = 2, kKeepEcx = 4, kKeepEdx = 8;
-
-/* Registers the game's code pushes on entry and pops before its ret, which
- * the calls by address in between may change: as they were when the scope
- * ends. */
-class Kept
+/* What the thunks below run a core under: every register but eax kept, as the game's code keeps
+ * what it pushes (the registers a core leaves are nobody's). */
+template <typename Function>
+auto kept(CPU& cpu, Function function)
 {
-public:
-    Kept(CPU& cpu, unsigned which)
-        : cpu_(cpu), which_(which), eax_(cpu.eax), ebx_(cpu.ebx), ecx_(cpu.ecx), edx_(cpu.edx)
-    {
-    }
-    Kept(const Kept&) = delete;
-    Kept& operator=(const Kept&) = delete;
-    ~Kept()
-    {
-        if (which_ & kKeepEax)
-            cpu_.eax = eax_;
-        if (which_ & kKeepEbx)
-            cpu_.ebx = ebx_;
-        if (which_ & kKeepEcx)
-            cpu_.ecx = ecx_;
-        if (which_ & kKeepEdx)
-            cpu_.edx = edx_;
-    }
-
-private:
-    CPU& cpu_;
-    const unsigned which_;
-    const reg32 eax_, ebx_, ecx_, edx_;
-};
+    const EspKept registers(cpu);
+    return function();
+}
 
 /* Room on the guest's stack for what a callee is handed the address of: the
  * code's frame (`pushed` bytes of registers under esp on entry, then
@@ -172,7 +152,7 @@ private:
 
 /* Win32's function `Function`, its import's slot `Slot`, handed `words` (the
  * first the lowest on the stack): the port's own, called as C++
- * (native_windows.h); in the check through the slot, stdcall.  What it gives
+ * (native_windows.h).  What it gives
  * back in eax, the other registers as it leaves them.  nullopt when the game
  * stopped in it. */
 template <reg32 Slot, auto Function, typename... Words>
@@ -185,9 +165,7 @@ std::optional<reg32> windows(App* app, CPU& cpu, Words... words)
  * already: what it gives back in eax.  nullopt when the game stopped. */
 std::optional<reg32> game(App* app, CPU& cpu, reg32 target)
 {
-    if (!guest::call(app, cpu, target))
-        return std::nullopt;
-    return cpu.eax;
+    return guest::pointerCall(app, cpu, target, {});
 }
 
 /* Error (0x401010) from win\threads.c's `function` at `line` with `text`:
@@ -195,8 +173,6 @@ std::optional<reg32> game(App* app, CPU& cpu, reg32 target)
  * names as the code hands them over.  False when the game stopped. */
 bool threadsError(App* app, CPU& cpu, reg32 function, reg32 line, reg32 text)
 {
-    cpu.edx = kThreadsFile;
-    cpu.ecx = function;
     put(app, kWhereFile, kThreadsFile);
     put(app, kWhereFunction, function);
     put(app, kWhereLine, line);
@@ -262,8 +238,6 @@ struct Wait
  * then); ecx kept. */
 std::optional<Wait> waitForHandles(App* app, CPU& cpu, reg32 count, reg32 handles, reg32 ms)
 {
-    const Kept kept(cpu, kKeepEcx);
-    cpu.edx = handles;
     const auto result = windows<kWaitForMultipleObjectsEx, &host::waitMany>(
         app, cpu, count, handles, 0, ms, 0);
     if (!result)
@@ -276,8 +250,7 @@ std::optional<Wait> waitForHandles(App* app, CPU& cpu, reg32 count, reg32 handle
  * False when the game stopped. */
 bool runThread(App* app, CPU& cpu, reg32 function)
 {
-    cpu.eax = function;
-    return guest::call(app, cpu, function);
+    return guest::pointerCall(app, cpu, function, {function}).has_value();
 }
 
 /* The threads set up: the main thread's id kept, a handle of it of its own
@@ -286,7 +259,6 @@ bool runThread(App* app, CPU& cpu, reg32 function)
  * edx kept. */
 std::optional<reg32> setUpThreads(App* app, CPU& cpu)
 {
-    const Kept kept(cpu, kKeepEcx | kKeepEdx);
     const auto id = windows<kGetCurrentThreadId, &host::currentThreadId>(app, cpu);
     if (!id)
         return std::nullopt;
@@ -307,7 +279,6 @@ std::optional<reg32> setUpThreads(App* app, CPU& cpu)
     const auto lock = guest::direct<0x4eb2e0, ea::newLock>(app, cpu);
     if (!lock)
         return std::nullopt;
-    cpu.eax = *lock;  // as the call by address leaves it
     put(app, kGameLock, *lock);
     return *lock;
 }
@@ -318,7 +289,6 @@ bool threadsReady(App* app, CPU& cpu)
 {
     if (at(app, kThreadsReady) != 0)
         return true;
-    cpu.eax = 0;
     return setUpThreads(app, cpu).has_value();
 }
 
@@ -337,7 +307,6 @@ std::optional<reg32> threadHandle(App* app, CPU& cpu, reg32 thread)
  * back.  ecx kept, edx as Windows leaves it. */
 std::optional<reg32> setPriority(App* app, CPU& cpu, reg32 thread, reg32 priority)
 {
-    const Kept kept(cpu, kKeepEcx);
     if (!threadsReady(app, cpu))
         return std::nullopt;
     const auto handle = threadHandle(app, cpu, thread);
@@ -359,10 +328,8 @@ std::optional<reg32> startThread(App* app, CPU& cpu, reg32 function, reg32 stack
     const GuestFrame frame(cpu, 0xc, 4);
     const reg32 id = frame - 4;
     const bool locked = guest::direct<0x4f9070, ea::surfaceIsLocked>(app, cpu);
-    cpu.eax = locked ? 1 : 0;  // as the call by address leaves it
     if (locked)
     {
-        cpu.eax = kCreateThreadLine;  // as the code has it, with the file's and the function's names
         if (!threadsError(app, cpu, kCreateThreadName, kCreateThreadLine, kCreateThreadText))
             return std::nullopt;
     }
@@ -373,7 +340,6 @@ std::optional<reg32> startThread(App* app, CPU& cpu, reg32 function, reg32 stack
                                                                kCreateSuspended, id);
     if (!handle)
         return std::nullopt;
-    cpu.ecx = *handle;
     if (*handle != 0)
     {
         put(app, record + kUnused, 0);
@@ -381,9 +347,6 @@ std::optional<reg32> startThread(App* app, CPU& cpu, reg32 function, reg32 stack
         put(app, record + kStackSize, stackBytes);
         put(app, record + kPriority, priority);
         put(app, record + kThreadId, at(app, id));
-        // The record and the priority in eax and edx, as the code hands them over.
-        cpu.eax = record;
-        cpu.edx = priority;
         if (!setPriority(app, cpu, record, priority)
             || !windows<kResumeThread, &host::resumeThread>(app, cpu, *handle)
             || !windows<kSleepEx, &host::sleep>(app, cpu, 0, kAlertable))
@@ -400,7 +363,6 @@ std::optional<reg32> startThread(App* app, CPU& cpu, reg32 function, reg32 stack
  * called (a bug of the game's, kept).  ebx, ecx and edx kept. */
 std::optional<reg32> endThread(App* app, CPU& cpu, reg32 thread, reg32 stale)
 {
-    const Kept kept(cpu, kKeepEbx | kKeepEcx | kKeepEdx);
     reg32 handle = stale;
     if (thread == kTheMainThread)
     {
@@ -430,8 +392,6 @@ std::optional<reg32> endThread(App* app, CPU& cpu, reg32 thread, reg32 stale)
  * what SleepEx gives back.  ecx and edx kept. */
 std::optional<reg32> sleepFor(App* app, CPU& cpu, reg32 ms)
 {
-    const Kept kept(cpu, kKeepEcx | kKeepEdx);
-    cpu.eax = ms;
     return windows<kSleepEx, &host::sleep>(app, cpu, ms, kAlertable);
 }
 
@@ -439,7 +399,6 @@ std::optional<reg32> sleepFor(App* app, CPU& cpu, reg32 ms)
  * ecx and edx kept. */
 std::optional<bool> isThreadNow(App* app, CPU& cpu, reg32 thread)
 {
-    const Kept kept(cpu, kKeepEcx | kKeepEdx);
     const auto id = windows<kGetCurrentThreadId, &host::currentThreadId>(app, cpu);
     if (!id || !threadsReady(app, cpu))
         return std::nullopt;
@@ -456,7 +415,6 @@ namespace
 /* The priority of `thread`, EA's.  ecx and edx kept. */
 std::optional<reg32> priorityOf(App* app, CPU& cpu, reg32 thread)
 {
-    const Kept kept(cpu, kKeepEcx | kKeepEdx);
     if (!threadsReady(app, cpu))
         return std::nullopt;
     const auto handle = threadHandle(app, cpu, thread);
@@ -473,7 +431,6 @@ std::optional<reg32> priorityOf(App* app, CPU& cpu, reg32 thread)
 template <reg32 Slot, auto Function, typename... Words>
 std::optional<reg32> windowsKept(App* app, CPU& cpu, Words... words)
 {
-    const Kept kept(cpu, kKeepEcx | kKeepEdx);
     return windows<Slot, Function>(app, cpu, words...);
 }
 
@@ -543,7 +500,6 @@ std::optional<bool> eventSetWithin(App* app, CPU& cpu, reg32 event, reg32 ms)
 /* Whether `event` is set, without waiting.  edx kept. */
 std::optional<bool> eventPolled(App* app, CPU& cpu, reg32 event)
 {
-    const Kept kept(cpu, kKeepEdx);
     return eventSetWithin(app, cpu, event, 0);
 }
 
@@ -552,7 +508,6 @@ std::optional<bool> eventPolled(App* app, CPU& cpu, reg32 event)
 /* `event` waited on for ever: it, or 0 if the wait failed.  edx kept. */
 std::optional<reg32> eventWaited(App* app, CPU& cpu, reg32 event)
 {
-    const Kept kept(cpu, kKeepEdx);
     const GuestFrame frame(cpu, kEventWaitPushed, kEventWaitFrame);
     const reg32 handles = frame - 4;
     put(app, handles, event);
@@ -569,7 +524,6 @@ namespace
  * edx kept. */
 std::optional<reg32> eventSetAndClosed(App* app, CPU& cpu, reg32 event)
 {
-    const Kept kept(cpu, kKeepEcx | kKeepEdx);
     if (!windows<kSetEvent, &host::setEvent>(app, cpu, event))
         return std::nullopt;
     return windows<kCloseHandle, &host::closeHandle>(app, cpu, event);
@@ -579,12 +533,12 @@ std::optional<reg32> eventSetAndClosed(App* app, CPU& cpu, reg32 event)
  * with `buffer`, "[%5d] sorry, not implemented" printed into it first.
  * sprintf is handed the stack as the code has it: edx, which the code pushes,
  * just above the arguments (a word sprintf never reads). */
-std::optional<reg32> errorText(App* app, CPU& cpu, reg32 buffer)
+std::optional<reg32> errorText(App* app, CPU& cpu, reg32 buffer, reg32 edx)
 {
     if (buffer != 0)
     {
         const GuestFrame frame(cpu, 4, 0);
-        put(app, frame - 0, cpu.edx);
+        put(app, frame - 0, edx);  // the edx the code pushes, above the arguments
         guest::direct<0x4df690, watcom::clib::sprintf>(app, cpu, buffer, kNotImplemented,
                                                        guest::Words({at(app, kErrorCode) & 0xffff}));
         if (cpu.terminate)
@@ -599,11 +553,8 @@ std::optional<reg32> errorText(App* app, CPU& cpu, reg32 buffer)
  * game stopped. */
 bool sineCosine(App* app, CPU& cpu, reg32 angle, reg32 sine, reg32 cosine)
 {
-    const Kept kept(cpu, kKeepEbx | kKeepEdx);
-    cpu.eax = angle;
-    cpu.edx = sine;
-    cpu.ebx = cosine;
-    return guest::call(app, cpu, kSineCosine);
+    guest::direct<0x4ea970, frontend::simd::sineCosine>(app, cpu, angle, sine, cosine);
+    return !cpu.terminate;
 }
 
 x86::Float floatAt(App* app, reg32 address)
@@ -726,8 +677,6 @@ bool rotateAboutAxis(App* app, CPU& cpu, reg32 axis, reg32 angle, reg32 matrix)
     const reg32 unit = frame - 0x30, sineAt = frame - 0x24, cosineAt = frame - 4;
     if (!sineCosine(app, cpu, angle, sineAt, cosineAt))
         return false;
-    // The axis in eax, as the code hands it over: the callee leaves it there, and so does this.
-    cpu.eax = axis;
     guest::direct<0x4e01c0, vertices::makeUnitVector>(app, cpu, axis, unit);
     if (cpu.terminate)
         return false;
@@ -811,7 +760,6 @@ std::optional<reg32> growFreeLocks(App* app, CPU& cpu)
  * was none.  ecx and edx kept. */
 std::optional<reg32> newLock(App* app, CPU& cpu)
 {
-    const Kept kept(cpu, kKeepEcx | kKeepEdx);
     if (!threadsReady(app, cpu))
         return std::nullopt;
     if (at(app, kFreeLocks) == 0)
@@ -826,9 +774,6 @@ std::optional<reg32> newLock(App* app, CPU& cpu)
     if (lock == 0)
         return 0;
     put(app, kFreeLocks, at(app, lock + kLockLink));
-    // eax and edx as the call by address loads them (edx kept; eax Windows' after).
-    cpu.eax = lock;
-    cpu.edx = kSectionBytes;
     guest::direct<0x4e070c, ea::clearBytes>(app, cpu, lock, kSectionBytes);
     if (cpu.terminate
         || !windows<kInitializeCriticalSection, &host::initLock>(app, cpu, lock))
@@ -842,7 +787,6 @@ std::optional<reg32> lockFreed(App* app, CPU& cpu, reg32 lock)
 {
     if (lock == 0)
         return 0;
-    const Kept kept(cpu, kKeepEcx | kKeepEdx);
     if (!windows<kDeleteCriticalSection, &host::deleteLock>(app, cpu, lock))
         return std::nullopt;
     const reg32 head = at(app, kFreeLocks);
@@ -862,7 +806,6 @@ bool surfaceIsLocked(App* app)
  * the MEMORYSTATUS in the frame under ecx and edx pushed.  ecx and edx kept. */
 std::optional<reg32> physicalBytes(App* app, CPU& cpu)
 {
-    const Kept kept(cpu, kKeepEcx | kKeepEdx);
     const GuestFrame frame(cpu, 8, kMemoryStatusBytes);
     const reg32 status = frame - kMemoryStatusBytes;
     put(app, status, kMemoryStatusBytes);
@@ -874,178 +817,199 @@ std::optional<reg32> physicalBytes(App* app, CPU& cpu)
 namespace
 {
 
-/* The adapter of a core of one register's argument: eax what it gives back,
+/* The thunk of a core of one register's argument: eax what it gives back,
  * ret. */
-void oneArgument(App* app, CPU& cpu, std::optional<reg32> (*core)(App*, CPU&, reg32), reg32 argument)
+void oneArgument(App* app, CPU& cpu, x86::Args& args, std::optional<reg32> (*core)(App*, CPU&, reg32), reg32 argument)
 {
-    const auto result = core(app, cpu, argument);
+    const auto result = kept(cpu, [&] { return core(app, cpu, argument); });
     if (!result)
         return;
-    cpu.eax = *result;
+    args.eax = *result;
     cpu.esp += 4;
 }
 
 }  // namespace
 
-void waitForObjects(win32::WinApplication* app, x86::CPU& cpu);
-void threadStart(win32::WinApplication* app, x86::CPU& cpu);
-void threadsInit(win32::WinApplication* app, x86::CPU& cpu);
-void createThread(win32::WinApplication* app, x86::CPU& cpu);
-void removeThread(win32::WinApplication* app, x86::CPU& cpu);
-void sleepMs(win32::WinApplication* app, x86::CPU& cpu);
-void sleepTicks(win32::WinApplication* app, x86::CPU& cpu);
-void isThread(win32::WinApplication* app, x86::CPU& cpu);
-void threadPriority(win32::WinApplication* app, x86::CPU& cpu);
-void setThreadPriority(win32::WinApplication* app, x86::CPU& cpu);
-void exitThread(win32::WinApplication* app, x86::CPU& cpu);
-void createEvent(win32::WinApplication* app, x86::CPU& cpu);
-void postEvent(win32::WinApplication* app, x86::CPU& cpu);
-void signalEvent(win32::WinApplication* app, x86::CPU& cpu);
-void pollEvent(win32::WinApplication* app, x86::CPU& cpu);
-void waitEvent(win32::WinApplication* app, x86::CPU& cpu);
-void waitEventTicks(win32::WinApplication* app, x86::CPU& cpu);
-void waitForAny(win32::WinApplication* app, x86::CPU& cpu);
-void closeEvent(win32::WinApplication* app, x86::CPU& cpu);
-void createManualEvent(win32::WinApplication* app, x86::CPU& cpu);
-void setEvent(win32::WinApplication* app, x86::CPU& cpu);
-void resetEvent(win32::WinApplication* app, x86::CPU& cpu);
-void pulseEvent(win32::WinApplication* app, x86::CPU& cpu);
-void waitManualEvent(win32::WinApplication* app, x86::CPU& cpu);
-void setAndCloseEvent(win32::WinApplication* app, x86::CPU& cpu);
-void lastErrorText(win32::WinApplication* app, x86::CPU& cpu);
-void setLastError(win32::WinApplication* app, x86::CPU& cpu);
-void lastError(win32::WinApplication* app, x86::CPU& cpu);
-void doNothing(win32::WinApplication* app, x86::CPU& cpu);
-void xRotation(win32::WinApplication* app, x86::CPU& cpu);
-void yRotation(win32::WinApplication* app, x86::CPU& cpu);
-void zRotation(win32::WinApplication* app, x86::CPU& cpu);
-void axisRotation(win32::WinApplication* app, x86::CPU& cpu);
-void randomFraction(win32::WinApplication* app, x86::CPU& cpu);
-void growLocks(win32::WinApplication* app, x86::CPU& cpu);
-void makeLock(win32::WinApplication* app, x86::CPU& cpu);
-void enterLock(win32::WinApplication* app, x86::CPU& cpu);
-void leaveLock(win32::WinApplication* app, x86::CPU& cpu);
-void freeLock(win32::WinApplication* app, x86::CPU& cpu);
-void surfaceLocked(win32::WinApplication* app, x86::CPU& cpu);
-void physicalMemory(win32::WinApplication* app, x86::CPU& cpu);
+x86::reg32 waitForObjects(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 threadStart(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 threadsInit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 createThread(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 removeThread(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 sleepMs(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 sleepTicks(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 isThread(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 threadPriority(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 setThreadPriority(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 exitThread(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 createEvent(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 postEvent(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 signalEvent(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 pollEvent(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 waitEvent(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 waitEventTicks(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 waitForAny(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 closeEvent(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 createManualEvent(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 setEvent(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 resetEvent(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 pulseEvent(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 waitManualEvent(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 setAndCloseEvent(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 lastErrorText(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 setLastError(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 lastError(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 doNothing(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 xRotation(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 yRotation(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 zRotation(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 axisRotation(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 randomFraction(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 growLocks(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 makeLock(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 enterLock(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 leaveLock(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 freeLock(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 surfaceLocked(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 physicalMemory(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
 
 /* 0x4df6f0: waitForHandles for eax handles at edx, ebx ms at most (-1 for
  * ever): eax the handle that was set, or 0; ebx what the wait gave back; edx
  * as Windows leaves it. */
-void waitForObjects(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 waitForObjects(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const auto wait = waitForHandles(app, cpu, cpu.eax, cpu.edx, cpu.ebx);
+    const auto wait = kept(cpu, [&] { return waitForHandles(app, cpu, args.eax, args.edx, args.ebx); });
     if (!wait)
-        return;
-    cpu.eax = wait->set;
-    cpu.ebx = wait->result;
+        return args.eax;
+    args.eax = wait->set;
+    args.ebx = wait->result;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4df730: where a thread createThread made starts (a ThreadProc): the
  * function it was handed as its parameter run (runThread); 0 back, ret 4. */
-void threadStart(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 threadStart(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     if (!runThread(app, cpu, at(app, cpu.esp + 4)))
-        return;
-    cpu.eax = 0;
+        return args.eax;
+    args.eax = 0;
     cpu.esp += 4 + 4;
+    return args.eax;
 }
 
 /* 0x4df740: setUpThreads, once: eax left the lock (as it was, set up
  * already). */
-void threadsInit(win32::WinApplication* app, x86::CPU& cpu)
+std::optional<reg32> threadsSetUp(App* app, CPU& cpu, reg32 eax)
 {
     if (at(app, kThreadsReady) == 0)
-    {
-        const auto lock = setUpThreads(app, cpu);
-        if (!lock)
-            return;
-        cpu.eax = *lock;
-    }
+        return kept(cpu, [&] { return setUpThreads(app, cpu); });
+    return eax;
+}
+
+x86::reg32 threadsInit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+{
+    const auto lock = threadsSetUp(app, cpu, args.eax);
+    if (!lock)
+        return args.eax;
+    args.eax = *lock;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4df7a0: startThread of function eax, a stack of edx bytes, priority ebx,
  * into the record at [esp + 4]: eax 1 if it was made; ebx left the record;
  * ret 4. */
-void createThread(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 createThread(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     const reg32 record = at(app, cpu.esp + 4);
-    const auto made = startThread(app, cpu, cpu.eax, cpu.edx, cpu.ebx, record);
+    const auto made = kept(cpu, [&] { return startThread(app, cpu, args.eax, args.edx, args.ebx, record); });
     if (!made)
-        return;
-    cpu.eax = *made;
-    cpu.ebx = record;
+        return args.eax;
+    args.eax = *made;
+    args.ebx = record;
     cpu.esp += 4 + 4;
+    return args.eax;
 }
 
 /* 0x4df870: endThread of record eax (-1: the one asking), ebx the handle the
  * main thread's case goes on with.  No caller in the game. */
-void removeThread(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 removeThread(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const auto result = endThread(app, cpu, cpu.eax, cpu.ebx);
+    const auto result = kept(cpu, [&] { return endThread(app, cpu, args.eax, args.ebx); });
     if (!result)
-        return;
-    cpu.eax = *result;
+        return args.eax;
+    args.eax = *result;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4df8e0: eax ms slept. */
-void sleepMs(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 sleepMs(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    oneArgument(app, cpu, sleepFor, cpu.eax);
+    oneArgument(app, cpu, args, sleepFor, args.eax);
+    return args.eax;
 }
 
 /* 0x4df8f0: eax of the game's ticks slept.  No caller in the game. */
-void sleepTicks(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 sleepTicks(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    oneArgument(app, cpu, sleepFor, ticksToMs(app, cpu.eax));
+    oneArgument(app, cpu, args, sleepFor, ticksToMs(app, args.eax));
+    return args.eax;
 }
 
 /* 0x4df930: 1 if this is the thread of record eax (0: the main thread; -1:
  * any, so always), else 0. */
-void isThread(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 isThread(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const auto is = isThreadNow(app, cpu, cpu.eax);
+    const auto is = kept(cpu, [&] { return isThreadNow(app, cpu, args.eax); });
     if (!is)
-        return;
-    cpu.eax = *is ? 1 : 0;
+        return args.eax;
+    args.eax = *is ? 1 : 0;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4df980: the priority of the thread of record eax (0: the main thread;
  * -1: this one), EA's.  No caller in the game. */
-void threadPriority(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 threadPriority(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    oneArgument(app, cpu, priorityOf, cpu.eax);
+    oneArgument(app, cpu, args, priorityOf, args.eax);
+    return args.eax;
 }
 
 /* 0x4dfa30: setPriority of the thread of record eax (0: the main thread; -1:
  * this one) to EA's priority edx: eax what SetThreadPriority gives back. */
-void setThreadPriority(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 setThreadPriority(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const auto result = setPriority(app, cpu, cpu.eax, cpu.edx);
+    const auto result = kept(cpu, [&] { return setPriority(app, cpu, args.eax, args.edx); });
     if (!result)
-        return;
-    cpu.eax = *result;
+        return args.eax;
+    args.eax = *result;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4dfaf0: this thread ended (ExitThread(0)).  No caller in the game. */
-void exitThread(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 exitThread(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const auto result = windowsKept<kExitThread, &host::exitThread>(app, cpu, 0);
+    const auto result = kept(cpu, [&] { return windowsKept<kExitThread, &host::exitThread>(app, cpu, 0); });
     if (!result)
-        return;
-    cpu.eax = *result;
+        return args.eax;
+    args.eax = *result;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4dfb00's core: newEvent, auto-reset. */
 std::optional<reg32> newAutoEvent(App* app, CPU& cpu)
 {
     return newEvent(app, cpu, 0);
+}
+
+/* 0x4dfc10's core: newEvent, manual-reset. */
+std::optional<reg32> newManualEvent(App* app, CPU& cpu)
+{
+    return newEvent(app, cpu, 1);
 }
 
 /* 0x4dfb20's core: eventSet of `event`, handed in edx. */
@@ -1055,246 +1019,285 @@ std::optional<reg32> eventPosted(App* app, CPU& cpu, reg32 event)
 }
 
 /* 0x4dfb00: an event, set by one and reset as a wait takes it (auto-reset). */
-void createEvent(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 createEvent(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    oneArgument(app, cpu, newEvent, 0);
+    oneArgument(app, cpu, args, newEvent, 0);
+    return args.eax;
 }
 
 /* 0x4dfb20: event edx set; eax (what the callers would post with it) not
  * kept.  It runs on into signalEvent. */
-void postEvent(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 postEvent(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    oneArgument(app, cpu, eventSet, cpu.edx);
+    oneArgument(app, cpu, args, eventSet, args.edx);
+    return args.eax;
 }
 
 /* 0x4dfb30: event eax set -- a second entry of postEvent's, past its first
  * instruction (and its nops), which the game calls too. */
-void signalEvent(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 signalEvent(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    oneArgument(app, cpu, eventSet, cpu.eax);
+    oneArgument(app, cpu, args, eventSet, args.eax);
+    return args.eax;
 }
 
 /* 0x4dfb40: 1 if event eax is set (taken, if auto-reset), else 0, without
  * waiting. */
-void pollEvent(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 pollEvent(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const auto set = eventPolled(app, cpu, cpu.eax);
+    const auto set = kept(cpu, [&] { return eventPolled(app, cpu, args.eax); });
     if (!set)
-        return;
-    cpu.eax = *set ? 1 : 0;
+        return args.eax;
+    args.eax = *set ? 1 : 0;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4dfb70: event eax waited on for ever: it, or 0 if the wait failed. */
-void waitEvent(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 waitEvent(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    oneArgument(app, cpu, eventWaited, cpu.eax);
+    oneArgument(app, cpu, args, eventWaited, args.eax);
+    return args.eax;
 }
 
 /* 0x4dfb90: 1 if event eax is set within edx of the game's ticks, else 0.
  * edx left as the wait leaves it.  No caller in the game. */
-void waitEventTicks(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 waitEventTicks(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const auto set = eventSetWithin(app, cpu, cpu.eax, ticksToMs(app, cpu.edx));
+    const auto set = kept(cpu, [&] { return eventSetWithin(app, cpu, args.eax, ticksToMs(app, args.edx)); });
     if (!set)
-        return;
-    cpu.eax = *set ? 1 : 0;
+        return args.eax;
+    args.eax = *set ? 1 : 0;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4dfbf0: eax handles at edx waited on for ever: the one set, or 0. */
-void waitForAny(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 waitForAny(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const auto wait = waitForHandles(app, cpu, cpu.eax, cpu.edx, kInfinite);
+    const auto wait = kept(cpu, [&] { return waitForHandles(app, cpu, args.eax, args.edx, kInfinite); });
     if (!wait)
-        return;
-    cpu.eax = wait->set;
+        return args.eax;
+    args.eax = wait->set;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4dfc00: handle eax closed -- an event's, a thread's. */
-void closeEvent(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 closeEvent(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    oneArgument(app, cpu, handleClosed, cpu.eax);
+    oneArgument(app, cpu, args, handleClosed, args.eax);
+    return args.eax;
 }
 
 /* 0x4dfc10: an event that stays set until it is reset (manual-reset). */
-void createManualEvent(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 createManualEvent(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    oneArgument(app, cpu, newEvent, 1);
+    oneArgument(app, cpu, args, newEvent, 1);
+    return args.eax;
 }
 
 /* 0x4dfc30: event eax set -- the same code as signalEvent's.  No caller in
  * the game. */
-void setEvent(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 setEvent(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    oneArgument(app, cpu, eventSet, cpu.eax);
+    oneArgument(app, cpu, args, eventSet, args.eax);
+    return args.eax;
 }
 
 /* 0x4dfc40: event eax reset.  No caller in the game. */
-void resetEvent(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 resetEvent(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    oneArgument(app, cpu, eventReset, cpu.eax);
+    oneArgument(app, cpu, args, eventReset, args.eax);
+    return args.eax;
 }
 
 /* 0x4dfc50: event eax pulsed: set, those waiting let go, reset. */
-void pulseEvent(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 pulseEvent(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    oneArgument(app, cpu, eventPulsed, cpu.eax);
+    oneArgument(app, cpu, args, eventPulsed, args.eax);
+    return args.eax;
 }
 
 /* 0x4dfc60: event eax waited on for ever -- waitEvent's code again, for the
  * manual events. */
-void waitManualEvent(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 waitManualEvent(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    oneArgument(app, cpu, eventWaited, cpu.eax);
+    oneArgument(app, cpu, args, eventWaited, args.eax);
+    return args.eax;
 }
 
 /* 0x4dfc80: event eax set, and its handle closed. */
-void setAndCloseEvent(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 setAndCloseEvent(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    oneArgument(app, cpu, eventSetAndClosed, cpu.eax);
+    oneArgument(app, cpu, args, eventSetAndClosed, args.eax);
+    return args.eax;
 }
 
 /* 0x4dfca0: errorText into the buffer at eax (none: only the code).  No
  * caller in the game. */
-void lastErrorText(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 lastErrorText(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    oneArgument(app, cpu, errorText, cpu.eax);
+    const reg32 edx = args.edx;
+    const auto result = kept(cpu, [&] { return errorText(app, cpu, args.eax, edx); });
+    if (!result)
+        return args.eax;
+    args.eax = *result;
+    cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4dfce0: Windows' last error set to eax.  No caller in the game. */
-void setLastError(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 setLastError(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    oneArgument(app, cpu, lastErrorSet, cpu.eax);
+    oneArgument(app, cpu, args, lastErrorSet, args.eax);
+    return args.eax;
 }
 
 /* 0x4dfcf0: Windows' last error. */
-void lastError(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 lastError(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const auto result = windowsKept<kGetLastError, &host::lastError>(app, cpu);
+    const auto result = kept(cpu, [&] { return windowsKept<kGetLastError, &host::lastError>(app, cpu); });
     if (!result)
-        return;
-    cpu.eax = *result;
+        return args.eax;
+    args.eax = *result;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4dfd00: nothing (a bare ret).  No caller in the game. */
-void doNothing(win32::WinApplication*, x86::CPU& cpu)
+x86::reg32 doNothing(win32::WinApplication*, x86::CPU& cpu, x86::Args& args)
 {
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4dfd80: rotateAboutX of the matrix at eax by the angle at [esp + 4]: eax
  * left the cosine's bits; ret 4. */
-void xRotation(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 xRotation(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const auto cosine = rotateAboutX(app, cpu, cpu.eax, cpu.esp + 4);
+    const auto cosine = kept(cpu, [&] { return rotateAboutX(app, cpu, args.eax, cpu.esp + 4); });
     if (!cosine)
-        return;
-    cpu.eax = *cosine;
+        return args.eax;
+    args.eax = *cosine;
     cpu.esp += 4 + 4;
+    return args.eax;
 }
 
 /* 0x4dfde0: rotateAboutY of the matrix at eax by the angle at [esp + 4]. */
-void yRotation(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 yRotation(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const auto cosine = rotateAboutY(app, cpu, cpu.eax, cpu.esp + 4);
+    const auto cosine = kept(cpu, [&] { return rotateAboutY(app, cpu, args.eax, cpu.esp + 4); });
     if (!cosine)
-        return;
-    cpu.eax = *cosine;
+        return args.eax;
+    args.eax = *cosine;
     cpu.esp += 4 + 4;
+    return args.eax;
 }
 
 /* 0x4dfe40: rotateAboutZ of the matrix at eax by the angle at [esp + 4]. */
-void zRotation(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 zRotation(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const auto cosine = rotateAboutZ(app, cpu, cpu.eax, cpu.esp + 4);
+    const auto cosine = kept(cpu, [&] { return rotateAboutZ(app, cpu, args.eax, cpu.esp + 4); });
     if (!cosine)
-        return;
-    cpu.eax = *cosine;
+        return args.eax;
+    args.eax = *cosine;
     cpu.esp += 4 + 4;
+    return args.eax;
 }
 
 /* 0x4dfea0: rotateAboutAxis of the matrix at [esp + 8] by the angle at
  * [esp + 4] about the axis at eax; ret 8.  No caller in the game. */
-void axisRotation(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 axisRotation(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    if (!rotateAboutAxis(app, cpu, cpu.eax, cpu.esp + 4, at(app, cpu.esp + 8)))
-        return;
+    const reg32 axis = args.eax;
+    if (!rotateAboutAxis(app, cpu, axis, cpu.esp + 4, at(app, cpu.esp + 8)))
+        return args.eax;
+    args.eax = axis;  // as makeUnitVector leaves it
     cpu.esp += 4 + 8;
+    return args.eax;
 }
 
 /* 0x4eb230: randomFractionOf onto the x87's stack; eax and edx kept. */
-void randomFraction(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 randomFraction(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu, kKeepEax | kKeepEdx);
-    const auto fraction = randomFractionOf(app, cpu);
+    const reg32 eax = args.eax;
+    const auto fraction = kept(cpu, [&] { return randomFractionOf(app, cpu); });
     if (!fraction)
-        return;
-    cpu.fpu.push(*fraction);
+        return args.eax;
+    args.eax = eax;  // eax and edx kept
+    args.floatSet = true;
+    args.floatResult = *fraction;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4eb260: growFreeLocks: eax left the pages. */
-void growLocks(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 growLocks(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const auto pages = growFreeLocks(app, cpu);
+    const auto pages = kept(cpu, [&] { return growFreeLocks(app, cpu); });
     if (!pages)
-        return;
-    cpu.eax = *pages;
+        return args.eax;
+    args.eax = *pages;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4eb2e0: newLock: the lock, or 0. */
-void makeLock(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 makeLock(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const auto lock = newLock(app, cpu);
+    const auto lock = kept(cpu, [&] { return newLock(app, cpu); });
     if (!lock)
-        return;
-    cpu.eax = *lock;
+        return args.eax;
+    args.eax = *lock;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4eb340: lock eax taken (EnterCriticalSection).  No caller in the game. */
-void enterLock(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 enterLock(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    oneArgument(app, cpu, lockEntered, cpu.eax);
+    oneArgument(app, cpu, args, lockEntered, args.eax);
+    return args.eax;
 }
 
 /* 0x4eb350: lock eax given back (LeaveCriticalSection).  No caller in the
  * game. */
-void leaveLock(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 leaveLock(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    oneArgument(app, cpu, lockLeft, cpu.eax);
+    oneArgument(app, cpu, args, lockLeft, args.eax);
+    return args.eax;
 }
 
 /* 0x4eb360: lockFreed of lock eax: eax left the list's head before. */
-void freeLock(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 freeLock(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    oneArgument(app, cpu, lockFreed, cpu.eax);
+    oneArgument(app, cpu, args, lockFreed, args.eax);
+    return args.eax;
 }
 
 /* 0x4f9070: 1 if a DirectDraw surface is locked (the screen's, 0x9f3d0c, or
  * another's, 0x567180), else 0 -- DirectDraw's, not the threads': what
  * createThread asks. */
-void surfaceLocked(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 surfaceLocked(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    cpu.eax = surfaceIsLocked(app) ? 1 : 0;
+    args.eax = surfaceIsLocked(app) ? 1 : 0;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x5221f0: physicalBytes -- the file system's, not the threads'. */
-void physicalMemory(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 physicalMemory(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const auto bytes = physicalBytes(app, cpu);
+    const auto bytes = kept(cpu, [&] { return physicalBytes(app, cpu); });
     if (!bytes)
-        return;
-    cpu.eax = *bytes;
+        return args.eax;
+    args.eax = *bytes;
     cpu.esp += 4;
+    return args.eax;
 }
 
-/* 0x4dfc00's and 0x4dfcf0's typed cores (native_ea_threads.h): as their adapters run them. */
+/* 0x4dfc00's and 0x4dfcf0's typed cores (native_ea_threads.h): as their thunks run them. */
 std::optional<reg32> eventClosed(App* app, CPU& cpu, reg32 event)
 {
     return handleClosed(app, cpu, event);
@@ -1303,6 +1306,21 @@ std::optional<reg32> eventClosed(App* app, CPU& cpu, reg32 event)
 std::optional<reg32> lastErrorOf(App* app, CPU& cpu)
 {
     return windowsKept<kGetLastError, &host::lastError>(app, cpu);
+}
+
+std::optional<reg32> threadStarted(App* app, CPU& cpu, reg32 function, reg32 stackBytes, reg32 priority, reg32 record)
+{
+    return startThread(app, cpu, function, stackBytes, priority, record);
+}
+
+std::optional<reg32> eventPulse(App* app, CPU& cpu, reg32 event)
+{
+    return eventPulsed(app, cpu, event);
+}
+
+std::optional<reg32> eventSetClosed(App* app, CPU& cpu, reg32 event)
+{
+    return eventSetAndClosed(app, cpu, event);
 }
 
 }  // namespace ea

@@ -3,14 +3,17 @@
 #include "native_collide.h"
 #include "native_controls_input.h"
 #include "native_controls_queue.h"
+#include "native_controls_race.h"
 #include "native_ea_files.h"
 #include "native_ea_memory.h"
 #include "native_frontend_loopb.h"
 #include "native_frontend_menue.h"
 #include "native_frontend_sima.h"
 #include "native_frontend_simb.h"
+#include "native_frontend_simd.h"
 #include "native_game.h"
 #include "native_graphics.h"
+#include "native_handling.h"
 #include "native_guest.h"
 #include "native_raceload.h"
 #include "native_racestart.h"
@@ -19,6 +22,7 @@
 #include "native_vertices.h"
 #include "native_watcom.h"
 #include "thrash_calls.h"
+#include "native_render.h"
 
 #include <cstdint>
 #include <cstring>
@@ -29,10 +33,7 @@
  * the track's objects -- the COLL file of a track's objects, and the drawing
  * code that follows them in nfs3.exe: render states, the software
  * renderer's blend, the polygon lists' drawers, the race's mouse pointer, and
- * the text lines of the race's messages.  disassemble_nfs3hp.py binds each
- * address to the function of that name here (COLLIDE_NATIVES), and the
- * generated code calls it by name.  tools/game_checks holds each against its
- * generated code (collide.inc).
+ * the text lines of the race's messages.  The game's code calls each by the name it has here.
  *
  * A car's record, as the collisions read it: its position at 0x98 (three
  * floats), its axes -- forward, up, right, three floats each -- at 0xc0,
@@ -50,8 +51,8 @@
  * corner's offsets at 0x5eff04, 0x5efeb4 and 0x5efeb8, and contactNormal the
  * normal at 0x5efe78.
  *
- * Each is a typed core -- named parameters, a result, C++ locals -- with an
- * adapter under the game's name for the dispatch and the callers still on
+ * Each is a typed core -- named parameters, a result, C++ locals -- with a
+ * thunk under the game's name for the dispatch and the callers still on
  * registers, which leaves eax and the x87's stack as the game's code does (a
  * fcomp's status word in ax where it shows), the registers it was handed no
  * argument in as the caller had them.  A callee is handed its argument
@@ -71,6 +72,11 @@
  * are plain copies here. */
 namespace nfs3hp
 {
+namespace decompiled
+{
+void depthOffsetsSet(win32::WinApplication* app);  // native_decompiled.cpp's, 0x4c7a60
+}
+
 namespace collide
 {
 
@@ -128,40 +134,27 @@ constexpr reg32 kZeroVector = 0x42dd30, kZeroVector2 = 0x42dd3c, kEdgeBits = 0x4
 constexpr reg32 kFaceInFirst = 0x42dd60, kFaceInSecond = 0x42e010;
 constexpr reg32 kEdgeInFirst = 0x42e2c0, kEdgeInSecond = 0x42e4f0;
 constexpr reg32 kCarsRespond = 0x42f280;
-constexpr reg32 kNormalize = 0x4972f0;
 constexpr reg32 kSubtractVectors = 0x4e0000;
 
-/* A loop's safepoint, where the generated code has one: the guest's context
+/* A loop's safepoint, where the game's code has one: the guest's context
  * handed over when another thread waits for it. */
-void safepoint(App* app, CPU& cpu)
+void safepoint(App* app, x86::CPU& cpu)
 {
     if (app->contextWanted())
         app->yieldContext(cpu);
 }
 
 /* A native_frontend_* file's typed core called as C++ (guest::direct): nothing (false) when the
- * game stopped in it (its calls into the game throw fe::Terminated).  tools/game_checks does not
- * build those files: there it goes by address, through its ByAddress, as the game's code calls it,
- * every register but eax kept.  A reg32 result is the eax the function leaves: eax set to it (in the
- * game too); after any other, eax spoilt there, so that code still reading what the callee left in
- * eax differs there. */
+ * game stopped in it (its calls into the game throw fe::Terminated), every register but eax kept.
+ * A reg32 result is the eax the function leaves, set to it; after any other, eax is left alone. */
 template <reg32 Address, auto Core, typename... Args>
 auto feCore(App* app, CPU& cpu, Args... args)
 {
     const auto run = [&] {
-#ifdef NFS_GAME_CHECKS
-        const guest::KeptRegisters kept(cpu);
-        return guest::ByAddress<Core>::template call<Address>(app, cpu, args...);
-#else
         return guest::direct<Address, Core>(app, cpu, args...);
-#endif
     };
     using Result = decltype(run());
-    const auto spoil = [&] {
-#ifdef NFS_GAME_CHECKS
-        cpu.eax = 0x5b0115edu;
-#endif
-    };
+    const auto spoil = [&] {};
     if constexpr (std::is_void_v<Result>)
     {
         try
@@ -181,7 +174,7 @@ auto feCore(App* app, CPU& cpu, Args... args)
         {
             const Result result = run();
             if constexpr (std::is_same_v<Result, x86::reg32>)
-                cpu.eax = result;  // a menu core's result: the eax it leaves, as the call by address does
+                (void)result;  // a menu core's result: the eax it leaves is no longer set (no caller reads it)
             else
                 spoil();
             return cpu.terminate ? std::optional<Result>() : std::optional<Result>(result);
@@ -242,10 +235,9 @@ bool fAbove(const Float& a, const Float& b)
  * status word as it leaves it, which the caller puts into ax. */
 constexpr reg16 kC0 = 0x100, kC3 = 0x4000;
 
-reg16 fcom(CPU& cpu, const Float& a, const Float& b)
+reg16 fcom(const Float& a, const Float& b)
 {
-    cpu.fpu.compare(a, b);
-    return cpu.fpu.status.word;
+    return fp::compare(a, b);
 }
 
 /* A float's size either way, as the collisions work it out: its bits when 0
@@ -276,9 +268,9 @@ std::optional<Float> dot(App* app, CPU& cpu, reg32 a, reg32 b)
 /* The registers a function of the game's pushes on entry, written where it
  * pushes them -- below esp, where only what runs later reads them.  For the
  * car-to-car functions: raceload::carsCollide, which collideCars calls after
- * them, reads its cross product's vector before the check's stand-in for the
- * cross product (0x4e0160, which writes nothing) sets it -- so in the check
- * it reads the words pushCarsApart and findContact pushed there. */
+ * them, reads its cross product's vector before the cross product
+ * (0x4e0160, which writes nothing) sets it, so it reads the words pushCarsApart
+ * and findContact pushed there. */
 struct Pushed
 {
     Pushed(std::initializer_list<reg32> values) : values(values) {}
@@ -310,88 +302,110 @@ private:
     const reg32 base;
 };
 
-/* A call by address as the code makes it: `registers` into eax, edx, ebx and
- * ecx in turn, `words` pushed (the first at the top) and taken off after it;
- * every register but eax as it was before after it (guest::KeptRegisters).
- * eax as the callee leaves it; nullopt when the game stopped. */
+/* The corner test at `test` (0x42dd60, 0x42e010, 0x42e2c0 or 0x42e4f0) of the box a against b, the three signs
+ * the registers and the stack's word hand it: 1 inside, else 0. */
+std::optional<reg32> cornerTested(App* app, CPU& cpu, reg32 test, reg32 a, reg32 b, reg32 first, reg32 second,
+                                  reg32 third)
+{
+    switch (test)
+    {
+    case kFaceInFirst:
+        return guest::direct<0x42dd60, raceload::cornerIn>(app, cpu, a, b, std::int32_t(first), std::int32_t(second),
+                                                         std::int32_t(third))
+                   ? 1u
+                   : 0u;
+    case kFaceInSecond:
+        return guest::direct<0x42e010, raceload::cornerInBack>(app, cpu, a, b, std::int32_t(first),
+                                                             std::int32_t(second), std::int32_t(third))
+                   ? 1u
+                   : 0u;
+    case kEdgeInFirst:
+        return guest::direct<0x42e2c0, raceload::cornerIn2>(app, cpu, a, b, std::int32_t(first), std::int32_t(second),
+                                                          std::int32_t(third))
+                   ? 1u
+                   : 0u;
+    default:
+        return guest::direct<0x42e4f0, raceload::cornerInBack2>(app, cpu, a, b, std::int32_t(first),
+                                                              std::int32_t(second), std::int32_t(third))
+                   ? 1u
+                   : 0u;
+    }
+}
+
+/* A call by address (a callee with no typed core) as the code makes it: `registers` into eax, edx,
+ * ebx and ecx in turn, `words` pushed (the first lowest) and taken off after it; every register but
+ * eax as it was before after it.  eax as the callee leaves it; nullopt when the game stopped. */
 std::optional<reg32> callWith(App* app, CPU& cpu, reg32 target, std::initializer_list<reg32> registers,
                               std::initializer_list<reg32> words = {})
 {
-    const guest::KeptRegisters kept(cpu);
-    reg32* const into[] = {&cpu.eax, &cpu.edx, &cpu.ebx, &cpu.ecx};
-    unsigned i = 0;
-    for (const reg32 value : registers)
-        *into[i++] = value;
-    if (!guest::call(app, cpu, target, words))
-        return std::nullopt;
-    return cpu.eax;
+    return guest::pointerCall(app, cpu, target, registers, words);
 }
 
 }  // namespace
 
-void findContact(App* app, CPU& cpu);
-void contactNormal(App* app, CPU& cpu);
-void pushCarsApart(App* app, CPU& cpu);
-void separateCars(App* app, CPU& cpu);
-void polygonEdgeNormal(App* app, CPU& cpu);
-void clearOfWall(App* app, CPU& cpu);
-void carAgainstWalls(App* app, CPU& cpu);
-void collideCars(App* app, CPU& cpu);
-void clearCarList(App* app, CPU& cpu);
-void objectInReach(App* app, CPU& cpu);
-void carAgainstObjects(App* app, CPU& cpu);
-void addCarToList(App* app, CPU& cpu);
-void carCollisions(App* app, CPU& cpu);
-void distanceSquared(App* app, CPU& cpu);
-void nearestPoint(App* app, CPU& cpu);
-void openCollFile(App* app, CPU& cpu);
-void closeCollFile(App* app, CPU& cpu);
-void collFileSize(App* app, CPU& cpu);
-void readCollFile(App* app, CPU& cpu);
-void collFileCount(App* app, CPU& cpu);
-void collChunk(App* app, CPU& cpu);
-void playerControls(App* app, CPU& cpu);
-void forgetRenderStates(App* app, CPU& cpu);
-void statesForText(App* app, CPU& cpu);
-void statesForPictures(App* app, CPU& cpu);
-void statesForHud(App* app, CPU& cpu);
-void statesForScreens(App* app, CPU& cpu);
-void passLayerNothing(App* app, CPU& cpu);
-void passSecondLayer(App* app, CPU& cpu);
-void passFirstLayer(App* app, CPU& cpu);
-void makeBlendTables(App* app, CPU& cpu);
-void blendSpan(App* app, CPU& cpu);
-void subdivisionDepth(App* app, CPU& cpu);
-void drawTexturedTriangles(App* app, CPU& cpu);
-void drawFlatTriangles(App* app, CPU& cpu);
-void drawTrianglesByZ(App* app, CPU& cpu);
-void drawQuadsByZ(App* app, CPU& cpu);
-void drawFlatTrianglesAgain(App* app, CPU& cpu);
-void drawColouredTriangles(App* app, CPU& cpu);
-void stateRecord(App* app, CPU& cpu);
-void drawRecords(App* app, CPU& cpu);
-void raceTextFrame(App* app, CPU& cpu);
-void setMirrored(App* app, CPU& cpu);
-void drawMirroredRecords(App* app, CPU& cpu);
-void countFrame(App* app, CPU& cpu);
-void raceViewDistance(App* app, CPU& cpu);
-void raceFrameEnd(App* app, CPU& cpu);
-void raceFrameNothing(App* app, CPU& cpu);
-void raceEndNothing(App* app, CPU& cpu);
-void raceStartDrawing(App* app, CPU& cpu);
-void raceStartNothing(App* app, CPU& cpu);
-void drawPointer(App* app, CPU& cpu);
-void openMessages(App* app, CPU& cpu);
-void closeMessages(App* app, CPU& cpu);
-void clearAllMessages(App* app, CPU& cpu);
-void clearMessages(App* app, CPU& cpu);
-void clearMessageLine(App* app, CPU& cpu);
-void addMessageText(App* app, CPU& cpu);
-void addMessageCharacter(App* app, CPU& cpu);
-void copyMessageLines(App* app, CPU& cpu);
-void messagesScrolled(App* app, CPU& cpu);
-void messagesNothing(App* app, CPU& cpu);
-void seedHash(App* app, CPU& cpu);
+x86::reg32 findContact(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 contactNormal(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 pushCarsApart(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 separateCars(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 polygonEdgeNormal(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 clearOfWall(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 carAgainstWalls(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 collideCars(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 clearCarList(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 objectInReach(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 carAgainstObjects(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 addCarToList(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 carCollisions(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 distanceSquared(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 nearestPoint(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 openCollFile(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 closeCollFile(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 collFileSize(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 readCollFile(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 collFileCount(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 collChunk(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 playerControls(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 forgetRenderStates(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 statesForText(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 statesForPictures(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 statesForHud(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 statesForScreens(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 passLayerNothing(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 passSecondLayer(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 passFirstLayer(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 makeBlendTables(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 blendSpan(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 subdivisionDepth(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 drawTexturedTriangles(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 drawFlatTriangles(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 drawTrianglesByZ(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 drawQuadsByZ(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 drawFlatTrianglesAgain(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 drawColouredTriangles(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 stateRecord(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 drawRecords(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 raceTextFrame(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 setMirrored(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 drawMirroredRecords(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 countFrame(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 raceViewDistance(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 raceFrameEnd(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 raceFrameNothing(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 raceEndNothing(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 raceStartDrawing(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 raceStartNothing(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 drawPointer(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 openMessages(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 closeMessages(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 clearAllMessages(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 clearMessages(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 clearMessageLine(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 addMessageText(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 addMessageCharacter(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 copyMessageLines(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 messagesScrolled(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 messagesNothing(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 seedHash(App* app, x86::CPU& cpu, x86::Args& args);
 
 /* Whether, and how, the boxes of cars a and b touch -- the first's six
  * faces' centres and then its eight corners are tried, each point's signs in
@@ -423,7 +437,7 @@ std::optional<reg32> contactKind(App* app, CPU& cpu, reg32 a, reg32 b, const Pus
     const GuestFrame frame(cpu, 0x14, 0);  // as deep as the code's
     for (const Probe& probe : probes)
     {
-        const std::optional<reg32> hit = callWith(app, cpu, probe.test, {a, b, probe.ebx, probe.ecx}, {probe.pushed});
+        const std::optional<reg32> hit = cornerTested(app, cpu, probe.test, a, b, probe.ebx, probe.ecx, probe.pushed);
         if (!hit)
             return std::nullopt;
         if (*hit != 0)
@@ -433,14 +447,15 @@ std::optional<reg32> contactKind(App* app, CPU& cpu, reg32 a, reg32 b, const Pus
 }
 
 /* 0x42f550: contactKind of car eax and car edx. */
-void findContact(App* app, CPU& cpu)
+x86::reg32 findContact(App* app, x86::CPU& cpu, x86::Args& args)
 {
     const std::optional<reg32> kind =
-        contactKind(app, cpu, cpu.eax, cpu.edx, {cpu.ebx, cpu.ecx, cpu.esi, cpu.edi, cpu.ebp});
+        contactKind(app, cpu, args.eax, args.edx, {args.ebx, args.ecx, args.esi, args.edi, args.ebp});
     if (!kind)
-        return;
-    cpu.eax = *kind;
+        return args.eax;
+    args.eax = *kind;
     cpu.esp += 4;
+    return args.eax;
 }
 
 namespace
@@ -567,13 +582,14 @@ std::optional<reg32> normalOfContact(App* app, CPU& cpu, reg32 a, reg32 b, reg32
 }  // namespace
 
 /* 0x42f8c0: normalOfContact for car eax and car edx, by ebx. */
-void contactNormal(App* app, CPU& cpu)
+x86::reg32 contactNormal(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const std::optional<reg32> left = normalOfContact(app, cpu, cpu.eax, cpu.edx, cpu.ebx);
+    const std::optional<reg32> left = normalOfContact(app, cpu, args.eax, args.edx, args.ebx);
     if (!left)
-        return;
-    cpu.eax = *left;
+        return args.eax;
+    args.eax = *left;
     cpu.esp += 4;
+    return args.eax;
 }
 
 
@@ -623,13 +639,14 @@ bool pushApart(App* app, CPU& cpu, reg32 a, reg32 b, const reg32 (&direction)[3]
 
 /* 0x42fe10: pushApart for car eax and car edx along the direction on the
  * stack; 1; ret 0xc. */
-void pushCarsApart(App* app, CPU& cpu)
+x86::reg32 pushCarsApart(App* app, x86::CPU& cpu, x86::Args& args)
 {
     const reg32 direction[3] = {at(app, cpu.esp + 4), at(app, cpu.esp + 8), at(app, cpu.esp + 0xc)};
-    if (!pushApart(app, cpu, cpu.eax, cpu.edx, direction, {cpu.ebx, cpu.ecx, cpu.esi, cpu.ebp}))
-        return;
-    cpu.eax = 1;
+    if (!pushApart(app, cpu, args.eax, args.edx, direction, {args.ebx, args.ecx, args.esi, args.ebp}))
+        return args.eax;
+    args.eax = 1;
     cpu.esp += 4 + 0xc;
+    return args.eax;
 }
 
 namespace
@@ -684,18 +701,11 @@ std::optional<reg32> separateTwo(App* app, CPU& cpu, reg32 a, reg32 b)
     {
         // The line from the first car to the second, into either frame; what
         // the call leaves in ebx and ecx the code pushes in contactKind's.
-        reg32 leftEbx, leftEcx;
-        {
-            const guest::KeptRegisters kept(cpu);
-            cpu.eax = 1;
-            cpu.edx = b + kCarPosition;
-            cpu.ebx = a + kCarPosition;
-            cpu.ecx = line;
-            if (!guest::call(app, cpu, kSubtractVectors))
-                return std::nullopt;
-            leftEbx = cpu.ebx;
-            leftEcx = cpu.ecx;
-        }
+        // (the subtraction leaves ebx and ecx as handed)
+        const reg32 leftEbx = a + kCarPosition, leftEcx = line;
+        guest::direct<0x4e0000, vertices::offsetVectorList<false>>(app, cpu, 1, b + kCarPosition, a + kCarPosition, line);
+        if (cpu.terminate)
+            return std::nullopt;
         static const reg32 axes[] = {0xc0, 0xcc, 0xd8};
         for (reg32 i = 0; i < 6; ++i)
         {
@@ -738,13 +748,14 @@ std::optional<reg32> separateTwo(App* app, CPU& cpu, reg32 a, reg32 b)
 }  // namespace
 
 /* 0x42fee0: separateTwo for car eax and car edx. */
-void separateCars(App* app, CPU& cpu)
+x86::reg32 separateCars(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const std::optional<reg32> r = separateTwo(app, cpu, cpu.eax, cpu.edx);
+    const std::optional<reg32> r = separateTwo(app, cpu, args.eax, args.edx);
     if (!r)
-        return;
-    cpu.eax = *r;
+        return args.eax;
+    args.eax = *r;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* The fixed point's multiply, as the code makes it -- imul; shl edx, 16;
@@ -796,16 +807,11 @@ std::optional<reg32> edgeNormal(App* app, CPU& cpu, reg32 edge, reg32 place, reg
     default:
         break;
     }
-    // edx 0 handed over, and the first multiply by what the call leaves there.
-    reg32 leftEdx;
-    {
-        const guest::KeptRegisters kept(cpu);
-        cpu.eax = vector;
-        cpu.edx = 0;
-        if (!guest::call(app, cpu, 0x4970c0))
-            return std::nullopt;
-        leftEdx = cpu.edx;
-    }
+    // The first multiply is by the edx the call leaves, which is the 0 handed over (the core never
+    // touches edx).
+    if (!feCore<0x4970c0, frontend::simd::fixedNormalise>(app, cpu, vector))
+        return std::nullopt;
+    const reg32 leftEdx = 0;
     constexpr reg32 kOne = 0x10000;  // up's y; its x and z 0
     const reg32 x = at(app, vector), y = at(app, vector + 4), z = at(app, vector + 8);
     const reg32 first = fixedTimes(y, leftEdx) - fixedTimes(z, kOne);
@@ -822,13 +828,14 @@ std::optional<reg32> edgeNormal(App* app, CPU& cpu, reg32 edge, reg32 place, reg
 }
 
 /* 0x430210: edgeNormal of edge eax of the track position at ebx into edx. */
-void polygonEdgeNormal(App* app, CPU& cpu)
+x86::reg32 polygonEdgeNormal(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const std::optional<reg32> second = edgeNormal(app, cpu, cpu.eax, cpu.ebx, cpu.edx);
+    const std::optional<reg32> second = edgeNormal(app, cpu, args.eax, args.ebx, args.edx);
     if (!second)
-        return;
-    cpu.eax = *second;
+        return args.eax;
+    args.eax = *second;
     cpu.esp += 4;
+    return args.eax;
 }
 
 // A track position's record, as clearOfWall reads it: its polygon's index
@@ -879,13 +886,14 @@ std::optional<reg32> clear(App* app, CPU& cpu, reg32 car, reg32 place)
 }
 
 /* 0x430350: clear of car eax against the track position edx. */
-void clearOfWall(App* app, CPU& cpu)
+x86::reg32 clearOfWall(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const std::optional<reg32> c = clear(app, cpu, cpu.eax, cpu.edx);
+    const std::optional<reg32> c = clear(app, cpu, args.eax, args.edx);
     if (!c)
-        return;
-    cpu.eax = *c;
+        return args.eax;
+    args.eax = *c;
     cpu.esp += 4;
+    return args.eax;
 }
 
 // What carAgainstWalls calls: the car's turn applied to its axes (0x4a2cc0,
@@ -1120,11 +1128,12 @@ std::optional<reg32> againstWalls(App* app, CPU& cpu, reg32 car)
         if (crossedWalls == 0)
             continue;
         // By address: the eax it leaves is againstWalls' where the length is 0.
-        const std::optional<reg32> normalized = callWith(app, cpu, kNormalize, {normal});
-        if (!normalized)
+        const float normalLength = guest::direct<0x4972f0, vertices::normaliseVector>(app, cpu, normal);
+        if (cpu.terminate)
             return std::nullopt;
-        const Float length = cpu.fpu.take();
-        const reg16 word = fcom(cpu, 0.0, length);
+        const std::optional<reg32> normalized = normal;  // eax as it was handed
+        const Float length = Float(normalLength);
+        const reg16 word = fcom(0.0, length);
         if (word & kC3)
             return (*normalized & 0xffff0000) | word;
         // The wall's corner by the edges' bits: its polygon's, scaled, for
@@ -1175,20 +1184,24 @@ std::optional<reg32> againstWalls(App* app, CPU& cpu, reg32 car)
             return std::nullopt;
         if (!(byte(app, car + kCarFlags) & 4))
             return car;
-        return callWith(app, cpu, kWallJolt, {car});
+        // (the code's matching of the revs to the speed leaves the car in eax)
+        if (!guest::direct<0x4aa4f4, handling::matchToSpeed>(app, cpu, car))
+            return std::nullopt;
+        return car;
     }
 }
 
 }  // namespace
 
 /* 0x4304b0: againstWalls for car eax. */
-void carAgainstWalls(App* app, CPU& cpu)
+x86::reg32 carAgainstWalls(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const std::optional<reg32> r = againstWalls(app, cpu, cpu.eax);
+    const std::optional<reg32> r = againstWalls(app, cpu, args.eax);
     if (!r)
-        return;
-    cpu.eax = *r;
+        return args.eax;
+    args.eax = *r;
     cpu.esp += 4;
+    return args.eax;
 }
 
 namespace
@@ -1220,27 +1233,29 @@ std::optional<reg32> collide(App* app, CPU& cpu, reg32 a, reg32 b)
         touched = true;
     }
     if (touched)
-        return callWith(app, cpu, kCarsRespond, {a, b, kContactPoint});
+        return guest::direct<0x42f280, raceload::respond>(app, cpu, a, b, kContactPoint);
     return last;
 }
 
 }  // namespace
 
 /* 0x430c80: collide for car eax and car edx. */
-void collideCars(App* app, CPU& cpu)
+x86::reg32 collideCars(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const std::optional<reg32> left = collide(app, cpu, cpu.eax, cpu.edx);
+    const std::optional<reg32> left = collide(app, cpu, args.eax, args.edx);
     if (!left)
-        return;
-    cpu.eax = *left;
+        return args.eax;
+    args.eax = *left;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x430cd0: no car tested yet this frame. */
-void clearCarList(App* app, CPU& cpu)
+x86::reg32 clearCarList(App* app, x86::CPU& cpu, x86::Args& args)
 {
     put(app, kCarCount, 0);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* Whether the point at `point` (x and z; y taken as the car's) is within
@@ -1266,14 +1281,15 @@ std::optional<reg32> inReach(App* app, CPU& cpu, reg32 car, reg32 point, reg32 r
 
 /* 0x430ce0: inReach for car eax, the point at edx, the reach and the
  * offset's vector on the stack; ret 8. */
-void objectInReach(App* app, CPU& cpu)
+x86::reg32 objectInReach(App* app, x86::CPU& cpu, x86::Args& args)
 {
     const std::optional<reg32> r =
-        inReach(app, cpu, cpu.eax, cpu.edx, at(app, cpu.esp + 4), at(app, cpu.esp + 8));
+        inReach(app, cpu, args.eax, args.edx, at(app, cpu.esp + 4), at(app, cpu.esp + 8));
     if (!r)
-        return;
-    cpu.eax = *r;
+        return args.eax;
+    args.eax = *r;
     cpu.esp += 4 + 8;
+    return args.eax;
 }
 
 /* Car `car` added to this frame's list, and tested against those before it:
@@ -1298,11 +1314,11 @@ std::optional<reg32> addToList(App* app, CPU& cpu, reg32 car)
         {
             const float d = float(fp::sub(loadFloat(app, car + along), loadFloat(app, other + along)));
             // Each fcomp's status word into ax, as fnstsw leaves it.
-            const bool zeroBelow = (fcom(cpu, 0.0, Float(d)) & kC0) != 0;
+            const bool zeroBelow = (fcom(0.0, Float(d)) & kC0) != 0;
             if (zeroBelow)
                 eax = bitsOf(d);
             const float size = zeroBelow ? d : float(-Float(d));
-            const reg16 word = fcom(cpu, Float(size), Float(radii));
+            const reg16 word = fcom(Float(size), Float(radii));
             eax = (eax & 0xffff0000) | word;
             if (!(word & kC0))
             {
@@ -1333,7 +1349,6 @@ std::optional<reg32> addToList(App* app, CPU& cpu, reg32 car)
 // argument of its.  The response by address too: the car eax pushed by the
 // vector edx at ebx, stdcall, a 0 pushed -- its frame, whose addresses it
 // hands on, lies under that word, where a call as C++ would not put it.
-constexpr reg32 kObjectJolt = 0x471440, kObjectResponse = 0x42efe0;
 constexpr reg32 kSoundBumped = 0x6000a, kSoundKnocked = 0x6000b, kSoundLoud = 0x41700000;  // 15.0
 
 /* Car `car` against the track's objects near it: those close by a rough
@@ -1398,7 +1413,7 @@ std::optional<reg32> againstObjects(App* app, CPU& cpu, reg32 car)
         const Float toFixed = loadDouble(app, kObjectToFixed);
         const reg32 joltZ = reg32(fp::toInteger<sreg32>(fp::mul(loadFloat(app, offset + 8), toFixed)));
         const reg32 joltX = reg32(fp::toInteger<sreg32>(fp::mul(loadFloat(app, offset), toFixed)));
-        if (!callWith(app, cpu, kObjectJolt, {car, how, joltX, joltZ}))
+        if (!guest::direct<0x471440, controls::bump>(app, cpu, car, joltX, how))
             return std::nullopt;
         if (how == 1)
         {
@@ -1416,8 +1431,14 @@ std::optional<reg32> againstObjects(App* app, CPU& cpu, reg32 car)
             guest::direct<0x4dffb0, vertices::offsetVectorList<true>>(app, cpu, i32(how), point, scaled, scaled);
             if (cpu.terminate)
                 return std::nullopt;
-            if (!callWith(app, cpu, kObjectResponse, {car, away, scaled}, {0}))
-                return std::nullopt;
+            {
+                // The word the game's code pushes for it (0), above the callee's frame.
+                const GuestFrame word(cpu, 0, 4);
+                const reg32 reach = word - 4;
+                put(app, reach, 0);
+                if (!guest::direct<0x42efe0, raceload::boxHits>(app, cpu, car, away, scaled, reach))
+                    return std::nullopt;
+            }
             if ((at(app, car + kCarSoundLoudness) & 0x7fffffff) != 0)
             {
                 const Float loudness = loadFloat(app, car + kCarSoundLoudness);
@@ -1464,23 +1485,25 @@ std::optional<reg32> againstObjects(App* app, CPU& cpu, reg32 car)
 }
 
 /* 0x430da0: againstObjects for car eax. */
-void carAgainstObjects(App* app, CPU& cpu)
+x86::reg32 carAgainstObjects(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const std::optional<reg32> r = againstObjects(app, cpu, cpu.eax);
+    const std::optional<reg32> r = againstObjects(app, cpu, args.eax);
     if (!r)
-        return;
-    cpu.eax = *r;
+        return args.eax;
+    args.eax = *r;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4310c0: addToList for car eax. */
-void addCarToList(App* app, CPU& cpu)
+x86::reg32 addCarToList(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const std::optional<reg32> r = addToList(app, cpu, cpu.eax);
+    const std::optional<reg32> r = addToList(app, cpu, args.eax);
     if (!r)
-        return;
-    cpu.eax = *r;
+        return args.eax;
+    args.eax = *r;
     cpu.esp += 4;
+    return args.eax;
 }
 
 // A car's collisions' fields: whether it is out of the race (+0x88) and in
@@ -1524,13 +1547,14 @@ std::optional<reg32> frameCollisions(App* app, CPU& cpu, reg32 car)
 }
 
 /* 0x4311d0 (a car's +0x618): frameCollisions for car eax. */
-void carCollisions(App* app, CPU& cpu)
+x86::reg32 carCollisions(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const std::optional<reg32> left = frameCollisions(app, cpu, cpu.eax);
+    const std::optional<reg32> left = frameCollisions(app, cpu, args.eax);
     if (!left)
-        return;
-    cpu.eax = *left;
+        return args.eax;
+    args.eax = *left;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* The square of the distance between the points (ax, ay, az) and (bx, by,
@@ -1543,10 +1567,11 @@ reg32 squaredDistance(reg32 ax, reg32 ay, reg32 az, reg32 bx, reg32 by, reg32 bz
 
 /* 0x431250: squaredDistance of (eax, edx, ebx) and (ecx, and the two on the
  * stack); ret 8. */
-void distanceSquared(App* app, CPU& cpu)
+x86::reg32 distanceSquared(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    cpu.eax = squaredDistance(cpu.eax, cpu.edx, cpu.ebx, cpu.ecx, at(app, cpu.esp + 4), at(app, cpu.esp + 8));
+    args.eax = squaredDistance(args.eax, args.edx, args.ebx, args.ecx, at(app, cpu.esp + 4), at(app, cpu.esp + 8));
     cpu.esp += 4 + 8;
+    return args.eax;
 }
 
 // The points nearestPoint searches: x, y, z and the value, 0x10 bytes each.
@@ -1578,10 +1603,11 @@ reg32 nearest(App* app, reg32 x, reg32 y, reg32 z)
 }
 
 /* 0x431280: nearest to (eax, edx, ebx). */
-void nearestPoint(App* app, CPU& cpu)
+x86::reg32 nearestPoint(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    cpu.eax = nearest(app, cpu.eax, cpu.edx, cpu.ebx);
+    args.eax = nearest(app, args.eax, args.edx, args.ebx);
     cpu.esp += 4;
+    return args.eax;
 }
 
 // The track's COLL file, its objects: its handle, its 16 bytes' header
@@ -1643,23 +1669,25 @@ bool readColl(App* app, CPU& cpu, reg32 handle, reg32 to)
 }
 
 /* 0x431320: openColl for the name at eax. */
-void openCollFile(App* app, CPU& cpu)
+x86::reg32 openCollFile(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const std::optional<reg32> handle = openColl(app, cpu, cpu.eax);
+    const std::optional<reg32> handle = openColl(app, cpu, args.eax);
     if (!handle)
-        return;
-    cpu.eax = *handle;
+        return args.eax;
+    args.eax = *handle;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4313b0: closeColl for eax. */
-void closeCollFile(App* app, CPU& cpu)
+x86::reg32 closeCollFile(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const std::optional<reg32> closed = closeColl(app, cpu, cpu.eax);
+    const std::optional<reg32> closed = closeColl(app, cpu, args.eax);
     if (!closed)
-        return;
-    cpu.eax = *closed;
+        return args.eax;
+    args.eax = *closed;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* The COLL file's size, its header's. */
@@ -1669,19 +1697,21 @@ reg32 collSize(App* app)
 }
 
 /* 0x4313d0: collSize. */
-void collFileSize(App* app, CPU& cpu)
+x86::reg32 collFileSize(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    cpu.eax = collSize(app);
+    args.eax = collSize(app);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4313e0: readColl of the COLL file eax into edx; 1. */
-void readCollFile(App* app, CPU& cpu)
+x86::reg32 readCollFile(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    if (!readColl(app, cpu, cpu.eax, cpu.edx))
-        return;
-    cpu.eax = 1;
+    if (!readColl(app, cpu, args.eax, args.edx))
+        return args.eax;
+    args.eax = 1;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* The COLL file's chunks' count, its header's. */
@@ -1691,10 +1721,11 @@ reg32 collCount(App* app)
 }
 
 /* 0x431410: collCount. */
-void collFileCount(App* app, CPU& cpu)
+x86::reg32 collFileCount(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    cpu.eax = collCount(app);
+    args.eax = collCount(app);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* Chunk `chunk` of the COLL file's data at `data`: data plus its offset in
@@ -1705,10 +1736,11 @@ reg32 collChunkAt(App* app, reg32 data, reg32 chunk)
 }
 
 /* 0x431420: collChunkAt for eax and edx. */
-void collChunk(App* app, CPU& cpu)
+x86::reg32 collChunk(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    cpu.eax = collChunkAt(app, cpu.eax, cpu.edx);
+    args.eax = collChunkAt(app, args.eax, args.edx);
     cpu.esp += 4;
+    return args.eax;
 }
 
 // The controls' state for the frame: its word at 0x79c4a4 (the steering in
@@ -1778,13 +1810,14 @@ std::optional<reg32> controls(App* app, CPU& cpu, reg32 car)
 }
 
 /* 0x431430 (a car's +0x600): controls for car eax. */
-void playerControls(App* app, CPU& cpu)
+x86::reg32 playerControls(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const std::optional<reg32> eax = controls(app, cpu, cpu.eax);
+    const std::optional<reg32> eax = controls(app, cpu, args.eax);
     if (!eax)
-        return;
-    cpu.eax = *eax;
+        return args.eax;
+    args.eax = *eax;
     cpu.esp += 4;
+    return args.eax;
 }
 
 // The render states the game keeps (setRenderState's cache), -1 for none.
@@ -1793,7 +1826,6 @@ constexpr reg32 kStateTexture = 0x554e54, kStateAlpha = 0x554e58, kStateDepthBia
 constexpr reg32 kTextureState = 1, kFogColourState = 3, kAlphaTestState = 0x68, kDepthBiasState = 0x15;
 // The driver's depth for the HUD (0 off the card), the card's, the race's depth bias.
 constexpr reg32 kHudDepth = 0x7a3a60, kCardDepth = 0x7a3a68, kRaceDepthBias = 0x7a3a64;
-constexpr reg32 kDepthOffsets = 0x4c7a60;  // the depth offsets worked out: no registers
 
 /* The cached render states forgotten (-1), so that each is set again. */
 void forgetStates(App* app)
@@ -1803,10 +1835,11 @@ void forgetStates(App* app)
 }
 
 /* 0x4318c0: forgetStates; every register as it was. */
-void forgetRenderStates(App* app, CPU& cpu)
+x86::reg32 forgetRenderStates(App* app, x86::CPU& cpu, x86::Args& args)
 {
     forgetStates(app);
     cpu.esp += 4;
+    return args.eax;
 }
 
 namespace
@@ -1828,13 +1861,14 @@ bool setStates(App* app, CPU& cpu, std::initializer_list<std::pair<reg32, reg32>
     return true;
 }
 
-/* The render-state functions' adapter: the core, eax as the last call
+/* The render-state functions' thunk: the core, eax as the last call
  * leaves it. */
-void statesAdapter(App* app, CPU& cpu, bool (*core)(App*, CPU&))
+x86::reg32 statesThunk(App* app, CPU& cpu, x86::Args& args, bool (*core)(App*, CPU&))
 {
     if (!core(app, cpu))
-        return;
+        return args.eax;
     cpu.esp += 4;
+    return args.eax;
 }
 
 }  // namespace
@@ -1866,7 +1900,8 @@ bool pictureStates(App* app, CPU& cpu)
 bool hudStates(App* app, CPU& cpu)
 {
     put(app, kHudDepth, gameSettings(app).projectedText != 0 ? at(app, kCardDepth) : 0);
-    if (!guest::watcom(app, cpu, kDepthOffsets, {}))
+    guest::direct<0x4c7a60, decompiled::depthOffsetsSet>(app, cpu);
+    if (cpu.terminate)
         return false;
     forgetStates(app);
     return setRenderState(app, cpu, 4, at(app, kHudDepth)) && setRenderState(app, cpu, 0xd, 1)
@@ -1882,27 +1917,27 @@ bool screenStates(App* app, CPU& cpu)
 }
 
 /* 0x431aa0: textStates. */
-void statesForText(App* app, CPU& cpu)
+x86::reg32 statesForText(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    statesAdapter(app, cpu, textStates);
+    return statesThunk(app, cpu, args, textStates);
 }
 
 /* 0x431af0: pictureStates. */
-void statesForPictures(App* app, CPU& cpu)
+x86::reg32 statesForPictures(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    statesAdapter(app, cpu, pictureStates);
+    return statesThunk(app, cpu, args, pictureStates);
 }
 
 /* 0x431b40: hudStates. */
-void statesForHud(App* app, CPU& cpu)
+x86::reg32 statesForHud(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    statesAdapter(app, cpu, hudStates);
+    return statesThunk(app, cpu, args, hudStates);
 }
 
 /* 0x431bc0: screenStates. */
-void statesForScreens(App* app, CPU& cpu)
+x86::reg32 statesForScreens(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    statesAdapter(app, cpu, screenStates);
+    return statesThunk(app, cpu, args, screenStates);
 }
 
 /* A view pass's layer that draws nothing: what its callers hand it (eax how many quads, edx the
@@ -1912,10 +1947,11 @@ void layerNothing(App*, reg32, reg32)
 }
 
 /* 0x431c20: layerNothing (an empty function). */
-void passLayerNothing(App* app, CPU& cpu)
+x86::reg32 passLayerNothing(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    layerNothing(app, cpu.eax, cpu.edx);
+    layerNothing(app, args.eax, args.edx);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* The main pass's second and first layers: nothing; the layer its callers hand it (eax) goes
@@ -1929,17 +1965,19 @@ void firstLayerNothing(App*, reg32)
 }
 
 /* 0x431c30: secondLayerNothing (an empty function). */
-void passSecondLayer(App* app, CPU& cpu)
+x86::reg32 passSecondLayer(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    secondLayerNothing(app, cpu.eax);
+    secondLayerNothing(app, args.eax);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x431c40: firstLayerNothing (an empty function). */
-void passFirstLayer(App* app, CPU& cpu)
+x86::reg32 passFirstLayer(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    firstLayerNothing(app, cpu.eax);
+    firstLayerNothing(app, args.eax);
     cpu.esp += 4;
+    return args.eax;
 }
 
 // The software renderer's blend: its tables of a channel times another (5
@@ -1986,10 +2024,11 @@ reg32 fillBlendTables(App* app)
 }
 
 /* 0x431c50: fillBlendTables. */
-void makeBlendTables(App* app, CPU& cpu)
+x86::reg32 makeBlendTables(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    cpu.eax = fillBlendTables(app);
+    args.eax = fillBlendTables(app);
     cpu.esp += 4;
+    return args.eax;
 }
 
 // A span's record, as blendSpan reads it: the texture's rows, the texel's
@@ -2034,10 +2073,11 @@ void blendInto(App* app, reg32 span)
 
 /* 0x431d50 (handed to the software renderer as its blend): blendInto for the
  * span at eax. */
-void blendSpan(App* app, CPU& cpu)
+x86::reg32 blendSpan(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    blendInto(app, cpu.eax);
+    blendInto(app, args.eax);
     cpu.esp += 4;
+    return args.eax;
 }
 
 // A corner's depth, as the drawers' corners have it; the depths a quad is
@@ -2062,10 +2102,11 @@ reg32 subdivisions(App* app, reg32 a, reg32 b, reg32 c, reg32 d)
 }
 
 /* 0x432690: subdivisions of the corners eax, edx, ebx and ecx. */
-void subdivisionDepth(App* app, CPU& cpu)
+x86::reg32 subdivisionDepth(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    cpu.eax = subdivisions(app, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx);
+    args.eax = subdivisions(app, args.eax, args.edx, args.ebx, args.ecx);
     cpu.esp += 4;
+    return args.eax;
 }
 
 // A polygon list's record, as the drawers read it: the next (+0), its kind
@@ -2077,11 +2118,7 @@ constexpr reg32 kRecordKind = 4, kRecordFlags = 6, kRecordCorners = 8, kRecordTe
 constexpr reg32 kTextureHandle = 4, kTextureFlags = 0x28;
 constexpr reg32 kCornerU = 0x18, kCornerV = 0x1c;  // a corner's texture coordinates
 constexpr reg32 kKindQuad = 0, kKindTriangle = 1;
-constexpr reg32 kDrawTriangle = 0x4c11b0;    // the triangle eax, edx, ebx drawn
-constexpr reg32 kDrawTriangleZ = 0x4c1aa0;   // by z
-constexpr reg32 kDrawQuad = 0x4c12e0;        // the quad eax, edx, ebx, ecx drawn
-constexpr reg32 kDrawQuadZ = 0x4c20e0;       // by z
-constexpr reg32 kDrawFlat = 0x4c0b20;        // a flat triangle, eax and edx
+constexpr reg32 kDrawQuadZ = 0x4c20e0;       // the quad eax, edx, ebx, ecx drawn by z (render::quadByZDrawn)
 
 namespace
 {
@@ -2130,11 +2167,35 @@ bool depthBiasState(App* app, CPU& cpu, reg8 flags)
     return setThrashState(app, cpu, kDepthBiasState, bias, kStateDepthBias);
 }
 
-/* A drawer's draw call: the corners in eax, edx, ebx and ecx (a triangle's
- * three). */
-bool drawCorners(App* app, CPU& cpu, reg32 target, std::initializer_list<reg32> corners)
+/* A drawer's draw call, as C++: the triangle (0x4c11b0), the triangle by z (0x4c1aa0), the quad
+ * (0x4c12e0), the flat triangle (0x4c0b20); false when the game stopped. */
+bool drawTriangle(App* app, CPU& cpu, reg32 a, reg32 b, reg32 c)
 {
-    return callWith(app, cpu, target, corners).has_value();
+    guest::direct<0x4c11b0, vertices::clipTriangleCore>(app, cpu, a, b, c);
+    return !cpu.terminate;
+}
+
+bool drawTriangleByZ(App* app, CPU& cpu, reg32 a, reg32 b, reg32 c)
+{
+    guest::direct<0x4c1aa0, vertices::clipTriangleByZCore>(app, cpu, a, b, c);
+    return !cpu.terminate;
+}
+
+bool drawQuad(App* app, CPU& cpu, reg32 a, reg32 b, reg32 c, reg32 d)
+{
+    guest::direct<0x4c12e0, vertices::clipQuadCore>(app, cpu, a, b, c, d);
+    return !cpu.terminate;
+}
+
+/* The quad by z (0x4c20e0, render::quadByZ: by address, it has no typed core). */
+bool drawQuadByZ(App* app, CPU& cpu, reg32 a, reg32 b, reg32 c, reg32 d)
+{
+    return guest::direct<kDrawQuadZ, render::quadByZDrawn>(app, cpu, a, b, c, d).has_value();
+}
+
+bool drawFlat(App* app, CPU& cpu, reg32 a, reg32 b)
+{
+    return guest::direct<0x4c0b20, render::lineDrawn>(app, cpu, a, b).has_value();
 }
 
 /* The next record of a drawer's run: 0 at the list's end, the record itself
@@ -2146,19 +2207,16 @@ std::optional<reg32> runEnds(App* app, reg32 next, reg32 kind)
     return std::nullopt;
 }
 
-/* A drawer's adapter: the record at eax, the next in eax; ebx, ecx and edx
+/* A drawer's thunk: the record at eax, the next in eax; ebx, ecx and edx
  * as the caller had them (the drawers push and pop them). */
-void drawer(App* app, CPU& cpu, std::optional<reg32> (*core)(App*, CPU&, reg32))
+x86::reg32 drawer(App* app, CPU& cpu, x86::Args& args, std::optional<reg32> (*core)(App*, CPU&, reg32))
 {
-    const reg32 ebx = cpu.ebx, ecx = cpu.ecx, edx = cpu.edx;
-    const std::optional<reg32> next = core(app, cpu, cpu.eax);
+    const std::optional<reg32> next = core(app, cpu, args.eax);
     if (!next)
-        return;
-    cpu.eax = *next;
-    cpu.ebx = ebx;
-    cpu.ecx = ecx;
-    cpu.edx = edx;
+        return args.eax;
+    args.eax = *next;
     cpu.esp += 4;
+    return args.eax;
 }
 
 }  // namespace
@@ -2196,7 +2254,7 @@ std::optional<reg32> texturedTriangles(App* app, CPU& cpu, reg32 record)
         if (now != 0 && (byte(app, now + kTextureFlags) & 8)
             && !guest::direct<0x432390, graphics::softwareBlendColour>(app, cpu, at(app, first + 0x10)))
             return std::nullopt;
-        if (!drawCorners(app, cpu, kDrawTriangle, {first, second, third}))
+        if (!drawTriangle(app, cpu, first, second, third))
             return std::nullopt;
         if (const auto next = runEnds(app, at(app, record), kKindTriangle))
             return next;
@@ -2213,7 +2271,7 @@ std::optional<reg32> flatTriangle(App* app, CPU& cpu, reg32 record)
         return std::nullopt;
     if (!alphaState(app, cpu, (byte(app, record + kRecordFlags) & 1) != 0))
         return std::nullopt;
-    if (!drawCorners(app, cpu, kDrawFlat, {first, second}))
+    if (!drawFlat(app, cpu, first, second))
         return std::nullopt;
     return at(app, record);
 }
@@ -2245,7 +2303,8 @@ std::optional<reg32> trianglesByZ(App* app, CPU& cpu, reg32 record)
         }
         if (!textureState(app, cpu, record, texture) || !depthBiasState(app, cpu, flags))
             return std::nullopt;
-        if (!drawCorners(app, cpu, (flags & 0x10) ? kDrawTriangleZ : kDrawTriangle, {first, second, third}))
+        if (!((flags & 0x10) ? drawTriangleByZ(app, cpu, first, second, third)
+                             : drawTriangle(app, cpu, first, second, third)))
             return std::nullopt;
         if (const auto next = runEnds(app, at(app, record), kKindTriangle))
             return next;
@@ -2280,7 +2339,8 @@ std::optional<reg32> quadsByZ(App* app, CPU& cpu, reg32 record)
         }
         if (!textureState(app, cpu, record, texture) || !depthBiasState(app, cpu, flags))
             return std::nullopt;
-        if (!drawCorners(app, cpu, (flags & 0x10) ? kDrawQuadZ : kDrawQuad, {first, second, third, fourth}))
+        if (!((flags & 0x10) ? drawQuadByZ(app, cpu, first, second, third, fourth)
+                             : drawQuad(app, cpu, first, second, third, fourth)))
             return std::nullopt;
         if (const auto next = runEnds(app, at(app, record), kKindQuad))
             return next;
@@ -2290,34 +2350,34 @@ std::optional<reg32> quadsByZ(App* app, CPU& cpu, reg32 record)
 
 /* 0x433530 (a polygon list's drawer, the software renderers' and
  * Direct3D's): texturedTriangles. */
-void drawTexturedTriangles(App* app, CPU& cpu)
+x86::reg32 drawTexturedTriangles(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    drawer(app, cpu, texturedTriangles);
+    return drawer(app, cpu, args, texturedTriangles);
 }
 
 /* 0x433660 (a polygon list's drawer): flatTriangle. */
-void drawFlatTriangles(App* app, CPU& cpu)
+x86::reg32 drawFlatTriangles(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    drawer(app, cpu, flatTriangle);
+    return drawer(app, cpu, args, flatTriangle);
 }
 
 /* 0x4336e0 (a polygon list's drawer, the driver's): trianglesByZ. */
-void drawTrianglesByZ(App* app, CPU& cpu)
+x86::reg32 drawTrianglesByZ(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    drawer(app, cpu, trianglesByZ);
+    return drawer(app, cpu, args, trianglesByZ);
 }
 
 /* 0x433840 (a polygon list's drawer, the driver's): quadsByZ. */
-void drawQuadsByZ(App* app, CPU& cpu)
+x86::reg32 drawQuadsByZ(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    drawer(app, cpu, quadsByZ);
+    return drawer(app, cpu, args, quadsByZ);
 }
 
 /* 0x4339d0 (a polygon list's drawer, the driver's): flatTriangle, the same
  * code again. */
-void drawFlatTrianglesAgain(App* app, CPU& cpu)
+x86::reg32 drawFlatTrianglesAgain(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    drawer(app, cpu, flatTriangle);
+    return drawer(app, cpu, args, flatTriangle);
 }
 
 /* The triangles with colours of their own from `record` on -- the driver's
@@ -2326,18 +2386,26 @@ void drawFlatTrianglesAgain(App* app, CPU& cpu)
  * game stopped. */
 std::optional<reg32> ownColourTriangles(App* app, CPU& cpu, reg32 record)
 {
-    return callWith(app, cpu, at(app, kHudDepth) != 0 ? 0x434380 : 0x433e30, {record});
+    if (at(app, kHudDepth) != 0)
+    {
+        const reg32 next = guest::direct<0x434380, vertices::submitPolygonsCore>(app, cpu, record);
+        if (cpu.terminate)
+            return std::nullopt;
+        return next;
+    }
+    return guest::pointerCall(app, cpu, 0x433e30, {record});  // render::colouredTriangles: no typed core
 }
 
 /* 0x4347b0 (a polygon list's drawer): ownColourTriangles for the record in
  * eax. */
-void drawColouredTriangles(App* app, CPU& cpu)
+x86::reg32 drawColouredTriangles(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const std::optional<reg32> next = ownColourTriangles(app, cpu, cpu.eax);
+    const std::optional<reg32> next = ownColourTriangles(app, cpu, args.eax);
     if (!next)
-        return;
-    cpu.eax = *next;
+        return args.eax;
+    args.eax = *next;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* A render state's record: state +8, value +0xc set.  The next record. */
@@ -2349,13 +2417,14 @@ std::optional<reg32> stateFromRecord(App* app, CPU& cpu, reg32 record)
 }
 
 /* 0x434850 (a polygon list's drawer): stateFromRecord. */
-void stateRecord(App* app, CPU& cpu)
+x86::reg32 stateRecord(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const std::optional<reg32> next = stateFromRecord(app, cpu, cpu.eax);
+    const std::optional<reg32> next = stateFromRecord(app, cpu, args.eax);
     if (!next)
-        return;
-    cpu.eax = *next;
+        return args.eax;
+    args.eax = *next;
     cpu.esp += 4;
+    return args.eax;
 }
 
 // The polygon lists' drawers, by a record's kind.
@@ -2383,22 +2452,24 @@ bool drawList(App* app, CPU& cpu, reg32 record)
 }
 
 /* 0x434950: drawList from eax. */
-void drawRecords(App* app, CPU& cpu)
+x86::reg32 drawRecords(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    if (!drawList(app, cpu, cpu.eax))
-        return;
+    if (!drawList(app, cpu, args.eax))
+        return args.eax;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x434990: the race's text for the frame (0x4bed70, loopb's, with 0x7cdac0); eax as it leaves
  * it. */
-void raceTextFrame(App* app, CPU& cpu)
+x86::reg32 raceTextFrame(App* app, x86::CPU& cpu, x86::Args& args)
 {
     const std::optional<reg32> clipped = feCore<0x4bed70, frontend::loopb::useClip>(app, cpu, 0x7cdac0u);
     if (!clipped)
-        return;
-    cpu.eax = *clipped;
+        return args.eax;
+    args.eax = *clipped;
     cpu.esp += 4;
+    return args.eax;
 }
 
 // Whether the view is drawn mirrored.
@@ -2414,43 +2485,48 @@ reg32 setViewMirrored(App* app, reg32 view)
 }
 
 /* 0x4349a0: setViewMirrored for the view at eax. */
-void setMirrored(App* app, CPU& cpu)
+x86::reg32 setMirrored(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    cpu.eax = setViewMirrored(app, cpu.eax);
+    args.eax = setViewMirrored(app, args.eax);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4349d0: setViewMirrored for the view at eax, then the polygon list on
  * the stack's first word drawn (drawList); ret 8. */
-void drawMirroredRecords(App* app, CPU& cpu)
+x86::reg32 drawMirroredRecords(App* app, x86::CPU& cpu, x86::Args& args)
 {
     const reg32 list = at(app, cpu.esp + 4);
-    setViewMirrored(app, cpu.eax);
+    setViewMirrored(app, args.eax);
     if (!drawList(app, cpu, list))
-        return;
+        return args.eax;
     cpu.esp += 4 + 8;
+    return args.eax;
 }
 
 // The frames drawn.
 constexpr reg32 kFramesDrawn = 0x5f1fa8;
 
 /* 0x434a70: the frames drawn counted. */
-void countFrame(App* app, CPU& cpu)
+x86::reg32 countFrame(App* app, x86::CPU& cpu, x86::Args& args)
 {
     put(app, kFramesDrawn, at(app, kFramesDrawn) + 1);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x434a80: the race's view distance (0x41d610 with the settings'; by
  * address: the eax it leaves is this one's, and track's core gives nothing
  * back). */
-void raceViewDistance(App* app, CPU& cpu)
+x86::reg32 raceViewDistance(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const std::optional<reg32> left = guest::watcomEax(app, cpu, 0x41d610, {gameSettings(app).viewDistance});
-    if (!left)
-        return;
-    cpu.eax = *left;
+    const reg32 distance = gameSettings(app).viewDistance;
+    guest::direct<0x41d610, track::chooseViewDistance>(app, cpu, distance);
+    if (cpu.terminate)
+        return args.eax;
+    args.eax = distance;  // it leaves eax as handed
     cpu.esp += 4;
+    return args.eax;
 }
 
 // The race's fog colour: blue, green, red bytes.
@@ -2465,37 +2541,42 @@ bool fogColour(App* app, CPU& cpu)
 }
 
 /* 0x434a90: fogColour. */
-void raceFrameEnd(App* app, CPU& cpu)
+x86::reg32 raceFrameEnd(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    statesAdapter(app, cpu, fogColour);
+    return statesThunk(app, cpu, args, fogColour);
 }
 
 /* 0x434ae0: nothing at the race's frame (an empty function). */
-void raceFrameNothing(App*, CPU& cpu)
+x86::reg32 raceFrameNothing(App* app, x86::CPU& cpu, x86::Args& args)
 {
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x434af0: nothing at the race's end (an empty function). */
-void raceEndNothing(App*, CPU& cpu)
+x86::reg32 raceEndNothing(App* app, x86::CPU& cpu, x86::Args& args)
 {
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x434b00: the drawing made ready at the race's start: the reciprocals'
  * table (0x4eb3c0), the polygon lists' drawers (0x434870, by address: the
  * eax it leaves is this one's, and render's core gives nothing back). */
-void raceStartDrawing(App* app, CPU& cpu)
+x86::reg32 raceStartDrawing(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    if (!guest::direct<0x4eb3c0, graphics::reciprocalsMade>(app, cpu) || !guest::call(app, cpu, 0x434870))
-        return;
+    if (!guest::direct<0x4eb3c0, graphics::reciprocalsMade>(app, cpu)
+        || !guest::direct<0x434870, render::polygonDrawersSet>(app, cpu))
+        return args.eax;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x434b10: nothing at the race's start (an empty function). */
-void raceStartNothing(App*, CPU& cpu)
+x86::reg32 raceStartNothing(App* app, x86::CPU& cpu, x86::Args& args)
 {
     cpu.esp += 4;
+    return args.eax;
 }
 
 // The screen's clip edges, as a float's bits: the far depth, left, right,
@@ -2594,17 +2675,18 @@ bool pointer(App* app, CPU& cpu)
         putByte(app, corner + kVertexClip, clipCodeOf(app, corner));
     if (!setRenderState(app, cpu, kTextureState, at(app, kPointers + at(app, kPointer) * kPointerRecordBytes)))
         return false;
-    return drawCorners(app, cpu, kDrawQuad, {corners[0], corners[1], corners[2], corners[3]});
+    return drawQuad(app, cpu, corners[0], corners[1], corners[2], corners[3]);
 }
 
 }  // namespace
 
 /* 0x434b60: pointer. */
-void drawPointer(App* app, CPU& cpu)
+x86::reg32 drawPointer(App* app, x86::CPU& cpu, x86::Args& args)
 {
     if (!pointer(app, cpu))
-        return;
+        return args.eax;
     cpu.esp += 4;
+    return args.eax;
 }
 
 // The race's messages (chat): their channels and lines in a block of
@@ -2659,13 +2741,14 @@ reg32 remainder(reg32 value, reg32 by)
     return reg32(std::int64_t(sreg32(value)) % sreg32(by));
 }
 
-/* The adapter of a messages' function: the result in eax. */
-void returns(CPU& cpu, const std::optional<reg32>& result)
+/* The thunk of a messages' function: the result in eax. */
+x86::reg32 returns(CPU& cpu, x86::Args& args, const std::optional<reg32>& result)
 {
     if (!result)
-        return;
-    cpu.eax = *result;
+        return args.eax;
+    args.eax = *result;
     cpu.esp += 4;
+    return args.eax;
 }
 
 }  // namespace
@@ -2912,74 +2995,81 @@ std::optional<reg32> copyChannel(App* app, CPU& cpu, reg32 channel)
 }  // namespace
 
 /* 0x436c40: openChannels from the settings at eax. */
-void openMessages(App* app, CPU& cpu)
+x86::reg32 openMessages(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    returns(cpu, openChannels(app, cpu, cpu.eax));
+    return returns(cpu, args, openChannels(app, cpu, args.eax));
 }
 
 /* 0x436cf0: closeChannels, eax as the caller had it. */
-void closeMessages(App* app, CPU& cpu)
+x86::reg32 closeMessages(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    returns(cpu, closeChannels(app, cpu, cpu.eax));
+    return returns(cpu, args, closeChannels(app, cpu, args.eax));
 }
 
 /* 0x436d40: clearAllChannels. */
-void clearAllMessages(App* app, CPU& cpu)
+x86::reg32 clearAllMessages(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    cpu.eax = clearAllChannels(app);
+    args.eax = clearAllChannels(app);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x436d60: clearChannel for channel eax. */
-void clearMessages(App* app, CPU& cpu)
+x86::reg32 clearMessages(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    cpu.eax = clearChannel(app, cpu.eax);
+    args.eax = clearChannel(app, args.eax);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x436dc0: clearLine for line edx of channel eax; eax the channel's lines,
  * as the code leaves it. */
-void clearMessageLine(App* app, CPU& cpu)
+x86::reg32 clearMessageLine(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const reg32 channel = cpu.eax, line = cpu.edx;
+    const reg32 channel = args.eax, line = args.edx;
     const reg32 lines = at(app, kMessages) + kChannels + channel * kChannelBytes + kChannelLines;
     clearLine(app, channel, line);
-    cpu.eax = lines;
+    args.eax = lines;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x436e10: addText of the text at edx to channel eax. */
-void addMessageText(App* app, CPU& cpu)
+x86::reg32 addMessageText(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    cpu.eax = addText(app, cpu.eax, cpu.edx);
+    args.eax = addText(app, args.eax, args.edx);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x436e90: addCharacter of dl to channel eax. */
-void addMessageCharacter(App* app, CPU& cpu)
+x86::reg32 addMessageCharacter(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    cpu.eax = addCharacter(app, cpu.eax, reg8(cpu.edx));
+    args.eax = addCharacter(app, args.eax, reg8(args.edx));
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x437080: copyChannel of channel eax. */
-void copyMessageLines(App* app, CPU& cpu)
+x86::reg32 copyMessageLines(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    returns(cpu, copyChannel(app, cpu, cpu.eax));
+    return returns(cpu, args, copyChannel(app, cpu, args.eax));
 }
 
 /* 0x4371a0: channelScrolled (the code compares the block's kind with 1, for
  * flags no caller reads). */
-void messagesScrolled(App* app, CPU& cpu)
+x86::reg32 messagesScrolled(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    cpu.eax = channelScrolled(app);
+    args.eax = channelScrolled(app);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4371c0: nothing (an empty function). */
-void messagesNothing(App*, CPU& cpu)
+x86::reg32 messagesNothing(App* app, x86::CPU& cpu, x86::Args& args)
 {
     cpu.esp += 4;
+    return args.eax;
 }
 
 // The hash's seed: the whole product, its low 16 bits, the odd seed.
@@ -3008,10 +3098,49 @@ reg32 seedTheHash(App* app, reg32 seed)
 }
 
 /* 0x4371d0: seedTheHash of eax. */
-void seedHash(App* app, CPU& cpu)
+x86::reg32 seedHash(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    cpu.eax = seedTheHash(app, cpu.eax);
+    args.eax = seedTheHash(app, args.eax);
     cpu.esp += 4;
+    return args.eax;
+}
+
+/* The typed cores the game's other code calls (native_collide.h), under the game's addresses. */
+bool picturesStated(App* app, CPU& cpu)
+{
+    return pictureStates(app, cpu);
+}
+
+std::optional<reg32> messageLinesCopied(App* app, CPU& cpu, reg32 channel)
+{
+    return copyChannel(app, cpu, channel);
+}
+
+std::optional<reg32> raceTextOfFrame(App* app, CPU& cpu)
+{
+    return feCore<0x4bed70, frontend::loopb::useClip>(app, cpu, 0x7cdac0u);
+}
+
+void frameCounted(App* app)
+{
+    put(app, kFramesDrawn, at(app, kFramesDrawn) + 1);
+}
+
+bool raceStartPrepared(App* app, CPU& cpu)
+{
+    return guest::direct<0x4eb3c0, graphics::reciprocalsMade>(app, cpu)
+           && guest::direct<0x434870, render::polygonDrawersSet>(app, cpu);
+}
+
+void carListCleared(App* app)
+{
+    put(app, kCarCount, 0);
+}
+
+bool listDrawnMirrored(App* app, CPU& cpu, reg32 view, reg32 list)
+{
+    setViewMirrored(app, view);
+    return drawList(app, cpu, list);
 }
 
 }  // namespace collide

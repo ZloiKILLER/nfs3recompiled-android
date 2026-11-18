@@ -10,6 +10,38 @@
 #include "port_snd_play.h"
 #include "port_sound_speech.h"
 #include <iterator>
+#include "native_guest.h"
+
+namespace nfs3hp
+{
+namespace
+{
+
+/* A call through a pointer or to a function of the game's that has no typed core: Watcom's register
+ * arguments (eax, edx, ebx, ecx in turn) and the stack words as `arguments` have them, through
+ * guest::pointerCall; its eax, and Terminated when the game stopped in it. */
+x86::reg32 callAt(fe::Guest& guest, x86::reg32 target, const fe::Arguments& arguments = fe::Arguments())
+{
+    x86::CPU& cpu = guest.cpu();
+    x86::Args registers;
+    x86::reg32* const into[4] = { &registers.eax, &registers.edx, &registers.ebx, &registers.ecx };
+    for (std::size_t i = 0; i < arguments.registerCount; ++i)
+        *into[i] = arguments.registers[i];
+    const x86::reg32 esp = cpu.esp;
+    for (std::size_t i = arguments.stackCount; i-- > 0;)
+    {
+        cpu.esp -= 4;
+        guest.setDword(cpu.esp, arguments.stack[i]);
+    }
+    const std::optional<x86::reg32> result = guest::pointerCall(guest.app(), cpu, target, registers);
+    if (!result)
+        throw fe::Terminated();
+    cpu.esp = esp;
+    return *result;
+}
+
+}  // namespace
+}  // namespace nfs3hp
 
 /* The screens a race's track is chosen on, decompiled:
  *
@@ -24,7 +56,7 @@
  *
  * Plan step 5: each function a typed core in frontend::tracks (native_frontend_tracks.h), in a
  * frame of its own where the game's function has one (fe::Frame: what it calls runs at the stack
- * addresses it did), and an adapter under the game's name for the calls by address.  A core of
+ * addresses it did), and a thunk under the game's name for the calls by address.  A core of
  * this file calls another as C++ (guest::direct), and the typed cores of other files too
  * (fe::direct); the rest of the game still by address. */
 namespace nfs3hp
@@ -79,7 +111,7 @@ x86::reg32 frontend::tracks::locationFrame(App* app, CPU& cpu)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 4);
-    fe::direct<0x426b00, frontend::cars::recordTrack>(app, cpu);
+    fe::direct<0x426b00, frontend::cars::recordTrack>(app, cpu, 0);  // its result is not read
     return 0;
 }
 
@@ -145,7 +177,7 @@ std::int32_t half(std::int32_t value)
 /* sub_456200: the track's places on its map -- each one's shape, where it
  * stands and its centre; none for the tracks past the first nine, nor for the
  * first in a network race. */
-x86::reg32 frontend::tracks::placeTrackPlaces(App* app, CPU& cpu)
+x86::reg32 frontend::tracks::placeTrackPlaces(App* app, CPU& cpu, reg32 eax)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 24 + 0x50);
@@ -154,7 +186,7 @@ x86::reg32 frontend::tracks::placeTrackPlaces(App* app, CPU& cpu)
     {
         for (const x86::reg32 at : { 0x677d74u, 0x677d72u, 0x677d70u, 0x677d76u })
             guest.setWord(at, 0);
-        return guest.eax();
+        return eax;
     }
     const x86::reg32 name = guest.frame();   // char[0x50]
     for (x86::reg32 i = 0;; ++i)
@@ -163,10 +195,10 @@ x86::reg32 frontend::tracks::placeTrackPlaces(App* app, CPU& cpu)
         if (std::int32_t(i) >= std::int32_t(guest.dword(kTrackPlaceCounts + 4 * t)))
             return t;
         fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), name, guest.dword(kTrackPlaceNames + 16 * t + 4 * i), guest::Words({}));
-        const x86::reg32 shape = guest.call(kFindShapeFormat, fe::args({ guest.dword(kInfoArt), name }));
+        const x86::reg32 shape = callAt(guest, kFindShapeFormat, fe::args({ guest.dword(kInfoArt), name }));
         const x86::reg32 opaque = (guest.byte(kDisplayFlags) & kNoTranslucency) ? 0xffffffff : 0;
         const auto texture = fe::direct<0x4d6390, port::shapes::artTexturesOf>(app, cpu, cpu.esp - 4, shape,
-                                                                               std::int32_t(opaque), cpu.ecx);
+                                                                               std::int32_t(opaque), 0);
         guest.setWord(kPlaceShapes + 2 * i, std::uint16_t(*texture));
         const x86::reg32 place = guest.dword(shape + 0xc);
         const std::int32_t x = std::int32_t(place << 20) >> 20;
@@ -194,18 +226,18 @@ x86::reg32 frontend::tracks::infoEnter(App* app, CPU& cpu, reg32 menu)
     fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), name, kArtName.address, guest::Words{kArtFolder, guest.dword(kTrackArtNames + 4 * gameSettings(guest).track)});
     // The game's code hands it "trkinfomask" in edx too, which it does not read.
     guest.setDword(kInfoArt,
-                   reg32(*fe::direct<0x44ac90, port::buttons::shapesLoaded>(app, cpu, cpu.esp - 4, name, cpu.ebx)));
+                   reg32(*fe::direct<0x44ac90, port::buttons::shapesLoaded>(app, cpu, cpu.esp - 4, name, 0)));
     if (Item mask = fe::findItem(guest, menu, kInfoMask))
     {
         const x86::reg32 shape =
             fe::direct<0x4ef1e0, frontend::eab::shapeFileFind>(app, cpu, guest.dword(kInfoArt), kMask.address);
         const auto texture =
-            fe::direct<0x4d6390, port::shapes::artTexturesOf>(app, cpu, cpu.esp - 4, shape, 0, cpu.ecx);
+            fe::direct<0x4d6390, port::shapes::artTexturesOf>(app, cpu, cpu.esp - 4, shape, 0, 0);
         guest.setWord(mask.address() + kMaskShape, std::uint16_t(*texture));
     }
     const auto mapShape = fe::direct<0x456800, port::buttons::mapShape>(app, cpu, cpu.esp - 4, 0, 0);
     guest.setWord(kInfoD90, std::uint16_t(*mapShape));
-    guest::direct<0x456200, placeTrackPlaces>(app, cpu);
+    guest::direct<0x456200, placeTrackPlaces>(app, cpu, 0);  // its result is not read
     return 0;
 }
 
@@ -222,8 +254,7 @@ x86::reg32 frontend::tracks::speak(App* app, CPU& cpu, reg32 language, reg32 tra
     const x86::reg32 speaker = guest.dword(kLanguageSpeakers + 4 * language);
     fe::direct<kSprintf, watcom::clib::sprintf>(app, cpu, path, kDescriptionName.address,
                                                 guest::Words{folder, speaker, track});
-    guest.leaveEdx(speaker);
-    const x86::reg32 started = guest.call(kStartStream, fe::args({ path }));
+    const x86::reg32 started = callAt(guest, kStartStream, fe::args({ path }));
     if (started != 0)
         guest.setDword(kSpeaking, 1);
     return started;
@@ -245,13 +276,13 @@ x86::reg32 frontend::tracks::infoFrame(App* app, CPU& cpu)
 }
 
 /* sub_4c9590: the description stopped, if it is spoken. */
-x86::reg32 frontend::tracks::stopSpeaking(App* app, CPU& cpu)
+x86::reg32 frontend::tracks::stopSpeaking(App* app, CPU& cpu, reg32 eax)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 16);
     if (guest.dword(kSpeaking) == 0)
-        return guest.eax();
-    fe::direct<0x4c9490, port::descriptionStopped>(app, cpu, cpu.esp - 4, cpu.eax);
+        return eax;
+    fe::direct<0x4c9490, port::descriptionStopped>(app, cpu, cpu.esp - 4, eax);
     // What the calls leave in eax, the last one's: the cores hand theirs back.
     x86::reg32 left =
         reg32(*fe::direct<0x4e8c1c, port::removeEveryBank>(app, cpu, cpu.esp - 4, guest.dword(kStreamHandle)));
@@ -271,7 +302,7 @@ x86::reg32 frontend::tracks::infoExit(App* app, CPU& cpu)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 4);
-    guest::direct<0x4c9590, stopSpeaking>(app, cpu);
+    guest::direct<0x4c9590, stopSpeaking>(app, cpu, 0);  // its result is not read
     return 0;
 }
 
@@ -288,63 +319,65 @@ const GuestString kSpeakStrings[] = { kDescriptionName };
 
 }  // namespace
 
-void frontend::locationOnEnter(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::locationOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4487e0", 0, 0, kLocationStrings, std::size(kLocationStrings) };
-    const x86::reg32 menu = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return tracks::locationEnter(app, cpu, menu); });
+    const x86::reg32 menu = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return tracks::locationEnter(app, cpu, menu); });
 }
 
-void frontend::locationOnFrame(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::locationOnFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4487d0", 0, 0, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return tracks::locationFrame(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return tracks::locationFrame(app, cpu); });
 }
 
-void frontend::locationOnExit(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::locationOnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     // sub_4489e0: nothing to undo.
     static fe::Site site{ "sub_4489e0", 0, 4, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [](Guest&) { return x86::reg32(0); });
+    return fe::runThunk(app, cpu, args, site, [](Guest&) { return x86::reg32(0); });
 }
 
-void frontend::infoPlaceTrackPlaces(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::infoPlaceTrackPlaces(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_456200", 0, 0, nullptr, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return tracks::placeTrackPlaces(app, cpu); });
+    const x86::reg32 eax = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return tracks::placeTrackPlaces(app, cpu, eax); });
 }
 
-void frontend::infoOnEnter(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::infoOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4568d0", 0, 0, kInfoEnterStrings, std::size(kInfoEnterStrings),
                           fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx };
-    const x86::reg32 menu = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return tracks::infoEnter(app, cpu, menu); });
+    const x86::reg32 menu = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return tracks::infoEnter(app, cpu, menu); });
 }
 
-void frontend::infoOnFrame(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::infoOnFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_456890", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return tracks::infoFrame(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return tracks::infoFrame(app, cpu); });
 }
 
-void frontend::infoOnExit(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::infoOnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_456990", 0, 0, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return tracks::infoExit(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return tracks::infoExit(app, cpu); });
 }
 
-void frontend::infoSpeak(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::infoSpeak(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4c94e0", 0, 0, kSpeakStrings, std::size(kSpeakStrings),
                           fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const x86::reg32 language = cpu.eax, track = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return tracks::speak(app, cpu, language, track); });
+    const x86::reg32 language = args.eax, track = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return tracks::speak(app, cpu, language, track); });
 }
 
-void frontend::infoStopSpeaking(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::infoStopSpeaking(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4c9590", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return tracks::stopSpeaking(app, cpu); });
+    const x86::reg32 eax = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return tracks::stopSpeaking(app, cpu, eax); });
 }
 }

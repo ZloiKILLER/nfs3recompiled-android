@@ -18,9 +18,55 @@
 #include "native_graphics.h"
 #include "native_vertices.h"
 #include "thrash_calls.h"
+#include "native_render.h"
 #include <nfs3hp.h>
 #include <cstring>
 #include <iterator>
+
+/* The thunks defined below under their qualified names. */
+namespace nfs3hp
+{
+namespace frontend
+{
+x86::reg32 rendDrawQuadClipped(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendDrawQuadSplit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendSkidAddSegment(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendSkidMarksDraw(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendPolygonDepths(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendPolygonsIntoBuckets(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendPolygonsSorted(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendClearDepthBuckets(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendDepthBucketAppend(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendDepthBucketsAdd(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendDepthBucketsGather(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendClearFarBuckets(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendFarBucketsGather(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendClearBuckets(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendDrawListAdd(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendBlinkingQuads(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendFadeParticles(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendLoadParticleTextures(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendClearParticles(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendClearParticleStates(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendParticlesCameraChanged(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendParticlesPass(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendDropsPass(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendFormatBits(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendExpandPalettedShape(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendLoadShapeTexture(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendFitPowerOfTwo(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendCopyCabinBar(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendLoadEffectTextures(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendNothing(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendLoadEffects(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendSkidSubdivide(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendSkidStrip(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendSkidWheel(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendDefaultFieldOfView(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendSmokeEmit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rendSparksPass(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+}
+}
 
 /* What the race's drawing does around the port's vertex and polygon code,
  * decompiled:
@@ -50,7 +96,7 @@
  *
  * Plan step 5: each function a typed core in frontend::rende (native_frontend_rende.h), in a
  * frame of its own where the game's function has one (fe::Frame: what it calls runs at the stack
- * addresses it did), and an adapter under the game's name for the calls by address.  A core of
+ * addresses it did), and a thunk under the game's name for the calls by address.  A core of
  * this round's three files (rendd, rende, loada) calls another as C++ (guest::direct), and the
  * typed cores of other files too (fe::direct); the rest of the game still by address. */
 #if defined(__clang__)
@@ -62,7 +108,7 @@
 namespace nfs3hp
 {
 
-/* The port's View Angle (tools/apply_view_angle.py), in nfs3hp_main.cpp. */
+/* The port's View Angle (the port's View Angle change), in nfs3hp_main.cpp. */
 x86::reg32 viewAngleFor(win32::WinApplication* app, x86::reg32 angle);
 
 namespace
@@ -75,7 +121,34 @@ using x86::reg32;
 using x86::sreg32;
 using std::uint8_t;
 
-/* A generated function's stack argument, by its place, before its frame. */
+/* Guest::call as a call through guest::pointerCall: `arguments`' registers in eax, edx, ebx and ecx, `esi` in esi,
+ * its stack words pushed in order, esp back after; Terminated when the game stopped in it.  `floatResult`, when given,
+ * takes the float the callee gives back. */
+inline reg32 callAt(Guest& guest, reg32 function, const fe::Arguments& arguments = fe::Arguments(), reg32 esi = 0,
+                    double* floatResult = nullptr)
+{
+    x86::CPU& cpu = guest.cpu();
+    x86::Args registers;
+    reg32* const into[4] = { &registers.eax, &registers.edx, &registers.ebx, &registers.ecx };
+    for (std::size_t i = 0; i < arguments.registerCount; ++i)
+        *into[i] = arguments.registers[i];
+    registers.esi = esi;
+    const reg32 esp = cpu.esp;
+    for (std::size_t i = arguments.stackCount; i-- > 0;)
+    {
+        cpu.esp -= 4;
+        guest.setDword(cpu.esp, arguments.stack[i]);
+    }
+    const std::optional<reg32> result = guest::pointerCall(guest.app(), cpu, function, registers);
+    if (!result)
+        throw fe::Terminated();
+    cpu.esp = esp;
+    if (floatResult)
+        *floatResult = registers.floatResult;  // what the callee leaves on the x87's top, as a float result
+    return *result;
+}
+
+/* A game function's stack argument, by its place, before its frame. */
 reg32 stackArgument(win32::WinApplication* app, const x86::CPU& cpu, reg32 place)
 {
     return app->getMemory<reg32>(cpu.esp + 4 + 4 * place);
@@ -156,8 +229,6 @@ constexpr reg32 kFillZero = 0x4e070c;          // eax where, edx how many bytes
 constexpr reg32 kRandom = 0x4e0d88;
 constexpr reg32 kSprintf = 0x4df690;
 constexpr reg32 kStrstr = 0x4e0820;
-constexpr reg32 kSquareTexture = 0x4d3f50;     // eax a shape, edx a flag to set, ebx the record, ecx a format, the stack another
-constexpr reg32 kPaletteTexture = 0x4d41a0;    // eax a shape, edx the record
 
 // The race's data.
 constexpr reg32 kDisplayFlags = 0x7a3a58;      // byte; bit 2 a card with alpha
@@ -195,7 +266,7 @@ reg32 clipSecondTriangle(Guest& guest, reg32 a, reg32 c, reg32 d, uint8_t codeC,
     guest.setDword(corners + 8, d);
     guest.setByte(codes + 1, codeC);
     guest.setByte(codes + 2, codeD);
-    return guest.call(kClipPolygon, args({ corners, codes, any }));
+    return callAt(guest, kClipPolygon, args({ corners, codes, any }));
 }
 
 reg32 clipFirstTriangle(Guest& guest, reg32 a, reg32 b, reg32 c, uint8_t any)
@@ -204,7 +275,7 @@ reg32 clipFirstTriangle(Guest& guest, reg32 a, reg32 b, reg32 c, uint8_t any)
     guest.setDword(corners, a);
     guest.setDword(corners + 4, b);
     guest.setDword(corners + 8, c);
-    return guest.call(kClipPolygon, args({ corners, corners + kQuadCodes, any }));
+    return callAt(guest, kClipPolygon, args({ corners, corners + kQuadCodes, any }));
 }
 
 /* The four corners' codes, in the frame where the clipper reads them. */
@@ -226,40 +297,36 @@ x86::reg32 frontend::rende::drawQuadClipped(App* app, CPU& cpu, reg32 a, reg32 b
 {
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 12 + kQuadFrame);
-    // Its arguments in the registers, as the code has them: what it leaves there is built on them.
-    cpu.eax = a;
-    cpu.edx = b;
-    cpu.ebx = c;
-    cpu.ecx = d;
+    // eax as the code has it, a first and what each call leaves; the other registers are left, not read.
+    reg32 eax = a;
     noteQuadCodes(guest, a, b, c, d);
     const reg32 codes = guest.frame() + kQuadCodes;
     const uint8_t codeA = guest.byte(codes), codeB = guest.byte(codes + 1), codeC = guest.byte(codes + 2), codeD = guest.byte(codes + 3);
     const uint8_t outOfFirst = uint8_t(codeA & codeB & codeC);
     const uint8_t anyOfFirst = uint8_t(codeA | codeB | codeC);
     if ((outOfFirst & codeD) != 0)
-        return withHigh(withLow(cpu.eax, uint8_t(outOfFirst & codeD)), outOfFirst);
-    cpu.ebx = withLow(cpu.ebx, uint8_t(anyOfFirst | codeD));
+        return withHigh(withLow(eax, uint8_t(outOfFirst & codeD)), outOfFirst);
     if ((anyOfFirst | codeD) == 0)
-        return driverCall<thrash::kThrashDrawQuad, &port::driver::drawQuad>(guest, a, b, c, d);
+        driverCall<thrash::kThrashDrawQuad, &port::driver::drawQuad>(guest, a, b, c, d);
+        return eax;
 
     if (outOfFirst != 0)
-        cpu.eax = withHigh(cpu.eax, outOfFirst);
+        eax = withHigh(eax, outOfFirst);
     else if (anyOfFirst == 0)
-        driverCall<thrash::kThrashDrawTri, &port::driver::drawTri>(guest, a, b, c);
+        driverCall<thrash::kThrashDrawTri, &port::driver::drawTri>(guest, a, b, c);  // void: eax as it was
     else
-        clipFirstTriangle(guest, a, b, c, anyOfFirst);
+        eax = clipFirstTriangle(guest, a, b, c, anyOfFirst);
 
     // The codes again: the clipper has had them.
     const uint8_t again = guest.byte(codes), againC = guest.byte(codes + 2), againD = guest.byte(codes + 3);
-    cpu.ecx = withHigh(withLow(cpu.ecx, againC), againD);
     const uint8_t outOfSecond = uint8_t(again & againC & againD);
     if (outOfSecond != 0)
-        return withLow(cpu.eax, outOfSecond);
+        return withLow(eax, outOfSecond);
     const uint8_t anyOfSecond = uint8_t(again | againC | againD);
     if (anyOfSecond == 0)
     {
-        cpu.ebx = d;
-        return driverCall<thrash::kThrashDrawTri, &port::driver::drawTri>(guest, a, c, d);
+        driverCall<thrash::kThrashDrawTri, &port::driver::drawTri>(guest, a, c, d);
+        return eax;
     }
     return clipSecondTriangle(guest, a, c, d, againC, againD, anyOfSecond);
 }
@@ -270,39 +337,34 @@ x86::reg32 frontend::rende::drawQuadSplit(App* app, CPU& cpu, reg32 a, reg32 b, 
 {
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 12 + kQuadFrame);
-    // Its arguments in the registers, as the code has them: what it leaves there is built on them.
-    cpu.eax = a;
-    cpu.edx = b;
-    cpu.ebx = c;
-    cpu.ecx = d;
+    // eax as the code has it, a first and what each call leaves; the other registers are left, not read.
+    reg32 eax = a;
     noteQuadCodes(guest, a, b, c, d);
     const reg32 codes = guest.frame() + kQuadCodes;
     const uint8_t codeA = guest.byte(codes), codeB = guest.byte(codes + 1), codeC = guest.byte(codes + 2), codeD = guest.byte(codes + 3);
     const uint8_t outOfFirst = uint8_t(codeA & codeB & codeC);
-    cpu.ebx = withLow(cpu.ebx, codeC);
     if ((outOfFirst & codeD) != 0)
-        return withHigh(withLow(cpu.eax, outOfFirst), uint8_t(outOfFirst & codeD));
+        return withHigh(withLow(eax, outOfFirst), uint8_t(outOfFirst & codeD));
 
     if (outOfFirst == 0)
     {
         const uint8_t anyOfFirst = uint8_t(codeA | codeB | codeC);
         if (anyOfFirst == 0)
-            driverCall<thrash::kThrashDrawTri, &port::driver::drawTri>(guest, a, b, c);
+            driverCall<thrash::kThrashDrawTri, &port::driver::drawTri>(guest, a, b, c);  // void: eax as it was
         else
-            clipFirstTriangle(guest, a, b, c, anyOfFirst);
+            eax = clipFirstTriangle(guest, a, b, c, anyOfFirst);
     }
 
     // The codes again: the clipper has had them.
     const uint8_t again = guest.byte(codes), againC = guest.byte(codes + 2), againD = guest.byte(codes + 3);
-    cpu.ecx = withHigh(cpu.ecx, againC);
     const uint8_t outOfSecond = uint8_t(again & againC & againD);
     if (outOfSecond != 0)
-        return withHigh(withLow(cpu.eax, outOfSecond), againD);
+        return withHigh(withLow(eax, outOfSecond), againD);
     const uint8_t anyOfSecond = uint8_t(again | againC | againD);
     if (anyOfSecond == 0)
     {
-        cpu.edx = d;
-        return driverCall<thrash::kThrashDrawTri, &port::driver::drawTri>(guest, a, c, d);
+        driverCall<thrash::kThrashDrawTri, &port::driver::drawTri>(guest, a, c, d);
+        return eax;
     }
     return clipSecondTriangle(guest, a, c, d, againC, againD, anyOfSecond);
 }
@@ -358,7 +420,6 @@ x86::reg32 frontend::rende::skidAddSegment(App* app, CPU& cpu, reg32 from, reg32
     const fe::Frame ownFrame(guest, cpu, 12 + 0x4c);
     constexpr reg32 kToSides = 0, kFromSides = 0x18;
     const reg32 frame = guest.frame();
-    cpu.ebx = withHigh(alphaFrom, uint8_t(alphaTo));
     const double lift = floatOf(guest, kSkidLift);
     guest.setDword(frame + kToSides, guest.dword(to));
     guest.setFloat(frame + kToSides + 4, float(fp::add(floatOf(guest, to + 4), lift)));
@@ -373,7 +434,6 @@ x86::reg32 frontend::rende::skidAddSegment(App* app, CPU& cpu, reg32 from, reg32
     guest.setFloat(frame + kFromSides + 0x10, float(fp::add(lift, floatOf(guest, from + 0x10))));
     const reg32 last = guest.dword(from + 0x14);
     guest.setDword(frame + kFromSides + 0x14, last);
-    cpu.ecx = mode;
     if (mode == 0)
         return last;
 
@@ -407,20 +467,15 @@ x86::reg32 frontend::rende::skidAddSegment(App* app, CPU& cpu, reg32 from, reg32
     const reg32 count = guest.dword(strip + kStripCount);
     const reg32 corners = strip + kStripCorners + count * kStripCornersBytes, alphas = strip + kStripAlphas + 2 * count;
     // As the call by address leaves them, for the end (edx's high bytes with the texture).
-    guest.leaveEdx(alphas);
-    guest.leaveEbx(frame + kFromSides);
-    guest.leaveEcx(frame + kToSides);
     fe::direct<0x4c6c70, frontend::sime::skidSegmentPut>(app, cpu, corners, alphas, frame + kFromSides, frame + kToSides,
                                                          alphaFrom & 0xff, alphaTo & 0xff);
-    const reg32 random = guest.call(kRandom);
+    const reg32 random = callAt(guest, kRandom);
     uint8_t texture = uint8_t(random & 1);
     const reg32 countNow = guest.dword(strip + kStripCount);
     if (mode == 2)
     {
-        cpu.ebx = countNow;
         texture = uint8_t(texture + 2);
     }
-    cpu.edx = withLow(cpu.edx, texture);
     guest.setByte(strip + kStripTextures + countNow, texture);
     guest.setDword(strip + kStripCount, guest.dword(strip + kStripCount) + 1);
     return strip;
@@ -465,14 +520,11 @@ x86::reg32 frontend::rende::skidStrip(App* app, CPU& cpu, reg32 centre, reg32 fr
     constexpr reg32 kHalfWidth = 0x549714;      // a double
     const reg32 way = guest.frame();
     const reg32 across = way + 0xc;
-    guest.leaveEcx(out);
     guest.setFloat(way, float(fp::sub(floatOf(guest, to), floatOf(guest, from))));
     guest.setFloat(way + 4, float(fp::sub(floatOf(guest, to + 4), floatOf(guest, from + 4))));
     guest.setFloat(way + 8, float(fp::sub(floatOf(guest, to + 8), floatOf(guest, from + 8))));
     fe::direct<0x4972f0, vertices::normaliseVector>(app, cpu, way);
     // As the call by address leaves them.
-    guest.leaveEdx(axle);
-    guest.leaveEbx(across);
     const reg32 left = fe::direct<0x4e0160, frontend::simd::cross>(app, cpu, way, axle, across);
 
     const double width = doubleOf(guest, kHalfWidth);
@@ -532,17 +584,13 @@ x86::reg32 frontend::rende::skidWheel(App* app, CPU& cpu, reg32 car, reg32 wheel
     const sreg32 scaled = fp::toInteger<sreg32>(fp::mul(bounded, doubleOf(guest, kToAlpha)));
     const reg32 alpha = reg32(sreg32(reg32(scaled) * 143u) >> 16);
 
-    cpu.ebx = released;
-    cpu.edx = reg32(scaled);
     if (released == 0)
     {
         const reg32 since = guest.dword(kFrameTime) - guest.dword(mark + kMarkTime);
-        cpu.edx = mark;
         if (sreg32(since) <= 0)
             return since;
     }
     const reg32 now = guest.dword(kFrameTime);
-    cpu.edx = mark;
     const reg32 sliding = guest.dword(mark + kMarkSliding);
     guest.setDword(mark + kMarkTime, now);
     if (sliding == 0)
@@ -562,7 +610,6 @@ x86::reg32 frontend::rende::skidWheel(App* app, CPU& cpu, reg32 car, reg32 wheel
     const reg32 markSides = mark + kMarkSides;
     // Nonzero when the mark's point is within `limit` of here; edx as the call by address leaves it.
     const auto nearHere = [&](reg32 limit) {
-        guest.leaveEdx(here);
         return fe::direct<0x496f20, frontend::rendc::withinFlatDistance>(app, cpu, point, here, limit);
     };
     if (released != 0)
@@ -595,7 +642,6 @@ x86::reg32 frontend::rende::skidWheel(App* app, CPU& cpu, reg32 car, reg32 wheel
     copyDwords(guest, markSides, sides, 3);
     copyDwords(guest, markSides + 12, sides + 12, 3);
     copyDwords(guest, point, here, 3);
-    cpu.edx = mark;
     guest.setByte(mark + kMarkAlpha, uint8_t(alpha));
     return withLow(mark, uint8_t(alpha));
 }
@@ -679,7 +725,7 @@ x86::reg32 frontend::rende::skidMarksDraw(App* app, CPU& cpu, reg32 view)
     }
     if (last != 0)
         guest.setDword(last, 0);
-    guest.call(kDepthBuckets, args({ first }, { guest.dword(kSkidDepth) }));
+    fe::direct<0x4c7790, vertices::bucketsDepthedInto>(guest.app(), guest.cpu(), first, guest.dword(kSkidDepth));
     const reg32 now = guest.dword(kFrameTime);
     guest.setDword(kSkidDrawnAt, now);
     return now;
@@ -824,11 +870,9 @@ x86::reg32 frontend::rende::polygonsSorted(App* app, CPU& cpu, reg32 result, reg
     const reg32 ebp = guest.frame() + 0x10;
     fe::direct<kFillZero, ea::clearBytes>(guest.app(), guest.cpu(), kSortHeads, kSortBytes);
     guest::direct<0x4c7180, polygonDepths>(app, cpu, list, ebp - 8, ebp - 4);
-    guest.setEsi(ebp - 0x10);
     guest::direct<0x4c7260, polygonsIntoBuckets>(app, cpu, list, guest.dword(ebp - 8), guest.dword(ebp - 4));
-    guest.call(kGatherSorted);
+    callAt(guest, kGatherSorted, fe::Arguments(), ebp - 0x10);  // esi: where the callee puts the list
     copyDwords(guest, result, ebp - 0x10, 2);
-    guest.setEsi(ebp - 8);
     return result;
 }
 
@@ -845,7 +889,6 @@ x86::reg32 frontend::rende::depthBucketAppend(App* app, CPU& cpu, reg32 view, re
     const double place = fp::mul(fp::add(depthValue, floatOf(guest, kDepthBias)), floatOf(guest, kBucketsPerUnit));
     const reg32 bucket = clampedBucket(fp::toInteger<sreg32>(place), kDepthMost) * 8;
     const reg32 joined = guest.frame();
-    guest.setEsi(joined);
     const reg32 left = guest::direct<0x4bbec0, rendd::joinLists>(app, cpu, joined, guest.dword(kDepthHeads + bucket),
                                                                  guest.dword(kDepthLast + bucket), first, last);
     copyDwords(guest, kDepthHeads + bucket, joined, 2);
@@ -905,7 +948,6 @@ x86::reg32 frontend::rende::depthBucketsGather(App* app, CPU& cpu, reg32 result)
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 20 + 0x10);
     const reg32 ebp = guest.frame() + 0x10;
-    guest.setEsi(ebp - 8);
     guest::direct<0x4bbe70, rendd::emptyList>(app, cpu, ebp - 8);
     reg32 first = guest.dword(ebp - 8), last = guest.dword(ebp - 4);
     if (guest.dword(kDrawnOnCard) == 0)
@@ -929,7 +971,6 @@ x86::reg32 frontend::rende::depthBucketsGather(App* app, CPU& cpu, reg32 result)
     }
     guest.setDword(result, first);
     guest.setDword(result + 4, last);
-    guest.setEsi(ebp - 8);
     return result;
 }
 
@@ -940,7 +981,6 @@ x86::reg32 frontend::rende::farBucketsGather(App* app, CPU& cpu, reg32 result)
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 20 + 0x10);
     const reg32 ebp = guest.frame() + 0x10;
-    guest.setEsi(ebp - 0x10);
     guest::direct<0x4bbe70, rendd::emptyList>(app, cpu, ebp - 0x10);
     reg32 first = guest.dword(ebp - 0x10), last = guest.dword(ebp - 0xc);
     if (guest.dword(kDrawnOnCard) != 0)
@@ -960,7 +1000,6 @@ x86::reg32 frontend::rende::farBucketsGather(App* app, CPU& cpu, reg32 result)
     }
     guest.setDword(result, first);
     guest.setDword(result + 4, last);
-    guest.setEsi(ebp);
     return result;
 }
 
@@ -976,7 +1015,6 @@ x86::reg32 frontend::rende::drawListAdd(App* app, CPU& cpu, reg32 first, reg32 l
     if (guest.dword(kDrawnOnCard) == 0)
         return guest::direct<0x4c7480, depthBucketsAdd>(app, cpu, first, base);
     const reg32 joined = guest.frame();
-    guest.setEsi(joined);
     const reg32 left = guest::direct<0x4bbec0, rendd::joinLists>(app, cpu, joined, guest.dword(kPendingList),
                                                                  guest.dword(kPendingList + 4), first, last);
     copyDwords(guest, kPendingList, joined, 2);
@@ -1007,7 +1045,6 @@ x86::reg32 frontend::rende::blinkingQuads(App* app, CPU& cpu, reg32 view)
     const reg32 corners = guest.frame();
     const reg32 list = corners + 0x80, quadAt = corners + 0x8c;
 
-    guest.setEsi(list);
     guest::direct<0x4bbe70, rendd::emptyList>(app, cpu, list);
     guest::direct<0x4bbf20, rendd::openListStart>(app, cpu);
     for (reg32 i = 0; i < kLightCount; ++i)
@@ -1045,7 +1082,6 @@ x86::reg32 frontend::rende::blinkingQuads(App* app, CPU& cpu, reg32 view)
         for (reg32 corner = 0; corner < 4; ++corner)
             guest.setDword(quad + kPolygonCorners + 4 * corner, quad + kPolygonBytes + corner * kVertexBytes);
     }
-    guest.setEsi(list);
     guest::direct<0x4bbfc0, rendd::openListClose>(app, cpu, list);
     return guest::direct<0x4bc060, rendd::drawListAt>(app, cpu, view, list, guest.dword(kDepth));
 }
@@ -1178,11 +1214,9 @@ x86::reg32 frontend::rende::particlesPass(App* app, CPU& cpu, reg32 view)
     if (gameSettings(guest).effectsLevel == 2)
         return view;
     const reg32 list = guest.frame();
-    guest.setEsi(list);
-    guest.leaveEdx(view + kViewMatrix);
     guest::direct<0x4cc540, particlesCameraChanged>(app, cpu, guest.dword(view + kViewIndex));
-    guest.call(kParticles, args({ view }));
-    return guest.call(kSortedBuckets, args({ guest.dword(list) }, { guest.dword(kDepth) }));
+    callAt(guest, kParticles, args({ view, view + kViewMatrix }), list);  // esi: read by the particles' pass  // edx the view's matrix, which it reads
+    return fe::direct<0x4c7610, vertices::bucketsSortedInto>(guest.app(), guest.cpu(), guest.dword(list), guest.dword(kDepth));
 }
 
 namespace
@@ -1192,7 +1226,6 @@ namespace
 reg32 handBackList(Guest& guest, reg32 list, reg32 result)
 {
     copyDwords(guest, result, list, 2);
-    guest.setEsi(list + 8);
     return result;
 }
 
@@ -1208,15 +1241,13 @@ x86::reg32 frontend::rende::dropsPass(App* app, CPU& cpu, reg32 view, reg32 resu
     const reg32 list = guest.frame();
     if (sreg32(gameSettings(guest).effectsLevel) >= 1)
     {
-        guest.setEsi(list);
         guest::direct<0x4bbe70, rendd::emptyList>(app, cpu, list);
     }
     else
     {
         guest::direct<0x4bbf20, rendd::openListStart>(app, cpu);
-        guest.setEsi(list);
         if (guest.dword(view) == 0)
-            guest.call(kDrops, args({ view }));
+            callAt(guest, kDrops, args({ view }));
         guest::direct<0x4bbfc0, rendd::openListClose>(app, cpu, list);
     }
     return handBackList(guest, list, result);
@@ -1229,7 +1260,6 @@ x86::reg32 frontend::rende::sparksPass(App* app, CPU& cpu, reg32 view, reg32 res
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 12 + 8);
     constexpr reg32 kSparkKind = 0x8ca22c;
-    constexpr reg32 kSparks = 0x4ddb40;
     const reg32 list = guest.frame();
     guest::direct<0x4bbf20, rendd::openListStart>(app, cpu);
     if (guest.dword(view) == 0 && guest.dword(kSparkKind) != 0 && gameSettings(guest).effectsLevel != 2)
@@ -1237,11 +1267,9 @@ x86::reg32 frontend::rende::sparksPass(App* app, CPU& cpu, reg32 view, reg32 res
         fe::direct<0x4dbda0, frontend::simd::viewProjection>(app, cpu, view);
         const reg32 kind = guest.dword(kSparkKind);
         if (kind == 1 || kind == 2)
-            guest.call(kSparks, args({ view }));
-        guest.setEsi(list);
+            fe::direct<0x4ddb40, render::sparksDrawn>(app, cpu, view);
         fe::direct<0x4dbde0, frontend::simc::setView>(app, cpu, view);
     }
-    guest.setEsi(list);
     guest::direct<0x4bbfc0, rendd::openListClose>(app, cpu, list);
     return handBackList(guest, list, result);
 }
@@ -1298,7 +1326,7 @@ x86::reg32 frontend::rende::smokeEmit(App* app, CPU& cpu, reg32 view, reg32 poin
     const float scale = float(inverse);
     const sreg32 quarter = sreg32(guest.dword(kPuffLifeMost)) >> 2;
     const reg32 spread = quarter > 1 ? reg32(quarter) : 1;
-    const reg32 lessLife = guest.call(kRandom) % spread;
+    const reg32 lessLife = callAt(guest, kRandom) % spread;
     guest.setFloat(puff + kPuffX, float(fp::mul(x, scale)));
     guest.setFloat(puff + kPuffY, float(fp::mul(scale, y)));
     guest.setDword(puff + kPuffLife, guest.dword(kPuffLifeMost) - lessLife);
@@ -1365,8 +1393,6 @@ x86::reg32 frontend::rende::expandPalettedShape(App* app, CPU& cpu, reg32 shape,
     }
     guest.setByte(shape, 0);
     guest.setByte(shape, kShapeType16);
-    cpu.ebx = from;
-    cpu.edx = out;
     return shape;
 }
 
@@ -1389,7 +1415,7 @@ x86::reg32 frontend::rende::loadShapeTexture(App* app, CPU& cpu, reg32 file, reg
     guest.setWord(record + kTextureWidth, guest.word(shape + kShapeWidth));
     guest.setWord(record + kTextureHeight, guest.word(shape + kShapeHeight));
     guest.setByte(record + kTextureFlags, 0);
-    guest.setDword(record + kTextureHandle, guest.call(kSquareTexture, args({ shape, ownPalette, record, format }, { second })));
+    guest.setDword(record + kTextureHandle, *fe::direct<0x4d3f50, render::squareTextureMade>(app, cpu, shape, ownPalette, record, format, second));
 
     reg32 left = fe::direct<0x4f24e0, frontend::eab::shapeFindHotspot>(app, cpu, shape);
     if (left != 0)
@@ -1399,7 +1425,6 @@ x86::reg32 frontend::rende::loadShapeTexture(App* app, CPU& cpu, reg32 file, reg
         {
             const uint8_t flags = uint8_t(guest.byte(record + kTextureFlags) | kTextureAdditive);
             left = withHigh(left, flags);
-            cpu.ecx = 1;
             guest.setByte(record + kTextureFlags, flags);
             guest.setDword(ownPalette, 1);
         }
@@ -1407,7 +1432,6 @@ x86::reg32 frontend::rende::loadShapeTexture(App* app, CPU& cpu, reg32 file, reg
     if (guest.dword(ownPalette) != 0)
     {
         const uint8_t flags = uint8_t(guest.byte(record + kTextureFlags) | kTextureOwnPalette);
-        cpu.edx = withLow(cpu.edx, flags);
         guest.setByte(record + kTextureRoundRobin, 0xff);
         guest.setByte(record + kTextureFlags, flags);
         return left;
@@ -1456,9 +1480,6 @@ x86::reg32 frontend::rende::copyCabinBar(App* app, CPU& cpu, reg32 bar, reg32 sh
             from += reg32(sreg32(std::int16_t(guest.word(shape + kShapeWidth)))) * 2;
         }
     }
-    cpu.ebx = reg32(row);
-    cpu.ecx = to;
-    cpu.edx = from;
     return index;
 }
 
@@ -1521,10 +1542,9 @@ x86::reg32 frontend::rende::loadEffectTextures(App* app, CPU& cpu)
         fe::direct<0x495230, graphics::loadingProgress>(app, cpu, pushed);
     };
 
-    guest.leaveEdx(0);
-    guest.call(kSprintf, args({}, { name, 0x549458, kSfxFolder }));
+    fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), name, 0x549458, guest::Words{kSfxFolder});
     // Its flags in edx, as the call before leaves it.
-    const reg32 file = *fe::direct<0x4e0ec0, ea::loadWhole>(app, cpu, name, cpu.edx);
+    const reg32 file = *fe::direct<0x4e0ec0, ea::loadWhole>(app, cpu, name, 0);
     progress(kProgress36);
     for (reg32 line = 0; line < kLineCount; ++line)
     {
@@ -1556,7 +1576,7 @@ x86::reg32 frontend::rende::loadEffectTextures(App* app, CPU& cpu)
     if ((guest.byte(kDisplayFlags) & kCardWithAlpha) != 0)
     {
         const reg32 shape = fe::direct<0x4ef1e0, frontend::eab::shapeFileFind>(app, cpu, file, 0x5494c4u);
-        guest.call(kPaletteTexture, args({ shape, kSparkTexture }));
+        fe::direct<0x4d41a0, render::paletteTextured>(app, cpu, shape, kSparkTexture);
     }
     else
         texture(file, 0x5494cc, kFormat16, kSparkTexture, 0);
@@ -1587,58 +1607,58 @@ x86::reg32 frontend::rende::loadEffects(App* app, CPU& cpu)
 }
 
 
-void frontend::rendDrawQuadClipped(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendDrawQuadClipped(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4c1900", 0, 0, nullptr, 0, kKeepsEsiEdi };
-    const reg32 a = cpu.eax, b = cpu.edx, c = cpu.ebx, d = cpu.ecx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rende::drawQuadClipped(app, cpu, a, b, c, d); });
+    const reg32 a = args.eax, b = args.edx, c = args.ebx, d = args.ecx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rende::drawQuadClipped(app, cpu, a, b, c, d); });
 }
 
-void frontend::rendDrawQuadSplit(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendDrawQuadSplit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4c19e0", 0, 0, nullptr, 0, kKeepsEsiEdi };
-    const reg32 a = cpu.eax, b = cpu.edx, c = cpu.ebx, d = cpu.ecx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rende::drawQuadSplit(app, cpu, a, b, c, d); });
+    const reg32 a = args.eax, b = args.edx, c = args.ebx, d = args.ecx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rende::drawQuadSplit(app, cpu, a, b, c, d); });
 }
 
-void frontend::rendSkidAddSegment(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendSkidAddSegment(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4c6cb0", 4, 0, nullptr, 0, kKeepsEsiEdi };
-    const reg32 from = cpu.eax, to = cpu.edx, alphaFrom = cpu.ebx, alphaTo = cpu.ecx;
+    const reg32 from = args.eax, to = args.edx, alphaFrom = args.ebx, alphaTo = args.ecx;
     const reg32 mode = stackArgument(app, cpu, 0);
-    fe::runWhole(app, cpu, site, [&](Guest&) {
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
         return rende::skidAddSegment(app, cpu, from, to, alphaFrom, alphaTo, mode);
     });
 }
 
-void frontend::rendSkidMarksDraw(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendSkidMarksDraw(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4c6f00", 0, 0, nullptr, 0 };
-    const reg32 view = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rende::skidMarksDraw(app, cpu, view); });
+    const reg32 view = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rende::skidMarksDraw(app, cpu, view); });
 }
 
-void frontend::rendPolygonDepths(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendPolygonDepths(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4c7180", 0, 0, nullptr, 0, kKeepsEcxEsiEdi };
-    const reg32 list = cpu.eax, least = cpu.edx, scale = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rende::polygonDepths(app, cpu, list, least, scale); });
+    const reg32 list = args.eax, least = args.edx, scale = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rende::polygonDepths(app, cpu, list, least, scale); });
 }
 
-void frontend::rendPolygonsIntoBuckets(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendPolygonsIntoBuckets(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4c7260", 8, 0, nullptr, 0 };
-    const reg32 list = cpu.eax;
+    const reg32 list = args.eax;
     const reg32 least = stackArgument(app, cpu, 0), scale = stackArgument(app, cpu, 1);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rende::polygonsIntoBuckets(app, cpu, list, least, scale); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rende::polygonsIntoBuckets(app, cpu, list, least, scale); });
 }
 
-void frontend::rendPolygonsSorted(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendPolygonsSorted(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4c7380", 8, 0, nullptr, 0, kKeepsAllButEsi };
-    const reg32 result = cpu.esi;
+    const reg32 result = args.esi;
     const reg32 list = stackArgument(app, cpu, 0), last = stackArgument(app, cpu, 1);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rende::polygonsSorted(app, cpu, result, list, last); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rende::polygonsSorted(app, cpu, result, list, last); });
 }
 
 /* sub_4c73e0: the depth buckets cleared, when the polygons are sorted here. */
@@ -1647,37 +1667,37 @@ x86::reg32 frontend::rende::clearDepthBuckets(App* app, CPU& cpu)
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 8);
     if (guest.dword(kDrawnOnCard) == 0)
-        guest.call(kFillZero, args({ kDepthHeads, kDepthBytes }));
-    return guest.eax();
+        fe::direct<kFillZero, ea::clearBytes>(guest.app(), guest.cpu(), kDepthHeads, kDepthBytes);
+    return 0;  // nothing: the thunk leaves eax as it came
 }
 
-void frontend::rendClearDepthBuckets(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendClearDepthBuckets(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4c73e0", 0, 0, nullptr, 0, kKeepsEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rende::clearDepthBuckets(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { rende::clearDepthBuckets(app, cpu); return args.eax; });
 }
 
-void frontend::rendDepthBucketAppend(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendDepthBucketAppend(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4c7400", 12, 0, nullptr, 0 };
-    const reg32 view = cpu.eax;
+    const reg32 view = args.eax;
     const reg32 first = stackArgument(app, cpu, 0), last = stackArgument(app, cpu, 1), depth = stackArgument(app, cpu, 2);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rende::depthBucketAppend(app, cpu, view, first, last, depth); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rende::depthBucketAppend(app, cpu, view, first, last, depth); });
 }
 
-void frontend::rendDepthBucketsAdd(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendDepthBucketsAdd(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4c7480", 4, 0, nullptr, 0 };
-    const reg32 list = cpu.eax;
+    const reg32 list = args.eax;
     const reg32 base = stackArgument(app, cpu, 0);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rende::depthBucketsAdd(app, cpu, list, base); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rende::depthBucketsAdd(app, cpu, list, base); });
 }
 
-void frontend::rendDepthBucketsGather(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendDepthBucketsGather(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4c7580", 0, 0, nullptr, 0, kKeepsAllButEsi };
-    const reg32 result = cpu.esi;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rende::depthBucketsGather(app, cpu, result); });
+    const reg32 result = args.esi;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rende::depthBucketsGather(app, cpu, result); });
 }
 
 /* sub_4c75f0: the far buckets cleared, on the card. */
@@ -1686,21 +1706,21 @@ x86::reg32 frontend::rende::clearFarBuckets(App* app, CPU& cpu)
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 8);
     if (guest.dword(kDrawnOnCard) != 0)
-        guest.call(kFillZero, args({ kFarHeads, kFarBytes }));
-    return guest.eax();
+        fe::direct<kFillZero, ea::clearBytes>(guest.app(), guest.cpu(), kFarHeads, kFarBytes);
+    return 0;  // nothing: the thunk leaves eax as it came
 }
 
-void frontend::rendClearFarBuckets(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendClearFarBuckets(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4c75f0", 0, 0, nullptr, 0, kKeepsEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rende::clearFarBuckets(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { rende::clearFarBuckets(app, cpu); return args.eax; });
 }
 
-void frontend::rendFarBucketsGather(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendFarBucketsGather(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4c76e0", 0, 0, nullptr, 0, kKeepsAllButEsi };
-    const reg32 result = cpu.esi;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rende::farBucketsGather(app, cpu, result); });
+    const reg32 result = args.esi;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rende::farBucketsGather(app, cpu, result); });
 }
 
 /* sub_4c7750: on the card, the near buckets cleared, and the depth ones when `depthToo`. */
@@ -1711,45 +1731,45 @@ x86::reg32 frontend::rende::clearBuckets(App* app, CPU& cpu, reg32 depthToo)
     if (guest.dword(kDrawnOnCard) != 0)
     {
         if (depthToo != 0)
-            guest.call(kFillZero, args({ kDepthHeads, kDepthBytes }));
-        guest.call(kFillZero, args({ kNearBuckets, kNearBytes }));
+            fe::direct<kFillZero, ea::clearBytes>(guest.app(), guest.cpu(), kDepthHeads, kDepthBytes);
+        fe::direct<kFillZero, ea::clearBytes>(guest.app(), guest.cpu(), kNearBuckets, kNearBytes);
     }
-    return guest.eax();
+    return depthToo;
 }
 
-void frontend::rendClearBuckets(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendClearBuckets(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4c7750", 0, 0, nullptr, 0, kKeepsEdx };
-    const reg32 depthToo = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rende::clearBuckets(app, cpu, depthToo); });
+    const reg32 depthToo = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rende::clearBuckets(app, cpu, depthToo); });
 }
 
-void frontend::rendDrawListAdd(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendDrawListAdd(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4c7940", 12, 0, nullptr, 0, kKeepsEcxEsiEdi };
     const reg32 first = stackArgument(app, cpu, 0), last = stackArgument(app, cpu, 1), base = stackArgument(app, cpu, 2);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rende::drawListAdd(app, cpu, first, last, base); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rende::drawListAdd(app, cpu, first, last, base); });
 }
 
-void frontend::rendBlinkingQuads(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendBlinkingQuads(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4c9f70", 0, 0, nullptr, 0 };
-    const reg32 view = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rende::blinkingQuads(app, cpu, view); });
+    const reg32 view = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rende::blinkingQuads(app, cpu, view); });
 }
 
-void frontend::rendFadeParticles(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendFadeParticles(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4cb220", 0, 0, nullptr, 0 };
-    const reg32 view = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rende::fadeParticles(app, cpu, view); });
+    const reg32 view = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rende::fadeParticles(app, cpu, view); });
 }
 
-void frontend::rendLoadParticleTextures(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendLoadParticleTextures(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4cb590", 0, 0, kParticleNames, std::size(kParticleNames) };
-    const reg32 file = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rende::loadParticleTextures(app, cpu, file); });
+    const reg32 file = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rende::loadParticleTextures(app, cpu, file); });
 }
 
 /* sub_4cb6f0: the particles' states and fades cleared. */
@@ -1758,16 +1778,16 @@ x86::reg32 frontend::rende::clearParticles(App* app, CPU& cpu)
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 8);
     fe::direct<kFillZero, ea::clearBytes>(guest.app(), guest.cpu(), kParticleStates, kParticleStatesBytes);
-    const reg32 left = guest.call(kFillZero, args({ kFades, kFadesBytes }));
+    const reg32 left = fe::direct<kFillZero, ea::clearBytes>(guest.app(), guest.cpu(), kFades, kFadesBytes);
     guest.setDword(kFadeCount, 0);
     guest.setDword(kFadeCount + 4, 0);
     return left;
 }
 
-void frontend::rendClearParticles(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendClearParticles(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4cb6f0", 0, 0, nullptr, 0, kKeepsEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rende::clearParticles(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rende::clearParticles(app, cpu); });
 }
 
 /* sub_4cb730: the particles' states cleared. */
@@ -1775,34 +1795,34 @@ x86::reg32 frontend::rende::clearParticleStates(App* app, CPU& cpu)
 {
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 8);
-    return guest.call(kFillZero, args({ kParticleStates, kParticleStatesBytes }));
+    return fe::direct<kFillZero, ea::clearBytes>(guest.app(), guest.cpu(), kParticleStates, kParticleStatesBytes);
 }
 
-void frontend::rendClearParticleStates(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendClearParticleStates(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4cb730", 0, 0, nullptr, 0, kKeepsEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rende::clearParticleStates(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rende::clearParticleStates(app, cpu); });
 }
 
-void frontend::rendParticlesCameraChanged(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendParticlesCameraChanged(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4cc540", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx | fe::kRestoreEsi };
-    const reg32 view = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rende::particlesCameraChanged(app, cpu, view); });
+    const reg32 view = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rende::particlesCameraChanged(app, cpu, view); });
 }
 
-void frontend::rendParticlesPass(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendParticlesPass(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4cc5c0", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEdx | fe::kRestoreEsi };
-    const reg32 view = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rende::particlesPass(app, cpu, view); });
+    const reg32 view = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rende::particlesPass(app, cpu, view); });
 }
 
-void frontend::rendDropsPass(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendDropsPass(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4cc600", 0, 0, nullptr, 0, kKeepsEdxEdi };
-    const reg32 view = cpu.eax, result = cpu.esi;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rende::dropsPass(app, cpu, view, result); });
+    const reg32 view = args.eax, result = args.esi;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rende::dropsPass(app, cpu, view, result); });
 }
 
 /* sub_4d18b0: how many bits a texture's format has. */
@@ -1813,26 +1833,26 @@ x86::reg32 frontend::rende::formatBits(App* app, CPU& cpu, reg32 format)
     return format == 2 ? 8 : format == 6 ? 0x20 : 0x10;
 }
 
-void frontend::rendFormatBits(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendFormatBits(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4d18b0", 0, 0, nullptr, 0, kKeepsEdx };
-    const reg32 format = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rende::formatBits(app, cpu, format); });
+    const reg32 format = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rende::formatBits(app, cpu, format); });
 }
 
-void frontend::rendExpandPalettedShape(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendExpandPalettedShape(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4d3380", 0, 0, nullptr, 0, kKeepsEcxEsiEdi };
-    const reg32 shape = cpu.eax, to = cpu.edx, palette = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rende::expandPalettedShape(app, cpu, shape, to, palette); });
+    const reg32 shape = args.eax, to = args.edx, palette = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rende::expandPalettedShape(app, cpu, shape, to, palette); });
 }
 
-void frontend::rendLoadShapeTexture(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendLoadShapeTexture(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4d4080", 4, 0, &kAdditive, 1, kKeepsEsiEdi };
-    const reg32 file = cpu.eax, named = cpu.edx, format = cpu.ebx, record = cpu.ecx;
+    const reg32 file = args.eax, named = args.edx, format = args.ebx, record = args.ecx;
     const reg32 second = stackArgument(app, cpu, 0);
-    fe::runWhole(app, cpu, site, [&](Guest&) {
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
         return rende::loadShapeTexture(app, cpu, file, named, format, record, second);
     });
 }
@@ -1849,69 +1869,70 @@ x86::reg32 frontend::rende::fitPowerOfTwo(App* app, CPU& cpu, reg32 a, reg32 b)
     return 1;
 }
 
-void frontend::rendFitPowerOfTwo(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendFitPowerOfTwo(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4d4120", 0, 0, nullptr, 0 };
-    const reg32 a = cpu.eax, b = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rende::fitPowerOfTwo(app, cpu, a, b); });
+    const reg32 a = args.eax, b = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rende::fitPowerOfTwo(app, cpu, a, b); });
 }
 
-void frontend::rendCopyCabinBar(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendCopyCabinBar(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4d4440", 0, 0, nullptr, 0, kKeepsEsiEdi };
-    const reg32 bar = cpu.eax, shape = cpu.edx, buffer = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rende::copyCabinBar(app, cpu, bar, shape, buffer); });
+    const reg32 bar = args.eax, shape = args.edx, buffer = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rende::copyCabinBar(app, cpu, bar, shape, buffer); });
 }
 
-void frontend::rendLoadEffectTextures(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendLoadEffectTextures(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4d5370", 0, 0, kSfxStrings, std::size(kSfxStrings) };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rende::loadEffectTextures(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rende::loadEffectTextures(app, cpu); });
 }
 
-/* sub_4d56b0: an empty function; eax as it came. */
+/* sub_4d56b0: an empty function; eax as it came (the thunk's). */
 x86::reg32 frontend::rende::nothing(App* app, CPU& cpu)
 {
     static_cast<void>(app);
-    return cpu.eax;
+    static_cast<void>(cpu);
+    return 0;
 }
 
-void frontend::rendNothing(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendNothing(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4d56b0", 0, 0, nullptr, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rende::nothing(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { rende::nothing(app, cpu); return args.eax; });
 }
 
-void frontend::rendLoadEffects(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendLoadEffects(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4d56f0", 0, 0, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rende::loadEffects(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rende::loadEffects(app, cpu); });
 }
 
-void frontend::rendSkidSubdivide(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendSkidSubdivide(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4db750", 8, 0, nullptr, 0, kKeepsEsiEdi };
-    const reg32 depth = cpu.eax, from = cpu.edx, to = cpu.ebx, alphaFrom = cpu.ecx;
+    const reg32 depth = args.eax, from = args.edx, to = args.ebx, alphaFrom = args.ecx;
     const reg32 alphaTo = stackArgument(app, cpu, 0), mode = stackArgument(app, cpu, 1);
-    fe::runWhole(app, cpu, site, [&](Guest&) {
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
         return rende::skidSubdivide(app, cpu, depth, from, to, alphaFrom, alphaTo, mode);
     });
 }
 
-void frontend::rendSkidStrip(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendSkidStrip(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4db8b0", 4, 0, nullptr, 0, kKeepsEsiEdi };
-    const reg32 centre = cpu.eax, from = cpu.edx, to = cpu.ebx, axle = cpu.ecx;
+    const reg32 centre = args.eax, from = args.edx, to = args.ebx, axle = args.ecx;
     const reg32 out = stackArgument(app, cpu, 0);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rende::skidStrip(app, cpu, centre, from, to, axle, out); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rende::skidStrip(app, cpu, centre, from, to, axle, out); });
 }
 
-void frontend::rendSkidWheel(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendSkidWheel(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4db940", 8, 0, nullptr, 0, kKeepsEsiEdi };
-    const reg32 car = cpu.eax, wheel = cpu.edx, position = cpu.ebx, axle = cpu.ecx;
+    const reg32 car = args.eax, wheel = args.edx, position = args.ebx, axle = args.ecx;
     const reg32 released = stackArgument(app, cpu, 0), strength = stackArgument(app, cpu, 1);
-    fe::runWhole(app, cpu, site, [&](Guest&) {
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
         return rende::skidWheel(app, cpu, car, wheel, position, axle, released, strength);
     });
 }
@@ -1923,25 +1944,25 @@ x86::reg32 frontend::rende::defaultFieldOfView(App* app, CPU& cpu)
     return gameSettings(app).viewAngle == 1 ? 75 : viewAngleFor(app, 90);
 }
 
-void frontend::rendDefaultFieldOfView(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendDefaultFieldOfView(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4dbcc0", 0, 0, nullptr, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rende::defaultFieldOfView(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rende::defaultFieldOfView(app, cpu); });
 }
 
-void frontend::rendSmokeEmit(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendSmokeEmit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4dd930", 12, 0, nullptr, 0 };
-    const reg32 view = cpu.eax;
+    const reg32 view = args.eax;
     const reg32 pointX = stackArgument(app, cpu, 0), pointY = stackArgument(app, cpu, 1), pointZ = stackArgument(app, cpu, 2);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rende::smokeEmit(app, cpu, view, pointX, pointY, pointZ); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rende::smokeEmit(app, cpu, view, pointX, pointY, pointZ); });
 }
 
-void frontend::rendSparksPass(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::rendSparksPass(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4dedf0", 0, 0, nullptr, 0, kKeepsEdxEdi };
-    const reg32 view = cpu.eax, result = cpu.esi;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return rende::sparksPass(app, cpu, view, result); });
+    const reg32 view = args.eax, result = args.esi;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rende::sparksPass(app, cpu, view, result); });
 }
 
 }

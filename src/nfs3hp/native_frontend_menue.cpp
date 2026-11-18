@@ -5,10 +5,77 @@
 #include "native_ea_memory.h"
 #include "native_frontend_eab.h"
 #include "native_graphics.h"
+#include "native_raceload.h"
+#include "port_fields.h"
 #include "port_shapes.h"
+
 #include "native_watcom.h"
 #include <nfs3hp.h>
 #include <cstring>
+#include "native_guest.h"
+#include "native_vertices.h"
+
+namespace nfs3hp
+{
+namespace
+{
+
+/* A call through a pointer or to a function of the game's that has no typed core: Watcom's register
+ * arguments (eax, edx, ebx, ecx in turn) and the stack words as `arguments` have them, through
+ * guest::pointerCall; its eax, and Terminated when the game stopped in it. */
+x86::reg32 callAt(fe::Guest& guest, x86::reg32 target, const fe::Arguments& arguments = fe::Arguments())
+{
+    x86::CPU& cpu = guest.cpu();
+    x86::Args registers;
+    x86::reg32* const into[4] = { &registers.eax, &registers.edx, &registers.ebx, &registers.ecx };
+    for (std::size_t i = 0; i < arguments.registerCount; ++i)
+        *into[i] = arguments.registers[i];
+    const x86::reg32 esp = cpu.esp;
+    for (std::size_t i = arguments.stackCount; i-- > 0;)
+    {
+        cpu.esp -= 4;
+        guest.setDword(cpu.esp, arguments.stack[i]);
+    }
+    const std::optional<x86::reg32> result = guest::pointerCall(guest.app(), cpu, target, registers);
+    if (!result)
+        throw fe::Terminated();
+    cpu.esp = esp;
+    return *result;
+}
+
+}  // namespace
+}  // namespace nfs3hp
+
+namespace nfs3hp
+{
+namespace
+{
+
+/* The game's float operations on plain values: fild, the single-precision sum, difference and
+ * product (fp::), what jb and ja read after fcom, and the truncation of sub_4dfd56 and fistp. */
+struct FloatMath
+{
+    explicit FloatMath(fe::Guest& guest) : m_guest(guest) {}
+
+    static x86::Float integer(std::int32_t value) { return x86::Float(x86::sreg32(value)); }
+    x86::Float load(x86::reg32 address) const { return x86::Float(m_guest.floatAt(address)); }
+    x86::Float add(const x86::Float& a, const x86::Float& b) { return fp::add(a, b); }
+    x86::Float sub(const x86::Float& a, const x86::Float& b) { return fp::sub(a, b); }
+    x86::Float mul(const x86::Float& a, const x86::Float& b) { return fp::mul(a, b); }
+    bool above(const x86::Float& a, const x86::Float& b) { return a > b; }
+    bool below(const x86::Float& a, const x86::Float& b) { return !(a >= b); }  // or unordered
+    std::int32_t truncated(const x86::Float& value)
+    {
+        const double chopped = fe::direct<0x4dfd56, watcom::clib::chop>(m_guest.app(), m_guest.cpu(), double(value));
+        return fp::toInteger<x86::sreg32>(chopped);
+    }
+
+private:
+    fe::Guest& m_guest;
+};
+
+}  // namespace
+}  // namespace nfs3hp
 
 /* The small things the menus' widgets lean on that the linker put far from
  * them, among the movies' stream and EA's libraries, decompiled:
@@ -27,7 +94,7 @@
  *
  * Plan step 5: each function a typed core in frontend::menue (native_frontend_menue.h), in a
  * frame of its own where the game's function has one (fe::Frame: what it calls runs at the stack
- * addresses it did), and an adapter under the game's name for the calls by address.  A core of
+ * addresses it did), and a thunk under the game's name for the calls by address.  A core of
  * the menu files, the port's or a typed library's is called as C++ (guest::direct, fe::direct);
  * the rest of the game by address, and so is a call whose registers the code goes on with. */
 namespace nfs3hp
@@ -39,7 +106,6 @@ namespace
 using fe::args;
 using fe::Guest;
 using fe::GuestString;
-using fe::X87;
 using x86::Float;
 using x86::reg32;
 using x86::sreg32;
@@ -51,7 +117,7 @@ constexpr std::uint8_t kPushedEcxEdx = fe::kRestoreEcx | fe::kRestoreEdx;
 constexpr std::uint8_t kPushedEcxEsiEdi = fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi;
 constexpr std::uint8_t kPushedEbxEcxEsiEdi = fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi;
 
-/* A generated function's stack argument, by its place, before its frame. */
+/* A game function's stack argument, by its place, before its frame. */
 reg32 stackArgument(win32::WinApplication* app, const x86::CPU& cpu, reg32 place)
 {
     return app->getMemory<reg32>(cpu.esp + 4 + 4 * place);
@@ -85,7 +151,7 @@ std::int32_t int16At(const Guest& guest, reg32 address)
 constexpr std::uint32_t kKilometresA = 3, kKilometresB = 4;
 constexpr reg32 kToKilometres = 0x5404d8;      // float, 3.6
 constexpr reg32 kToMiles = 0x5404dc;           // float, 2.2369
-constexpr reg32 kSpeedFormat = 0x5404cc;       // "%5.2f"; the check puts its own there, to see the double
+constexpr reg32 kSpeedFormat = 0x5404cc;       // "%5.2f"
 constexpr GuestString kNoSpeed{ 0x5404d4, "---" };
 
 }  // namespace
@@ -127,8 +193,8 @@ x86::reg32 frontend::menue::timeText(App* app, CPU& cpu, reg32 time, reg32 buffe
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 28);
-    X87 x87(guest);
-    const std::int32_t hundredths = x87.truncated(fp::mul(X87::integer(std::int32_t(time)), doubleAt(guest, kToHundredths)));
+    FloatMath x87(guest);
+    const std::int32_t hundredths = x87.truncated(fp::mul(FloatMath::integer(std::int32_t(time)), doubleAt(guest, kToHundredths)));
     const std::int32_t minutes = std::int16_t(hundredths / kHundredthsAMinute);
     const std::int32_t pastMinute = std::int32_t(reg32(hundredths) - reg32(minutes) * reg32(kHundredthsAMinute));
     const std::int32_t seconds = std::int16_t(pastMinute / kHundredthsASecond);
@@ -136,7 +202,6 @@ x86::reg32 frontend::menue::timeText(App* app, CPU& cpu, reg32 time, reg32 buffe
     const reg32 language = gameSettings(guest).language;
     const reg32 secondMark = guest.byte(language + kSecondMarks);
     const reg32 minuteMark = guest.byte(language + kMinuteMarks);
-    guest.leaveEdx(secondMark);
     return fe::direct<kSprintf, watcom::clib::sprintf>(
         app, cpu, buffer, kTimeFormat.address,
         guest::Words{reg32(minutes), minuteMark, reg32(seconds), secondMark, reg32(rest)});
@@ -177,12 +242,12 @@ constexpr reg32 kLanguageTexts = 0x563a80;     // its block, once loaded
 }  // namespace
 
 /* sub_4d1880: the language's block given back. */
-x86::reg32 frontend::menue::freeLanguageTexts(App* app, CPU& cpu)
+x86::reg32 frontend::menue::freeLanguageTexts(App* app, CPU& cpu, reg32 eax)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 12);
     const reg32 texts = guest.dword(kLanguageTexts);
-    reg32 result = guest.eax();
+    reg32 result = eax;
     if (texts != 0)
         result = *fe::direct<0x4e1890, ea::purgeBlock>(app, cpu, texts);
     guest.setDword(kLanguageTexts, 0);
@@ -244,7 +309,7 @@ reg32 clipAndDrawQuad(Guest& guest)
 {
     for (reg32 i = 0; i < 4; ++i)
         guest.setByte(corner(i) + kCornerClip, clipCode(guest, corner(i)));
-    return guest.call(kClipQuad, args({ corner(0), corner(1), corner(2), corner(3) }));
+    return fe::direct<kClipQuad, vertices::quadClipped>(guest.app(), guest.cpu(), corner(0), corner(1), corner(2), corner(3));
 }
 
 /* The quad's corners, clockwise from the top left. */
@@ -328,14 +393,13 @@ x86::reg32 frontend::menue::drawArtTiles(App* app, CPU& cpu, reg32 art, std::int
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 16 + 0x1c);
     if ((guest.byte(kDisplayFlags) & kNoTranslucency) != 0 || guest.dword(kInRace) != 0)
-        return guest.eax();
+        return art;  // eax as it came: the art
     const reg32 record = kArtRecords + kArtSize * art;
     const std::int32_t first = int16At(guest, record + kArtFirstTile);
     if (first == -1)
     {
-        guest.leaveEdx(art);
         // By address: the log's hook takes nothing, but the game's code pushes its format and the record.
-        guest.call(kNotLoadedLog, args({ reg32(first) }, { kNotLoadedFormat, art }));
+        fe::direct<0x42d500, raceload::noHook>(app, cpu);
         return *fe::direct<0x4f0120, ea::waitKey>(app, cpu);
     }
     placeDepth(guest);
@@ -347,11 +411,11 @@ x86::reg32 frontend::menue::drawArtTiles(App* app, CPU& cpu, reg32 art, std::int
     {
         const reg32 at = kTiles + kTileSize * reg32(tile);
         placeTexture(guest, kOneBits, 0, 0, 0, 0, kOneBits, kOneBits, kOneBits);
-        const Float side = X87::integer(int16At(guest, at + kTileSide));
-        const Float column = X87::integer(std::int32_t(reg32(int16At(guest, at + kTileColumn)) * kTilePitch + kTilePitch));
-        const Float place = X87::integer(std::int32_t(reg32(int16At(guest, record + kArtX)) + reg32(x)));
+        const Float side = FloatMath::integer(int16At(guest, at + kTileSide));
+        const Float column = FloatMath::integer(std::int32_t(reg32(int16At(guest, at + kTileColumn)) * kTilePitch + kTilePitch));
+        const Float place = FloatMath::integer(std::int32_t(reg32(int16At(guest, record + kArtX)) + reg32(x)));
         const Float left = fp::sub(place, column);
-        const float top = float(X87::integer(std::int32_t(reg32(int16At(guest, at + kTileRow)) * kTilePitch + reg32(y))));
+        const float top = float(FloatMath::integer(std::int32_t(reg32(int16At(guest, at + kTileRow)) * kTilePitch + reg32(y))));
         const Float right = fp::add(left, side);
         const Float bottom = fp::add(side, Float(top));
         placeCorners(guest, float(left), top, float(right), float(bottom));
@@ -359,8 +423,6 @@ x86::reg32 frontend::menue::drawArtTiles(App* app, CPU& cpu, reg32 art, std::int
         clipAndDrawQuad(guest);
     }
     restoreTexture(guest);
-    guest.leaveEdx(art);
-    guest.leaveEbx(kOneBits);
     return reg32(end);
 }
 
@@ -402,7 +464,7 @@ x86::reg32 frontend::menue::cornerFade(App* app, CPU& cpu, float x, float y, reg
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 12 + 0x1c);
-    X87 x87(guest);
+    FloatMath x87(guest);
     const float awayX = fadeDistance(guest, x, kFadeCentreX);
     const Float afterX = fp::sub(doubleAt(guest, kFadeTop), fadeAlong(guest, awayX, kFadePerX));
     const float awayY = fadeDistance(guest, y, kFadeCentreY);
@@ -438,14 +500,14 @@ x86::reg32 frontend::menue::drawBouncer(App* app, CPU& cpu, reg32 texture, std::
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 12 + 0x18);
     const Bouncer b{ texture, x, y, fromU, fromV, width, height, scale, colour };
-    const Float widthValue = X87::integer(b.width);
-    const Float heightValue = X87::integer(b.height);
+    const Float widthValue = FloatMath::integer(b.width);
+    const Float heightValue = FloatMath::integer(b.height);
     const Float scaledWidth = fp::mul(widthValue, Float(b.scale));
     const Float scaledHeight = fp::mul(Float(b.scale), heightValue);
 
     placeDepth(guest);
-    const float left = float(X87::integer(b.x));
-    const float top = float(X87::integer(b.y));
+    const float left = float(FloatMath::integer(b.x));
+    const float top = float(FloatMath::integer(b.y));
     const Float right = fp::add(scaledWidth, Float(left));
     const Float bottom = fp::add(scaledHeight, Float(top));
     placeCorners(guest, left, top, float(right), float(bottom));
@@ -460,8 +522,8 @@ x86::reg32 frontend::menue::drawBouncer(App* app, CPU& cpu, reg32 texture, std::
     }
 
     const Float texel = Float(guest.floatAt(kTexelSize));
-    const Float u = X87::integer(b.u);
-    const Float v = X87::integer(b.v);
+    const Float u = FloatMath::integer(b.u);
+    const Float v = FloatMath::integer(b.v);
     const Float uFrom = fp::mul(u, texel);
     const Float uTo = fp::mul(fp::add(u, Float(float(widthValue))), texel);
     const Float vFrom = fp::mul(v, texel);
@@ -477,7 +539,6 @@ x86::reg32 frontend::menue::drawBouncer(App* app, CPU& cpu, reg32 texture, std::
     fe::direct<0x431900, graphics::sendState>(app, cpu, kRenderStateTexture, b.texture);
     const reg32 drawn = clipAndDrawQuad(guest);
     restoreTexture(guest);
-    guest.leaveEdx(0);
     return drawn;
 }
 
@@ -509,7 +570,6 @@ x86::reg32 frontend::menue::scaleColour(App* app, CPU& cpu, reg32 colour, std::i
         alphaRedGreen = alpha + (scaled(colour >> 16) << 16) + (scaled(colour >> 8) << 8);
         blue = scaled(colour);
     }
-    guest.leaveEdx(alphaRedGreen);
     return blue + alphaRedGreen;
 }
 
@@ -554,7 +614,7 @@ x86::reg32 frontend::menue::loadPointer(App* app, CPU& cpu, reg32 file)
             // eax, loaded with the name for it by the game's code, is the result's again after it.
             fe::direct<kSprintf, watcom::clib::sprintf>(app, cpu, name, kPointerName.address,
                                                         guest::Words{reg32(kind), reg32(frame)});
-            const reg32 shape = guest.call(kFindShape, args({ file, name }));
+            const reg32 shape = callAt(guest, kFindShape, args({ file, name }));
             if (shape == 0)
                 continue;
             const reg32 hotSpot = kHotSpots + kHotSpotsPerKind * reg32(kind) + kHotSpotSize * reg32(frame);
@@ -613,117 +673,122 @@ x86::reg32 frontend::menue::shadedTriangle(App* app, CPU& cpu, reg32 x0, reg32 y
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 12);
-    // By address: what the function leaves in ebx, ecx and edx, this one leaves.
-    return guest.call(kDrawShadedTriangle, args({ x0, y0, x1, y1 }, { x2, y2, colour0, colour1, colour2 }));
+        // The stack word x2 is pushed under the call's five, where the core finds it (and rewrites it).
+    const reg32 x2At = cpu.esp - 4 * 5;
+    guest.setDword(x2At, x2);
+    return reg32(*fe::direct<kDrawShadedTriangle, port::fields::triangle>(
+        app, cpu, cpu.esp - 4 - 4 * 5, std::int32_t(x0), std::int32_t(y0), std::int32_t(x1), std::int32_t(y1), x2At,
+        std::int32_t(y2), colour0, colour1, colour2));
 }
 
 /* ---------------------------------------------------------------------------
  * The functions
  * ------------------------------------------------------------------------- */
 
-void frontend::resultsMetricText(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::resultsMetricText(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static const GuestString kStrings[] = { kNoSpeed };
     static fe::Site site{ "sub_4cedd0", 8, 0, kStrings, 1 };
     const float speed = app->getMemory<float>(cpu.esp + 4);
     const reg32 buffer = stackArgument(app, cpu, 1);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return menue::metricText(app, cpu, speed, buffer); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menue::metricText(app, cpu, speed, buffer); });
 }
 
-void frontend::resultsTimeText(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::resultsTimeText(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static const GuestString kStrings[] = { kTimeFormat };
     static fe::Site site{ "sub_4cee40", 0, 0, kStrings, 1, kPushedEbxEcxEsiEdi };
-    const reg32 time = cpu.eax, buffer = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return menue::timeText(app, cpu, time, buffer); });
+    const reg32 time = args.eax, buffer = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menue::timeText(app, cpu, time, buffer); });
 }
 
-void frontend::lapsToOption(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::lapsToOption(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4cf160", 0, 0, nullptr, 0 };
-    const reg32 laps = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return menue::lapsToOption(app, cpu, laps); });
+    const reg32 laps = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menue::lapsToOption(app, cpu, laps); });
 }
 
-void frontend::optionToLaps(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::optionToLaps(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4cf190", 0, 0, nullptr, 0 };
-    const reg32 option = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return menue::optionToLaps(app, cpu, option); });
+    const reg32 option = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menue::optionToLaps(app, cpu, option); });
 }
 
-void frontend::languageTextsFree(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::languageTextsFree(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4d1880", 0, 0, nullptr, 0, kPushedEcxEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return menue::freeLanguageTexts(app, cpu); });
+    const x86::reg32 eax = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menue::freeLanguageTexts(app, cpu, eax); });
 }
 
-void frontend::artTilesDraw(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::artTilesDraw(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4d7560", 0, 0, nullptr, 0, kPushedEcxEsiEdi };
-    const reg32 art = cpu.eax;
-    const std::int32_t x = std::int32_t(cpu.edx), y = std::int32_t(cpu.ebx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return menue::drawArtTiles(app, cpu, art, x, y); });
+    const reg32 art = args.eax;
+    const std::int32_t x = std::int32_t(args.edx), y = std::int32_t(args.ebx);
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menue::drawArtTiles(app, cpu, art, x, y); });
 }
 
-void frontend::bouncerCornerFade(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::bouncerCornerFade(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4d7cc0", 12, 0, nullptr, 0, kPushedEcxEdx };
     const float x = app->getMemory<float>(cpu.esp + 4), y = app->getMemory<float>(cpu.esp + 8);
     const reg32 alpha = stackArgument(app, cpu, 2);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return menue::cornerFade(app, cpu, x, y, alpha); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menue::cornerFade(app, cpu, x, y, alpha); });
 }
 
-void frontend::bouncerDraw(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::bouncerDraw(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4d7d90", 0x14, 0, nullptr, 0, kPushedEsiEdi };
-    const Bouncer bouncer{ cpu.eax,
-                           std::int32_t(cpu.edx),
-                           std::int32_t(cpu.ebx),
-                           std::int32_t(cpu.ecx),
+    const Bouncer bouncer{ args.eax,
+                           std::int32_t(args.edx),
+                           std::int32_t(args.ebx),
+                           std::int32_t(args.ecx),
                            std::int32_t(stackArgument(app, cpu, 0)),
                            std::int32_t(stackArgument(app, cpu, 1)),
                            std::int32_t(stackArgument(app, cpu, 2)),
                            app->getMemory<float>(cpu.esp + 4 + 4 * 3),
                            stackArgument(app, cpu, 4) };
-    fe::runWhole(app, cpu, site, [&](Guest&) {
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
         return menue::drawBouncer(app, cpu, bouncer.texture, bouncer.x, bouncer.y, bouncer.u, bouncer.v, bouncer.width,
                                   bouncer.height, bouncer.scale, bouncer.colour);
     });
 }
 
-void frontend::pickerShadedTriangle(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pickerShadedTriangle(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4d88c0", 0x14, 0, nullptr, 0, kPushedEsiEdi };
-    const reg32 x0 = cpu.eax, y0 = cpu.edx, x1 = cpu.ebx, y1 = cpu.ecx;
+    const reg32 x0 = args.eax, y0 = args.edx, x1 = args.ebx, y1 = args.ecx;
     const reg32 x2 = stackArgument(app, cpu, 0), y2 = stackArgument(app, cpu, 1);
     const reg32 colour0 = stackArgument(app, cpu, 2), colour1 = stackArgument(app, cpu, 3), colour2 = stackArgument(app, cpu, 4);
-    fe::runWhole(app, cpu, site, [&](Guest&) {
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
         return menue::shadedTriangle(app, cpu, x0, y0, x1, y1, x2, y2, colour0, colour1, colour2);
     });
 }
 
-void frontend::effectsBandColourScaled(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::effectsBandColourScaled(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4d9180", 0, 0, nullptr, 0, kPushedEbxEcxEsiEdi };
-    const reg32 colour = cpu.eax;
-    const std::int32_t scale = std::int32_t(cpu.edx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return menue::scaleColour(app, cpu, colour, scale); });
+    const reg32 colour = args.eax;
+    const std::int32_t scale = std::int32_t(args.edx);
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menue::scaleColour(app, cpu, colour, scale); });
 }
 
-void frontend::menuPointerLoad(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::menuPointerLoad(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static const GuestString kStrings[] = { kPointerName };
     static fe::Site site{ "sub_4daa10", 0, 0, kStrings, 1 };
-    const reg32 file = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return menue::loadPointer(app, cpu, file); });
+    const reg32 file = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menue::loadPointer(app, cpu, file); });
 }
 
-void frontend::menuPointerHotSpot(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::menuPointerHotSpot(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4dab10", 0, 0, nullptr, 0, kPushedEbxEcxEsiEdi };
-    const reg32 xAt = cpu.eax, yAt = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return menue::pointerHotSpot(app, cpu, xAt, yAt); });
+    const reg32 xAt = args.eax, yAt = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menue::pointerHotSpot(app, cpu, xAt, yAt); });
 }
 
 }

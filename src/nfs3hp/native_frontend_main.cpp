@@ -25,7 +25,7 @@
  * the menu engine's, driven by the .MNU.
  *
  * Plan step 5: each function a typed core in frontend::main (native_frontend_main.h), in a frame
- * of its own where the game's function has one (fe::Frame), and an adapter under the game's name
+ * of its own where the game's function has one (fe::Frame), and a thunk under the game's name
  * for the calls by address.  A core calls this file's others and the dialogs'
  * (native_frontend_dialogs.h) as C++ (guest::direct), the attract mode and the name's check too
  * (fe::direct); the rest of the game still by address. */
@@ -127,7 +127,7 @@ void placeAfterLabel(Guest& guest, Item shifted, std::uint32_t label)
 
 /* A player's name dialog: the buffer it edits, its two lines and two
  * buttons (char* each), the text of its first line, and the function its
- * answer goes to -- the generated one this file stands in for, whose address
+ * answer goes to -- the game's function this file replaces, whose address
  * the dialog keeps and calls. */
 struct NameDialog
 {
@@ -727,122 +727,122 @@ x86::reg32 frontend::mainmenu::multiExit(App*, CPU&)
     return 0;
 }
 
-/* The handlers, native whole (disassemble_nfs3hp.py's MENU_NATIVES): each
- * the generated function it was, what that one's ret pops, and the strings
+/* The handlers, native whole: each
+ * the game's function it was, what that one's ret pops, and the strings
  * it hands to the game; the core makes its frame. */
 namespace frontend
 {
 
-void mainMenuOnEnter(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 mainMenuOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_45d050", 0, 0, kMainEnterStrings, std::size(kMainEnterStrings) };
-    const x86::reg32 menu = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return mainmenu::mainEnter(app, cpu, menu); });
+    const x86::reg32 menu = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return mainmenu::mainEnter(app, cpu, menu); });
 }
 
-void mainMenuOnExit(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 mainMenuOnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_45d2f0", 0, 0, nullptr, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return mainmenu::mainExit(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return mainmenu::mainExit(app, cpu); });
 }
 
-void mainMenuOnFrame(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 mainMenuOnFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_45cff0", 0, 0, kFrameStrings, std::size(kFrameStrings) };
-    const x86::reg32 menu = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return mainmenu::mainFrame(app, cpu, menu); });
+    const x86::reg32 menu = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return mainmenu::mainFrame(app, cpu, menu); });
 }
 
-void mainMenuOnPlayerName(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 mainMenuOnPlayerName(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_45cef0", 0, 0, nullptr, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return mainmenu::playerName(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return mainmenu::playerName(app, cpu); });
 }
 
-void mainMenuPlayerNameAnswer(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 mainMenuPlayerNameAnswer(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_45cdd0", 0, 0, nullptr, 0 };
-    const x86::reg32 answer = cpu.eax, close = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return mainmenu::playerNameAnswer(app, cpu, answer, close); });
+    const x86::reg32 answer = args.eax, close = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return mainmenu::playerNameAnswer(app, cpu, answer, close); });
 }
 
-void splitMenuOnEnter(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 splitMenuOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_45d360", 0, 0, kSplitEnterStrings, std::size(kSplitEnterStrings) };
-    const x86::reg32 menu = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return mainmenu::splitEnter(app, cpu, menu); });
+    const x86::reg32 menu = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return mainmenu::splitEnter(app, cpu, menu); });
 }
 
-void splitMenuOnExit(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 splitMenuOnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_45d620", 0, 0, nullptr, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return mainmenu::splitExit(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return mainmenu::splitExit(app, cpu); });
 }
 
-void splitMenuOnFrame(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 splitMenuOnFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_45d300", 0, 0, kFrameStrings, std::size(kFrameStrings) };
-    const x86::reg32 menu = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return mainmenu::splitFrame(app, cpu, menu); });
+    const x86::reg32 menu = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return mainmenu::splitFrame(app, cpu, menu); });
 }
 
-void splitMenuOnPlayer2Name(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 splitMenuOnPlayer2Name(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_45cf70", 0, 0, nullptr, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return mainmenu::player2Name(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return mainmenu::player2Name(app, cpu); });
 }
 
-void splitMenuPlayer2NameAnswer(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 splitMenuPlayer2NameAnswer(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_45ce60", 0, 0, nullptr, 0 };
-    const x86::reg32 answer = cpu.eax, close = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return mainmenu::player2NameAnswer(app, cpu, answer, close); });
+    const x86::reg32 answer = args.eax, close = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return mainmenu::player2NameAnswer(app, cpu, answer, close); });
 }
 
-void multiMenuOnEnter(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 multiMenuOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_440470", 0, 0, kMultiEnterStrings, std::size(kMultiEnterStrings) };
-    const x86::reg32 menu = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return mainmenu::multiEnter(app, cpu, menu); });
+    const x86::reg32 menu = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return mainmenu::multiEnter(app, cpu, menu); });
 }
 
-void multiMenuOnExit(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 multiMenuOnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4405b0", 0, 0, nullptr, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return mainmenu::multiExit(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return mainmenu::multiExit(app, cpu); });
 }
 
-void multiMenuOnFrame(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 multiMenuOnFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4403f0", 0, 0, kMultiFrameStrings, std::size(kMultiFrameStrings) };
-    const x86::reg32 menu = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return mainmenu::multiFrame(app, cpu, menu); });
+    const x86::reg32 menu = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return mainmenu::multiFrame(app, cpu, menu); });
 }
 
-void multiMenuApplyRaceList(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 multiMenuApplyRaceList(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_440160", 0, 0, kMultiApplyStrings, std::size(kMultiApplyStrings) };
-    const x86::reg32 menu = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return mainmenu::applyRaceList(app, cpu, menu); });
+    const x86::reg32 menu = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return mainmenu::applyRaceList(app, cpu, menu); });
 }
 
-void multiMenuFollowRaceType(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 multiMenuFollowRaceType(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_440390", 0, 0, nullptr, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return mainmenu::followRaceType(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return mainmenu::followRaceType(app, cpu); });
 }
 
-void multiMenuOnBack(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 multiMenuOnBack(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4400d0", 0, 0, nullptr, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return mainmenu::multiBack(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return mainmenu::multiBack(app, cpu); });
 }
 
-void multiMenuLeaveAnswer(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 multiMenuLeaveAnswer(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_43fcb0", 0, 0, nullptr, 0 };
-    const x86::reg32 answer = cpu.eax, close = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return mainmenu::multiLeaveAnswer(app, cpu, answer, close); });
+    const x86::reg32 answer = args.eax, close = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return mainmenu::multiLeaveAnswer(app, cpu, answer, close); });
 }
 
 }  // namespace frontend

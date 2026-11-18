@@ -4,15 +4,14 @@
 #include "native_controls_pipeline.h"
 #include "native_controls_queue.h"
 #include "native_frontend_eaa.h"
+#include "native_game.h"
 #include "native_guest.h"
 
 #include <optional>
 #include <type_traits>
 
 /* The controls read and turned into the players' actions every frame of a
- * race.  disassemble_nfs3hp.py binds each address to the function of that
- * name here (CONTROLS_PIPELINE_NATIVES), and the generated code calls it by
- * name.  tools/game_checks holds each against its generated code.
+ * race.  The game's code calls each by the name it has here.
  *
  * A control is a dword as the control sets have it (native_controls_
  * devices.cpp): its device's number in the top four bits, its kind in the low
@@ -29,7 +28,7 @@
  * The four bytes are handed on to the race's queue of inputs (0x4c6530, the
  * network's 0x4c60c0), which feeds the cars.
  *
- * Each is a typed function under a name of its own, with an adapter under the
+ * Each is a typed function under a name of its own, with a thunk under the
  * game's name for the callers still on registers and the dispatch: it leaves
  * eax as the game's code does -- for some, what the last step left there,
  * which no caller reads -- and every other register as the caller had it.
@@ -37,11 +36,9 @@
  * code calls them; the joysticks' reading, the device sets and the queue are
  * their files' typed functions, called as C++ (guest::direct, their headers);
  * the keys' state (0x4eb1c0) and the memory's clearing are called by address,
- * or as the code calls them, their registers kept (KeptRegisters). */
+ * or as the code calls them, their registers kept (EspKept). */
 namespace nfs3hp
 {
-void fillZero(win32::WinApplication* app, x86::CPU& cpu);  // 0x4e070c, native_game.cpp
-
 namespace controls
 {
 
@@ -104,105 +101,40 @@ constexpr reg32 kRaceMenuToo = 0x7d36a8;
 constexpr reg32 kReplayFrames = 0x560104;
 constexpr reg32 kQueueStopped = 0x560108;
 constexpr sreg32 kReplayShown = 2;
-// What is called by address.
-
-/* A call as the code makes it: the return address's slot, and esp as the
- * callee leaves it.  False when the game stopped in it. */
-bool direct(App* app, CPU& cpu, void (*function)(App*, CPU&))
-{
-    cpu.esp -= 4;
-    function(app, cpu);
-    return !cpu.terminate;
-}
-
-bool byAddress(App* app, CPU& cpu, reg32 target)
-{
-    cpu.esp -= 4;
-    app->dynamic_call(target, cpu);
-    return !cpu.terminate;
-}
-
-/* What a function's frame keeps of its caller's across a call: every register but eax. */
-class KeptRegisters
-{
-public:
-    explicit KeptRegisters(CPU& cpu)
-        : cpu_(cpu), ebx_(cpu.ebx), ecx_(cpu.ecx), edx_(cpu.edx), esi_(cpu.esi), edi_(cpu.edi), ebp_(cpu.ebp), esp_(cpu.esp)
-    {
-    }
-    ~KeptRegisters()
-    {
-        cpu_.ebx = ebx_;
-        cpu_.ecx = ecx_;
-        cpu_.edx = edx_;
-        cpu_.esi = esi_;
-        cpu_.edi = edi_;
-        cpu_.ebp = ebp_;
-        cpu_.esp = esp_;
-    }
-
-private:
-    CPU& cpu_;
-    reg32 ebx_, ecx_, edx_, esi_, edi_, ebp_, esp_;
-};
-
 /* `bytes` at `from` cleared (0x4e070c); where the clearing stopped, as it
  * leaves eax.  nullopt when the game stopped. */
 std::optional<reg32> zeroFill(App* app, CPU& cpu, reg32 from, reg32 bytes)
 {
-    const KeptRegisters kept(cpu);
-    cpu.eax = from;
-    cpu.edx = bytes;
-    if (!direct(app, cpu, fillZero))
+    const reg32 end = guest::direct<0x4e070c, ea::clearBytes>(app, cpu, from, bytes);
+    if (cpu.terminate)
         return std::nullopt;
-    return cpu.eax;
+    return end;
 }
 
 /* A native_frontend_* file's typed core called as C++ (guest::direct): nothing (false) when the
- * game stopped in it (its calls into the game throw fe::Terminated).  tools/game_checks does not
- * build those files: there it goes by address, through its ByAddress, as the game's code calls it,
- * every register but eax kept.  A reg32 result is the eax the function leaves: eax set to it (in the
- * game too); after any other, eax spoilt there, so that code still reading what the callee left in
- * eax differs there. */
+ * game stopped in it (its calls into the game throw fe::Terminated), every register but eax kept.
+ * A reg32 result is the eax the function leaves, set to it; after any other, eax is left alone. */
 template <reg32 Address, auto Core, typename... Args>
 auto feCore(App* app, CPU& cpu, Args... args)
 {
-    const auto run = [&] {
-#ifdef NFS_GAME_CHECKS
-        const guest::KeptRegisters kept(cpu);
-        return guest::ByAddress<Core>::template call<Address>(app, cpu, args...);
-#else
-        return guest::direct<Address, Core>(app, cpu, args...);
-#endif
-    };
-    using Result = decltype(run());
-    const auto spoil = [&] {
-#ifdef NFS_GAME_CHECKS
-        cpu.eax = 0x5b0115edu;
-#endif
-    };
+    using Result = decltype(guest::direct<Address, Core>(app, cpu, args...));
     if constexpr (std::is_void_v<Result>)
     {
         try
         {
-            run();
+            guest::direct<Address, Core>(app, cpu, args...);
         }
         catch (const fe::Terminated&)
         {
             return false;
         }
-        spoil();
         return !cpu.terminate;
     }
     else
     {
         try
         {
-            const Result result = run();
-            if constexpr (std::is_same_v<Result, x86::reg32>)
-                cpu.eax = result;  // a menu core's result: the eax it leaves, as the call by address does
-            else
-                spoil();
+            const Result result = guest::direct<Address, Core>(app, cpu, args...);
             return cpu.terminate ? std::optional<Result>() : std::optional<Result>(result);
         }
         catch (const fe::Terminated&)
@@ -229,11 +161,9 @@ reg32 kindOf(reg32 control)
  * what it answers, held 0xff or how far 0 to 0xff. */
 std::optional<reg32> askKind(App* app, CPU& cpu, reg32 kind, reg32 control)
 {
-    const KeptRegisters kept(cpu);
-    cpu.eax = control;
-    if (!byAddress(app, cpu, at(app, kKinds + kind * 4)))
-        return std::nullopt;
-    return cpu.eax;
+    x86::Args registers;
+    registers.eax = control;
+    return guest::pointerCall(app, cpu, at(app, kKinds + kind * 4), registers);
 }
 
 /* The same, of the control's own kind. */
@@ -249,11 +179,12 @@ reg32 deviceOf(reg32 control)
 }
 
 /* pop ebp, pop edx, ret: the end controlHeld's entries share. */
-void popEbpEdx(App* app, CPU& cpu)
+x86::reg32 popEbpEdx(App* app, CPU& cpu, x86::Args& args)
 {
-    cpu.ebp = at(app, cpu.esp);
-    cpu.edx = at(app, cpu.esp + 4);
+    args.ebp = at(app, cpu.esp);
+    args.edx = at(app, cpu.esp + 4);
     cpu.esp += 0xc;
+    return args.eax;
 }
 
 /* 0x431580: no joystick read: their states cleared, their list empty.  Where
@@ -673,158 +604,187 @@ std::optional<reg32> readControls(App* app, CPU& cpu, reg32 unchanged)
 namespace
 {
 
-/* The adapters' end: eax the core's answer, ret. */
-void answer(CPU& cpu, reg32 result)
+/* The thunks' end: eax the core's answer, ret. */
+void answer(reg32& eax, reg32& esp, reg32 result)
 {
-    cpu.eax = result;
-    cpu.esp += 4;
+    eax = result;
+    esp += 4;
 }
 
 /* The same, for a core that may stop the game: nothing more when it did. */
-void answer(CPU& cpu, const std::optional<reg32>& result)
+void answer(reg32& eax, reg32& esp, const std::optional<reg32>& result)
 {
     if (result)
-        answer(cpu, *result);
+        answer(eax, esp, *result);
 }
 
 }  // namespace
 
-void clearJoysticks(App* app, CPU& cpu);
-void readJoysticks(App* app, CPU& cpu);
-void pollJoystick(App* app, CPU& cpu);
-void buttonHeld(App* app, CPU& cpu);
-void hatPointing(App* app, CPU& cpu);
-void axisAmount(App* app, CPU& cpu);
-void keyHeld(App* app, CPU& cpu);
-void controlHeld(App* app, CPU& cpu);
-void controlHeldNo(App* app, CPU& cpu);
-void controlHeldYes(App* app, CPU& cpu);
-void controlHeldByKind(App* app, CPU& cpu);
-void noControl(App* app, CPU& cpu);
-void bindPlayersControls(App* app, CPU& cpu);
-void startRaceControls(App* app, CPU& cpu);
-void readRaceControls(App* app, CPU& cpu);
-void bindControl(App* app, CPU& cpu);
-void bindFunctionKeys(App* app, CPU& cpu);
-void queueRaceControls(App* app, CPU& cpu);
+x86::reg32 clearJoysticks(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 readJoysticks(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 pollJoystick(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 buttonHeld(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 hatPointing(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 axisAmount(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 keyHeld(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 controlHeld(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 controlHeldNo(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 controlHeldYes(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 controlHeldByKind(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 noControl(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 bindPlayersControls(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 startRaceControls(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 readRaceControls(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 bindControl(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 bindFunctionKeys(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 queueRaceControls(App* app, CPU& cpu, x86::Args& args);
 
 /* 0x431580: forgetJoysticks. */
-void clearJoysticks(App* app, CPU& cpu)
+x86::reg32 clearJoysticks(App* app, CPU& cpu, x86::Args& args)
 {
-    answer(cpu, forgetJoysticks(app, cpu));
+    answer(args.eax, cpu.esp, forgetJoysticks(app, cpu));
+    return args.eax;
 }
 
 /* 0x4315a0: readPolledJoysticks. */
-void readJoysticks(App* app, CPU& cpu)
+x86::reg32 readJoysticks(App* app, CPU& cpu, x86::Args& args)
 {
-    answer(cpu, readPolledJoysticks(app, cpu, cpu.eax));
+    answer(args.eax, cpu.esp, readPolledJoysticks(app, cpu, args.eax));
+    return args.eax;
 }
 
 /* 0x431690: listJoystick for joystick eax. */
-void pollJoystick(App* app, CPU& cpu)
+x86::reg32 pollJoystick(App* app, CPU& cpu, x86::Args& args)
 {
-    answer(cpu, listJoystick(app, cpu.eax));
+    answer(args.eax, cpu.esp, listJoystick(app, args.eax));
+    return args.eax;
 }
 
 /* 0x4316c0: buttonDown for control eax. */
-void buttonHeld(App* app, CPU& cpu)
+x86::reg32 buttonHeld(App* app, CPU& cpu, x86::Args& args)
 {
-    answer(cpu, buttonDown(app, cpu.eax));
+    answer(args.eax, cpu.esp, buttonDown(app, args.eax));
+    return args.eax;
 }
 
 /* 0x4316f0: hatDirection for control eax. */
-void hatPointing(App* app, CPU& cpu)
+x86::reg32 hatPointing(App* app, CPU& cpu, x86::Args& args)
 {
-    answer(cpu, hatDirection(app, cpu.eax));
+    answer(args.eax, cpu.esp, hatDirection(app, args.eax));
+    return args.eax;
 }
 
 /* 0x431740: axisInto for control eax. */
-void axisAmount(App* app, CPU& cpu)
+x86::reg32 axisAmount(App* app, CPU& cpu, x86::Args& args)
 {
-    answer(cpu, axisInto(app, cpu.eax));
+    answer(args.eax, cpu.esp, axisInto(app, args.eax));
+    return args.eax;
 }
 
 /* 0x4317d0: keyDown for control eax. */
-void keyHeld(App* app, CPU& cpu)
+x86::reg32 keyHeld(App* app, CPU& cpu, x86::Args& args)
 {
-    answer(cpu, keyDown(app, cpu.eax));
+    answer(args.eax, cpu.esp, keyDown(app, args.eax));
+    return args.eax;
 }
 
 /* 0x431800: controlDown for control eax. */
-void controlHeld(App* app, CPU& cpu)
+x86::reg32 controlHeld(App* app, CPU& cpu, x86::Args& args)
 {
-    answer(cpu, controlDown(app, cpu, cpu.eax));
+    answer(args.eax, cpu.esp, controlDown(app, cpu, args.eax));
+    return args.eax;
 }
 
 /* 0x431880: controlHeld's end, not held: 0, its frame (ebp, edx pushed)
  * left.  An entry of its own in the disassembly, jumped to from
  * controlHeldByKind. */
-void controlHeldNo(App* app, CPU& cpu)
+x86::reg32 controlHeldNo(App* app, CPU& cpu, x86::Args& args)
 {
-    cpu.eax = 0;
-    popEbpEdx(app, cpu);
+    args.eax = 0;
+    popEbpEdx(app, cpu, args);
+    return args.eax;
 }
 
 /* 0x431885: controlHeld's end, held: 0xff, its frame left.  An entry of its
  * own in the disassembly, which nothing jumps to by it. */
-void controlHeldYes(App* app, CPU& cpu)
+x86::reg32 controlHeldYes(App* app, CPU& cpu, x86::Args& args)
 {
-    cpu.eax = kHeld;
-    popEbpEdx(app, cpu);
+    args.eax = kHeld;
+    popEbpEdx(app, cpu, args);
+    return args.eax;
 }
 
 /* 0x43188d: heldByKind for control eax of kind edx, in controlHeld's frame,
  * which it leaves. */
-void controlHeldByKind(App* app, CPU& cpu)
+x86::reg32 controlHeldByKind(App* app, CPU& cpu, x86::Args& args)
 {
-    const auto held = heldByKind(app, cpu, cpu.eax, cpu.edx);
+    const auto held = heldByKind(app, cpu, args.eax, args.edx);
     if (!held)
-        return;
-    cpu.eax = *held;
-    popEbpEdx(app, cpu);
+        return args.eax;
+    args.eax = *held;
+    popEbpEdx(app, cpu, args);
+    return args.eax;
 }
 
 /* 0x4318b0: no control: 0. */
-void noControl(App* app, CPU& cpu)
+x86::reg32 noControl(App* app, CPU& cpu, x86::Args& args)
 {
     (void)app;
-    answer(cpu, 0);
+    answer(args.eax, cpu.esp, 0);
+    return args.eax;
 }
 
 /* 0x48f1f0: bindPlayers. */
-void bindPlayersControls(App* app, CPU& cpu)
+x86::reg32 bindPlayersControls(App* app, CPU& cpu, x86::Args& args)
 {
-    answer(cpu, bindPlayers(app, cpu));
+    answer(args.eax, cpu.esp, bindPlayers(app, cpu));
+    return args.eax;
 }
 
 /* 0x48f4f0: startControls. */
-void startRaceControls(App* app, CPU& cpu)
+x86::reg32 startRaceControls(App* app, CPU& cpu, x86::Args& args)
 {
-    answer(cpu, startControls(app, cpu));
+    answer(args.eax, cpu.esp, startControls(app, cpu));
+    return args.eax;
 }
 
 /* 0x48f550: readControls. */
-void readRaceControls(App* app, CPU& cpu)
+x86::reg32 readRaceControls(App* app, CPU& cpu, x86::Args& args)
 {
-    answer(cpu, readControls(app, cpu, cpu.eax));
+    answer(args.eax, cpu.esp, readControls(app, cpu, args.eax));
+    return args.eax;
 }
 
 /* 0x48f940: bindAction of action eax to control edx. */
-void bindControl(App* app, CPU& cpu)
+x86::reg32 bindControl(App* app, CPU& cpu, x86::Args& args)
 {
-    answer(cpu, bindAction(app, cpu.eax, cpu.edx));
+    answer(args.eax, cpu.esp, bindAction(app, args.eax, args.edx));
+    return args.eax;
 }
 
 /* 0x48f970: bindOwnKeys. */
-void bindFunctionKeys(App* app, CPU& cpu)
+x86::reg32 bindFunctionKeys(App* app, CPU& cpu, x86::Args& args)
 {
-    answer(cpu, bindOwnKeys(app));
+    answer(args.eax, cpu.esp, bindOwnKeys(app));
+    return args.eax;
 }
 
 /* 0x48fa10: handOnActions. */
-void queueRaceControls(App* app, CPU& cpu)
+x86::reg32 queueRaceControls(App* app, CPU& cpu, x86::Args& args)
 {
-    answer(cpu, handOnActions(app, cpu, cpu.eax));
+    answer(args.eax, cpu.esp, handOnActions(app, cpu, args.eax));
+    return args.eax;
+}
+
+/* The typed cores of the thunks above, for callers that call them as C++ (native_controls_pipeline.h). */
+std::optional<reg32> playersBound(App* app, CPU& cpu)
+{
+    return bindPlayers(app, cpu);
+}
+
+std::optional<reg32> raceControlsStarted(App* app, CPU& cpu)
+{
+    return startControls(app, cpu);
 }
 
 }  // namespace controls

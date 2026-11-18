@@ -7,6 +7,7 @@
 #include "native_frontend_glue.h"
 #include "native_game.h"
 #include "native_guest.h"
+#include "native_watcom.h"
 #include "port_snd_stream_calls.h"
 #include "native_windows.h"
 #include "host_threads.h"
@@ -16,14 +17,21 @@
 #include <initializer_list>
 #include <optional>
 
+/* The esp a guest call's scope began with put back at its end: what guest::EspKept did of it (the other
+ * registers are the thunks' args now). */
+namespace
+{
+using nfs3hp::guest::EspKept;
+}  // namespace
+
 /* EA's formats and keys under the menus: a shape located in its file
  * (cmn\locatshp.c), the keys (win\key.c: a key's character, the key hook's
  * key, inkey, the game's keys flushed), the packed data (cmn\unpack.c,
  * cmn\loadpack.c: unpack, unpacksize, loadpackadr), and between them in the
  * code the secondary timer's end (win\lowtimer.c: a callback removed, the
- * thread stopped).  disassemble_nfs3hp.py binds each address to the
- * function of that name here (EA_FORMATS_NATIVES), and the generated code
- * calls it by name.  tools/game_checks holds each against its generated code.
+ * thread stopped).  Each address is bound to the
+ * function of that name here (EA_FORMATS_NATIVES), and the game's code
+ * calls it by name.
  *
  * A shape file ("SHPI") has its count at +8 and from +0x10 an entry of 8
  * bytes for each shape: its name, four characters, and where the shape is
@@ -49,7 +57,7 @@
  * has ended, its record at 0x9f0c20) that calls the eight callbacks of
  * 0x9f0c00 in turn, under the lock at 0x9f0c34 (0 when there is no timer).
  *
- * Each is a typed function under a name of its own, with an adapter under the
+ * Each is a typed function under a name of its own, with a thunk under the
  * game's name for the callers still on registers and the dispatch: it leaves
  * eax, and the registers the code does not keep, as the code leaves them --
  * what a callee left there flows through (an unpacker's, the timer's last
@@ -62,9 +70,9 @@
  * through its slot, Windows' functions through their imports' slots; every
  * other function of the game's by address -- Huffman's unpacker, which no
  * header has, and the runs' whose ebx and edx the code takes as it leaves
- * them -- the registers it keeps put back (KeptRegisters), at the code's
+ * them -- the registers it keeps put back (EspKept), at the code's
  * depth: Error hands vsprintf its arguments' address.  The waits' loops have
- * the generated code's safepoints. */
+ * the game's code's safepoints. */
 namespace nfs3hp
 {
 namespace ea
@@ -122,31 +130,6 @@ constexpr reg32 kExit = 0x4dfd04;
 // The unpackers called by address, by code.
 constexpr reg32 kUnpack10 = 0x5102a4, kUnpack30 = 0x50ed50, kUnpack4a = 0x510110;
 
-/* The registers a callee keeps as the code has them, put back after it. */
-class KeptRegisters
-{
-public:
-    explicit KeptRegisters(CPU& cpu)
-        : cpu_(cpu), ebx_(cpu.ebx), ecx_(cpu.ecx), edx_(cpu.edx), esi_(cpu.esi), edi_(cpu.edi), ebp_(cpu.ebp),
-          esp_(cpu.esp)
-    {
-    }
-    ~KeptRegisters()
-    {
-        cpu_.ebx = ebx_;
-        cpu_.ecx = ecx_;
-        cpu_.edx = edx_;
-        cpu_.esi = esi_;
-        cpu_.edi = edi_;
-        cpu_.ebp = ebp_;
-        cpu_.esp = esp_;
-    }
-
-private:
-    CPU& cpu_;
-    reg32 ebx_, ecx_, edx_, esi_, edi_, ebp_, esp_;
-};
-
 /* The code's depth on the guest's stack under esp on entry: `pushed` bytes of registers (and a
  * call's return address slot), then `bytes` of its frame; esp under them while it lasts. */
 class GuestFrame
@@ -163,13 +146,13 @@ private:
     const reg32 esp_;
 };
 
-/* A Windows function of one argument, the registers kept: the port's own, called as C++
- * (native_windows.h); in the check through its import's slot `Slot` (stdcall). */
+/* A Windows function of one argument: the port's own, called as C++ (native_windows.h); in the
+ * check through its import's slot `Slot` (stdcall).  What it leaves in eax, or nullopt when the game
+ * stopped; the registers the code keeps its thunks keep. */
 template <reg32 Slot, auto Function>
-bool windows(App* app, CPU& cpu, reg32 argument)
+std::optional<reg32> windows(App* app, CPU& cpu, reg32 argument)
 {
-    const KeptRegisters kept(cpu);
-    return guest::windows<Slot, Function>(app, cpu, argument).has_value();
+    return guest::windows<Slot, Function>(app, cpu, argument);
 }
 
 /* The big-endian number of `bytes` bytes at `address`. */
@@ -221,22 +204,12 @@ bool packError(App* app, CPU& cpu, reg32 function, reg32 line, reg32 format, reg
     return !cpu.terminate;
 }
 
-/* A code's unpacker: `data` unpacked to `to`, ebx `third` at the call -- 1 for those that take it,
- * 0x4a's its size -- and put back after as the code pops it; what it leaves in ecx and edx the code
- * leaves.  Its result -- for 0x4a's (`sizeHanded`) not its eax but the size handed, as it leaves
- * ebx -- or nullopt when the game stopped. */
-std::optional<reg32> runUnpacker(App* app, CPU& cpu, reg32 target, reg32 data, reg32 to, reg32 third,
-                                 bool sizeHanded = false)
+/* A code's unpacker in native_ea_net.cpp without a typed function (0x5102a4, 0x50ed50), by
+ * address: `data` unpacked to `to`, ebx 1 at the call (the tables read); its result, or nullopt when
+ * the game stopped. */
+std::optional<reg32> runUnpacker(App* app, CPU& cpu, reg32 target, reg32 data, reg32 to)
 {
-    const reg32 kept = cpu.ebx;
-    cpu.eax = data;
-    cpu.edx = to;
-    cpu.ebx = third;
-    if (!guest::call(app, cpu, target))
-        return std::nullopt;
-    const reg32 size = sizeHanded ? cpu.ebx : cpu.eax;
-    cpu.ebx = kept;
-    return size;
+    return guest::pointerCall(app, cpu, target, {data, to, 1});
 }
 
 /* 0x4ef270: the shape named by the four characters at `name` in the shape file at `file` -- the
@@ -265,7 +238,7 @@ ShapeFound findShape(App* app, reg32 file, reg32 name)
  * Lock's or the plain one; 0x80 to 0x8f shifted up a byte, 0x90 on without their top bit and
  * shifted up a byte.  Caps Lock's own key flips its state, 0 back; Ctrl+Esc leaves the game (exit
  * 0) when 0x564810 says so.  nullopt when the game stopped. */
-std::optional<reg32> scanCharacter(App* app, CPU& cpu, reg32 code)
+std::optional<reg32> scanCharacter(App* app, CPU& cpu, reg32 code, reg32 callerEcx)
 {
     if (code == kCapsLockKey)
     {
@@ -279,14 +252,14 @@ std::optional<reg32> scanCharacter(App* app, CPU& cpu, reg32 code)
     {
         if (at(app, kCtrlEscapeQuits) != 0 && code == kEscapeKey)
         {
-            // exit(0), the game's end, does not come back -- its stand-in does, and the code then
-            // reads the table at what ecx holds there: the caller's, as exit leaves it.  ebx and
-            // ecx pushed.
+            // exit(0), the game's end, the code then
+            // reads the table at what ecx holds there: the caller's (`callerEcx`), as exit leaves
+            // it.  ebx and ecx pushed.
             const GuestFrame pushed(cpu, 8, 0);
-            cpu.eax = 0;
-            if (!guest::call(app, cpu, kExit))
+            guest::direct<kExit, watcom::clib::exit>(app, cpu, 0u);
+            if (cpu.terminate)
                 return std::nullopt;
-            table = cpu.ecx;
+            table = callerEcx;
         }
         else
             table = kCtrlKeys;
@@ -307,16 +280,14 @@ std::optional<reg32> scanCharacter(App* app, CPU& cpu, reg32 code)
     return character;
 }
 
-/* 0x4f0100: the key hook's next key, 0 for none or without a hook; what the hook leaves in the
- * other registers the code leaves.  nullopt when the game stopped. */
+/* 0x4f0100: the key hook's next key, 0 for none or without a hook (the hook, a pointer in the
+ * game's memory, called by it).  nullopt when the game stopped. */
 std::optional<reg32> hookKey(App* app, CPU& cpu)
 {
     const reg32 hook = at(app, kKeyHook);
     if (hook == 0)
         return 0;
-    if (!guest::call(app, cpu, hook))
-        return std::nullopt;
-    return cpu.eax;
+    return guest::pointerCall(app, cpu, hook, {});
 }
 
 }  // namespace
@@ -330,7 +301,7 @@ std::optional<reg32> waitKey(App* app, CPU& cpu)
     put(app, kWhereFunction, kInkeyName);
     put(app, kWhereLine, kInkeyLine);
     {
-        // edx, ecx and ebx pushed: the check's Error hands vsprintf its arguments' address.
+        // edx, ecx and ebx pushed: Error hands vsprintf its arguments' address.
         const GuestFrame pushed(cpu, 0xc, 0);
         if (!guest::direct<0x501010, ea::surfaceUnlocked>(app, cpu, kInkeyName))
             return std::nullopt;
@@ -340,11 +311,10 @@ std::optional<reg32> waitKey(App* app, CPU& cpu)
     {
         if (app->contextWanted())
             app->yieldContext(cpu);
-        // Its result left in eax, as the call by address leaves it, for the key hook after it.
+        // Its result is nobody's: the key hook (0x4f00e0, the only one set) does not read eax.
         const port::Result done = guest::direct<0x4e7630, port::stream::runDueTasks>(app, cpu, cpu.esp - 4, 0u);
         if (!done)
             return std::nullopt;
-        cpu.eax = *done;
         std::optional<reg32> next;
         {
             // The call's return address.
@@ -387,37 +357,33 @@ std::optional<reg32> unpackTo(App* app, CPU& cpu, reg32 data, reg32 to)
     switch (byte(app, data) & 0xfe)
     {
     case 0x10:
-        return runUnpacker(app, cpu, kUnpack10, data, to, 1);
+        return runUnpacker(app, cpu, kUnpack10, data, to);
     case 0x18:
     {
-        // The blocks too; edx as the unpacker leaves it, which the code leaves.
+        // The blocks too.
         const Regs left = guest::direct<0x510760, ea::unpackDxt>(app, cpu, data, to, 1u);
         if (cpu.terminate)
             return std::nullopt;
-        cpu.edx = left.edx;
         return left.eax;
     }
     case 0x30:
     case 0x32:
     case 0x34:
-        return runUnpacker(app, cpu, kUnpack30, data, to, 1);
+        return runUnpacker(app, cpu, kUnpack30, data, to);
     case 0x46:
     {
-        // edx as the unpacker leaves it, which the code leaves.
         const Regs left = guest::direct<0x510870, ea::unpackPairs>(app, cpu, data, to);
         if (cpu.terminate)
             return std::nullopt;
-        cpu.edx = left.edx;
         return left.eax;
     }
     case 0x4a:
     {
-        // ecx pushed over it.
+        // ecx pushed over it.  The size handed in ebx, which the unpacker keeps, is the result.
         const GuestFrame kept(cpu, 4, 0);
-        const reg32 ecx = cpu.ecx;
-        const std::optional<reg32> size =
-            runUnpacker(app, cpu, kUnpack4a, data, to, bigEndian(app, data + kPackSize, 3), true);
-        cpu.ecx = ecx;
+        const reg32 size = bigEndian(app, data + kPackSize, 3);
+        if (!guest::direct<kUnpack4a, ea::unpackRuns>(app, cpu, data, to))
+            return std::nullopt;
         return size;
     }
     default:
@@ -547,7 +513,8 @@ std::optional<reg32> removeTimer(App* app, CPU& cpu, reg32 callback)
             put(app, kTimerCallbacks + (i - 1) * 4, at(app, kTimerCallbacks + i * 4));
         put(app, kLastTimerCallback, 0);
     }
-    if (!windows<kLeaveCriticalSection, &host::leaveLock>(app, cpu, at(app, kTimerLock)))
+    const std::optional<reg32> leaveLeft = windows<kLeaveCriticalSection, &host::leaveLock>(app, cpu, at(app, kTimerLock));
+    if (!leaveLeft)
         return std::nullopt;
     if (at(app, kTimerCallbacks) != 0)
         return 0;
@@ -556,7 +523,7 @@ std::optional<reg32> removeTimer(App* app, CPU& cpu, reg32 callback)
             return i * 4;
     // The call's return address; eax as the code has it there, what LeaveCriticalSection left.
     const GuestFrame call(cpu, 4, 0);
-    return stopTimer(app, cpu, cpu.eax);
+    return stopTimer(app, cpu, *leaveLeft);
 }
 
 namespace
@@ -619,8 +586,6 @@ std::optional<Loaded> loadPacked(App* app, CPU& cpu, reg32 name, reg32 flags)
         block = *unpackedBlock;
         if (block != 0)
         {
-            // What unpack leaves in the registers loadpackadr pops or sets after.
-            const KeptRegisters kept(cpu);
             const GuestFrame call(cpu, 4, 0);
             if (!unpackChecked(app, cpu, *copy, block))
                 return std::nullopt;
@@ -635,139 +600,190 @@ std::optional<Loaded> loadPacked(App* app, CPU& cpu, reg32 name, reg32 flags)
 
 }  // namespace
 
-void locateShape(App* app, CPU& cpu);
-void keyCharacter(App* app, CPU& cpu);
-void keyFromHook(App* app, CPU& cpu);
-void inkey(App* app, CPU& cpu);
-void flushKeys(App* app, CPU& cpu);
-void unpackQuietly(App* app, CPU& cpu);
-void unpack(App* app, CPU& cpu);
-void unpackSizeQuietly(App* app, CPU& cpu);
-void unpacksize(App* app, CPU& cpu);
-void stopLowTimer(App* app, CPU& cpu);
-void removeLowTimer(App* app, CPU& cpu);
-void loadpackadr(App* app, CPU& cpu);
+/* The cores of 0x4ef270, 0x4f0010, 0x4f0100 and 0x4f0240 for the menus' code (native_ea_formats.h). */
+reg32 shapeLocated(App* app, reg32 file, reg32 name)
+{
+    return findShape(app, file, name).shape;
+}
+
+std::optional<reg32> scanCodeCharacter(App* app, CPU& cpu, reg32 code, reg32 callerEcx)
+{
+    return scanCharacter(app, cpu, code, callerEcx);
+}
+
+std::optional<reg32> hookedKey(App* app, CPU& cpu)
+{
+    return hookKey(app, cpu);
+}
+
+std::optional<reg32> menuKeysFlushed(App* app, CPU& cpu)
+{
+    if (!flushMenuKeys(app, cpu))
+        return std::nullopt;
+    return 0;
+}
+
+x86::reg32 locateShape(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 keyCharacter(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 keyFromHook(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 inkey(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 flushKeys(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 unpackQuietly(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 unpack(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 unpackSizeQuietly(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 unpacksize(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 stopLowTimer(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 removeLowTimer(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 loadpackadr(App* app, CPU& cpu, x86::Args& args);
 
 /* 0x4ef270: findShape in the file at eax of the name at edx: eax the shape, edx left at the entry
  * the search stopped at (as it was in a file of none). */
-void locateShape(App* app, CPU& cpu)
+x86::reg32 locateShape(App* app, CPU& cpu, x86::Args& args)
 {
-    const reg32 file = cpu.eax;
-    const ShapeFound found = findShape(app, file, cpu.edx);
-    cpu.eax = found.shape;
+    const reg32 file = args.eax;
+    const ShapeFound found = findShape(app, file, args.edx);
+    args.eax = found.shape;
     if (at(app, file + kShapeCount) != 0)
-        cpu.edx = found.entry;
+        args.edx = found.entry;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4f0010: scanCharacter of scan code eax. */
-void keyCharacter(App* app, CPU& cpu)
+x86::reg32 keyCharacter(App* app, CPU& cpu, x86::Args& args)
 {
-    const std::optional<reg32> character = scanCharacter(app, cpu, cpu.eax);
+    std::optional<reg32> character;
+    {
+        const EspKept kept(cpu);
+        character = scanCharacter(app, cpu, args.eax, args.ecx);
+    }
     if (!character)
-        return;
-    cpu.eax = *character;
+        return args.eax;
+    args.eax = *character;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4f0100: hookKey. */
-void keyFromHook(App* app, CPU& cpu)
+x86::reg32 keyFromHook(App* app, CPU& cpu, x86::Args& args)
 {
     const std::optional<reg32> key = hookKey(app, cpu);
     if (!key)
-        return;
-    cpu.eax = *key;
+        return args.eax;
+    args.eax = *key;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4f0120: waitKey: eax the key. */
-void inkey(App* app, CPU& cpu)
+x86::reg32 inkey(App* app, CPU& cpu, x86::Args& args)
 {
     const std::optional<reg32> key = waitKey(app, cpu);
     if (!key)
-        return;
-    cpu.eax = *key;
+        return args.eax;
+    args.eax = *key;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4f0240: flushMenuKeys: eax the last key taken, none. */
-void flushKeys(App* app, CPU& cpu)
+x86::reg32 flushKeys(App* app, CPU& cpu, x86::Args& args)
 {
     if (!flushMenuKeys(app, cpu))
-        return;
-    cpu.eax = 0;
+        return args.eax;
+    args.eax = 0;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4f2560: unpackTo of the data at eax to edx: eax the size. */
-void unpackQuietly(App* app, CPU& cpu)
+x86::reg32 unpackQuietly(App* app, CPU& cpu, x86::Args& args)
 {
-    const std::optional<reg32> size = unpackTo(app, cpu, cpu.eax, cpu.edx);
+    const std::optional<reg32> size = unpackTo(app, cpu, args.eax, args.edx);
     if (!size)
-        return;
-    cpu.eax = *size;
+        return args.eax;
+    args.eax = *size;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4f2620: unpackChecked of the data at eax to edx: eax and edx the size. */
-void unpack(App* app, CPU& cpu)
+x86::reg32 unpack(App* app, CPU& cpu, x86::Args& args)
 {
-    const std::optional<reg32> size = unpackChecked(app, cpu, cpu.eax, cpu.edx);
+    const std::optional<reg32> size = unpackChecked(app, cpu, args.eax, args.edx);
     if (!size)
-        return;
-    cpu.eax = *size;
-    cpu.edx = *size;
+        return args.eax;
+    args.eax = *size;
+    args.edx = *size;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4f26a0: packedSize of the data at eax. */
-void unpackSizeQuietly(App* app, CPU& cpu)
+x86::reg32 unpackSizeQuietly(App* app, CPU& cpu, x86::Args& args)
 {
-    cpu.eax = packedSize(app, cpu.eax);
+    args.eax = packedSize(app, args.eax);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4f2710: packedSizeChecked of the data at eax. */
-void unpacksize(App* app, CPU& cpu)
+x86::reg32 unpacksize(App* app, CPU& cpu, x86::Args& args)
 {
-    const std::optional<reg32> size = packedSizeChecked(app, cpu, cpu.eax);
+    const std::optional<reg32> size = packedSizeChecked(app, cpu, args.eax);
     if (!size)
-        return;
-    cpu.eax = *size;
+        return args.eax;
+    args.eax = *size;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4f2830: stopTimer: eax as its last call left it (the caller's without a timer). */
-void stopLowTimer(App* app, CPU& cpu)
+x86::reg32 stopLowTimer(App* app, CPU& cpu, x86::Args& args)
 {
-    const std::optional<reg32> left = stopTimer(app, cpu, cpu.eax);
+    std::optional<reg32> left;
+    {
+        const EspKept kept(cpu);
+        left = stopTimer(app, cpu, args.eax);
+    }
     if (!left)
-        return;
-    cpu.eax = *left;
+        return args.eax;
+    args.eax = *left;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4f29b0: removeTimer of callback eax. */
-void removeLowTimer(App* app, CPU& cpu)
+x86::reg32 removeLowTimer(App* app, CPU& cpu, x86::Args& args)
 {
-    const std::optional<reg32> left = removeTimer(app, cpu, cpu.eax);
+    std::optional<reg32> left;
+    {
+        const EspKept kept(cpu);
+        left = removeTimer(app, cpu, args.eax);
+    }
     if (!left)
-        return;
-    cpu.eax = *left;
+        return args.eax;
+    args.eax = *left;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4f2e20: loadPacked of the file named eax, flags edx: eax the block; edx the block given back
  * last, or as loading the file left it. */
-void loadpackadr(App* app, CPU& cpu)
+x86::reg32 loadpackadr(App* app, CPU& cpu, x86::Args& args)
 {
-    const std::optional<Loaded> loaded = loadPacked(app, cpu, cpu.eax, cpu.edx);
+    std::optional<Loaded> loaded;
+    {
+        const EspKept kept(cpu);
+        loaded = loadPacked(app, cpu, args.eax, args.edx);
+    }
     if (!loaded)
-        return;
-    cpu.eax = loaded->block;
+        return args.eax;
+    args.eax = loaded->block;
     if (loaded->freed != 0)
-        cpu.edx = loaded->freed;
+        args.edx = loaded->freed;
     cpu.esp += 4;
+    return args.eax;
 }
 
 }  // namespace ea

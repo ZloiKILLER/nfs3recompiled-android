@@ -1,7 +1,10 @@
 #include "native_frontend_simb.h"
+#include "port_conv.h"
+#include "native_racestart.h"
 #include "game_settings.h"
 #include "native_ea_threads.h"
 #include "native_frontend.h"
+#include "native_frontend_fx.h"
 #include "native_frontend_sima.h"
 #include "native_frontend_simc.h"
 #include "native_frontend_simd.h"
@@ -13,7 +16,7 @@
 #include <cstring>
 
 /* A car on the track, the part of the simulation at 0x4a0aa0..0x4a2f40 that was
- * still generated code, decompiled:
+ * still to do, decompiled:
  *
  *   placed       a car put on a node of the road, its frames and its surface
  *                worked out from the node (sub_4a0aa0);
@@ -30,16 +33,16 @@
  *
  * A replay is the same to the bit only if every sum here is the x87's, in its
  * order, so nothing is rearranged: each fp:: call is an instruction's, its operands
- * in the order the generated code has them, a value that went through a float on
+ * in the order the game's code has them, a value that went through a float on
  * the stack goes through a float here, and a dword moved whole stays a dword, which
  * keeps a NaN's bits as a load through the x87 would not.
  *
  * The car's state stays in guest memory.  What is handed to the game by address
- * lives in the frame, where the generated function had it.
+ * lives in the frame, where the game's function had it.
  *
  * Plan step 5: each function a typed core in frontend::simb (native_frontend_simb.h), in
- * a frame of its own (fe::Frame: what it calls runs at the stack addresses it did), and an
- * adapter under the game's name for the calls by address.  A core of the simulation's files
+ * a frame of its own (fe::Frame: what it calls runs at the stack addresses it did), and a
+ * thunk under the game's name for the calls by address.  A core of the simulation's files
  * calls another as C++ (guest::direct), and the typed cores of other files too (fe::direct);
  * the rest of the game still by address. */
 #if defined(__clang__)
@@ -70,7 +73,6 @@ constexpr reg32 kEaseFrame = 0x4a1090;         // eax a car
 constexpr reg32 kClampSpin = 0x4a20c0;         // eax a car
 constexpr reg32 kSpinStep = 0x4a2e20;          // eax a car, edx the steps a second
 constexpr reg32 kZRotation = 0x4dfe40;         // eax a matrix, the stack the angle
-constexpr reg32 kDot = 0x4e01f0;               // eax and edx vectors; on the x87
 
 // The game's numbers.
 constexpr reg32 kNodes = 0x5dd948;             // the road's nodes, kNodeBytes each
@@ -258,8 +260,7 @@ void copyDwords(Guest& guest, reg32 to, reg32 from, reg32 count)
         guest.setDword(to + 4 * i, guest.dword(from + 4 * i));
 }
 
-/* A part of a node's vector for fild: the int8 as 16.16's 512 steps, what the
- * generated code gets from the dword it tops, shifted down and up again. */
+/* A part of a node's vector for fild: the int8 as 16.16's 512 steps, what the game's code gets from the dword it tops, shifted down and up again. */
 Float nodePart(const Guest& guest, reg32 node, reg32 part)
 {
     return Float(sreg32(std::int8_t(guest.byte(node + part))) * 512);
@@ -281,17 +282,14 @@ float floatWithBits(reg32 bits)
 
 /* A word the code pushes for a callee that takes the address of it (stdcall): put where the push
  * puts it, below esp, and esp below it while this lives, so the callee's frame lies where the
- * game's does.  In tools/frontend_checks the call goes by address and pushes it itself, at the
- * same place: there esp stays. */
+ * game's does. */
 class Pushed
 {
 public:
     Pushed(Guest& guest, x86::CPU& cpu, reg32 word) : m_cpu(cpu), m_esp(cpu.esp)
     {
         guest.setDword(m_esp - 4, word);
-#ifndef NFS_FRONTEND_CHECKS
         cpu.esp -= 4;
-#endif
     }
     ~Pushed() { m_cpu.esp = m_esp; }
     Pushed(const Pushed&) = delete;
@@ -350,7 +348,6 @@ x86::reg32 frontend::simb::placeOnRoad(App* app, CPU& cpu, reg32 car, reg32 node
     const reg32 frame = guest.frame();
     const reg32 position = car + kTrackPosition;
     // In ebx all through, and left there.
-    guest.leaveEbx(position);
     fe::direct<0x41e940, trackdata::resetPlace>(app, cpu, node, position);
 
     const reg32 nodeOffset = node * kNodeBytes;
@@ -384,14 +381,12 @@ x86::reg32 frontend::simb::placeOnRoad(App* app, CPU& cpu, reg32 car, reg32 node
 
     guest::direct<0x4a08c0, frontend::sima::carTrackEnvironment>(app, cpu, car);
     // Handed whether it faces back in edx too, which it does not read: there as the code has it.
-    guest.leaveEdx(facesBack);
     guest::direct<0x49ffa0, frontend::sima::carTrackFrame>(app, cpu, car);
-    guest.call(kFrameFromRoad, args({ car, facesBack }));
-    guest.call(kLastFrameFromRoad, args({ car, facesBack }));
+    fe::direct<kFrameFromRoad, port::conv::frameFromRoad>(guest.app(), guest.cpu(), car, facesBack);
+    fe::direct<kLastFrameFromRoad, port::conv::lastFrameFromRoad>(guest.app(), guest.cpu(), car, facesBack);
 
     store(guest, car + kRoadHeight, fp::mul(integerAt(guest, guest.dword(kNodes) + nodeOffset + 4), fromFixed));
-    guest.call(kRoadRise, args({ car }));
-    const Float rise = guest.fpu().take();
+    const Float rise = fe::direct<kRoadRise, port::conv::carLowestPoint>(guest.app(), guest.cpu(), car)->st0;
     guest.setDword(car + kClearance, 0);
     store(guest, car + kPlaceY, fp::sub(loadFloat(guest, car + kPlaceY), rise));
 
@@ -399,7 +394,6 @@ x86::reg32 frontend::simb::placeOnRoad(App* app, CPU& cpu, reg32 car, reg32 node
     if (guest.byte(car + kDetached) == 0)
     {
         // The 1 it is handed in edx stays there after it, and this function leaves edx as it is.
-        guest.leaveEdx(1);
         surface = fe::direct<0x4207e0, trackdata::placeSurface>(app, cpu, position, 1);
     }
     guest.setDword(car + kSurfaceWhole, surface);
@@ -699,10 +693,8 @@ x86::reg32 frontend::simb::reactToSurface(App* app, CPU& cpu, reg32 car, reg32 n
         }
     }
 
-    // By address: what it leaves in eax goes on below.
-    guest.call(kDot, args({ car + kVelocity, normal }));
-    const Float resting = guest.fpu().take();
-    reg32 eax = guest.eax();
+    const Float resting = Float(fe::direct<0x4e01f0, vertices::dotProduct>(app, cpu, car + kVelocity, normal));
+    reg32 eax = 0;
     if (!jb(fcom(eax, resting, loadFloat(guest, kBounceLimit))))
         return eax;
 
@@ -727,7 +719,7 @@ x86::reg32 frontend::simb::reactToSurface(App* app, CPU& cpu, reg32 car, reg32 n
         if (eax != 0 && !jb(fcom(eax, 0.0, loadFloat(guest, car + kClearance))))
         {
             guest.setWord(car + kContacts, 0);
-            return guest.call(kStartIdleShake, args({ car }));
+            return *fe::direct<kStartIdleShake, racestart::startIdleShakeOf>(guest.app(), guest.cpu(), car);
         }
     }
     if (sreg32(guest.dword(car + kUpright)) > kKickUprightBits)
@@ -767,7 +759,7 @@ x86::reg32 frontend::simb::hitTunnelRoof(App* app, CPU& cpu, reg32 car)
         const Pushed pushed(guest, cpu, 0);
         fe::direct<0x42efe0, raceload::boxHits>(app, cpu, car, down, point, pushed.address());
     }
-    return guest.call(kClampSpin, args({ car }));
+    return fe::direct<kClampSpin, port::conv::clampSpin>(guest.app(), guest.cpu(), car)->eax;
 }
 
 /* sub_4a2260: the downforce and the drag.  Upright and at a speed, going forward, a
@@ -779,8 +771,8 @@ namespace
 {
 
 /* Its body, a function of its own as it was before the core: fp:: is the host's arithmetic, which
- * of two NaNs keeps the one the compiler happens to put first, and laid out inside the core the
- * check's case 503 of 1000 (two NaNs of opposite signs) came out the other way round. */
+ * of two NaNs keeps the one the compiler happens to put first, and laid out inside the core a pair
+ * of NaNs of opposite signs came out the other way round. */
 reg32 downforceAndDragIn(win32::WinApplication* app, x86::CPU& cpu, Guest& guest, reg32 car)
 {
     constexpr reg32 kInverse = 0x00, kOnCar = 0x24;
@@ -874,8 +866,8 @@ x86::reg32 frontend::simb::settle(App* app, CPU& cpu, reg32 car)
     store(guest, car + kRightAgainstRoad, dotOf(cpu, guest, car + kFrame, up));
     store(guest, car + kUpright, dotOf(cpu, guest, car + kUp, up));
     store(guest, car + kForwardAgainstRoad, dotOf(cpu, guest, car + kForward, up));
-    guest.call(kFollowFrame, args({ car, up }, { guest.dword(car + kUpright) }));
-    guest.call(kEaseFrame, args({ car }));
+    fe::direct<kFollowFrame, port::conv::followFrame>(guest.app(), guest.cpu(), car, up, guest.dword(car + kUpright));
+    fe::direct<kEaseFrame, port::conv::easeFrame>(guest.app(), guest.cpu(), car);
 
     const Float fromFixed = doubleAt(guest, kFromFixedSettle);
     const reg32 point = guest.dword(kNodes) + guest.dword(car + kCurrentNode) * kNodeBytes;
@@ -895,7 +887,7 @@ x86::reg32 frontend::simb::settle(App* app, CPU& cpu, reg32 car)
 
 /* sub_4a2bc0: how far across the road the car is at its node: its point from the
  * node's, along the road's right.  The answer stays on the x87. */
-x86::reg32 frontend::simb::offsetAcross(App* app, CPU& cpu, reg32 car)
+double frontend::simb::offsetAcrossValue(App* app, CPU& cpu, reg32 car)
 {
     Guest guest(app, cpu);
     const fe::Frame locals(guest, cpu, 0x44);
@@ -908,8 +900,7 @@ x86::reg32 frontend::simb::offsetAcross(App* app, CPU& cpu, reg32 car)
     store(guest, frame + kNodePoint + 8, fp::mul(fromFixed, integerAt(guest, point + 8)));
     fe::direct<0x4e0000, vertices::offsetVectorList<false>>(app, cpu, 1, car + kPlace, frame + kNodePoint,
                                                              frame + kFromNode);
-    // By address: what it leaves in eax is this function's.
-    return guest.call(kDot, args({ car + kRoadFrame, frame + kFromNode }));
+    return guest::direct<0x4e01f0, vertices::dotProduct>(app, cpu, car + kRoadFrame, frame + kFromNode);
 }
 
 /* sub_4a2cc0: a turn by three angles, the stack's first three, as one matrix at `out`,
@@ -947,7 +938,7 @@ x86::reg32 frontend::simb::turnMatrix(App* app, CPU& cpu, reg32 out, reg32 angle
     }
     if (jb(fp::compare(0.0, z)))
     {
-        guest.call(kZRotation, args({ frame + kZOnly }, { angleZ }));
+        fx::callAt(guest, kZRotation, args({ frame + kZOnly }, { angleZ }));
         fe::direct<0x4e0280, vertices::multiplyMatrix>(app, cpu, frame + kYAndX, frame + kZOnly, out);
         turned = 1;
     }
@@ -964,103 +955,108 @@ x86::reg32 frontend::simb::spinThirtySecond(App* app, CPU& cpu, reg32 car)
 {
     Guest guest(app, cpu);
     const fe::Frame locals(guest, cpu, 8);
-    return guest.call(kSpinStep, args({ car, 0x20 }));
+    return fe::direct<kSpinStep, port::conv::spinStep>(guest.app(), guest.cpu(), car, 0x20)->eax;
 }
 
 x86::reg32 frontend::simb::spinSixtyFourth(App* app, CPU& cpu, reg32 car)
 {
     Guest guest(app, cpu);
     const fe::Frame locals(guest, cpu, 8);
-    return guest.call(kSpinStep, args({ car, 0x40 }));
+    return fe::direct<kSpinStep, port::conv::spinStep>(guest.app(), guest.cpu(), car, 0x40)->eax;
 }
 
 namespace
 {
 
-// The registers each function pushes, of those a stand-in restores.
+// The registers each function pushes, of those the function restores.
 constexpr std::uint8_t kKeepsEsiEdi = fe::kRestoreEsi | fe::kRestoreEdi;
 constexpr std::uint8_t kKeepsAllButEdx = fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi;
 
 }
 
-void frontend::simTrackPlaceOnRoad(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::simTrackPlaceOnRoad(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4a0aa0", 0, 0, nullptr, 0, kKeepsEsiEdi };
-    const reg32 car = cpu.eax, node = cpu.edx, offset = cpu.ebx, facesBack = cpu.ecx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return simb::placeOnRoad(app, cpu, car, node, offset, facesBack); });
+    const reg32 car = args.eax, node = args.edx, offset = args.ebx, facesBack = args.ecx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return simb::placeOnRoad(app, cpu, car, node, offset, facesBack); });
 }
 
-void frontend::simTrackProbeWalls(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::simTrackProbeWalls(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4a1210", 0, 0, nullptr, 0 };
-    const reg32 car = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return simb::probeWalls(app, cpu, car); });
+    const reg32 car = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return simb::probeWalls(app, cpu, car); });
 }
 
-void frontend::simTrackPredictContact(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::simTrackPredictContact(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4a1610", 12, 0, nullptr, 0 };
-    const reg32 car = cpu.eax, wanted = cpu.esp + 4;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return simb::predictContact(app, cpu, car, wanted); });
+    const reg32 car = args.eax, wanted = cpu.esp + 4;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return simb::predictContact(app, cpu, car, wanted); });
 }
 
-void frontend::simTrackReactToSurface(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::simTrackReactToSurface(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4a1ce0", 0, 0, nullptr, 0, kKeepsAllButEdx };
-    const reg32 car = cpu.eax, normal = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return simb::reactToSurface(app, cpu, car, normal); });
+    const reg32 car = args.eax, normal = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return simb::reactToSurface(app, cpu, car, normal); });
 }
 
-void frontend::simTrackTunnelRoof(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::simTrackTunnelRoof(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4a21a0", 0, 0, nullptr, 0 };
-    const reg32 car = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return simb::hitTunnelRoof(app, cpu, car); });
+    const reg32 car = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return simb::hitTunnelRoof(app, cpu, car); });
 }
 
-void frontend::simTrackDownforceAndDrag(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::simTrackDownforceAndDrag(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4a2260", 0, 0, nullptr, 0 };
-    const reg32 car = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return simb::downforceAndDrag(app, cpu, car); });
+    const reg32 car = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return simb::downforceAndDrag(app, cpu, car); });
 }
 
-void frontend::simTrackSettle(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::simTrackSettle(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4a2690", 0, 0, nullptr, 0 };
-    const reg32 car = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return simb::settle(app, cpu, car); });
+    const reg32 car = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return simb::settle(app, cpu, car); });
 }
 
-void frontend::simTrackOffsetAcross(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::simTrackOffsetAcross(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4a2bc0", 0, 0, nullptr, 0 };
-    const reg32 car = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return simb::offsetAcross(app, cpu, car); });
+    const reg32 car = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
+        // The answer on the x87's stack; eax what the dot product leaves there: its first vector.
+        args.floatSet = true;
+        args.floatResult = simb::offsetAcrossValue(app, cpu, car);
+        return car + kRoadFrame;
+    });
 }
 
-void frontend::simTrackTurnMatrix(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::simTrackTurnMatrix(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4a2cc0", 16, 0, nullptr, 0 };
-    const reg32 out = cpu.eax;
+    const reg32 out = args.eax;
     const reg32 angleX = guest::at(app, cpu.esp + 4), angleY = guest::at(app, cpu.esp + 8);
     const reg32 angleZ = guest::at(app, cpu.esp + 12), total = guest::at(app, cpu.esp + 16);
-    fe::runWhole(app, cpu, site,
+    return fe::runThunk(app, cpu, args, site,
                  [&](Guest&) { return simb::turnMatrix(app, cpu, out, angleX, angleY, angleZ, total); });
 }
 
-void frontend::simTrackSpinThirtySecond(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::simTrackSpinThirtySecond(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4a2f10", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    const reg32 car = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return simb::spinThirtySecond(app, cpu, car); });
+    const reg32 car = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return simb::spinThirtySecond(app, cpu, car); });
 }
 
-void frontend::simTrackSpinSixtyFourth(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::simTrackSpinSixtyFourth(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4a2f30", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    const reg32 car = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return simb::spinSixtyFourth(app, cpu, car); });
+    const reg32 car = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return simb::spinSixtyFourth(app, cpu, car); });
 }
 
 }

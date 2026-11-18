@@ -1,5 +1,7 @@
 #include "game_settings.h"
 #include "port_snd_sources.h"
+#include "port_sound_calls.h"
+#include "port_sound_effects.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -13,9 +15,7 @@
  * A siren's state is a word in each of five tables: on, which tone, the first
  * tone's ticks, the second's (-1: for ever) and the ticks gone.  Its sound is
  * the player's own for siren 4, else the cops' by siren; it plays in a slot of
- * the race's (the player's 0x10, the cops' 0x1b on).  The game's code keeps
- * esi and edi for its own use around the calls into SND, which read them where
- * a play fails, so these set them the same way (sources::HeldEsiEdi). */
+ * the race's (the player's 0x10, the cops' 0x1b on). */
 namespace nfs3hp
 {
 namespace port
@@ -24,8 +24,6 @@ namespace port
 namespace
 {
 
-using sources::callGameResult;
-using sources::HeldEsiEdi;
 using sources::quotient;
 using sources::shiftedToZero;
 
@@ -38,7 +36,8 @@ constexpr Var<int32_t> kCopBank{0x571160};
 constexpr Table<reg32> kSlotSounds{0x570de8, 8};  // the sound each of the race's slots plays (-1 none)
 constexpr Var<int32_t> kSpeedClamp{0x57126c}, kNoiseScale{0x55260c};
 
-// What is not rewritten here: the play of a slot, its stop, and an effect of a bank.
+// What the sirens call of the effects' (port_sound_effects.cpp): the play of a slot, its stop, and an effect of a
+// bank.
 constexpr reg32 kSlotPlay = 0x417080, kSlotStop = 0x416f60, kPlayEffect = 0x4182b0;
 
 // The slot of the player's siren, and the cops' from this on.
@@ -74,12 +73,10 @@ int32_t sirenSlot(int32_t siren) { return siren == kPlayerSirenIndex ? kPlayerSi
 Result toneStarted(App* app, CPU& cpu, reg32 esp, int32_t siren, int32_t tone, int32_t effect)
 {
     const reg32 frame = esp - 5 * 4;  // five pushes
-    const HeldEbp ebp(cpu, frame);
-    HeldEsiEdi held(cpu);
-    held.setEsi(reg32(siren));
     kSirenTone.set(app, siren, tone);
+    cpu.esp = frame;
     const Result handle =
-        callGameResult(app, cpu, frame, kPlayEffect, {reg32(kCopBank(app)), reg32(effect), 0, 0}, {0x40});
+        guest::direct<kPlayEffect, bankEffect>(app, cpu, frame - 8, kCopBank(app), effect, 0, 0u, uint8_t(0x40));
     if (!handle)
         return {};
     if (siren == kPlayerSirenIndex)
@@ -94,7 +91,6 @@ Result toneStarted(App* app, CPU& cpu, reg32 esp, int32_t siren, int32_t tone, i
 Result toneFaded(App* app, CPU& cpu, reg32 esp, reg32 pushes, int32_t siren, int32_t next)
 {
     const reg32 frame = esp - pushes * 4;
-    const HeldEbp ebp(cpu, frame);
     kSirenTone.set(app, siren, next);
     kSirenTicks.set(app, siren, 0);
     return fadeSound(app, cpu, frame - 4, sirenSound(app, siren), 5, -1);
@@ -114,11 +110,8 @@ int32_t sirenActive(App* app, int32_t siren) { return kSirenOn(app, siren); }
 Result sirenSwitchedOn(App* app, CPU& cpu, reg32 esp, int32_t siren, bool steady)
 {
     const reg32 frame = esp - 5 * 4;
-    const HeldEbp ebp(cpu, frame);
     if (kSirenOn(app, siren) != 0)
         return siren;
-    HeldEsiEdi held(cpu);
-    held.setEdi(1);
     kSirenOn.set(app, siren, 1);
     if (steady)
     {
@@ -134,7 +127,6 @@ Result sirenSwitchedOn(App* app, CPU& cpu, reg32 esp, int32_t siren, bool steady
         return toneStarted(app, cpu, frame - 4, siren, 1, 1);
     }
     const int32_t ticks = randomTicks(app, 0x78, 0xf0);
-    held.setEdi(0);
     kSirenTone.set(app, siren, 0);
     kSirenFirst.set(app, siren, ticks);
     return toneStarted(app, cpu, frame - 4, siren, 0, 0);
@@ -144,10 +136,6 @@ Result sirenSwitchedOn(App* app, CPU& cpu, reg32 esp, int32_t siren, bool steady
 Result sirenSwitchedOff(App* app, CPU& cpu, reg32 esp, int32_t siren)
 {
     const reg32 frame = esp - 6 * 4;
-    const HeldEbp ebp(cpu, frame);
-    HeldEsiEdi held(cpu);
-    held.setEsi(0xf0);
-    held.setEdi(0x78);
     kSirenOn.set(app, siren, 0);
     kSirenTone.set(app, siren, 0);
     kSirenFirst.set(app, siren, 0xf0);
@@ -161,10 +149,6 @@ Result sirenTicked(App* app, CPU& cpu, reg32 esp, int32_t siren, int32_t volume,
 {
     const reg32 frame = esp - 3 * 4;  // esi, edi and ebp pushed
     const reg32 at = frame - 0xc;     // and three locals: the code's esp from here on
-    const HeldEbp ebp(cpu, frame);
-    HeldEsiEdi held(cpu);
-    held.setEsi(reg32(siren));
-    held.setEdi(pan);
     if (kSirenOn(app, siren) == 0)
         return siren;
     if (kSirenTone(app, siren) == 0)
@@ -197,17 +181,17 @@ Result sirenTicked(App* app, CPU& cpu, reg32 esp, int32_t siren, int32_t volume,
     // The pitch (16.10) as a bend of 0..127.
     const int32_t bend = std::clamp(shiftedToZero(int32_t(uint32_t(pitch) << 6), 16), 0, 0x7f);
     const int32_t slot = sirenSlot(siren);
-    Result r = setBend(app, cpu, at - 4, kSlotSounds(app, slot), bend);
+    // SND's bend's error text reads ebx, esi and edi as the code has them: the slot, the siren, the pan.
+    Result r = setBendFrom(app, cpu, at - 4, kSlotSounds(app, slot), bend, reg32(slot), reg32(siren), pan);
     if (!r)
         return {};
     // The effects' volume times 63 (steady) or 85 (warbling), the siren's volume of it.
     const int32_t effects = gameSettings(app).effectsVolume;
     const int32_t scale = kSirenSecond(app, siren) == -1 ? imul(effects, 63) : imul(effects, 85);
-    r = setVolume(app, cpu, at - 4, kSlotSounds(app, slot), imul(volume, scale) >> 14);
+    r = setVolumeFrom(app, cpu, at - 4, kSlotSounds(app, slot), imul(volume, scale) >> 14, frame);
     if (!r)
         return {};
     const int32_t mode = gameSettings(app).soundSetup;
-    held.setEsi(reg32(mode));
     // 3D (or surround): placed by the angle, the middle without stereo; else panned by the stereo's side.
     if (mode == 2)
         return placeSound(app, cpu, at - 4, kSlotSounds(app, slot), pan, 0);
@@ -219,26 +203,20 @@ Result sirenTicked(App* app, CPU& cpu, reg32 esp, int32_t siren, int32_t volume,
 
 }  // namespace sources
 
-/* The game's entries -- each its adapter, the registers and the stack in, the
+/* The game's entries -- each its thunk, the registers and the stack in, the
  * result in eax out. */
 
-/* 0x417b80 (stdcall 8): the noise ecx of slot eax, effect edx, as loud as the
- * car is near -- [esp+4] its distance (0x15f9 and on: silent), [esp+8] its pan
- * -- or the slot stopped.  The noise is a car's knock (port_sound_crash.cpp)
- * at a 16th of ecx's force.  eax as the code leaves it. */
-void noiseByDistance(App* app, CPU& cpu)
+/* 0x417b80's: the noise `force` of slot `slot`, effect `effect`, as loud as
+ * the car is near -- `distance` (0x15f9 and on: silent), `pan` -- or the slot
+ * stopped.  The noise is a car's knock (port_sound_crash.cpp) at a 16th of
+ * the force.  eax as the code leaves it. */
+Result noiseByDistancePlayed(App* app, CPU& cpu, reg32 esp, int32_t slot, reg32 effect, reg32 material, reg32 force,
+                             int32_t distance, reg32 pan)
 {
-    const Entry e(cpu);
-    const reg32 frame = e.frame(3);
+    const reg32 frame = esp - 3 * 4;
     const reg32 at = frame - 4;  // and a local
-    const HeldEbp ebp(cpu, frame);
-    HeldEsiEdi held(cpu);
-    const int32_t slot = int32_t(e.eax);
-    held.setEsi(e.eax);
-    held.setEdi(e.edx);
     if (kEffectsOn(app) == 0)
-        return e.back(cpu, e.eax, 8);
-    const int32_t distance = int32_t(e.arg(app, 0));
+        return slot;
     int32_t eax = slot;
     bool audible = false;
     if (distance < kFar)
@@ -249,134 +227,145 @@ void noiseByDistance(App* app, CPU& cpu)
     if (!audible && slot != -1)
     {
         if (kSlotSounds(app, slot) != 0xffffffffu)
-            return e.finish(cpu, callGameResult(app, cpu, at, kSlotStop, {e.eax}), 8);
-        return e.back(cpu, reg32(eax), 8);
+        {
+            cpu.esp = at;
+            return guest::direct<kSlotStop, slotStopped>(app, cpu, at - 4, slot);
+        }
+        return eax;
     }
-    e.finish(cpu,
-             sources::knockPlayed(app, cpu, at - 8 - 4, slot, e.edx, e.ebx, int32_t(e.ecx) >> 4, distance,
-                                  e.arg(app, 1)),
+    return sources::knockPlayed(app, cpu, at - 8 - 4, slot, effect, material, int32_t(force) >> 4, distance, pan);
+}
+
+/* 0x417b80 (stdcall 8): the noise ecx of slot eax, effect edx, material ebx,
+ * [esp+4] its distance, [esp+8] its pan. */
+x86::reg32 noiseByDistance(App* app, CPU& cpu, x86::Args& args)
+{
+    const Entry e(cpu, args);
+    return e.finish(cpu, args,
+             noiseByDistancePlayed(app, cpu, e.esp, int32_t(e.eax), e.edx, e.ebx, e.ecx, int32_t(e.arg(app, 0)),
+                                   e.arg(app, 1)),
              8);
+    return args.eax;
 }
 
-/* 0x417c00: the player's noise (slot 0x10, the second player's 0x11 by eax in
- * the split screen), effect 3, at pitch ebx, as loud as edx is short of 0x15f9,
- * pan ecx. */
-void playerNoise(App* app, CPU& cpu)
+/* 0x417c00's: the player's noise (slot 0x10, the second player's 0x11 by
+ * `player` in the split screen), effect 3, at pitch `pitch`, as loud as
+ * `distance` is short of 0x15f9, pan `pan`.  `player` with the effects off. */
+Result playerNoisePlayed(App* app, CPU& cpu, reg32 esp, reg32 player, int32_t distance, reg32 pitch, reg32 pan)
 {
-    const Entry e(cpu);
-    const reg32 frame = e.frame(3);
-    const HeldEbp ebp(cpu, frame);
-    HeldEsiEdi held(cpu);
-    held.setEsi(e.eax);
+    const reg32 frame = esp - 3 * 4;
     if (kEffectsOn(app) == 0)
-        return e.back(cpu, e.eax);
-    const int32_t distance = int32_t(e.edx);
-    if (distance < kFar)
-        held.setEdi(kFar);
-    const int32_t slot = e.eax != 0 && gameSettings(app).playMode == 1 ? 0x11 : kPlayerSirenSlot;
-    const reg32 volume = reg32(nearness(distance, kFar));
-    e.finish(cpu, callGameResult(app, cpu, frame, kSlotPlay, {reg32(slot), 3, e.ebx, volume}, {e.ecx}));
+        return int32_t(player);
+    const int32_t slot = player != 0 && gameSettings(app).playMode == 1 ? 0x11 : kPlayerSirenSlot;
+    const int32_t volume = nearness(distance, kFar);
+    cpu.esp = frame;
+    return guest::direct<kSlotPlay, slotPlayed>(app, cpu, frame - 8, slot, 3, volume, int32_t(pitch), pan);
 }
 
-/* 0x417c70: the player's noise stopped (the second player's by eax in the
- * split screen). */
-void playerNoiseStop(App* app, CPU& cpu)
+/* 0x417c70's: the player's noise stopped (the second player's by `player` in
+ * the split screen).  `player` with the effects off. */
+Result playerNoiseStopped(App* app, CPU& cpu, reg32 esp, reg32 player)
 {
-    const Entry e(cpu);
-    const reg32 frame = e.frame(1);
-    const HeldEbp ebp(cpu, frame);
+    const reg32 frame = esp - 4;
     if (kEffectsOn(app) == 0)
-        return e.back(cpu, e.eax);
-    const reg32 slot = e.eax != 0 && gameSettings(app).playMode == 1 ? 0x11 : kPlayerSirenSlot;
-    e.finish(cpu, callGameResult(app, cpu, frame, kSlotStop, {slot}));
+        return int32_t(player);
+    const int32_t slot = player != 0 && gameSettings(app).playMode == 1 ? 0x11 : kPlayerSirenSlot;
+    cpu.esp = frame;
+    return guest::direct<kSlotStop, slotStopped>(app, cpu, frame - 4, slot);
+}
+
+/* 0x417c00: the player's noise, eax the player, edx the distance, ebx the
+ * pitch, ecx the pan. */
+x86::reg32 playerNoise(App* app, CPU& cpu, x86::Args& args)
+{
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, playerNoisePlayed(app, cpu, e.esp, e.eax, int32_t(e.edx), e.ebx, e.ecx));
+}
+
+/* 0x417c70: the player's noise stopped, eax the player. */
+x86::reg32 playerNoiseStop(App* app, CPU& cpu, x86::Args& args)
+{
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, playerNoiseStopped(app, cpu, e.esp, e.eax));
 }
 
 /* 0x417ca0: whether siren eax is on. */
-void sirenIsOn(App* app, CPU& cpu)
+x86::reg32 sirenIsOn(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, reg32(sources::sirenActive(app, int32_t(e.eax))));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, reg32(sources::sirenActive(app, int32_t(e.eax))));
 }
 
 /* 0x417cb0: siren eax's first tone (effect 0). */
-void sirenFirstTone(App* app, CPU& cpu)
+x86::reg32 sirenFirstTone(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, toneStarted(app, cpu, e.esp, int32_t(e.eax), 0, 0));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, toneStarted(app, cpu, e.esp, int32_t(e.eax), 0, 0));
 }
 
 /* 0x417db0: siren eax's second tone (effect 1). */
-void sirenSecondTone(App* app, CPU& cpu)
+x86::reg32 sirenSecondTone(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, toneStarted(app, cpu, e.esp, int32_t(e.eax), 1, 1));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, toneStarted(app, cpu, e.esp, int32_t(e.eax), 1, 1));
 }
 
 /* 0x417e00: siren eax's one tone for ever (effect 9). */
-void sirenSteadyTone(App* app, CPU& cpu)
+x86::reg32 sirenSteadyTone(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, toneStarted(app, cpu, e.esp, int32_t(e.eax), 1, 9));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, toneStarted(app, cpu, e.esp, int32_t(e.eax), 1, 9));
 }
 
 /* 0x417d00: siren eax's first tone faded out, the second's turn. */
-void sirenFirstDone(App* app, CPU& cpu)
+x86::reg32 sirenFirstDone(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, toneFaded(app, cpu, e.esp, 4, int32_t(e.eax), 1));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, toneFaded(app, cpu, e.esp, 4, int32_t(e.eax), 1));
 }
 
 /* 0x417e60: siren eax's second tone faded out, the first's turn. */
-void sirenSecondDone(App* app, CPU& cpu)
+x86::reg32 sirenSecondDone(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, toneFaded(app, cpu, e.esp, 3, int32_t(e.eax), 0));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, toneFaded(app, cpu, e.esp, 3, int32_t(e.eax), 0));
 }
 
 /* 0x417eb0: siren eax on, if it is not: steady (edx not 0), or warbling --
  * from either tone at random, for a random while. */
-void sirenStart(App* app, CPU& cpu)
+x86::reg32 sirenStart(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, sources::sirenSwitchedOn(app, cpu, e.esp, int32_t(e.eax), e.edx != 0));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, sources::sirenSwitchedOn(app, cpu, e.esp, int32_t(e.eax), e.edx != 0));
 }
 
 /* 0x417f60: siren eax off, faded out, its state as it starts. */
-void sirenStop(App* app, CPU& cpu)
+x86::reg32 sirenStop(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, sources::sirenSwitchedOff(app, cpu, e.esp, int32_t(e.eax)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, sources::sirenSwitchedOff(app, cpu, e.esp, int32_t(e.eax)));
 }
 
 /* 0x417fd0: siren eax's tick: its tones turned when their ticks are up, its
  * volume edx, pitch ebx (16.10) and pan ecx set. */
-void sirenTick(App* app, CPU& cpu)
+x86::reg32 sirenTick(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, sources::sirenTicked(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx), int32_t(e.ebx), e.ecx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, sources::sirenTicked(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx), int32_t(e.ebx), e.ecx));
 }
 
-/* 0x4179d0 (stdcall 12): slot eax's noise edx -- 1 a car's, 0 the road's,
- * else another's -- at pitch ecx times ebx (16.16), as loud as [esp+4] (its
- * distance) is short of 0x15f (a car's) or 0x15f9, and as [esp+0xc] (its
- * speed) says; pan [esp+8].  Silent: the slot stopped.  eax as the code
- * leaves it: the last quotient it worked out when nothing plays. */
-void noiseBySpeed(App* app, CPU& cpu)
+/* 0x4179d0's: slot `slot`'s noise `kind` -- 1 a car's, 0 the road's, else
+ * another's -- at pitch `ecx` times `ebx` (16.16), as loud as `distance` is
+ * short of 0x15f (a car's) or 0x15f9, and as `speed` says; pan `pan`.  Silent:
+ * the slot stopped.  eax as the code leaves it: the last quotient it worked
+ * out when nothing plays. */
+Result noiseBySpeedPlayed(App* app, CPU& cpu, reg32 esp, int32_t slot, reg32 kind, reg32 ecx, reg32 ebx,
+                          int32_t distance, reg32 pan, int32_t speed)
 {
-    const Entry e(cpu);
-    const reg32 frame = e.frame(3);
+    const reg32 frame = esp - 3 * 4;
     const reg32 at = frame - 8;  // and two locals
-    const HeldEbp ebp(cpu, frame);
-    HeldEsiEdi held(cpu);
-    const int32_t slot = int32_t(e.eax);
-    const reg32 kind = e.edx;
-    held.setEsi(e.eax);
-    held.setEdi(kind);
     if (kEffectsOn(app) == 0)
-        return e.back(cpu, e.eax, 0xc);
-    const int32_t distance = int32_t(e.arg(app, 0));
-    const reg32 pan = e.arg(app, 1);
-    const int32_t speed = int32_t(e.arg(app, 2));
+        return slot;
     int32_t eax = slot;  // as the code has it as it goes
     int32_t loud;
     if (kind == 1)
@@ -390,7 +379,7 @@ void noiseBySpeed(App* app, CPU& cpu)
     else
     {
         // Else the effects' 40ths of it again, at most 127.
-        eax = shiftedToZero(imul(int32_t(e.ebx + 0x28), nearness(distance, kFar)), 7);
+        eax = shiftedToZero(imul(int32_t(ebx + 0x28), nearness(distance, kFar)), 7);
         eax = std::min(eax, 0x7f);
         eax = std::max(eax, 0);
         loud = eax;
@@ -415,11 +404,27 @@ void noiseBySpeed(App* app, CPU& cpu)
     if (volume == 0 && slot != -1)
     {
         if (kSlotSounds(app, slot) != 0xffffffffu)
-            return e.finish(cpu, callGameResult(app, cpu, at, kSlotStop, {e.eax}), 0xc);
-        return e.back(cpu, reg32(eax), 0xc);
+        {
+            cpu.esp = at;
+            return guest::direct<kSlotStop, slotStopped>(app, cpu, at - 4, slot);
+        }
+        return eax;
     }
-    const int32_t pitch = shiftedToZero(imul(int32_t(e.ecx), int32_t(e.ebx)), 16);
-    e.finish(cpu, callGameResult(app, cpu, at, kSlotPlay, {e.eax, kind, reg32(pitch), reg32(volume)}, {pan}), 0xc);
+    const int32_t pitch = shiftedToZero(imul(int32_t(ecx), int32_t(ebx)), 16);
+    cpu.esp = at;
+    return guest::direct<kSlotPlay, slotPlayed>(app, cpu, at - 8, slot, int32_t(kind), volume, pitch, pan);
+}
+
+/* 0x4179d0 (stdcall 12): slot eax's noise edx at pitch ecx times ebx,
+ * [esp+4] its distance, [esp+8] its pan, [esp+0xc] its speed. */
+x86::reg32 noiseBySpeed(App* app, CPU& cpu, x86::Args& args)
+{
+    const Entry e(cpu, args);
+    return e.finish(cpu, args,
+             noiseBySpeedPlayed(app, cpu, e.esp, int32_t(e.eax), e.edx, e.ecx, e.ebx, int32_t(e.arg(app, 0)),
+                                e.arg(app, 1), int32_t(e.arg(app, 2))),
+             0xc);
+    return args.eax;
 }
 
 }  // namespace port

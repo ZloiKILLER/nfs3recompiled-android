@@ -1,6 +1,9 @@
 #include "game_settings.h"
+#include "native_frontend_loada.h"
+#include "port_snd_calls.h"
 #include "port_snd_play.h"
 #include "port_snd_voices.h"
+#include "port_sound_effects.h"
 #include "port_sound_slice.h"
 #include "port_sound_racesetup.h"
 
@@ -33,10 +36,11 @@ struct Slot
 constexpr Table<Slot> kSlots{0x570de8};
 constexpr int32_t kSlotCount = 0x27;
 
-// The game's functions the race's sound calls.
+// The game's functions the race's sound calls: its fellow rewrites (as C++), what has no typed function yet (by
+// address).
 constexpr reg32 kSlotStop = 0x416f60, kCopSirenStop = 0x411ca0, kCopSourceReset = 0x411620;
 constexpr reg32 kEngineSoundsStart = 0x414830, kCarsReset = 0x4c8370, kCarsRestore = 0x4c8440;
-constexpr reg32 kPending = 0x4a33d0, kSetMasterVolume = 0x4e73d0, kStopAllSounds = 0x4e9010, kRemoveBanks = 0x4e8c1c;
+constexpr reg32 kSetMasterVolume = 0x4e73d0, kStopAllSounds = 0x4e9010, kRemoveBanks = 0x4e8c1c;
 constexpr reg32 kBusDown = 0x418790;
 
 /* The slots emptied: 1..0x27, the sound -1 and its effect -1. */
@@ -48,64 +52,79 @@ void slotsEmptied(App* app)
 
 }  // namespace
 
-/* 0x4121b0: cop car eax's sounds stopped (its slot 4 on too, unless edx),
- * its source reset for car edx.  eax as the reset leaves it. */
-void copRemove(App* app, CPU& cpu)
+/* 0x4121b0's: cop car `car`'s sounds stopped (its slot 4 on too, unless
+ * `keep`), its source reset for car `keep`.  eax as the reset leaves it. */
+Result copRemoved(App* app, CPU& cpu, reg32 esp, reg32 car, reg32 keep)
 {
-    const Entry e(cpu);
-    const reg32 frame = e.frame(3);
-    const HeldEbp ebp(cpu, frame);
-    Game g(app, cpu, frame);
-    const reg32 car = e.eax;
+    const reg32 frame = esp - 3 * 4;
     const reg32 source = car * 56 + 0x570b78;  // the car's source, 56 bytes a car
-    reg32 eax = e.eax;
+    reg32 eax = car;
+    const auto slotStop = [&](reg32 slot) {
+        cpu.esp = frame;
+        return tookEax(guest::direct<kSlotStop, slotStopped>(app, cpu, frame - 4, int32_t(slot)), eax);
+    };
     if (app->getMemory<reg32>(car * 56 + 0x570b78) != 0)
     {
-        if (e.edx == 0 && !g.call(kSlotStop, {car + 4, e.edx, car * 8, car}, eax))
-            return;
-        if (!g.call(kCopSirenStop, {car, e.edx, car * 8, car}, eax)
-            || !g.call(kSlotStop, {car + 0x16, e.edx, car * 8, car}, eax)
-            || !g.call(kSlotStop, {car + 0x1b, e.edx, car * 8, car}, eax))
-            return;
+        if (keep == 0 && !slotStop(car + 4))
+            return {};
+        cpu.esp = frame;
+        if (!tookEax(guest::direct<kCopSirenStop, copSirenStopped>(app, cpu, frame - 4, int32_t(car)), eax)
+            || !slotStop(car + 0x16) || !slotStop(car + 0x1b))
+            return {};
         const int32_t cops = int32_t(reg32(kCopsPlaying(app)) - 1);  // wrapping, as the code's dec
-        g.esi = reg32(cops);
         kCopsPlaying.set(app, cops);
         if (cops < 0)
             kCopsPlaying.set(app, 0);
     }
-    if (!g.call(kCopSourceReset, {source, e.edx, car * 8, car * 56}, eax))
-        return;
-    e.back(cpu, eax);
+    cpu.esp = frame;
+    eax = guest::direct<kCopSourceReset, sourceResetTo>(app, cpu, source, keep);
+    if (cpu.terminate)
+        return {};
+    return int32_t(eax);
+}
+
+/* 0x4121b0: cop car eax's sounds stopped (its slot 4 on too, unless edx),
+ * its source reset for car edx. */
+x86::reg32 copRemove(App* app, CPU& cpu, x86::Args& args)
+{
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, copRemoved(app, cpu, e.esp, e.eax, e.edx));
 }
 
 /* 0x4127b0: car eax's +0x624 compared with 0, the flags its caller tests --
  * which no caller does now: nothing. */
-void carFlagTest(App*, CPU& cpu)
+x86::reg32 carFlagTest(App*, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, e.eax);
+    const Entry e(cpu, args);
+    return e.back(cpu, args, e.eax);
 }
 
 /* 0x4129a0: the race's 0x6fd2b4. */
-void raceValue(App* app, CPU& cpu)
+x86::reg32 raceValue(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, reg32(gameSettings(app).recordsHolder));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, reg32(gameSettings(app).recordsHolder));
+}
+
+/* 0x4129b0's: nothing: eax as it came. */
+reg32 eaxKept(App*, reg32 eax)
+{
+    return eax;
 }
 
 /* 0x4129b0: nothing. */
-void soundNothing(App*, CPU& cpu)
+x86::reg32 soundNothing(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, e.eax);
+    const Entry e(cpu, args);
+    return e.back(cpu, args, eaxKept(app, e.eax));
 }
 
 /* 0x414800: the slots 1..0x27 emptied.  eax as the loop leaves it: 0x27. */
-void slotsEmpty(App* app, CPU& cpu)
+x86::reg32 slotsEmpty(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     slotsEmptied(app);
-    e.back(cpu, kSlotCount);
+    return e.back(cpu, args, kSlotCount);
 }
 
 /* 0x4136e0's: the race's first bank (<audio dir> and 0x536a20's name) loaded
@@ -115,41 +134,36 @@ Result raceBankLoadOf(App* app, CPU& cpu, reg32 esp)
 {
     const reg32 frame = esp - 6 * 4;
     const reg32 name = frame - 0x64;
-    const HeldEbp ebp(cpu, frame);
-    Game g(app, cpu, name);
-    g.esi = copyText(app, name, 0x7a2ab4);
-    appendText(app, name, 0x536a20, &g.esi);
-    g.edi = name;
-    g.sync();
+    copyText(app, name, 0x7a2ab4);
+    appendText(app, name, 0x536a20);
     return bankLoaded(app, cpu, name - 4, name, 0, 0x10, name);
 }
 
 /* 0x4136e0: the race's first bank (<audio dir> and 0x536a20's name) loaded
  * into slot 0, with 0x10 for the load. */
-void raceBankLoad(App* app, CPU& cpu)
+x86::reg32 raceBankLoad(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, raceBankLoadOf(app, cpu, e.esp));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, raceBankLoadOf(app, cpu, e.esp));
 }
 
-/* 0x4129c0: the race's sound set up: the slots emptied, the engines started,
+/* 0x4129c0's: the race's sound set up: the slots emptied, the engines started,
  * the cops' radio's banks picked (by the car, the second set for 0x6fd4c0),
  * the speech reset; for each of 8 cars (0x4a33d0 between) its sounds'
  * state cleared; the music's state, a random pick of 0x6fd4b4, the volumes
- * kept for the end, the master volume at 0x78. */
-void raceSoundInit(App* app, CPU& cpu)
+ * kept for the end, the master volume at 0x78.  `eax` as the code has it. */
+Result raceSoundsSetUp(App* app, CPU& cpu, reg32 esp, reg32 eax)
 {
-    const Entry e(cpu);
-    const reg32 frame = e.frame(6);
+    const reg32 frame = esp - 6 * 4;
     const HeldEbp ebp(cpu, frame);
     Game g(app, cpu, frame);
-    reg32 eax = e.eax;
     if (kEffectsOn(app) != 0)
     {
         app->getMemory<uint8_t>(0x552858) = 4;
         slotsEmptied(app);
-        if (!g.call(kEngineSoundsStart, {kSlotCount, e.edx, e.ebx, e.ecx}, eax))
-            return;
+        g.atCall();
+        if (!tookEax(guest::direct<kEngineSoundsStart, engineSoundsStarted>(app, cpu, frame - 4, reg32(kSlotCount)), eax))
+            return {};
         const int32_t car = gameSettings(app).track;
         if (car < 0xa)
         {
@@ -160,7 +174,6 @@ void raceSoundInit(App* app, CPU& cpu)
         }
         else
         {
-            g.esi = 0xffffffff;
             app->getMemory<reg32>(0x571238) = 0xffffffff;
             app->getMemory<reg32>(0x571240) = 0xffffffff;
         }
@@ -168,14 +181,16 @@ void raceSoundInit(App* app, CPU& cpu)
         app->getMemory<reg32>(0x552860) = 0;
         app->getMemory<reg32>(0x55285c) = 0;
     }
-    if (!g.call(kCarsReset, {eax}, eax))
-        return;
+    g.atCall();
+    if (!tookEax(guest::direct<kCarsReset, speechSetUp>(app, cpu, frame - 4), eax))
+        return {};
     // The 8 cars' sounds cleared (1..8 in the tables, the code's).
     for (reg32 car = 1; car <= 8; ++car)
     {
-        if (!g.call(kPending, {eax}, eax))
-            return;
-        g.esi = 0x200;
+        g.atCall();
+        eax = guest::direct<0x4a33d0, frontend::loada::stopCheck>(app, cpu);
+        if (cpu.terminate)
+            return {};
         for (const reg32 table : {0x570f47u, 0x570ddfu, 0x570f3fu, 0x571097u, 0x57106fu, 0x5710c7u})
             app->getMemory<uint8_t>(car + table) = 0;
         app->getMemory<reg32>(car * 4 + 0x5710ec) = 0;
@@ -184,7 +199,6 @@ void raceSoundInit(App* app, CPU& cpu)
     }
     // The slots' pans (the code writes the one byte each time).
     app->getMemory<uint8_t>(0x57126b) = 0x40;
-    g.edi = 0xffffffff;
     app->getMemory<uint8_t>(0x552930) = 0;
     app->getMemory<uint8_t>(0x552859) = 0;
     app->getMemory<uint8_t>(0x55285a) = 0;
@@ -202,9 +216,24 @@ void raceSoundInit(App* app, CPU& cpu)
     app->getMemory<reg32>(0x552920) = reg32(gameSettings(app).effectsVolume);
     app->getMemory<reg32>(0x552924) = reg32(gameSettings(app).engineVolume);
     app->getMemory<reg32>(0x552c38) = 0;
-    if (!g.call(kSetMasterVolume, {0x78}, eax))
-        return;
-    e.back(cpu, eax);
+    g.atCall();
+    if (!tookEax(guest::direct<kSetMasterVolume, setMasterVolume>(app, cpu, g.esp - 4, 0x78), eax))
+        return {};
+    return int32_t(eax);
+}
+
+/* 0x4129c0's core: the race's sound set up.  The eax the code has at the call is read by nothing: the
+ * slots' work and the speech reset each put a result in it before it is used. */
+Result raceSoundInitOf(App* app, CPU& cpu, reg32 esp)
+{
+    return raceSoundsSetUp(app, cpu, esp, 0);
+}
+
+/* 0x4129c0: the race's sound set up. */
+x86::reg32 raceSoundInit(App* app, CPU& cpu, x86::Args& args)
+{
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, raceSoundsSetUp(app, cpu, e.esp, e.eax));
 }
 
 /* 0x412b50: the race's sound ended: the master volume faded out a step at a
@@ -220,14 +249,15 @@ Result raceSoundEndOf(App* app, CPU& cpu, reg32 esp)
     reg32 eax = 0;
     for (int32_t level = 0x7f;;)
     {
-        // The delay: the generated code's loop, a safepoint a turn.
+        // The delay: the game's code's loop, a safepoint a turn.
         volatile reg32 turns = 1;
         while (turns < 0x2fffd)
         {
             safepoint(app, cpu);
             turns = turns + 1;
         }
-        if (!g.call(kSetMasterVolume, {reg32(level)}, eax))
+        g.atCall();
+        if (!tookEax(guest::direct<kSetMasterVolume, setMasterVolume>(app, cpu, g.esp - 4, level), eax))
             return std::nullopt;
         if (--level < 0)
             break;
@@ -245,12 +275,20 @@ Result raceSoundEndOf(App* app, CPU& cpu, reg32 esp)
             return std::nullopt;
         eax = reg32(*freed);
     }
-    if (kBusUsed(app) != 0 && !g.call(kBusDown, {eax}, eax))
-        return std::nullopt;
+    if (kBusUsed(app) != 0)
+    {
+        g.atCall();
+        if (!tookEax(guest::direct<kBusDown, busLevelDown>(app, cpu, g.esp - 4), eax))
+            return std::nullopt;
+    }
     const Result stopped = musicStopped(app, cpu, frame - 4, eax);
     if (!stopped)
         return std::nullopt;
-    if (!g.call(kSetMasterVolume, {0x7f}, eax) || !g.call(kCarsRestore, {eax}, eax))
+    g.atCall();
+    if (!tookEax(guest::direct<kSetMasterVolume, setMasterVolume>(app, cpu, g.esp - 4, 0x7f), eax))
+        return std::nullopt;
+    g.atCall();
+    if (!tookEax(guest::direct<kCarsRestore, speechScriptFreed>(app, cpu, g.esp - 4, eax), eax))
         return std::nullopt;
     gameSettings(app).effectsVolume = kEffectsKept(app);
     gameSettings(app).engineVolume = kEngineKept(app);
@@ -258,10 +296,10 @@ Result raceSoundEndOf(App* app, CPU& cpu, reg32 esp)
     return kMusicOnKept(app);
 }
 
-void raceSoundEnd(App* app, CPU& cpu)
+x86::reg32 raceSoundEnd(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, raceSoundEndOf(app, cpu, e.esp));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, raceSoundEndOf(app, cpu, e.esp));
 }
 
 }  // namespace port

@@ -1,5 +1,7 @@
 #include "game_settings.h"
+#include "native_frontend_simd.h"
 #include "port_snd_3d.h"
+#include "port_sound_effects.h"
 
 /* The race's sound in space, rewritten (port.h says how): where a sound's
  * source is from the listener -- its distance (the code's cheap one, the
@@ -26,8 +28,7 @@ constexpr Var<double> kDistanceScale{0x536918}, kAngleScale{0x536920}, kCarAngle
 constexpr Var<double> kAheadScale{0x536960}, kCellUnit{0x536968};
 constexpr Var<double> kAcrossScale{0x536970}, kAcrossUnit{0x536978};
 constexpr reg32 kLastPlaces = 0x570a60, kMoved = 0x570dc0;
-constexpr reg32 kAngle = 0x4e8f28;      // SNDangle (port_sound_effects.cpp)
-constexpr reg32 kTrackCell = 0x4970c0;  // the track's cell at a place; its record in edx
+constexpr reg32 kAngle = 0x4e8f28;      // SNDangle (port_sound_effects.cpp's vectorAngle)
 
 int32_t sum(int32_t a, int32_t b) { return int32_t(uint32_t(a) + uint32_t(b)); }
 
@@ -99,8 +100,9 @@ Result angleFromAxes(App* app, CPU& cpu, reg32 esp, reg32 listener, reg32 vector
     const int32_t second = scaledTop<Real>(top, scale);
     if (gameSettings(app).mirrored != 0)
         first = negated(first);
-    reg32 angle;
-    if (!callGame(app, cpu, esp, kAngle, {reg32(first >> 8), reg32(second >> 8)}, {}, angle))
+    cpu.esp = esp;
+    const reg32 angle = guest::direct<kAngle, vectorAngle>(app, cpu, first >> 8, second >> 8);
+    if (cpu.terminate)
         return {};
     return int32_t((angle << 6) & 0xffff);
 }
@@ -132,7 +134,10 @@ Result aheadIn(App* app, CPU& cpu, reg32 esp, const Vec3& place, reg32 record)
     const reg32 direction = kListenerDirection(app);
     for (int k = 0; k < 3; ++k)
         store<int32_t>(app, cellAt + 4 * k, cell[k]);
-    if (!callGame(app, cpu, below, kTrackCell, {cellAt, record, direction, 0}))
+    // (0x4970c0, simd's fixedNormalise, which reads only the vector in eax.)
+    cpu.esp = below;
+    guest::direct<0x4970c0, frontend::simd::fixedNormalise>(app, cpu, cellAt);
+    if (cpu.terminate)
         return {};
     // The cell as a place again, in the track's units, kept as floats.
     const double unit = kCellUnit(app);
@@ -241,60 +246,86 @@ Result aheadAlongTrack(App* app, CPU& cpu, reg32 esp, Arithmetic a, const Vec3& 
     return withArithmetic(a, [&](auto real) { return aheadIn<decltype(real)>(app, cpu, esp, place, direction); });
 }
 
+Result distanceAt(App* app, Arithmetic a, reg32 from, reg32 to)
+{
+    return distanceBetween(app, a, vectorAt(app, from), vectorAt(app, to));
+}
+
+Result angleAt(App* app, CPU& cpu, reg32 esp, Arithmetic a, reg32 listener, reg32 place)
+{
+    return angleToPlace(app, cpu, esp, a, listener, vectorAt(app, place));
+}
+
+Result carAngleAt(App* app, CPU& cpu, reg32 esp, Arithmetic a, reg32 listener, reg32 car)
+{
+    // Five pushes, no frame.
+    return withArithmetic(a, [&](auto real) {
+        return angleFromAxes<decltype(real)>(app, cpu, esp - 5 * 4, listener, car + 0x13c, kCarAngleScale(app));
+    });
+}
+
+Result aheadAt(App* app, CPU& cpu, reg32 esp, Arithmetic a, reg32 place, reg32 direction)
+{
+    return aheadAlongTrack(app, cpu, esp, a, vectorAt(app, place), direction);
+}
+
 }  // namespace world
 
 using namespace world;
 
-/* The game's entries -- each its adapter around the function above. */
+/* The game's entries -- each its thunk around the function above. */
 
 /* 0x410c40: listener eax's move to the place at edx.  eax left * 3. */
-void listenerMove(App* app, CPU& cpu)
+x86::reg32 listenerMove(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    moveListener(app, arithmeticOf(cpu), int32_t(e.eax), e.edx);
-    e.back(cpu, e.eax * 3);
+    const Entry e(cpu, args);
+    moveListener(app, arithmeticOf(cpu.fenv.rounding), int32_t(e.eax), e.edx);
+    return e.back(cpu, args, e.eax * 3);
 }
 
 /* 0x410cb0: the distance from the place at eax to the one at edx. */
-void sourceDistance(App* app, CPU& cpu)
+x86::reg32 sourceDistance(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, reg32(distanceBetween(app, arithmeticOf(cpu), vectorAt(app, e.eax), vectorAt(app, e.edx))));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, distanceAt(app, arithmeticOf(cpu.fenv.rounding), e.eax, e.edx));
 }
 
 /* 0x410d30: the angle of the place at edx from listener eax. */
-void sourceAngle(App* app, CPU& cpu)
+x86::reg32 sourceAngle(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, angleToPlace(app, cpu, e.esp, arithmeticOf(cpu), e.eax, vectorAt(app, e.edx)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, angleAt(app, cpu, e.esp, arithmeticOf(cpu.fenv.rounding), e.eax, e.edx));
 }
 
 /* 0x410dc0: the angle of the car at edx (its direction at +0x13c) from
  * listener eax. */
-void carAngle(App* app, CPU& cpu)
+x86::reg32 carAngle(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    // Five pushes, no frame.
-    e.finish(cpu, withArithmetic(arithmeticOf(cpu), [&](auto real) {
-                 return angleFromAxes<decltype(real)>(app, cpu, e.esp - 5 * 4, e.eax, e.edx + 0x13c, kCarAngleScale(app));
-             }));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, carAngleAt(app, cpu, e.esp, arithmeticOf(cpu.fenv.rounding), e.eax, e.edx));
 }
 
 /* 0x4124d0: how far the place at eax is ahead along the track. */
-void placeAhead(App* app, CPU& cpu)
+x86::reg32 placeAhead(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, aheadAlongTrack(app, cpu, e.esp, arithmeticOf(cpu), vectorAt(app, e.eax), e.edx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, aheadAt(app, cpu, e.esp, arithmeticOf(cpu.fenv.rounding), e.eax, e.edx));
 }
 
 /* 0x412620: the place at edx (ints) from the listener at eax: its distance in
  * eax, and across each axis over that (16.16, -1..1) at ebx and ebx + 4. */
-void placeAcross(App* app, CPU& cpu)
+x86::reg32 placeAcross(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, withArithmetic(arithmeticOf(cpu), [&](auto real) {
-                 return acrossIn<decltype(real)>(app, cpu, e.esp, e.eax, e.edx, e.ebx);
-             }));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, placeAcrossOf(app, cpu, e.esp, e.eax, e.edx, e.ebx));
+}
+
+/* 0x412620's core: placeAcross for the listener, the place and the pair `across` is written to; esp the
+ * frame base. */
+Result placeAcrossOf(App* app, CPU& cpu, reg32 esp, reg32 listener, reg32 place, reg32 across)
+{
+    return withArithmetic(arithmeticOf(cpu.fenv.rounding),
+                          [&](auto real) { return acrossIn<decltype(real)>(app, cpu, esp, listener, place, across); });
 }
 
 }  // namespace port

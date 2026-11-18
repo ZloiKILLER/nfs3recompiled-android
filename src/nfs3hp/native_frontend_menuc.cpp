@@ -1,4 +1,5 @@
 #include "native_frontend_menuc.h"
+#include "native_load_saves.h"
 #include "native_watcom.h"
 #include "native_frontend_menub.h"
 #include "game_settings.h"
@@ -46,7 +47,7 @@
  *                        sub_473080) and the screens after a race (sub_4732b0).
  *
  * Plan step 5: each function a typed core in frontend::menuc (native_frontend_menuc.h), in a
- * frame of its own where the game's function has one (fe::Frame), and an adapter under the game's
+ * frame of its own where the game's function has one (fe::Frame), and a thunk under the game's
  * name for the calls by address.  A core calls another of this file's, or of
  * native_frontend_menub.cpp's, as C++ (guest::direct), and the typed cores of the other menu files,
  * the port's and the libraries' too (fe::direct); the rest of the game still by address. */
@@ -175,7 +176,7 @@ public:
 
     // By address, as the shown-nows below: the type in edx, which the core does not take, is part of
     // the call this group's check sees.
-    bool shown() const { return g.call(kItemShownNow, fe::args({ item, type })) != 0; }
+    bool shown() const { return fe::direct<kItemShownNow, frontend::loop::shownNow>(g.app(), g.cpu(), item) != 0; }
 
     std::int32_t x() const { return s16(g, item + f.x); }
     std::int32_t y() const { return s16(g, item + kItemY); }
@@ -374,11 +375,11 @@ reg32 drawSortMark(App* app, CPU& cpu, Guest& guest, reg32 topLeft, reg32 widthH
     const std::int32_t left = std::int16_t(topLeft >> 16);
     const std::int32_t halfWidth = half(std::int16_t(widthHeight));
     const reg32 measured = reg32(*fe::direct<0x4d1850, port::text::lineText>(app, cpu, cpu.esp - 4, kLineSortBy,
-                                                                             cpu.edx));
+                                                                             0));
     const std::int32_t textWidth = std::int32_t(reg32(*fe::direct<0x452020, port::text::menuTextWidth>(
         app, cpu, cpu.esp - 4, measured, kFont)));
     const std::int32_t centre = left + halfWidth;
-    const reg32 line = reg32(*fe::direct<0x4d1850, port::text::lineText>(app, cpu, cpu.esp - 4, kLineSortBy, cpu.edx));
+    const reg32 line = reg32(*fe::direct<0x4d1850, port::text::lineText>(app, cpu, cpu.esp - 4, kLineSortBy, 0));
     fe::direct<0x452190, port::text::menuTextDrawn>(app, cpu, cpu.esp - 12, line, reg32(centre), reg32(top - 0x1e),
                                                     kFont, kAlignCentre, kRowText);
     fe::direct<0x4d7990, port::shapes::drawShapeOf>(app, cpu, cpu.esp - 4, shape, reg32(left - 6 + halfWidth),
@@ -399,7 +400,6 @@ reg32 drawTableSortMark(App* app, CPU& cpu, Guest& guest, reg32 item, reg32 boxe
     const reg32 at = item + boxes + 8 * column;
     const reg32 result = guest::direct<0x46cce0, frontend::menuc::drawColumnSortMark>(
         app, cpu, guest.dword(at), guest.dword(at + 4), reg32(s16(guest, item + shape)));
-    guest.leaveEdx(column);
     return result;
 }
 
@@ -492,7 +492,7 @@ reg32 drawLapTimesPopup(App* app, CPU& cpu, Guest& guest, reg32 item)
         fe::direct<0x4d8ac0, port::draw2d::drawFieldBoxOf>(app, cpu, cpu.esp - 20, left + 2, top + 2, width - 3,
                                                            15 * laps + 0x20, kPopupColours);
         const reg32 title = reg32(*fe::direct<0x4d1850, port::text::lineText>(app, cpu, cpu.esp - 4, kLineLapTimes,
-                                                                              cpu.edx));
+                                                                              0));
         t.text(title, left + half(width), top + 8, kAlignCentre, kHotText);
         std::int32_t lineY = top + 0x18;
         reg32 last = reg32(top);
@@ -530,7 +530,7 @@ void drawResultsRowPlain(App* app, CPU& cpu, const Table& t, reg32 record, reg32
     const std::uint32_t nameColour = t.isThisPlayer(record) ? kPlayerText : colour;
     std::int32_t x = t.x();
     const reg32 place = reg32(*fe::direct<0x4d1850, port::text::lineText>(app, cpu, cpu.esp - 4, kLineNoPlace,
-                                                                          cpu.edx));
+                                                                          0));
     t.text(place, x + half(t.width(0)), rowY, kAlignCentre, colour);
     x += t.width(0);
     guest::direct<0x455570, frontend::menub::resultsName>(app, cpu, record, buffer);
@@ -538,7 +538,7 @@ void drawResultsRowPlain(App* app, CPU& cpu, const Table& t, reg32 record, reg32
     guest::direct<0x455600, frontend::menub::resultsCarName>(app, cpu, record, buffer);
     t.fitted(buffer, x + 10, rowY + 5, colour, t.width(1));
     x += t.width(1);
-    const reg32 out = reg32(*fe::direct<0x4d1850, port::text::lineText>(app, cpu, cpu.esp - 4, kLineNoTime, cpu.edx));
+    const reg32 out = reg32(*fe::direct<0x4d1850, port::text::lineText>(app, cpu, cpu.esp - 4, kLineNoTime, 0));
     t.text(out, x + half(t.width(2)), rowY, kAlignCentre, dimmed ? kDimmedText : kOutText);
     x += t.width(2);
     lastColumnText(app, cpu, t, record, buffer);
@@ -557,7 +557,7 @@ void drawResultsRow(App* app, CPU& cpu, const Table& t, reg32 record, reg32 buff
     std::int32_t x = t.x();
     if (wrecked)
         guest.copyString(buffer, reg32(*fe::direct<0x4d1850, port::text::lineText>(app, cpu, cpu.esp - 4, kLineNoPlace,
-                                                                                   cpu.edx)));
+                                                                                   0)));
     else
         guest::direct<0x4555c0, frontend::menub::resultsPlaceText>(app, cpu, record, buffer);
     t.text(buffer, x + half(t.width(0)), rowY, kAlignCentre, colour);
@@ -570,7 +570,7 @@ void drawResultsRow(App* app, CPU& cpu, const Table& t, reg32 record, reg32 buff
     if (wrecked)
     {
         const reg32 line = reg32(*fe::direct<0x4d1850, port::text::lineText>(app, cpu, cpu.esp - 4, kLineWrecked,
-                                                                             cpu.edx));
+                                                                             0));
         t.text(line, x + half(t.width(2)), rowY, kAlignCentre, colour);
         x += t.width(2);
         lastColumnText(app, cpu, t, record, buffer);
@@ -604,7 +604,7 @@ void drawResults(App* app, CPU& cpu, Guest& guest, reg32 item, bool pointing)
     if (t.state() == kSlideGone)
         return;
     guest::direct<0x46e0d0, frontend::menuc::resultsTableLayout>(app, cpu, item);
-    const bool dimmed = reg32(*fe::direct<0x449df0, port::loop::keysTakenOf>(app, cpu, cpu.esp - 4, cpu.eax)) != 0;
+    const bool dimmed = reg32(*fe::direct<0x449df0, port::loop::keysTakenOf>(app, cpu, cpu.esp - 4, 0)) != 0;
     switch (guest.word(item + 0x86))
     {
     case 0:
@@ -647,9 +647,9 @@ void drawResults(App* app, CPU& cpu, Guest& guest, reg32 item, bool pointing)
     for (int column = 0; column < 4; ++column)
     {
         reg32 title = reg32(*fe::direct<0x4d1850, port::text::lineText>(app, cpu, cpu.esp - 4, kTitles[column],
-                                                                        cpu.edx));
+                                                                        0));
         if (gameSettings(guest).raceType == kRaceDuel && column == 3)
-            title = reg32(*fe::direct<0x4d1850, port::text::lineText>(app, cpu, cpu.esp - 4, kLineLaps, cpu.edx));
+            title = reg32(*fe::direct<0x4d1850, port::text::lineText>(app, cpu, cpu.esp - 4, kLineLaps, 0));
         t.title(column, title, kAligns[column], canPoint, dimmed, 1);
     }
 
@@ -800,7 +800,7 @@ reg32 layoutStandings(App* app, CPU& cpu, Guest& guest, reg32 item, std::uint32_
 
 constexpr std::uint16_t kEnter = 0x0d, kKeyRight = 0x4d00, kKeyLeft = 0x4b00, kKeyPageUp = 0x4900, kKeyPageDown = 0x5100;
 
-void click(App* app, CPU& cpu)
+void click(win32::WinApplication* app, x86::CPU& cpu)
 {
     fe::direct<0x4181d0, port::playMenuEffectOf>(app, cpu, cpu.esp - 4, kClick, kClickVolume);
 }
@@ -812,10 +812,8 @@ reg32 resultsKey(App* app, CPU& cpu, Guest& guest, reg32 item, std::uint16_t key
 {
     const Table t(app, cpu, guest, item, kResultsFields, kResultsType);
     reg32 ebx = 0xffffffff;
-    guest.leaveEbx(ebx);
     if (!t.shown())
     {
-        guest.leaveEdx(0);
         return 0;
     }
     const bool plain = fe::direct<0x4cef80, frontend::misc::postgameFinishers>(app, cpu) != 0;
@@ -884,8 +882,6 @@ reg32 resultsKey(App* app, CPU& cpu, Guest& guest, reg32 item, std::uint16_t key
         }
     }
     const reg32 result = used ? 2 : 0;
-    guest.leaveEbx(ebx);
-    guest.leaveEdx(result);
     return result;
 }
 
@@ -897,10 +893,8 @@ reg32 standingsKey(App* app, CPU& cpu, Guest& guest, reg32 item, std::uint16_t k
     const bool rounds = type == kRoundsType;
     const Table t(app, cpu, guest, item, kStandingsFields, type);
     reg32 ebx = 0xffffffff;
-    guest.leaveEbx(ebx);
     if (!t.shown())
     {
-        guest.leaveEdx(0);
         return 0;
     }
     const bool plain = fe::direct<0x4cef80, frontend::misc::postgameFinishers>(app, cpu) != 0;
@@ -981,8 +975,6 @@ reg32 standingsKey(App* app, CPU& cpu, Guest& guest, reg32 item, std::uint16_t k
         }
     }
     const reg32 result = used ? 2 : 0;
-    guest.leaveEbx(ebx);
-    guest.leaveEdx(result);
     return result;
 }
 
@@ -1025,7 +1017,7 @@ void drawStandings(App* app, CPU& cpu, Guest& guest, reg32 item, bool pointing)
     if (t.state() == kSlideGone)
         return;
     guest::direct<0x46f0c0, frontend::menuc::standingsTableLayout>(app, cpu, item);
-    const bool dimmed = reg32(*fe::direct<0x449df0, port::loop::keysTakenOf>(app, cpu, cpu.esp - 4, cpu.eax)) != 0;
+    const bool dimmed = reg32(*fe::direct<0x449df0, port::loop::keysTakenOf>(app, cpu, cpu.esp - 4, 0)) != 0;
     const bool plain = fe::direct<0x4cef80, frontend::misc::postgameFinishers>(app, cpu) != 0;
     switch (guest.word(item + 0x7c))
     {
@@ -1054,7 +1046,7 @@ void drawStandings(App* app, CPU& cpu, Guest& guest, reg32 item, bool pointing)
     for (int column = 0; column < 3; ++column)
     {
         const reg32 title = reg32(*fe::direct<0x4d1850, port::text::lineText>(app, cpu, cpu.esp - 4, kTitles[column],
-                                                                              cpu.edx));
+                                                                              0));
         t.title(column, title, kAligns[column], !plain && pointing, dimmed, 0);
     }
 
@@ -1078,7 +1070,7 @@ void drawStandings(App* app, CPU& cpu, Guest& guest, reg32 item, bool pointing)
         if (plain)
         {
             const reg32 line = reg32(*fe::direct<0x4d1850, port::text::lineText>(app, cpu, cpu.esp - 4, kLineNoTime,
-                                                                                 cpu.edx));
+                                                                                 0));
             t.text(line, x + half(t.width(1)), rowY, kAlignCentre, dimmed ? kDimmedText : kOutText);
         }
         else
@@ -1107,7 +1099,7 @@ void drawRounds(App* app, CPU& cpu, Guest& guest, reg32 item, bool pointing)
     if (t.state() == kSlideGone)
         return;
     guest::direct<0x46ff00, frontend::menuc::roundsTableLayout>(app, cpu, item);
-    const bool dimmed = reg32(*fe::direct<0x449df0, port::loop::keysTakenOf>(app, cpu, cpu.esp - 4, cpu.eax)) != 0;
+    const bool dimmed = reg32(*fe::direct<0x449df0, port::loop::keysTakenOf>(app, cpu, cpu.esp - 4, 0)) != 0;
     const bool plain = fe::direct<0x4cef80, frontend::misc::postgameFinishers>(app, cpu) != 0;
     switch (guest.word(item + 0x7c))
     {
@@ -1136,7 +1128,7 @@ void drawRounds(App* app, CPU& cpu, Guest& guest, reg32 item, bool pointing)
     for (int column = 0; column < 3; ++column)
     {
         const reg32 title = reg32(*fe::direct<0x4d1850, port::text::lineText>(app, cpu, cpu.esp - 4, kTitles[column],
-                                                                              cpu.edx));
+                                                                              0));
         t.title(column, title, kAligns[column], pointing && !plain, dimmed, 1);
     }
 
@@ -1157,11 +1149,11 @@ void drawRounds(App* app, CPU& cpu, Guest& guest, reg32 item, bool pointing)
         if (plain)
         {
             const reg32 none = reg32(*fe::direct<0x4d1850, port::text::lineText>(app, cpu, cpu.esp - 4, kLineNoPlace,
-                                                                                 cpu.edx));
+                                                                                 0));
             t.text(none, x + half(t.width(1)), rowY, kAlignCentre, colour);
             x += t.width(1);
             const reg32 line = reg32(*fe::direct<0x4d1850, port::text::lineText>(app, cpu, cpu.esp - 4, kLineNoTime,
-                                                                                 cpu.edx));
+                                                                                 0));
             t.text(line, x + half(t.width(2)), rowY, kAlignCentre, dimmed ? kDimmedText : kOutText);
         }
         else
@@ -1171,7 +1163,7 @@ void drawRounds(App* app, CPU& cpu, Guest& guest, reg32 item, bool pointing)
             if (won >= toWin)
             {
                 const reg32 winner = reg32(*fe::direct<0x4d1850, port::text::lineText>(
-                    app, cpu, cpu.esp - 4, kLineWinner, cpu.edx));
+                    app, cpu, cpu.esp - 4, kLineWinner, 0));
                 fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), buffer, kFormatOfTotalAndName, guest::Words{reg32(won), reg32(toWin), winner});
             }
             else
@@ -1189,7 +1181,7 @@ void drawRounds(App* app, CPU& cpu, Guest& guest, reg32 item, bool pointing)
             else
             {
                 const reg32 none = reg32(*fe::direct<0x4d1850, port::text::lineText>(
-                    app, cpu, cpu.esp - 4, kLineNoPlace, cpu.edx));
+                    app, cpu, cpu.esp - 4, kLineNoPlace, 0));
                 t.text(none, x + half(t.width(2)), rowY, kAlignCentre, colour);
             }
         }
@@ -1211,7 +1203,7 @@ constexpr reg32 kRacerBests[] = { 0x268, 0x270, 0x278, 0x280 };
 /* sub_470360: where the table stands, the first time. */
 reg32 sideBySideOnShow(Guest& guest, reg32 item)
 {
-    const reg32 shown = guest.call(kItemShownNow, fe::args({ item, kSideBySideType }));
+    const reg32 shown = fe::direct<kItemShownNow, frontend::loop::shownNow>(guest.app(), guest.cpu(), item);
     if (shown != 0 && guest.word(item + kSideX) == 0)
     {
         guest.setWord(item + kSideState, 0);
@@ -1227,7 +1219,7 @@ reg32 sideBySideOnShow(Guest& guest, reg32 item)
 void drawSideBySide(App* app, CPU& cpu, Guest& guest, reg32 item)
 {
     const reg32 buffer = guest.frame();               // char[0x100]
-    if (guest.call(kItemShownNow, fe::args({ item, kSideBySideType })) == 0)
+    if (fe::direct<kItemShownNow, frontend::loop::shownNow>(guest.app(), guest.cpu(), item) == 0)
         return;
     if (guest.word(item + kSideState) == kSlideOut)
     {
@@ -1248,7 +1240,7 @@ void drawSideBySide(App* app, CPU& cpu, Guest& guest, reg32 item)
             guest.setWord(item + kSideX, guest.word(item + kItemX));
         }
     }
-    const bool dimmed = reg32(*fe::direct<0x449df0, port::loop::keysTakenOf>(app, cpu, cpu.esp - 4, cpu.eax)) != 0;
+    const bool dimmed = reg32(*fe::direct<0x449df0, port::loop::keysTakenOf>(app, cpu, cpu.esp - 4, 0)) != 0;
     const std::int32_t lastPlayer = gameSettings(guest).playMode == 1 ? 1 : 0;
     const std::uint32_t kind = gameSettings(guest).hud[0].speedometerForm;
     const reg32 second = kind == 3 || kind == 4 ? 1 : 0;
@@ -1347,7 +1339,6 @@ constexpr reg32 kChromeBufferSize = 0x55a4d8;
 constexpr reg32 kGlowTexture = 0x678a54;
 constexpr reg32 kGlowTransform = 0x678a58;
 constexpr reg32 kGlowMode = 0x678a78;
-constexpr reg32 kAllocateVram = 0x4d5f40;
 constexpr reg32 kDisplayFlags = 0x7a3a58;
 constexpr std::uint8_t kNoTranslucency = 0x02;
 constexpr reg32 kArtChrome = 0x53abb8, kArtGlow = 0x53abc0;
@@ -1377,7 +1368,7 @@ reg32 loadMenuArt(App* app, CPU& cpu, Guest& guest, reg32 art)
         return 0;
     const reg32 glowTexture = guest.frame();
     guest.setDword(kChromeBufferSize, 4);
-    guest.setDword(kChromeBuffer, guest.call(kAllocateVram, fe::args({ 0x100, kChromeBufferSize, 0 })));
+    guest.setDword(kChromeBuffer, *fe::direct<0x4d5f40, graphics::artTexture>(app, cpu, 0x100, kChromeBufferSize, 0));
     const reg32 chrome = fe::direct<0x4ef1e0, frontend::eab::shapeFileFind>(app, cpu, art, kArtChrome);
     if (chrome != 0 && isSquareOf(guest, chrome, 0x100))
     {
@@ -1434,19 +1425,18 @@ reg32 drawTitle(App* app, CPU& cpu, Guest& guest)
     for (reg32 i = 0; i < 7; ++i)
         guest.setByte(codes + i, guest.byte(kLanguageCodes + i));
     fe::direct<0x4daf80, port::draw2d::resetScreens>(app, cpu, cpu.esp - 4,
-                                                     port::Args{ cpu.eax, cpu.edx, cpu.ebx, cpu.ecx });
+                                                     port::Args{});
     const std::uint32_t code = guest.byte(codes + guest.dword(kLanguageIndex));
     fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), name, kFormatTitle, guest::Words{kArtFolder, code});
-    // By address, as the shape's textures below: the flags in edx (and the 0 in ebx there), which the
-    // cores do not take, are part of the calls this group's check sees.
-    const reg32 file = guest.call(kReadFile, fe::args({ name, kLoadFlags }));
+        const reg32 file = fe::direct<kReadFile, frontend::draw::loadQfsFlags>(app, cpu, name, kLoadFlags);
     if (file == 0)
         return 0;
     const reg32 shape = fe::direct<0x4ef1e0, frontend::eab::shapeFileFind>(app, cpu, file, kBack);
-    guest.setDword(kTitleTexture, guest.call(kShapeTextures, fe::args({ shape, 0, 0 })));
-    guest.call(kBeginDraw);
-    fe::direct<0x4d7990, port::shapes::drawShapeOf>(app, cpu, cpu.esp - 4, guest.dword(kTitleTexture), 0, cpu.ebx);
-    guest.call(kEndDraw);
+        guest.setDword(kTitleTexture,
+                   reg32(*fe::direct<kShapeTextures, port::shapes::artTexturesOf>(app, cpu, cpu.esp - 4, shape, 0, 0)));
+    fe::direct<0x4d9120, graphics::windowTakenAndCleared>(app, cpu);
+    fe::direct<0x4d7990, port::shapes::drawShapeOf>(app, cpu, cpu.esp - 4, guest.dword(kTitleTexture), 0, 0);
+    fe::direct<0x4d9140, graphics::flipAndWait>(app, cpu);
     return *fe::direct<0x4e1890, ea::purgeBlock>(app, cpu, file);
 }
 
@@ -1477,19 +1467,17 @@ reg32 enterMenus(App* app, CPU& cpu, Guest& guest)
 {
     fe::direct<0x431bc0, collide::screenStates>(app, cpu);
     fe::direct<0x431900, graphics::sendState>(app, cpu, 3, 0);
-    guest.call(0x4d5cc0, fe::args({ 1, 0 }));
+    fe::direct<0x4d5cc0, graphics::drawingBegun>(app, cpu, 1, 0);
     const reg32 mode = guest.dword(kInputMode);
     guest.setDword(kSavedInputMode, mode);
     guest.setDword(kInputMode, 0x10);
-    cpu.eax = mode;  // what the game's code hands it, which it does not read
-    cpu.edx = 0x10;
     fe::direct<0x4f0230, frontend::eab::inputStateClose>(app, cpu);
     const reg32 flags = guest.dword(kInputFlags);
     guest.setDword(kSavedInputFlags, flags);
     guest.setByte(kInputFlags, std::uint8_t(flags | 4));
     fe::direct<0x4136e0, port::raceBankLoadOf>(app, cpu, cpu.esp - 4);   // the game's code: the flags in eax, unread
     fe::direct<0x4daf80, port::draw2d::resetScreens>(app, cpu, cpu.esp - 4,
-                                                     port::Args{ cpu.eax, cpu.edx, cpu.ebx, cpu.ecx });
+                                                     port::Args{});
     return fe::direct<0x49c140, frontend::menud::loadPointerArt>(app, cpu);
 }
 
@@ -1498,15 +1486,15 @@ reg32 leaveMenus(App* app, CPU& cpu, Guest& guest)
 {
     // By address: the stop's ebx is the one the function leaves, and the 0 in edx the removal is handed,
     // which its core does not take, is part of the call this group's check sees.
-    guest.call(0x4109d0);
-    guest.call(0x410b20, fe::args({ guest.eax(), 0 }));
+    fe::direct<0x4109d0, port::musicStopped>(app, cpu, cpu.esp - 4, 0);
+    fe::direct<0x410b20, port::banksRemoveOf>(app, cpu, cpu.esp - 4);
     guest.setDword(0x55b034, 0);
-    fe::direct<0x49c2a0, frontend::menud::freePointerArt>(app, cpu);
+    fe::direct<0x49c2a0, frontend::menud::freePointerArt>(app, cpu, 0);  // eax: its result is not read
     guest.setDword(kInputMode, guest.dword(kSavedInputMode));
     const reg32 flags = guest.dword(kSavedInputFlags);
     guest.setDword(kInputFlags, flags);
     fe::direct<0x472360, port::fields::customColoursRefreshed>(app, cpu, cpu.esp - 4, flags);
-    guest.call(0x472820);
+    fe::direct<0x472820, load::configSaved>(app, cpu);
     fe::direct<0x4d5c40, port::shapes::texturesLetGo>(app, cpu, cpu.esp - 4);
     return fe::direct<0x4d5d10, frontend::loopb::clearDrawnFlag>(app, cpu);
 }
@@ -1534,7 +1522,6 @@ reg32 runPostgame(App* app, CPU& cpu, Guest& guest)
     }
     fe::direct<0x4c9890, port::raceVoiceBankLoaded>(app, cpu, cpu.esp - 4, 0);
     const reg32 answer = reg32(*fe::direct<0x44b230, port::loop::menuLoopOf>(app, cpu, cpu.esp - 4, kPostgame, 0));
-    cpu.eax = answer;  // the game's code hands it the loop's answer in eax, which it does not read
     fe::direct<0x4c9a00, port::raceVoiceBanksFreed>(app, cpu, cpu.esp - 4);
     guest::direct<0x44e7d0, frontend::menub::awardsClear>(app, cpu);
     guest.setDword(kAfterRace, 0);
@@ -1549,156 +1536,344 @@ constexpr std::uint8_t kSortMarkSaves = fe::kRestoreEbx | fe::kRestoreEcx;
 }
 
 /* ---------------------------------------------------------------------------
- * The typed cores (native_frontend_menuc.h) and the adapters under the game's names
+ * The typed cores (native_frontend_menuc.h) and the thunks under the game's names
  *
- * Each core makes its own frame where the game's function has one: the adapter's Site leaves
+ * Each core makes its own frame where the game's function has one: the thunk's Site leaves
  * none (frameBytes 0), and what the core calls runs at the stack addresses it did.
  * ------------------------------------------------------------------------- */
 
-/* A table's handler that only asks whether it is shown, and answers that. */
-#define MENUC_SHOWN(name, address, type)                                                 \
-    x86::reg32 frontend::menuc::name(App* app, CPU& cpu, reg32 item)                     \
-    {                                                                                    \
-        Guest guest(app, cpu);                                                           \
-        const fe::Frame frame(guest, cpu, 8);                                            \
-        return guest.call(kItemShownNow, fe::args({ item, type }));                      \
-    }                                                                                    \
-    void frontend::name(win32::WinApplication* app, x86::CPU& cpu)                       \
-    {                                                                                    \
-        static fe::Site site{ address, 0, 0, nullptr, 0, fe::kRestoreEdx };              \
-        const reg32 item = cpu.eax;                                                      \
-        fe::runWhole(app, cpu, site, [&](Guest&) { return menuc::name(app, cpu, item); }); \
-    }
+x86::reg32 frontend::menuc::resultsTablePass(App* app, CPU& cpu, reg32 item)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 8);
+    return fe::direct<kItemShownNow, frontend::loop::shownNow>(app, cpu, item);
+}
 
-/* The same, whose answer is always 0. */
-#define MENUC_NOTHING(name, address, type)                                               \
-    x86::reg32 frontend::menuc::name(App* app, CPU& cpu, reg32 item)                     \
-    {                                                                                    \
-        Guest guest(app, cpu);                                                           \
-        const fe::Frame frame(guest, cpu, 8);                                            \
-        guest.call(kItemShownNow, fe::args({ item, type }));                             \
-        return reg32(0);                                                                 \
-    }                                                                                    \
-    void frontend::name(win32::WinApplication* app, x86::CPU& cpu)                       \
-    {                                                                                    \
-        static fe::Site site{ address, 0, 0, nullptr, 0, fe::kRestoreEdx };              \
-        const reg32 item = cpu.eax;                                                      \
-        fe::runWhole(app, cpu, site, [&](Guest&) { return menuc::name(app, cpu, item); }); \
-    }
+x86::reg32 frontend::resultsTablePass(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+{
+    static fe::Site site{ "sub_46e0b0", 0, 0, nullptr, 0, fe::kRestoreEdx };
+    const reg32 item = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menuc::resultsTablePass(app, cpu, item); });
+}
+x86::reg32 frontend::menuc::standingsTablePass(App* app, CPU& cpu, reg32 item)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 8);
+    return fe::direct<kItemShownNow, frontend::loop::shownNow>(app, cpu, item);
+}
 
-/* A table's draw: the item, whether the pointer counts; edx and eax 0 after. */
-#define MENUC_DRAW(name, address, locals, draw)                                          \
-    x86::reg32 frontend::menuc::name(App* app, CPU& cpu, reg32 item, reg32 pointing)     \
-    {                                                                                    \
-        Guest guest(app, cpu);                                                           \
-        const fe::Frame frame(guest, cpu, 20 + locals);                                  \
-        draw(app, cpu, guest, item, pointing != 0);                                      \
-        guest.leaveEdx(0);                                                               \
-        return reg32(0);                                                                 \
-    }                                                                                    \
-    void frontend::name(win32::WinApplication* app, x86::CPU& cpu)                       \
-    {                                                                                    \
-        static fe::Site site{ address, 0, 0, nullptr, 0, kResultsSaves };                \
-        const reg32 item = cpu.eax, pointing = cpu.edx;                                  \
-        fe::runWhole(app, cpu, site, [&](Guest&) { return menuc::name(app, cpu, item, pointing); }); \
-    }
+x86::reg32 frontend::standingsTablePass(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+{
+    static fe::Site site{ "sub_46f0a0", 0, 0, nullptr, 0, fe::kRestoreEdx };
+    const reg32 item = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menuc::standingsTablePass(app, cpu, item); });
+}
+x86::reg32 frontend::menuc::roundsTablePass(App* app, CPU& cpu, reg32 item)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 8);
+    return fe::direct<kItemShownNow, frontend::loop::shownNow>(app, cpu, item);
+}
 
-/* A function of the item alone, in a frame of its size. */
-#define MENUC_OF_ITEM(name, address, frameBytes, body)                                   \
-    x86::reg32 frontend::menuc::name(App* app, CPU& cpu, reg32 item)                     \
-    {                                                                                    \
-        Guest guest(app, cpu);                                                           \
-        const fe::Frame frame(guest, cpu, frameBytes);                                   \
-        return body(app, cpu, guest, item);                                              \
-    }                                                                                    \
-    void frontend::name(win32::WinApplication* app, x86::CPU& cpu)                       \
-    {                                                                                    \
-        static fe::Site site{ address, 0, 0, nullptr, 0 };                               \
-        const reg32 item = cpu.eax;                                                      \
-        fe::runWhole(app, cpu, site, [&](Guest&) { return menuc::name(app, cpu, item); }); \
-    }
+x86::reg32 frontend::roundsTablePass(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+{
+    static fe::Site site{ "sub_46fee0", 0, 0, nullptr, 0, fe::kRestoreEdx };
+    const reg32 item = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menuc::roundsTablePass(app, cpu, item); });
+}
+x86::reg32 frontend::menuc::resultsTableHidden(App* app, CPU& cpu, reg32 item)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 8);
+    fe::direct<kItemShownNow, frontend::loop::shownNow>(app, cpu, item);
+    return reg32(0);
+}
 
-/* A function of no arguments and the registers it saves. */
-#define MENUC_PLAIN(name, address, frameBytes, saves, body)                              \
-    x86::reg32 frontend::menuc::name(App* app, CPU& cpu)                                 \
-    {                                                                                    \
-        Guest guest(app, cpu);                                                           \
-        const fe::Frame frame(guest, cpu, frameBytes);                                   \
-        return body(app, cpu, guest);                                                    \
-    }                                                                                    \
-    void frontend::name(win32::WinApplication* app, x86::CPU& cpu)                       \
-    {                                                                                    \
-        static fe::Site site{ address, 0, 0, nullptr, 0, saves };                        \
-        fe::runWhole(app, cpu, site, [&](Guest&) { return menuc::name(app, cpu); });     \
-    }
+x86::reg32 frontend::resultsTableHidden(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+{
+    static fe::Site site{ "sub_46e640", 0, 0, nullptr, 0, fe::kRestoreEdx };
+    const reg32 item = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menuc::resultsTableHidden(app, cpu, item); });
+}
+x86::reg32 frontend::menuc::standingsTableHidden(App* app, CPU& cpu, reg32 item)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 8);
+    fe::direct<kItemShownNow, frontend::loop::shownNow>(app, cpu, item);
+    return reg32(0);
+}
 
-/* A function that leaves eax as it came, of no arguments it reads. */
-#define MENUC_EAX_KEPT(name, address, saves)                                             \
-    void frontend::name(win32::WinApplication* app, x86::CPU& cpu)                       \
-    {                                                                                    \
-        static fe::Site site{ address, 0, 0, nullptr, 0, saves };                        \
-        fe::runWhole(app, cpu, site, [&](Guest&) {                                       \
-            menuc::name(app, cpu);                                                       \
-            return cpu.eax;                                                              \
-        });                                                                              \
-    }
+x86::reg32 frontend::standingsTableHidden(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+{
+    static fe::Site site{ "sub_46f4c0", 0, 0, nullptr, 0, fe::kRestoreEdx };
+    const reg32 item = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menuc::standingsTableHidden(app, cpu, item); });
+}
+x86::reg32 frontend::menuc::roundsTableHidden(App* app, CPU& cpu, reg32 item)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 8);
+    fe::direct<kItemShownNow, frontend::loop::shownNow>(app, cpu, item);
+    return reg32(0);
+}
 
-MENUC_SHOWN(resultsTablePass, "sub_46e0b0", kResultsType)
-MENUC_SHOWN(standingsTablePass, "sub_46f0a0", kStandingsType)
-MENUC_SHOWN(roundsTablePass, "sub_46fee0", kRoundsType)
-MENUC_NOTHING(resultsTableHidden, "sub_46e640", kResultsType)
-MENUC_NOTHING(standingsTableHidden, "sub_46f4c0", kStandingsType)
-MENUC_NOTHING(roundsTableHidden, "sub_470340", kRoundsType)
-MENUC_DRAW(resultsTableDraw, "sub_46d3c0", 0x174, drawResults)
-MENUC_DRAW(standingsTableDraw, "sub_46e690", 0x270, drawStandings)
-MENUC_DRAW(roundsTableDraw, "sub_46f510", 0x16c, drawRounds)
-MENUC_OF_ITEM(resultsPopupColumn, "sub_46cdf0", 24 + 8, resultsPopupUnderPointer)
-MENUC_OF_ITEM(resultsLapTimesPopup, "sub_46d180", 24 + 0x114, drawLapTimesPopup)
-MENUC_OF_ITEM(resultsTableShown, "sub_46df90", 24 + 4, resultsOnShow)
-MENUC_OF_ITEM(standingsTableShown, "sub_46ef90", 24 + 4, standingsOnShow)
-MENUC_OF_ITEM(resultsTableLayout, "sub_46e0d0", 24, layoutResults)
-MENUC_OF_ITEM(loadMenuArtSlots, "sub_465d80", 24 + 4, loadMenuArt)
-MENUC_PLAIN(titleDraw, "sub_472f20", 24 + 0x134, fe::kRestoreAll, drawTitle)
-MENUC_PLAIN(titleWait, "sub_472fc0", 8, fe::kRestoreEdx, waitOnTitle)
-MENUC_PLAIN(menusEnter, "sub_473020", 8, fe::kRestoreEdx, enterMenus)
-MENUC_PLAIN(menusLeave, "sub_473080", 8, fe::kRestoreEdx, leaveMenus)
-MENUC_PLAIN(postgameRun, "sub_4732b0", 16, fe::kRestoreEcx | fe::kRestoreEdx | fe::kRestoreEsi, runPostgame)
+x86::reg32 frontend::roundsTableHidden(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+{
+    static fe::Site site{ "sub_470340", 0, 0, nullptr, 0, fe::kRestoreEdx };
+    const reg32 item = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menuc::roundsTableHidden(app, cpu, item); });
+}
+x86::reg32 frontend::menuc::resultsTableDraw(App* app, CPU& cpu, reg32 item, reg32 pointing)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 20 + 0x174);
+    drawResults(app, cpu, guest, item, pointing != 0);
+    return reg32(0);
+}
+
+x86::reg32 frontend::resultsTableDraw(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+{
+    static fe::Site site{ "sub_46d3c0", 0, 0, nullptr, 0, kResultsSaves };
+    const reg32 item = args.eax, pointing = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menuc::resultsTableDraw(app, cpu, item, pointing); });
+}
+x86::reg32 frontend::menuc::standingsTableDraw(App* app, CPU& cpu, reg32 item, reg32 pointing)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 20 + 0x270);
+    drawStandings(app, cpu, guest, item, pointing != 0);
+    return reg32(0);
+}
+
+x86::reg32 frontend::standingsTableDraw(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+{
+    static fe::Site site{ "sub_46e690", 0, 0, nullptr, 0, kResultsSaves };
+    const reg32 item = args.eax, pointing = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menuc::standingsTableDraw(app, cpu, item, pointing); });
+}
+x86::reg32 frontend::menuc::roundsTableDraw(App* app, CPU& cpu, reg32 item, reg32 pointing)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 20 + 0x16c);
+    drawRounds(app, cpu, guest, item, pointing != 0);
+    return reg32(0);
+}
+
+x86::reg32 frontend::roundsTableDraw(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+{
+    static fe::Site site{ "sub_46f510", 0, 0, nullptr, 0, kResultsSaves };
+    const reg32 item = args.eax, pointing = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menuc::roundsTableDraw(app, cpu, item, pointing); });
+}
+x86::reg32 frontend::menuc::resultsPopupColumn(App* app, CPU& cpu, reg32 item)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 24 + 8);
+    return resultsPopupUnderPointer(app, cpu, guest, item);
+}
+
+x86::reg32 frontend::resultsPopupColumn(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+{
+    static fe::Site site{ "sub_46cdf0", 0, 0, nullptr, 0 };
+    const reg32 item = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menuc::resultsPopupColumn(app, cpu, item); });
+}
+x86::reg32 frontend::menuc::resultsLapTimesPopup(App* app, CPU& cpu, reg32 item)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 24 + 0x114);
+    return drawLapTimesPopup(app, cpu, guest, item);
+}
+
+x86::reg32 frontend::resultsLapTimesPopup(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+{
+    static fe::Site site{ "sub_46d180", 0, 0, nullptr, 0 };
+    const reg32 item = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menuc::resultsLapTimesPopup(app, cpu, item); });
+}
+x86::reg32 frontend::menuc::resultsTableShown(App* app, CPU& cpu, reg32 item)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 24 + 4);
+    return resultsOnShow(app, cpu, guest, item);
+}
+
+x86::reg32 frontend::resultsTableShown(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+{
+    static fe::Site site{ "sub_46df90", 0, 0, nullptr, 0 };
+    const reg32 item = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menuc::resultsTableShown(app, cpu, item); });
+}
+x86::reg32 frontend::menuc::standingsTableShown(App* app, CPU& cpu, reg32 item)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 24 + 4);
+    return standingsOnShow(app, cpu, guest, item);
+}
+
+x86::reg32 frontend::standingsTableShown(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+{
+    static fe::Site site{ "sub_46ef90", 0, 0, nullptr, 0 };
+    const reg32 item = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menuc::standingsTableShown(app, cpu, item); });
+}
+x86::reg32 frontend::menuc::resultsTableLayout(App* app, CPU& cpu, reg32 item)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 24);
+    return layoutResults(app, cpu, guest, item);
+}
+
+x86::reg32 frontend::resultsTableLayout(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+{
+    static fe::Site site{ "sub_46e0d0", 0, 0, nullptr, 0 };
+    const reg32 item = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menuc::resultsTableLayout(app, cpu, item); });
+}
+x86::reg32 frontend::menuc::loadMenuArtSlots(App* app, CPU& cpu, reg32 item)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 24 + 4);
+    return loadMenuArt(app, cpu, guest, item);
+}
+
+x86::reg32 frontend::loadMenuArtSlots(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+{
+    static fe::Site site{ "sub_465d80", 0, 0, nullptr, 0 };
+    const reg32 item = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menuc::loadMenuArtSlots(app, cpu, item); });
+}
+x86::reg32 frontend::menuc::titleDraw(App* app, CPU& cpu)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 24 + 0x134);
+    return drawTitle(app, cpu, guest);
+}
+
+x86::reg32 frontend::titleDraw(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+{
+    static fe::Site site{ "sub_472f20", 0, 0, nullptr, 0, fe::kRestoreAll };
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menuc::titleDraw(app, cpu); });
+}
+x86::reg32 frontend::menuc::titleWait(App* app, CPU& cpu)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 8);
+    return waitOnTitle(app, cpu, guest);
+}
+
+x86::reg32 frontend::titleWait(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+{
+    static fe::Site site{ "sub_472fc0", 0, 0, nullptr, 0, fe::kRestoreEdx };
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menuc::titleWait(app, cpu); });
+}
+x86::reg32 frontend::menuc::menusEnter(App* app, CPU& cpu)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 8);
+    return enterMenus(app, cpu, guest);
+}
+
+x86::reg32 frontend::menusEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+{
+    static fe::Site site{ "sub_473020", 0, 0, nullptr, 0, fe::kRestoreEdx };
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menuc::menusEnter(app, cpu); });
+}
+x86::reg32 frontend::menuc::menusLeave(App* app, CPU& cpu)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 8);
+    return leaveMenus(app, cpu, guest);
+}
+
+x86::reg32 frontend::menusLeave(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+{
+    static fe::Site site{ "sub_473080", 0, 0, nullptr, 0, fe::kRestoreEdx };
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menuc::menusLeave(app, cpu); });
+}
+x86::reg32 frontend::menuc::postgameRun(App* app, CPU& cpu)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 16);
+    return runPostgame(app, cpu, guest);
+}
+
+x86::reg32 frontend::postgameRun(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+{
+    static fe::Site site{ "sub_4732b0", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEdx | fe::kRestoreEsi };
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menuc::postgameRun(app, cpu); });
+}
 
 /* sub_45cb50: the HUD editor's element, hidden: nothing to do. */
-void frontend::menuc::hudElementHidden(App*, CPU&)
+void frontend::menuc::hudElementHidden(win32::WinApplication* , x86::CPU& )
 {
 }
 
 /* sub_470390: the side by side table has nothing to do on a pass. */
-void frontend::menuc::headToHeadPass(App*, CPU&)
+void frontend::menuc::headToHeadPass(win32::WinApplication* , x86::CPU& )
 {
 }
 
 /* sub_473010: a comparison with the intro's flag, for no one. */
-void frontend::menuc::skipIntroCompare(App*, CPU&)
+void frontend::menuc::skipIntroCompare(win32::WinApplication* , x86::CPU& )
 {
 }
 
 /* sub_460760: the buttons' pulse starts again from its brightest, as the
  * selected item changes. */
-void frontend::menuc::resetButtonPulse(App* app, CPU& cpu)
+void frontend::menuc::resetButtonPulse(win32::WinApplication* app, x86::CPU& cpu)
 {
     Guest guest(app, cpu);
     guest.setDword(0x559fdc, 0xff);
 }
 
 /* sub_465d60: no chrome, no glow. */
-void frontend::menuc::clearMenuArtSlots(App* app, CPU& cpu)
+void frontend::menuc::clearMenuArtSlots(win32::WinApplication* app, x86::CPU& cpu)
 {
     Guest guest(app, cpu);
     clearMenuArt(guest);
 }
 
-MENUC_EAX_KEPT(hudElementHidden, "sub_45cb50", 0)
-MENUC_EAX_KEPT(headToHeadPass, "sub_470390", 0)
-MENUC_EAX_KEPT(skipIntroCompare, "sub_473010", 0)
-MENUC_EAX_KEPT(resetButtonPulse, "sub_460760", 0)
-MENUC_EAX_KEPT(clearMenuArtSlots, "sub_465d60", fe::kRestoreEdx)
+x86::reg32 frontend::hudElementHidden(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+{
+    static fe::Site site{ "sub_45cb50", 0, 0, nullptr, 0, 0 };
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
+        menuc::hudElementHidden(app, cpu);
+        return args.eax;
+    });
+}
+x86::reg32 frontend::headToHeadPass(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+{
+    static fe::Site site{ "sub_470390", 0, 0, nullptr, 0, 0 };
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
+        menuc::headToHeadPass(app, cpu);
+        return args.eax;
+    });
+}
+x86::reg32 frontend::skipIntroCompare(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+{
+    static fe::Site site{ "sub_473010", 0, 0, nullptr, 0, 0 };
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
+        menuc::skipIntroCompare(app, cpu);
+        return args.eax;
+    });
+}
+x86::reg32 frontend::resetButtonPulse(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+{
+    static fe::Site site{ "sub_460760", 0, 0, nullptr, 0, 0 };
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
+        menuc::resetButtonPulse(app, cpu);
+        return args.eax;
+    });
+}
+x86::reg32 frontend::clearMenuArtSlots(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+{
+    static fe::Site site{ "sub_465d60", 0, 0, nullptr, 0, fe::kRestoreEdx };
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
+        menuc::clearMenuArtSlots(app, cpu);
+        return args.eax;
+    });
+}
 
 /* sub_4654c0: the two values on the stack kept, in the slots at 0x678954.  What
  * is left in eax is the first. */
@@ -1710,11 +1885,11 @@ x86::reg32 frontend::menuc::setSliderComponents(App* app, CPU& cpu, reg32 first,
     return first;
 }
 
-void frontend::setSliderComponents(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::setSliderComponents(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4654c0", 8, 0, nullptr, 0, 0 };
     const reg32 first = app->getMemory<reg32>(cpu.esp + 4), second = app->getMemory<reg32>(cpu.esp + 8);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return menuc::setSliderComponents(app, cpu, first, second); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menuc::setSliderComponents(app, cpu, first, second); });
 }
 
 x86::reg32 frontend::menuc::drawColumnSortMark(App* app, CPU& cpu, reg32 topLeft, reg32 widthHeight, reg32 shape)
@@ -1724,13 +1899,13 @@ x86::reg32 frontend::menuc::drawColumnSortMark(App* app, CPU& cpu, reg32 topLeft
     return drawSortMark(app, cpu, guest, topLeft, widthHeight, shape);
 }
 
-void frontend::drawColumnSortMark(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::drawColumnSortMark(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_46cce0", 12, 0, nullptr, 0 };
     const reg32 arguments = cpu.esp + 4;
     const reg32 topLeft = app->getMemory<reg32>(arguments), widthHeight = app->getMemory<reg32>(arguments + 4);
     const reg32 shape = app->getMemory<reg32>(arguments + 8);
-    fe::runWhole(app, cpu, site, [&](Guest&) {
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
         return menuc::drawColumnSortMark(app, cpu, topLeft, widthHeight, shape);
     });
 }
@@ -1742,11 +1917,11 @@ x86::reg32 frontend::menuc::resultsSortMark(App* app, CPU& cpu, reg32 item)
     return drawTableSortMark(app, cpu, guest, item, 0x48, 0x86, 0x80);
 }
 
-void frontend::resultsSortMark(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::resultsSortMark(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_46cdc0", 0, 0, nullptr, 0, kSortMarkSaves };
-    const reg32 item = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return menuc::resultsSortMark(app, cpu, item); });
+    const reg32 item = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menuc::resultsSortMark(app, cpu, item); });
 }
 
 x86::reg32 frontend::menuc::standingsSortMark(App* app, CPU& cpu, reg32 item)
@@ -1756,11 +1931,11 @@ x86::reg32 frontend::menuc::standingsSortMark(App* app, CPU& cpu, reg32 item)
     return drawTableSortMark(app, cpu, guest, item, 0x46, 0x7c, 0x76);
 }
 
-void frontend::standingsSortMark(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::standingsSortMark(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_46e660", 0, 0, nullptr, 0, kSortMarkSaves };
-    const reg32 item = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return menuc::standingsSortMark(app, cpu, item); });
+    const reg32 item = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menuc::standingsSortMark(app, cpu, item); });
 }
 
 x86::reg32 frontend::menuc::roundsSortMark(App* app, CPU& cpu, reg32 item)
@@ -1770,11 +1945,11 @@ x86::reg32 frontend::menuc::roundsSortMark(App* app, CPU& cpu, reg32 item)
     return drawTableSortMark(app, cpu, guest, item, 0x46, 0x7c, 0x76);
 }
 
-void frontend::roundsSortMark(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::roundsSortMark(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_46f4e0", 0, 0, nullptr, 0, kSortMarkSaves };
-    const reg32 item = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return menuc::roundsSortMark(app, cpu, item); });
+    const reg32 item = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menuc::roundsSortMark(app, cpu, item); });
 }
 
 x86::reg32 frontend::menuc::resultsTableKey(App* app, CPU& cpu, reg32 item, reg32, reg32 key)
@@ -1784,11 +1959,11 @@ x86::reg32 frontend::menuc::resultsTableKey(App* app, CPU& cpu, reg32 item, reg3
     return resultsKey(app, cpu, guest, item, std::uint16_t(key));
 }
 
-void frontend::resultsTableKey(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::resultsTableKey(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_46e270", 0, 0, nullptr, 0, kKeySaves };
-    const reg32 item = cpu.eax, menu = cpu.edx, key = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return menuc::resultsTableKey(app, cpu, item, menu, key); });
+    const reg32 item = args.eax, menu = args.edx, key = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menuc::resultsTableKey(app, cpu, item, menu, key); });
 }
 
 x86::reg32 frontend::menuc::standingsTableLayout(App* app, CPU& cpu, reg32 item)
@@ -1798,11 +1973,11 @@ x86::reg32 frontend::menuc::standingsTableLayout(App* app, CPU& cpu, reg32 item)
     return layoutStandings(app, cpu, guest, item, kStandingsType, kResultsCount);
 }
 
-void frontend::standingsTableLayout(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::standingsTableLayout(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_46f0c0", 0, 0, nullptr, 0 };
-    const reg32 item = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return menuc::standingsTableLayout(app, cpu, item); });
+    const reg32 item = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menuc::standingsTableLayout(app, cpu, item); });
 }
 
 x86::reg32 frontend::menuc::standingsTableKey(App* app, CPU& cpu, reg32 item, reg32, reg32 key)
@@ -1812,11 +1987,11 @@ x86::reg32 frontend::menuc::standingsTableKey(App* app, CPU& cpu, reg32 item, re
     return standingsKey(app, cpu, guest, item, std::uint16_t(key), kStandingsType, kResultsCount);
 }
 
-void frontend::standingsTableKey(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::standingsTableKey(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_46f200", 0, 0, nullptr, 0, kKeySaves };
-    const reg32 item = cpu.eax, menu = cpu.edx, key = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return menuc::standingsTableKey(app, cpu, item, menu, key); });
+    const reg32 item = args.eax, menu = args.edx, key = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menuc::standingsTableKey(app, cpu, item, menu, key); });
 }
 
 x86::reg32 frontend::menuc::roundsTableShown(App* app, CPU& cpu, reg32 item)
@@ -1826,11 +2001,11 @@ x86::reg32 frontend::menuc::roundsTableShown(App* app, CPU& cpu, reg32 item)
     return roundsOnShow(app, cpu, guest, item);
 }
 
-void frontend::roundsTableShown(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::roundsTableShown(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_46fe30", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx };
-    const reg32 item = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return menuc::roundsTableShown(app, cpu, item); });
+    const reg32 item = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menuc::roundsTableShown(app, cpu, item); });
 }
 
 x86::reg32 frontend::menuc::roundsTableLayout(App* app, CPU& cpu, reg32 item)
@@ -1840,11 +2015,11 @@ x86::reg32 frontend::menuc::roundsTableLayout(App* app, CPU& cpu, reg32 item)
     return layoutStandings(app, cpu, guest, item, kRoundsType, kRoundsCount);
 }
 
-void frontend::roundsTableLayout(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::roundsTableLayout(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_46ff00", 0, 0, nullptr, 0 };
-    const reg32 item = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return menuc::roundsTableLayout(app, cpu, item); });
+    const reg32 item = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menuc::roundsTableLayout(app, cpu, item); });
 }
 
 x86::reg32 frontend::menuc::roundsTableKey(App* app, CPU& cpu, reg32 item, reg32, reg32 key)
@@ -1854,11 +2029,11 @@ x86::reg32 frontend::menuc::roundsTableKey(App* app, CPU& cpu, reg32 item, reg32
     return standingsKey(app, cpu, guest, item, std::uint16_t(key), kRoundsType, kRoundsCount);
 }
 
-void frontend::roundsTableKey(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::roundsTableKey(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_470040", 0, 0, nullptr, 0, kKeySaves };
-    const reg32 item = cpu.eax, menu = cpu.edx, key = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return menuc::roundsTableKey(app, cpu, item, menu, key); });
+    const reg32 item = args.eax, menu = args.edx, key = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menuc::roundsTableKey(app, cpu, item, menu, key); });
 }
 
 x86::reg32 frontend::menuc::headToHeadShown(App* app, CPU& cpu, reg32 item)
@@ -1868,11 +2043,11 @@ x86::reg32 frontend::menuc::headToHeadShown(App* app, CPU& cpu, reg32 item)
     return sideBySideOnShow(guest, item);
 }
 
-void frontend::headToHeadShown(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::headToHeadShown(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_470360", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEdx };
-    const reg32 item = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return menuc::headToHeadShown(app, cpu, item); });
+    const reg32 item = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menuc::headToHeadShown(app, cpu, item); });
 }
 
 x86::reg32 frontend::menuc::headToHeadDraw(App* app, CPU& cpu, reg32 item)
@@ -1880,15 +2055,14 @@ x86::reg32 frontend::menuc::headToHeadDraw(App* app, CPU& cpu, reg32 item)
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 20 + 0x154);
     drawSideBySide(app, cpu, guest, item);
-    guest.leaveEdx(0);
     return 0;
 }
 
-void frontend::headToHeadDraw(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::headToHeadDraw(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4703a0", 0, 0, nullptr, 0, kResultsSaves };
-    const reg32 item = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return menuc::headToHeadDraw(app, cpu, item); });
+    const reg32 item = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menuc::headToHeadDraw(app, cpu, item); });
 }
 
 /* sub_477c00: the flag at 0x55d000 down. */
@@ -1899,17 +2073,11 @@ x86::reg32 frontend::menuc::clearLoadFlag(App* app, CPU& cpu)
     return 0;
 }
 
-void frontend::clearLoadFlag(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::clearLoadFlag(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_477c00", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return menuc::clearLoadFlag(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menuc::clearLoadFlag(app, cpu); });
 }
 
-#undef MENUC_SHOWN
-#undef MENUC_NOTHING
-#undef MENUC_DRAW
-#undef MENUC_OF_ITEM
-#undef MENUC_PLAIN
-#undef MENUC_EAX_KEPT
 
 }

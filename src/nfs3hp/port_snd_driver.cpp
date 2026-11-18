@@ -1,6 +1,10 @@
 #include "port_snd_stream.h"
 #include "host_threads.h"
 #include "isnd_calls.h"
+#include "native_ea_threads.h"
+#include "native_frontend_wina.h"
+#include "port_snd_calls.h"
+#include "port_snd_voices.h"
 
 #include <cstdint>
 
@@ -24,7 +28,7 @@
  * What the callers read of the registers: SNDinit's (eight of them, all in
  * the game's options) `mov edx, eax` at once; iSNDmessageinit's, the game's
  * message window, only eax; the others' are the library's own, which read
- * what they keep.  So the adapters give back eax and nothing else (the
+ * what they keep.  So the thunks give back eax and nothing else (the
  * registers as they were), where the code leaves otherwise what it had no
  * use for: ecx, edx of iSNDmessageinit, edx of iSNDinit, SNDinit and
  * iSNDverifymode, ecx of SNDrestore. */
@@ -36,8 +40,6 @@ namespace port
 namespace
 {
 
-using stream::Preserve;
-using stream::residue;
 using stream::safepoint;
 
 constexpr Var<reg32> kDriverModule{0x9ef600}, kDriverMode{0x9ef608}, kDriverResult{0x9ef60c}, kDriverModeAsked{0x9ef610};
@@ -71,38 +73,25 @@ constexpr Where kInitError{0x549b10, 0x549fbc};     // iSNDinit's
 constexpr Where kVerifyError{0x54a098, 0x54a0a4};   // iSNDverifymode's
 
 /* The function at kSetFx for the bus's effect, called as the game's code
- * calls it, from `esp` with the registers `a` (its type in eax).  What
- * setBusType puts there, iSNDwinsetfx, as C++ (applyBusEffect): its frame
- * where the call's return address would be, every register but eax kept as
- * its adapter keeps them.  Anything else, and in tools/game_checks (which
- * stands the pointer in) any, through the pointer.  False when the game
- * stopped. */
-bool busEffect(App* app, CPU& cpu, reg32 esp, Args a)
+ * calls it, from `esp`: its type in eax, what the mixer's start left in edx
+ * (the channel's end) and the mode in ebx.  What setBusType puts there,
+ * iSNDwinsetfx, as C++ (applyBusEffect): its frame where the call's return
+ * address would be.  Anything else, through the pointer, ecx as it is.  Its eax; nothing when
+ * the game stopped. */
+Result busEffect(App* app, CPU& cpu, reg32 esp, reg32 type, reg32 mode)
 {
 #ifndef NFS3HP_SOUND_THROUGH_SLOTS
-    if (app->methodAt(kSetFx(app)) == &iSNDwinsetfx)
+    if (app->thunkAt(kSetFx(app)) == &iSNDwinsetfx)
     {
-        const reg32 esi = cpu.esi, edi = cpu.edi, ebp = cpu.ebp;
         cpu.esp = esp;
-        cpu.eax = a.eax;
-        cpu.edx = a.edx;
-        cpu.ebx = a.ebx;
-        cpu.ecx = a.ecx;
-        const Result result = applyBusEffect(app, cpu, esp - 4, a.eax);
-        if (!result)
-            return false;
-        cpu.eax = reg32(*result);
-        cpu.ebx = a.ebx;
-        cpu.ecx = a.ecx;
-        cpu.edx = a.edx;
-        cpu.esi = esi;
-        cpu.edi = edi;
-        cpu.ebp = ebp;
-        cpu.esp = esp;
-        return true;
+        return applyBusEffect(app, cpu, esp - 4, type);
     }
 #endif
-    return callGame(app, cpu, esp, kSetFx(app), a);
+    cpu.esp = esp;
+    const std::optional<reg32> eax = guest::pointerCall(app, cpu, kSetFx(app), {type, kMixerEnded, mode});
+    if (!eax)
+        return {};
+    return int32_t(*eax);
 }
 
 /* The cores: what the game's entries below do, with their arguments and a
@@ -111,14 +100,11 @@ bool busEffect(App* app, CPU& cpu, reg32 esp, Args a)
 /* 0x4e217c (iSNDunloaddll): eacsnd unloaded, when it was loaded.  0. */
 Result unloadDriver(App* app, CPU& cpu, reg32 esp)
 {
-    const Preserve keep(cpu);
     const reg32 module = kDriverModule(app);
     if (module != 0)
     {
-        Args a = residue(cpu);
-        a.edx = module;
         reg32 freed;
-        if (!callWindows<kFreeLibrary, &host::freeLibrary>(app, cpu, esp - 3 * 4, a, freed, module))
+        if (!callWindowsWords<kFreeLibrary, &host::freeLibrary>(app, cpu, esp - 3 * 4, freed, module))
             return {};
     }
     kDriverModule.set(app, 0);
@@ -136,12 +122,10 @@ void setPriorityOffset(App* app, uint16_t offset)
  * out of it).  eax as the last leave gave it. */
 Result leaveAllLocks(App* app, CPU& cpu, reg32 esp, reg32 eax)
 {
-    const Preserve keep(cpu);
     while (int8_t(kEntered(app)) > 0)
     {
         kEntered.set(app, uint8_t(kEntered(app) - 1));
-        if (!callWindows<kLeaveCriticalSection, &host::leaveLock>(
-                app, cpu, esp - 2 * 4, {eax, kLock(app), cpu.ebx, cpu.ecx}, eax, kLock(app)))
+        if (!callWindowsEax<kLeaveCriticalSection, &host::leaveLock>(app, cpu, esp - 2 * 4, eax, kLock(app)))
             return {};
     }
     return int32_t(eax);
@@ -153,32 +137,47 @@ Result leaveAllLocks(App* app, CPU& cpu, reg32 esp, reg32 eax)
  * last call's. */
 Result setServer(App* app, CPU& cpu, reg32 esp, reg32 server)
 {
-    const Preserve keep(cpu);
     const reg32 frame = esp - 5 * 4;
-    const HeldEbp ebp(cpu, frame);
     reg32 eax = server;
     kServer.set(app, server);
     if (server != 0 && kServerEvent(app) == 0)
     {
-        if (!callGame(app, cpu, frame, kCreateThread, {kThreadFunction, 0, 3, 0xffffffff}, {kServerThread.at}, eax))
+        // The thread made.
+        cpu.esp = frame - 4;  // the record's word pushed
+        const std::optional<reg32> thread =
+            guest::direct<kCreateThread, ea::threadStarted>(app, cpu, kThreadFunction, 0u, 3u, kServerThread.at);
+        cpu.esp = frame;
+        if (!thread)
             return {};
+        eax = *thread;
         while (kServerEvent(app) == 0)
         {
             safepoint(app, cpu);
-            if (!callGame(app, cpu, frame, kSleep, {0, cpu.edx, cpu.ebx, cpu.ecx}, {}, eax))
+            cpu.esp = frame;
+            const std::optional<reg32> slept = guest::direct<kSleep, ea::sleepFor>(app, cpu, 0u);
+            if (!slept)
                 return {};
+            eax = *slept;
         }
     }
     else if (kServer(app) == 0 && kServerEvent(app) != 0)
     {
         const reg32 event = kServerEvent(app);
-        if (!callGame(app, cpu, frame, kSetEvent, {kServerThread.at, event, cpu.ebx, cpu.ecx}, {}, eax))
+        // By address: eax too, which the code has the thread's place in (ea::eventPosted loads
+        // only edx, the one it reads).
+        cpu.esp = frame;
+        const std::optional<reg32> set = guest::pointerCall(app, cpu, kSetEvent, {kServerThread.at, event});
+        if (!set)
             return {};
+        eax = *set;
         while (kServerEvent(app) != 0)
         {
             safepoint(app, cpu);
-            if (!callGame(app, cpu, frame, kSleep, {0, event, cpu.ebx, cpu.ecx}, {}, eax))
+            cpu.esp = frame;
+            const std::optional<reg32> slept = guest::direct<kSleep, ea::sleepFor>(app, cpu, 0u);
+            if (!slept)
                 return {};
+            eax = *slept;
         }
     }
     return int32_t(eax);
@@ -190,26 +189,30 @@ Result setServer(App* app, CPU& cpu, reg32 esp, reg32 server)
 Result serveSounds(App* app, CPU& cpu, reg32 esp)
 {
     const reg32 frame = esp - 2 * 4;
-    const HeldEbp ebp(cpu, frame);
-    reg32 eax;
-    if (!callGame(app, cpu, frame, kCreateEvent, residue(cpu), {}, eax))
+    cpu.esp = frame;
+    const std::optional<reg32> made = guest::direct<kCreateEvent, ea::newAutoEvent>(app, cpu);
+    if (!made)
         return {};
-    kServerEvent.set(app, eax);
+    kServerEvent.set(app, *made);
     for (;;)
     {
         safepoint(app, cpu);
         if (kServer(app) == 0)
             break;
-        if (!callGame(app, cpu, frame, kServer(app), residue(cpu))
-            || !callGame(app, cpu, frame, kWaitEvent, {kServerEvent(app), cpu.edx, cpu.ebx, cpu.ecx}, {}, eax))
+        // The server through its pointer, the registers as they are (it takes none).
+        cpu.esp = frame;
+        if (!guest::pointerCall(app, cpu, kServer(app), {}).has_value())
+            return {};
+        cpu.esp = frame;
+        if (!guest::direct<kWaitEvent, ea::eventWaited>(app, cpu, kServerEvent(app)))
             return {};
     }
-    if (!callGame(app, cpu, frame, kCloseHandle, {kServerEvent(app), cpu.edx, cpu.ebx, cpu.ecx}, {}, eax))
+    cpu.esp = frame;
+    const std::optional<reg32> closed = guest::direct<kCloseHandle, ea::eventClosed>(app, cpu, kServerEvent(app));
+    if (!closed)
         return {};
-    // The event's place is cleared from edx, which was 0 when the server was
-    // found to be none and which the close keeps.
     kServerEvent.set(app, 0);
-    return int32_t(eax);
+    return int32_t(*closed);
 }
 
 /* 0x4e2754 (iSNDverifymode): mode `mode` (-1 any) against eacsnd's caps: its
@@ -218,17 +221,18 @@ Result serveSounds(App* app, CPU& cpu, reg32 esp)
  * or no rate.  `second` goes to SNDcaps as its eax (which it ignores). */
 Result verifyMode(App* app, CPU& cpu, reg32 esp, reg32 mode, reg32 second)
 {
-    const Preserve keep(cpu);
     const reg32 frame = esp - 4 * 4;
-    reg32 caps;
-    if (!callGame(app, cpu, frame, kCaps, {second, cpu.edx, cpu.ebx, cpu.ecx}, {}, caps))
+    // SNDcaps (native_game.cpp's, no typed core) by address.
+    cpu.esp = frame;
+    const std::optional<reg32> got = guest::pointerCall(app, cpu, kCaps, {second});
+    if (!got)
         return {};
+    const reg32 caps = *got;
     const reg32 both = (mode == 0xffffffff ? caps : mode) & caps;
     const reg32 formats = both & 0xff, rates = both & 0xff00;
     const reg32 stereo = mode == 0xffffffff ? 0 : both & 0xff0000;
     if (formats == 0)
     {
-        const HeldEbp ebp(cpu, 0xfc);
         if (!fail(app, cpu, frame - 4, kVerifyError, 0xfc, {0x54a0b4}, both))
             return {};
         return 0;
@@ -247,12 +251,20 @@ Result verifyMode(App* app, CPU& cpu, reg32 esp, reg32 mode, reg32 second)
     return int32_t(result);
 }
 
+/* The focus handler set (the game's 0x4cc860, a menu file's: by address), its
+ * eax back. */
+std::optional<reg32> setFocus(App* app, CPU& cpu, reg32 frame, reg32 handler)
+{
+    cpu.esp = frame;
+    return guest::pointerCall(app, cpu, kFocusHandler, {handler});
+}
+
 /* 0x4e225c (iSNDmessageinit, stdcall 24): the driver's message, on the game's
  * message thread, for window `window`: `command` 0 starts the driver -- eacsnd
  * checked for the mode, the rate taken from it, the mixer and eacsnd started,
  * the sound thread and the focus handler added -- another ends it.  The
  * result in 0x9ef60c, the message done.  0; `eax` is what the caller left,
- * which an error is told. */
+ * which an error is told, and the last call's is what eacsnd's are handed. */
 Result driverMessage(App* app, CPU& cpu, reg32 esp, reg32 window, reg32 command, reg32 eax)
 {
     const reg32 frame = esp - 3 * 4;
@@ -265,29 +277,33 @@ Result driverMessage(App* app, CPU& cpu, reg32 esp, reg32 window, reg32 command,
         if (kThreadStarted(app) != 0)
         {
             kThreadStarted.set(app, 0);
-            if (!setServer(app, cpu, frame - 4, 0))
+            const Result r = setServer(app, cpu, frame - 4, 0);
+            if (!r)
                 return {};
+            eax = reg32(*r);
         }
         if (kFocusAdded(app) != 0)
         {
-            if (!callGame(app, cpu, frame, kFocusHandler, {0, cpu.edx, cpu.ebx, cpu.ecx}))
+            const std::optional<reg32> set = setFocus(app, cpu, frame, 0);
+            if (!set)
                 return {};
+            eax = *set;
             kFocusAdded.set(app, 0);
         }
-        if (!guest::soundFrom<isnd::kDirectStop, &eacsnd::stop>(app, cpu, frame, residue(cpu)))
+        if (!guest::soundFrom<isnd::kDirectStop, &eacsnd::stop>(app, cpu, frame, eax))
             return {};
         kDriverResult.set(app, 0);
         return done();
     }
     if (window == 0)
     {
-        const HeldEbp ebp(cpu, 0x2d9);
-        if (!fail(app, cpu, frame - 4, kMessageError, 0x2d9, {0x549f64}, eax))
+        const Result r = fail(app, cpu, frame - 4, kMessageError, 0x2d9, {0x549f64}, eax);
+        if (!r)
             return {};
+        eax = reg32(*r);
     }
     const reg32 mode = kDriverModeAsked(app);
-    const std::optional<reg32> caps =
-        guest::soundFrom<isnd::kDirectCaps, &eacsnd::caps>(app, cpu, frame, {cpu.eax, cpu.edx, cpu.ebx, cpu.ecx}, window);
+    const std::optional<reg32> caps = guest::soundFrom<isnd::kDirectCaps, &eacsnd::caps>(app, cpu, frame, eax, window);
     if (!caps)
         return {};
     eax = *caps;
@@ -319,19 +335,29 @@ Result driverMessage(App* app, CPU& cpu, reg32 esp, reg32 window, reg32 command,
     kDriverMode.set(app, mode);
     if (kAtExit(app) == 0)
     {
-        // The restore registered to run at exit; the register the flag comes
-        // from (ch) is kept by the registration.
-        if (!callGame(app, cpu, frame, kAtExitRegister, {kRestoreFunction, cpu.edx, cpu.ebx, cpu.ecx}))
+        // The restore registered to run at exit (the runtime's atexit, a menu file's: by address).
+        cpu.esp = frame;
+        const std::optional<reg32> registered = guest::pointerCall(app, cpu, kAtExitRegister, {kRestoreFunction});
+        if (!registered)
             return {};
+        eax = *registered;
         kAtExit.set(app, 1);
     }
     // The mixer's start, with the mode and what the mixer calls when a channel ends.
-    if (!callGame(app, cpu, frame, kMixInit, {kDriverMode(app), kMixerEnded, mode, cpu.ecx}))
+    cpu.esp = frame;
+    const Result mixer = guest::direct<kMixInit, startMixer>(app, cpu, frame - 4, kDriverMode(app), kMixerEnded);
+    if (!mixer)
         return {};
-    if (kSetFx(app) != 0 && !busEffect(app, cpu, frame, {kBusType(app), cpu.edx, mode, cpu.ecx}))
-        return {};
-    const std::optional<reg32> started = guest::soundFrom<isnd::kDirectStart, &eacsnd::start>(
-        app, cpu, frame, {cpu.eax, cpu.edx, cpu.ebx, cpu.ecx}, mode, window);
+    eax = reg32(*mixer);
+    if (kSetFx(app) != 0)
+    {
+        const Result set = busEffect(app, cpu, frame, kBusType(app), mode);
+        if (!set)
+            return {};
+        eax = reg32(*set);
+    }
+    const std::optional<reg32> started =
+        guest::soundFrom<isnd::kDirectStart, &eacsnd::start>(app, cpu, frame, eax, mode, window);
     if (!started)
         return {};
     eax = *started;
@@ -346,7 +372,7 @@ Result driverMessage(App* app, CPU& cpu, reg32 esp, reg32 window, reg32 command,
     }
     if (kFocusAdded(app) == 0)
     {
-        if (!callGame(app, cpu, frame, kFocusHandler, {kFocusFunction, cpu.edx, cpu.ebx, cpu.ecx}))
+        if (!setFocus(app, cpu, frame, kFocusFunction))
             return {};
         kFocusAdded.set(app, 1);
     }
@@ -359,13 +385,14 @@ Result driverMessage(App* app, CPU& cpu, reg32 esp, reg32 window, reg32 command,
  * The driver's result. */
 Result stopSoundDriver(App* app, CPU& cpu, reg32 esp)
 {
-    const Preserve keep(cpu);
     const reg32 frame = esp - 3 * 4;
     kMessageDone.set(app, 0);
-    reg32 eax;
-    if (!callGame(app, cpu, frame, kSendMessage, {kMessageNumber, 1, 0, 0}, {}, eax))
+    // The message sent (a menu file's 0x4cc7c0: by address, with the four registers).
+    cpu.esp = frame;
+    const std::optional<reg32> sent = guest::pointerCall(app, cpu, kSendMessage, {kMessageNumber, 1, 0, 0});
+    if (!sent)
         return {};
-    if (eax == 0)
+    if (*sent == 0)
     {
         if (kThreadStarted(app) != 0)
         {
@@ -375,7 +402,7 @@ Result stopSoundDriver(App* app, CPU& cpu, reg32 esp)
         }
         if (kFocusAdded(app) != 0)
         {
-            if (!callGame(app, cpu, frame, kFocusHandler, {0, cpu.edx, cpu.ebx, cpu.ecx}))
+            if (!setFocus(app, cpu, frame, 0))
                 return {};
             kFocusAdded.set(app, 0);
         }
@@ -385,7 +412,8 @@ Result stopSoundDriver(App* app, CPU& cpu, reg32 esp)
         while (kMessageDone(app) == 0)
         {
             safepoint(app, cpu);
-            if (!callGame(app, cpu, frame, kSleep, {0, cpu.edx, cpu.ebx, cpu.ecx}))
+            cpu.esp = frame;
+            if (!guest::direct<kSleep, ea::sleepFor>(app, cpu, 0u))
                 return {};
         }
     if (!unloadDriver(app, cpu, frame - 4))
@@ -399,39 +427,46 @@ Result stopSoundDriver(App* app, CPU& cpu, reg32 esp)
  * result; -16 without the timer or the window. */
 Result startSoundDriver(App* app, CPU& cpu, reg32 esp, reg32 mode)
 {
-    const Preserve keep(cpu);
     const reg32 frame = esp - 3 * 4;
     kDriverModeAsked.set(app, mode);
     kLeaveAll.set(app, kLeaveAllFunction);
-    reg32 eax;
-    if (!callGame(app, cpu, frame, kLoadDriver, {mode, cpu.edx, cpu.ebx, cpu.ecx}, {}, eax))
+    // iSNDloaddll and the game's window (native_game.cpp's, no typed cores) by address.
+    cpu.esp = frame;
+    if (!guest::pointerCall(app, cpu, kLoadDriver, {mode}))
         return {};
     if (kSoundRunning(app) == 0)
     {
-        const HeldEbp ebp(cpu, kInitError.file);
         if (!fail(app, cpu, frame, kInitError, 0x349, {0x549fc8}, kInitError.function))
             return {};
         return int32_t(0xfffffff0);
     }
-    if (!callGame(app, cpu, frame, kWindowOfGame, residue(cpu), {}, eax))
+    cpu.esp = frame;
+    const std::optional<reg32> window = guest::pointerCall(app, cpu, kWindowOfGame, {});
+    if (!window)
         return {};
-    if (eax == 0)
+    if (*window == 0)
     {
-        if (!fail(app, cpu, frame - 2 * 4, kInitError, 0x351, {0x54a004}, eax))
+        if (!fail(app, cpu, frame - 2 * 4, kInitError, 0x351, {0x54a004}, *window))
             return {};
         return int32_t(0xfffffff0);
     }
-    if (!callGame(app, cpu, frame, kRegisterHandler, residue(cpu), {kMessageNumber, kMessageHandler}))
+    // The message's handler (a menu file's 0x4cc6d0, stdcall).
+    cpu.esp = frame - 2 * 4;  // the message and the handler pushed
+    guest::direct<kRegisterHandler, frontend::wina::handlerSet>(app, cpu, kMessageNumber, kMessageHandler);
+    cpu.esp = frame;
+    if (cpu.terminate)
         return {};
     kMessageDone.set(app, 0);
-    if (!callGame(app, cpu, frame, kSendMessage, {kMessageNumber, 0, 0, 0}))
+    cpu.esp = frame;
+    if (!guest::pointerCall(app, cpu, kSendMessage, {kMessageNumber, 0, 0, 0}))
         return {};
     // The message thread's answer waited for, as the code waits: a slice
     // given up a time.
     while (kMessageDone(app) == 0)
     {
         safepoint(app, cpu);
-        if (!callGame(app, cpu, frame, kSleep, {0, 0, cpu.ebx, cpu.ecx}))
+        cpu.esp = frame;
+        if (!guest::direct<kSleep, ea::sleepFor>(app, cpu, 0u))
             return {};
     }
     return int32_t(kDriverResult(app));
@@ -443,7 +478,6 @@ Result startSoundDriver(App* app, CPU& cpu, reg32 esp, reg32 mode)
  * error. */
 Result startLibrary(App* app, CPU& cpu, reg32 esp, reg32 mode, reg32 second)
 {
-    const Preserve keep(cpu);
     const reg32 frame = esp - 3 * 4;
     if (kInited(app) != 0)
         return 0;
@@ -451,11 +485,11 @@ Result startLibrary(App* app, CPU& cpu, reg32 esp, reg32 mode, reg32 second)
         kVoicesUsed.set(app, 0x10);
     if (kSoundTick(app) == 0)
         kSoundTick.set(app, kDefaultTick);
-    reg32 lock;
-    if (!callGame(app, cpu, frame, kMakeLock, residue(cpu), {}, lock))
+    cpu.esp = frame;
+    const std::optional<reg32> lock = guest::direct<kMakeLock, ea::newLock>(app, cpu);
+    if (!lock)
         return {};
-    kLock.set(app, lock);
-    cpu.edi = 0;
+    kLock.set(app, *lock);
     kTicks.set(app, 0);
     kTicksHigh.set(app, 0);
     kMasterVolume.set(app, 0x7f);
@@ -475,100 +509,130 @@ Result startLibrary(App* app, CPU& cpu, reg32 esp, reg32 mode, reg32 second)
     return 0;
 }
 
+}  // namespace
+
 /* 0x4e26b4 (SNDrestore): the library ended: what registered a restore
  * restored (the game's, Pathfinder, the streamers, the effects), every sound
  * stopped, the effects' end told, the driver ended, the lock gone.  The
- * driver's result; -10 before SNDinit. */
-Result endLibrary(App* app, CPU& cpu, reg32 esp)
+ * driver's result; -10 before SNDinit.  `eax` the caller's, which the first
+ * restore is handed, each next the one before's answer. */
+Result endLibrary(App* app, CPU& cpu, reg32 esp, reg32 eax)
 {
     if (kInited(app) == 0)
         return int32_t(0xfffffff6);
     for (const int32_t i : kRestoreOrder)
-        if (kRestores(app, i) != 0 && !callGame(app, cpu, esp, kRestores(app, i), residue(cpu)))
+        if (kRestores(app, i) != 0)
+        {
+            cpu.esp = esp;
+            const std::optional<reg32> restored = guest::pointerCall(app, cpu, kRestores(app, i), {eax});
+            if (!restored)
+                return {};
+            eax = *restored;
+        }
+    cpu.esp = esp;
+    if (!guest::direct<kStopAll, stopAllSounds>(app, cpu, esp - 4))
+        return {};
+    if (kBankHook(app) != 0)
+    {
+        cpu.esp = esp;
+        if (!guest::pointerCall(app, cpu, kBankHook(app), {0xffffffff}))
             return {};
-    if (!callGame(app, cpu, esp, kStopAll, residue(cpu)))
-        return {};
-    if (kBankHook(app) != 0 && !callGame(app, cpu, esp, kBankHook(app), {0xffffffff, cpu.edx, cpu.ebx, cpu.ecx}))
-        return {};
+    }
     // edx and ebx are pushed, to be popped again.
     const Result result = stopSoundDriver(app, cpu, esp - 2 * 4 - 4);
     if (!result)
         return {};
     kInited.set(app, 0);
-    if (!callGame(app, cpu, esp - 2 * 4, kFreeLock, {kLock(app), reg32(*result), cpu.ebx, cpu.ecx}))
+    cpu.esp = esp - 2 * 4;
+    if (!guest::direct<kFreeLock, ea::lockFreed>(app, cpu, kLock(app)))
         return {};
     return result;
 }
 
+namespace
+{
+
 }  // namespace
 
-/* The game's entries: adapters around the cores above. */
+/* The game's entries: thunks around the cores above. */
 
-void iSNDunloaddll(App* app, CPU& cpu)
+x86::reg32 iSNDunloaddll(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, unloadDriver(app, cpu, e.esp));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, unloadDriver(app, cpu, e.esp));
 }
 
-void SNDsetrate(App* app, CPU& cpu)
+x86::reg32 SNDsetrate(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    setPriorityOffset(app, uint16_t(e.eax));
-    e.back(cpu, 0);
+    const Entry e(cpu, args);
+    return e.back(cpu, args, priorityOffsetSet(app, e.eax));
 }
 
-void leaveAudioLocks(App* app, CPU& cpu)
+/* 0x4e2228's core: the priority offset set from `rate`'s low word; 0. */
+reg32 priorityOffsetSet(App* app, reg32 rate)
 {
-    const Entry e(cpu);
-    e.finish(cpu, leaveAllLocks(app, cpu, e.esp, e.eax));
+    setPriorityOffset(app, uint16_t(rate));
+    return 0;
 }
 
-void iSNDmessageinit(App* app, CPU& cpu)
+/* 0x4e2630's core: startLibrary for `mode` and `second`; esp the frame base. */
+Result libraryStarted(App* app, CPU& cpu, reg32 esp, reg32 mode, reg32 second)
 {
-    const Entry e(cpu);
-    e.finish(cpu, driverMessage(app, cpu, e.esp, e.arg(app, 1), e.arg(app, 4), e.eax), 0x18);
+    return startLibrary(app, cpu, esp, mode, second);
 }
 
-void iSNDinit(App* app, CPU& cpu)
+x86::reg32 leaveAudioLocks(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, startSoundDriver(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, leaveAllLocks(app, cpu, e.esp, e.eax));
 }
 
-void iSNDrestore(App* app, CPU& cpu)
+x86::reg32 iSNDmessageinit(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, stopSoundDriver(app, cpu, e.esp));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, driverMessage(app, cpu, e.esp, e.arg(app, 1), e.arg(app, 4), e.eax), 0x18);
 }
 
-void iSNDverifymode(App* app, CPU& cpu)
+x86::reg32 iSNDinit(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, verifyMode(app, cpu, e.esp, e.eax, e.edx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, startSoundDriver(app, cpu, e.esp, e.eax));
 }
 
-void SNDinit(App* app, CPU& cpu)
+x86::reg32 iSNDrestore(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, startLibrary(app, cpu, e.esp, e.eax, e.edx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, stopSoundDriver(app, cpu, e.esp));
 }
 
-void SNDrestore(App* app, CPU& cpu)
+x86::reg32 iSNDverifymode(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, endLibrary(app, cpu, e.esp));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, verifyMode(app, cpu, e.esp, e.eax, e.edx));
 }
 
-void soundThread(App* app, CPU& cpu)
+x86::reg32 SNDinit(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, serveSounds(app, cpu, e.esp));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, startLibrary(app, cpu, e.esp, e.eax, e.edx));
 }
 
-void setSoundServer(App* app, CPU& cpu)
+x86::reg32 SNDrestore(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, setServer(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, endLibrary(app, cpu, e.esp, e.eax));
+}
+
+x86::reg32 soundThread(App* app, CPU& cpu, x86::Args& args)
+{
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, serveSounds(app, cpu, e.esp));
+}
+
+x86::reg32 setSoundServer(App* app, CPU& cpu, x86::Args& args)
+{
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, setServer(app, cpu, e.esp, e.eax));
 }
 
 }  // namespace port

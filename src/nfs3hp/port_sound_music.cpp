@@ -1,7 +1,9 @@
 #include "game_settings.h"
 #include "native_ea_memory.h"
 #include "native_ea_support.h"
+#include "native_frontend_loada.h"
 #include "native_watcom.h"
+#include "port_snd_calls.h"
 #include "port_snd_play.h"
 #include "port_snd_stream_calls.h"
 #include "port_sound_slice.h"
@@ -13,7 +15,7 @@
  * through, the tune for the menus ("show") and for a race (the track's rock or
  * tech version) started on Pathfinder with its map, faded in and out, and the
  * effects' banks loaded and freed.  The port's change to the race music
- * (tools/apply_music_stream.py's, before these were native) is here: the
+ * (the port's music stream change's, before these were native) is here: the
  * track is played from its own file, not from a copy made at every race.
  *
  * The game's state: 0x6fbb54 set when there is no sound (no music either),
@@ -27,8 +29,7 @@
  *
  * The functions call the game's streams and Pathfinder, which are not
  * rewritten yet, by their addresses, with the registers the game's code has
- * at each call (the stand-ins of tools/game_checks read the ones their
- * function takes, and a few take more than the code gives them). */
+ * at each call. */
 namespace nfs3hp
 {
 namespace port
@@ -102,7 +103,8 @@ Result musicStopped(App* app, CPU& cpu, reg32 esp, reg32 eax)
         for (;;)
         {
             safepoint(app, cpu);
-            if (!g.call(kStreamGetVolume, {eax}, eax))
+            g.atCall();
+            if (!tookEax(guest::direct<kStreamGetVolume, stream::streamVolume>(app, cpu, g.esp - 4), eax))
                 return {};
             if (int32_t(eax) <= 0)
                 break;
@@ -110,14 +112,14 @@ Result musicStopped(App* app, CPU& cpu, reg32 esp, reg32 eax)
             if (!tookEax(guest::direct<kRunSystemTasks, stream::runDueTasks>(app, cpu, g.esp - 4, 0u), eax))
                 return {};
         }
-        g.esi = 0;
-        if (!g.call(kStreamPurge, {eax}, eax))
+        g.atCall();
+        if (!tookEax(guest::direct<kStreamPurge, stream::purgeStreamer>(app, cpu, g.esp - 4), eax))
             return {};
         kMusicPlaying.set(app, 0);
-        if (!g.call(kPathRestore, {eax}, eax))
+        g.atCall();
+        if (!tookEax(guest::direct<kPathRestore, stream::pathRestore>(app, cpu, g.esp - 4), eax))
             return {};
         const reg32 map = reg32(kMusicMap(app));
-        g.edi = map;
         if (map != 0)
         {
             g.atCall();
@@ -144,9 +146,7 @@ Result musicStarted(App* app, CPU& cpu, reg32 esp, int32_t tune, int32_t volume,
     if (tune == kNoTune)
     {
         tune = 0;
-        g.esi = 0;
     }
-    g.edi = kNoTune;
     kOwnTune.set(app, 0);
     reg32 eax = reg32(gameSettings(app).installIsRemote);
     kMenuTune.set(app, kNoTune);
@@ -160,7 +160,6 @@ Result musicStarted(App* app, CPU& cpu, reg32 esp, int32_t tune, int32_t volume,
     {
         // A tune of the menus' 6 at random (the sixth is the second): the
         // code divides EA's random number by 7 and takes the rest.
-        g.edi = 7;
         const reg32 random = nextRandom(app);
         eax = random / 7;
         uint8_t pick = uint8_t(random % 7 + 1);
@@ -173,14 +172,10 @@ Result musicStarted(App* app, CPU& cpu, reg32 esp, int32_t tune, int32_t volume,
         eax = uint8_t(std::int32_t(gameSettings(app).menuMusicAsked));
         kMenuPick.set(app, uint8_t(std::int32_t(gameSettings(app).menuMusicAsked)));
     }
-    // ecx for the calls below, as the code has it: the tune with the mode in
-    // its second byte (6 for the sixth).
-    reg32 ecx = (reg32(tune) & 0xffff00ff) | reg32(gameMode(app)) << 8;
     if (rockMode(app))
         kMenuPick.set(app, 1);
     if (tune == kMenuTuneSix)
     {
-        ecx = 6;
         g.atCall();
         if (!tookEax(cpu, guest::direct<kSprintf, watcom::clib::sprintf>(app, cpu, name, 0x5368c4, guest::Words{kAudioDir}), eax))
             return {};
@@ -208,7 +203,7 @@ Result musicStarted(App* app, CPU& cpu, reg32 esp, int32_t tune, int32_t volume,
         g.atCall();
         if (!tookEax(cpu, guest::direct<kSprintf, watcom::clib::sprintf>(app, cpu, name, kFormatTwo, guest::Words{kAudioDir, kTuneNames(app, pick)}), eax))
             return {};
-        ecx = appendText(app, name, !rockMode(app) && kTech(app) == 1 ? kTechEnd : kRockEnd);
+        appendText(app, name, !rockMode(app) && kTech(app) == 1 ? kTechEnd : kRockEnd);
         eax &= 0xffffff00;
     }
     const reg32 index = own != 0 && tune < 0xa ? kIndexOwn : kIndexMenu;
@@ -219,7 +214,8 @@ Result musicStarted(App* app, CPU& cpu, reg32 esp, int32_t tune, int32_t volume,
     if (!tookEax(guest::direct<kLoadFile, ea::loadWhole>(app, cpu, path, 0x10), eax))
         return {};
     kMusicMap.set(app, int32_t(eax));
-    if (!g.call(kPathInit, {eax}, eax))
+    g.atCall();
+    if (!tookEax(guest::direct<kPathInit, stream::pathInit>(app, cpu, g.esp - 4, eax), eax))
         return {};
     constexpr reg32 kRing = 0x5dc;  // the stream's ring, in blocks
     g.atCall();
@@ -227,14 +223,19 @@ Result musicStarted(App* app, CPU& cpu, reg32 esp, int32_t tune, int32_t volume,
         return {};
     // 0x4e73d0 (SNDmastervol) with the path in edx, which the stream start
     // below takes from it.
-    if (!g.call(0x4e73d0, {0, path, kRing, ecx}, eax))
+    g.atCall();
+    if (!tookEax(guest::direct<0x4e73d0, setMasterVolume>(app, cpu, g.esp - 4, 0), eax))
         return {};
-    if (!g.call(kPathStartStream, {reg32(kMusicStream(app)), path, kRing, ecx}, eax))
+    g.atCall();
+    if (!tookEax(guest::direct<kPathStartStream, stream::startPathStream>(app, cpu, g.esp - 4,
+                                                                          reg32(kMusicStream(app)), path, kRing),
+                 eax))
         return {};
     g.atCall();
     if (!tookEax(guest::direct<kStreamAutoVolume, stream::fadeStream>(app, cpu, g.esp - 4, 1, 0), eax))
         return {};
-    if (!g.call(0x4e73d0, {0x7f, reg32(volume), kRing, ecx}, eax))
+    g.atCall();
+    if (!tookEax(guest::direct<0x4e73d0, setMasterVolume>(app, cpu, g.esp - 4, 0x7f), eax))
         return {};
     g.atCall();
     if (!tookEax(guest::direct<kStreamAutoVolume, stream::fadeStream>(app, cpu, g.esp - 4, 0x64, volume), eax))
@@ -253,50 +254,55 @@ Result soundExitOf(App* app, CPU& cpu, reg32 esp, const Args& in)
     if (kEffectsOn(app) != 0 || kMusicOn(app) != 0)
     {
         Game g(app, cpu, esp - 4);
-        if (!g.call(kSoundRestore, {eax, in.edx, in.ebx, in.ecx}, eax))
+        g.atCall();
+        if (!tookEax(guest::direct<kSoundRestore, endLibrary>(app, cpu, g.esp - 4, eax), eax))
             return {};
     }
     return int32_t(eax);
 }
 
 /* 0x40feb0: SND ended at the game's exit, with the sound or the music on. */
-void soundExit(App* app, CPU& cpu)
+x86::reg32 soundExit(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, soundExitOf(app, cpu, e.esp, {e.eax, e.edx, e.ebx, e.ecx}));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, soundExitOf(app, cpu, e.esp, {e.eax, e.edx, e.ebx, e.ecx}));
 }
 
 /* 0x40fed0: the music's old copy (<temp>temp.mus) made writable and deleted. */
-void deleteMusicCopy(App* app, CPU& cpu)
+Result musicCopyDeleted(App* app, CPU& cpu, reg32 esp)
 {
-    const Entry e(cpu);
-    const reg32 frame = e.frame(3);
+    const reg32 frame = esp - 4 * 3;
     const reg32 name = frame - 0x80;
     const HeldEbp ebp(cpu, frame);
     Game g(app, cpu, name);
-    reg32 eax = e.eax;
+    reg32 eax = 0;  // what the code has in eax at the call: put over by the sprintf's result before it is read
     g.atCall();
     if (!tookEax(cpu, guest::direct<kSprintf, watcom::clib::sprintf>(app, cpu, name, 0x536880, guest::Words{kTempDir}), eax))
-        return;
+        return std::nullopt;
     g.atCall();
     if (!tookEax(guest::direct<kFileExists, ea::fileThere>(app, cpu, name), eax))
-        return;
+        return std::nullopt;
     if (eax != 0)
     {
         // The import at 0x5345ec (SetFileAttributesA): the attributes of the file set to archive (0x20).
-        g.sync();
-        if (!callWindows<0x5345ec, &host::setFileAttributes>(app, cpu, g.esp, {eax}, eax, name, 0x20)
+        if (!callWindowsWords<0x5345ec, &host::setFileAttributes>(app, cpu, g.esp, eax, name, 0x20)
             || !g.call(kUnlink, {name}, eax))
-            return;
+            return std::nullopt;
     }
-    e.back(cpu, eax);
+    return std::int32_t(eax);
+}
+
+x86::reg32 deleteMusicCopy(App* app, CPU& cpu, x86::Args& args)
+{
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, musicCopyDeleted(app, cpu, e.esp));
 }
 
 /* 0x40ffd0: the race's tune for the track. */
-void raceTuneOf(App* app, CPU& cpu)
+x86::reg32 raceTuneOf(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, reg32(raceTune(app)));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, reg32(raceTune(app)));
 }
 
 /* 0x410030: the race's music picked for track eax -- its tune, rock or tech
@@ -306,9 +312,9 @@ void raceTuneOf(App* app, CPU& cpu)
  * name made up from the tune's, which only that copy used).  eax as the code
  * leaves it (the file name's making clears its low byte, and the second one
  * has the mode). */
-void raceMusicPrepare(App* app, CPU& cpu)
+x86::reg32 raceMusicPrepare(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     const reg32 frame = e.frame(6) - 0x82;  // ebp as the code has it
     const reg32 name = frame - 0xaa;
     const HeldEbp ebp(cpu, frame);
@@ -316,18 +322,19 @@ void raceMusicPrepare(App* app, CPU& cpu)
     const int32_t track = int32_t(e.eax);
     reg32 eax = e.eax;
     const int32_t quiet = gameSettings(app).installIsRemote;
-    g.edi = reg32(quiet);
     if (quiet != 0 || track >= 0xa)
-        return e.back(cpu, eax);
-    if (!g.call(0x4a33d0, {eax, 0x80000, 0, e.eax}, eax))
-        return;
+        return e.back(cpu, args, eax);
+    g.atCall();
+    eax = guest::direct<0x4a33d0, frontend::loada::stopCheck>(app, cpu);
+    if (cpu.terminate)
+        return args.eax;
     if (kRaceStarted(app) != 0)
-        return e.back(cpu, eax);
+        return e.back(cpu, args, eax);
     if (std::int32_t(gameSettings(app).musicMode) < 3)
     {
         g.atCall();
         if (!tookEax(cpu, guest::direct<kSprintf, watcom::clib::sprintf>(app, cpu, name, kFormatTwo, guest::Words{kAudioDir, kTuneNames(app, track)}), eax))
-            return;
+            return args.eax;
         eax = (eax & 0xffff0000) | reg32(gameMode(app)) << 8;
     }
     else
@@ -336,7 +343,7 @@ void raceMusicPrepare(App* app, CPU& cpu)
         kRaceTune.set(app, tune);
         g.atCall();
         if (!tookEax(cpu, guest::direct<kSprintf, watcom::clib::sprintf>(app, cpu, name, kFormatTwo, guest::Words{kAudioDir, kTuneNames(app, tune)}), eax))
-            return;
+            return args.eax;
         const int32_t t = gameSettings(app).musicMode;
         if (t == 0xb)
         {
@@ -351,7 +358,7 @@ void raceMusicPrepare(App* app, CPU& cpu)
             eax &= 0xffffff00;
         }
     }
-    e.back(cpu, eax);
+    return e.back(cpu, args, eax);
 }
 
 /* 0x410330's: the music's CD stream made (300 KB of ring, 16 KB blocks), when
@@ -362,7 +369,8 @@ Result musicStreamMade(App* app, CPU& cpu, reg32 esp, reg32 eax, reg32 ecx)
     if (gameSettings(app).installIsRemote == 0 && kMusicOn(app) != 0)
     {
         Game g(app, cpu, esp - 3 * 4);
-        if (!g.call(kStreamMake, {0x4b000, 0x4000, 0, ecx}, eax))
+        g.atCall();
+        if (!tookEax(guest::direct<kStreamMake, stream::makeFirstStream>(app, cpu, g.esp - 4, 0x4b000u, 0x4000u, 0u), eax))
             return {};
         kMusicStream.set(app, int32_t(eax));
     }
@@ -371,10 +379,10 @@ Result musicStreamMade(App* app, CPU& cpu, reg32 esp, reg32 eax, reg32 ecx)
 
 /* 0x410330: the music's CD stream made (300 KB of ring, 16 KB blocks), when
  * the music is on. */
-void musicStreamMake(App* app, CPU& cpu)
+x86::reg32 musicStreamMake(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, musicStreamMade(app, cpu, e.esp, e.eax, e.ecx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, musicStreamMade(app, cpu, e.esp, e.eax, e.ecx));
 }
 
 /* 0x410370: the same, eax KB of ring. */
@@ -383,25 +391,26 @@ Result musicStreamOf(App* app, CPU& cpu, reg32 esp, reg32 eax, reg32 ecx)
     if (gameSettings(app).installIsRemote == 0 && kMusicOn(app) != 0)
     {
         Game g(app, cpu, esp - 3 * 4);
-        if (!g.call(kStreamMake, {eax << 10, 0x4000, 0, ecx}, eax))
+        g.atCall();
+        if (!tookEax(guest::direct<kStreamMake, stream::makeFirstStream>(app, cpu, g.esp - 4, eax << 10, 0x4000u, 0u), eax))
             return std::nullopt;
         kMusicStream.set(app, int32_t(eax));
     }
     return int32_t(eax);
 }
 
-void musicStreamMakeOf(App* app, CPU& cpu)
+x86::reg32 musicStreamMakeOf(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, musicStreamOf(app, cpu, e.esp, e.eax, e.ecx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, musicStreamOf(app, cpu, e.esp, e.eax, e.ecx));
 }
 
 /* 0x4103a0: the music after a change of setting eax (edx: the menus' tune
  * back): the menu's tune, or the race's for a track (3..12, rock or tech by
  * eax's evenness) -- restarted. */
-void musicAfterSetting(App* app, CPU& cpu)
+x86::reg32 musicAfterSetting(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     const reg32 esp = e.frame(4);
     const int32_t setting = int32_t(e.eax);
     // The menu's tune started again.
@@ -415,28 +424,28 @@ void musicAfterSetting(App* app, CPU& cpu)
         return started;
     };
     if (e.edx != 0)
-        return e.finish(cpu, menu());
+        return e.finish(cpu, args, menu());
     const int32_t track = gameSettings(app).musicMode;
     if (track < 3 || track > 0xc)
     {
         if (kMenuBack(app) != 0)
         {
             kMenuBack.set(app, 1);
-            return e.back(cpu, e.eax);
+            return e.back(cpu, args, e.eax);
         }
-        return e.finish(cpu, menu());
+        return e.finish(cpu, args, menu());
     }
     kTech.set(app, setting % 2 != 0 ? 0 : 1);
     const int32_t tune = raceTune(app);
     kRaceTune.set(app, tune);
     Result r = musicStopped(app, cpu, esp - 4, reg32(tune));
     if (!r)
-        return;
+        return args.eax;
     r = musicStarted(app, cpu, esp - 4, 0, std::int32_t(gameSettings(app).raceMusicVolume), 1);
     if (!r)
-        return;
+        return args.eax;
     kMenuBack.set(app, 0);
-    e.finish(cpu, r);
+    return e.finish(cpu, args, r);
 }
 
 /* 0x410460's: the menus' tune 0x18 while there is no other asked for (6),
@@ -445,6 +454,7 @@ void musicAfterSetting(App* app, CPU& cpu)
 Result musicMenuSixOf(App* app, CPU& cpu, reg32 esp, reg32 eax)
 {
     const reg32 frame = esp - 4 * 4;
+    // The tasks musicStopped runs read ebp unset: the code's frame pointer.
     const HeldEbp ebp(cpu, frame);
     kMenuSixAsked.set(app, 1);
     Result r = int32_t(eax);
@@ -459,25 +469,25 @@ Result musicMenuSixOf(App* app, CPU& cpu, reg32 esp, reg32 eax)
 }
 
 /* 0x410460: the menus' tune 0x18 while there is no other asked for (6). */
-void musicMenuSix(App* app, CPU& cpu)
+x86::reg32 musicMenuSix(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, musicMenuSixOf(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, musicMenuSixOf(app, cpu, e.esp, e.eax));
 }
 
 /* 0x4104f0: tune eax started at volume edx (ebx: its own). */
-void musicStart(App* app, CPU& cpu)
+x86::reg32 musicStart(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, musicStarted(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx), int32_t(e.ebx)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, musicStarted(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx), int32_t(e.ebx)));
 }
 
 /* 0x4107c0: a race's music started -- tune eax (the race's when ebx says
  * so), rock or tech, at volume edx less the car's own share for the tech --
  * from the track's own file, by the port's change. */
-void raceMusicStart(App* app, CPU& cpu)
+x86::reg32 raceMusicStart(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     const reg32 frame = e.frame(4) - 0x186;  // ebp as the code has it
     const reg32 locals = e.frame(4, 0x108);
     const reg32 name = locals;
@@ -491,51 +501,48 @@ void raceMusicStart(App* app, CPU& cpu)
     kOwnTune.set(app, 0);
     const int32_t quiet = gameSettings(app).installIsRemote;
     if (quiet != 0 || kMusicOn(app) == 0 || tune >= 0xa)
-        return e.back(cpu, reg32(tune));
+        return e.back(cpu, args, reg32(tune));
     reg32 eax;
-    reg32 pick, ecx;
+    reg32 pick;
     if (own != 0)
     {
         kMenuMusic.set(app, quiet);
         kOwnTune.set(app, 1);
         pick = reg32(kRaceTune(app));
-        ecx = (kTuneNames(app, int32_t(pick)) & 0xffffff00) | gameMode(app);
         eax = pick;
     }
     else
     {
         kMenuMusic.set(app, 1);
         pick = reg32(tune);
-        g.esi = kTuneNames(app, tune);
-        ecx = gameMode(app);
         eax = reg32(tune);
     }
     g.atCall();
     if (!tookEax(cpu, guest::direct<kSprintf, watcom::clib::sprintf>(app, cpu, name, kFormatTwo, guest::Words{kAudioDir, kTuneNames(app, int32_t(pick))}), eax))
-        return;
-    if (!rockMode(app))
-        g.edi = reg32(gameSettings(app).musicMode);
+        return args.eax;
     appendText(app, name, techMusic(app) ? kTechEnd : kRockEnd);
-    ecx = appendText(app, name, own != 0 ? kIndexOwn : kIndexMenu);
+    appendText(app, name, own != 0 ? kIndexOwn : kIndexMenu);
     musicIndexOpened(app, name);
     g.atCall();
     if (!tookEax(guest::direct<kLoadFile, ea::loadWhole>(app, cpu, name, 0x10), eax))
-        return;
+        return args.eax;
     kMusicMap.set(app, int32_t(eax));
-    if (!g.call(kPathInit, {eax}, eax))
-        return;
-    g.esi = kStreamEnd;
-    g.edi = name;
+    g.atCall();
+    if (!tookEax(guest::direct<kPathInit, stream::pathInit>(app, cpu, g.esp - 4, eax), eax))
+        return args.eax;
     g.atCall();
     if (!tookEax(cpu, guest::direct<kSprintf, watcom::clib::sprintf>(app, cpu, name, 0x536900, guest::Words{kTempDir}), eax))
-        return;
-    ecx = appendText(app, name, kStreamEnd);
+        return args.eax;
+    appendText(app, name, kStreamEnd);
     musicStreamFile(app, name);
-    if (!g.call(kPathStartStream, {reg32(kMusicStream(app)), name, kRing, ecx}, eax))
-        return;
+    g.atCall();
+    if (!tookEax(guest::direct<kPathStartStream, stream::startPathStream>(app, cpu, g.esp - 4,
+                                                                          reg32(kMusicStream(app)), name, kRing),
+                 eax))
+        return args.eax;
     g.atCall();
     if (!tookEax(guest::direct<kStreamAutoVolume, stream::fadeStream>(app, cpu, g.esp - 4, 1, 0), eax))
-        return;
+        return args.eax;
     reg32 level = volume;
     if (gameSettings(app).musicMode == 1 || kTech(app) == 1)
     {
@@ -547,16 +554,16 @@ void raceMusicStart(App* app, CPU& cpu)
     g.atCall();
     if (!tookEax(guest::direct<kStreamAutoVolume, stream::fadeStream>(app, cpu, g.esp - 4, 0x64, int32_t(level)),
                  eax))
-        return;
+        return args.eax;
     kMusicPlaying.set(app, 1);
-    e.back(cpu, eax);
+    return e.back(cpu, args, eax);
 }
 
 /* 0x4109d0: the music stopped. */
-void musicStop(App* app, CPU& cpu)
+x86::reg32 musicStop(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, musicStopped(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, musicStopped(app, cpu, e.esp, e.eax));
 }
 
 /* 0x410aa0's: the music's stream ended: the streamer's restore, the stream
@@ -567,7 +574,13 @@ Result musicStreamEndOf(App* app, CPU& cpu, reg32 esp, reg32 eax, reg32 ebx, reg
     if (gameSettings(app).installIsRemote == 0 && kMusicOn(app) != 0)
     {
         Game g(app, cpu, esp - 2 * 4);
-        if (!g.call(kStreamRestore, {eax}, eax) || !g.call(kStreamDelete, {reg32(kMusicStream(app)), 0, ebx, ecx}, eax))
+        g.atCall();
+        if (!tookEax(guest::direct<kStreamRestore, stream::restoreStreamer>(app, cpu, g.esp - 4), eax))
+            return {};
+        g.atCall();
+        if (!tookEax(guest::direct<kStreamDelete, stream::deleteCdStream>(app, cpu, g.esp - 4, reg32(kMusicStream(app)),
+                                                                          0u, ebx, ecx),
+                     eax))
             return {};
         // The stream is gone: edx holds the flag just tested: 0.
         kMusicStream.set(app, 0);
@@ -577,10 +590,10 @@ Result musicStreamEndOf(App* app, CPU& cpu, reg32 esp, reg32 eax, reg32 ebx, reg
 
 /* 0x410aa0: the music's stream ended: the streamer's restore, the stream
  * deleted. */
-void musicStreamEnd(App* app, CPU& cpu)
+x86::reg32 musicStreamEnd(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, musicStreamEndOf(app, cpu, e.esp, e.eax, e.ebx, e.ecx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, musicStreamEndOf(app, cpu, e.esp, e.eax, e.ebx, e.ecx));
 }
 
 /* 0x410ad0's: the 23 banks' header copies freed.  eax as the loop leaves it:
@@ -588,7 +601,6 @@ void musicStreamEnd(App* app, CPU& cpu)
 Result banksFreed(App* app, CPU& cpu, reg32 esp)
 {
     const reg32 frame = esp - 5 * 4;
-    const HeldEbp ebp(cpu, frame);
     Game g(app, cpu, frame);
     reg32 eax = 0;
     for (int32_t i = 0; i < kBankCopyCount; ++i)
@@ -598,7 +610,6 @@ Result banksFreed(App* app, CPU& cpu, reg32 esp)
         const reg32 copy = bank.copy;
         if (copy == 0)
             continue;
-        g.esi = 0;
         g.atCall();
         if (!tookEax(guest::direct<kPurgeMemory, ea::purgeBlock>(app, cpu, copy), eax))
             return {};
@@ -607,10 +618,10 @@ Result banksFreed(App* app, CPU& cpu, reg32 esp)
     return int32_t(eax);
 }
 
-void banksFree(App* app, CPU& cpu)
+x86::reg32 banksFree(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, banksFreed(app, cpu, e.esp));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, banksFreed(app, cpu, e.esp));
 }
 
 /* 0x410b20's: every bank removed from SND, the first's copy freed.  eax as
@@ -634,10 +645,10 @@ Result banksRemoveOf(App* app, CPU& cpu, reg32 esp)
 }
 
 /* 0x410b20: every bank removed from SND, the first's copy freed. */
-void banksRemove(App* app, CPU& cpu)
+x86::reg32 banksRemove(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, banksRemoveOf(app, cpu, e.esp));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, banksRemoveOf(app, cpu, e.esp));
 }
 
 /* 0x410b50's: bank file `file` (".bnk" added) loaded into slot `slot` and
@@ -649,7 +660,6 @@ Result bankLoaded(App* app, CPU& cpu, reg32 esp, reg32 file, int32_t slot, reg32
     const reg32 frame = esp - 4 * 4;  // ebp as the code has it
     const reg32 buffer = frame - 0x108;
     const reg32 handleAt = frame - 8;
-    const HeldEbp ebp(cpu, frame);
     Game g(app, cpu, buffer);
     if (kEffectsOn(app) == 0)
         return int32_t(eax);
@@ -659,27 +669,28 @@ Result bankLoaded(App* app, CPU& cpu, reg32 esp, reg32 file, int32_t slot, reg32
     if (!tookEax(guest::direct<kLoadFile, ea::loadWhole>(app, cpu, buffer, flags), eax))
         return {};
     const reg32 data = eax;
-    g.edi = data;
-    if (!g.call(0x4e8d20, {handleAt, data, flags, data}, eax))
+    g.atCall();
+    if (!tookEax(guest::direct<0x4e8d20, bankAdded>(app, cpu, g.esp - 4, handleAt, data), eax))
         return {};
     reg32 kept = data;
     if (eax == 7)
     {
         const reg32 handle = load<reg32>(app, handleAt);
-        if (!g.call(0x4e8db0, {handle, data, flags, data}, eax))
+        g.atCall();
+        if (!tookEax(guest::direct<0x4e8db0, bankHeaderSize>(app, cpu, g.esp - 4, int32_t(handle)), eax))
             return {};
         const reg32 size = eax;
         g.atCall();
         if (!tookEax(guest::direct<kReserveMemory, ea::reserved>(app, cpu, 0x53688c, size, flags), eax))
             return {};
         const reg32 copy = eax;
-        if (!g.call(0x4e8e20, {copy, handle, copy, data}, eax))
+        g.atCall();
+        if (!tookEax(guest::direct<0x4e8e20, copyBankHeader>(app, cpu, g.esp - 4, copy, int32_t(handle)), eax))
             return {};
         g.atCall();
         if (!tookEax(guest::direct<kPurgeMemory, ea::purgeBlock>(app, cpu, data), eax))
             return {};
         kept = copy;
-        g.edi = copy;
     }
     GameBank& bank = kGameBanks(app, slot);
     bank.copy = kept;
@@ -688,10 +699,10 @@ Result bankLoaded(App* app, CPU& cpu, reg32 esp, reg32 file, int32_t slot, reg32
     return int32_t(handle);
 }
 
-void bankLoad(App* app, CPU& cpu)
+x86::reg32 bankLoad(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, bankLoaded(app, cpu, e.esp, e.eax, int32_t(e.edx), e.ebx, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, bankLoaded(app, cpu, e.esp, e.eax, int32_t(e.edx), e.ebx, e.eax));
 }
 
 }  // namespace port

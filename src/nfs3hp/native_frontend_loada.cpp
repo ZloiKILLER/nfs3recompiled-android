@@ -1,11 +1,17 @@
 #include "native_frontend_loada.h"
+#include "port_fields.h"
+#include "native_load_carmodels.h"
+#include "native_load_saves.h"
+#include "native_ai_race.h"
 #include "native_watcom.h"
+#include "native_ea_net.h"
 #include "native_game.h"
 #include "game_settings.h"
 #include "native_aiplan.h"
 #include "native_ea_memory.h"
 #include "native_ea_support.h"
 #include "native_frontend.h"
+#include "native_frontend_fx.h"
 #include "native_frontend_eaa.h"
 #include "native_frontend_menub.h"
 #include "native_frontend_menuf.h"
@@ -17,11 +23,14 @@
 #include "native_frontend_sime.h"
 #include "native_handling.h"
 #include "native_load_cardb.h"
+#include "native_graphics.h"
+#include "native_raceload.h"
 #include "native_trackdata.h"
 #include "native_vertices.h"
+#include "native_render.h"
 #include <nfs3hp.h>
 #include <fpu.h>
-// What lib/thread.h holds pointers to and the checks' stand-in for SDL does not declare.
+// What lib/thread.h holds pointers to, declared here.
 struct SDL_AtomicInt;
 struct SDL_Semaphore;
 #include <lib/thread.h>
@@ -47,7 +56,7 @@ struct SDL_Semaphore;
  *
  * Plan step 5: each function a typed core in frontend::loada (native_frontend_loada.h), in a
  * frame of its own where the game's function has one (fe::Frame: what it calls runs at the stack
- * addresses it did), and an adapter under the game's name for the calls by address.  A core of
+ * addresses it did), and a thunk under the game's name for the calls by address.  A core of
  * this round's three files (rendd, rende, loada) calls another as C++ (guest::direct), and the
  * typed cores of other files too (fe::direct); the rest of the game still by address. */
 #if defined(__clang__)
@@ -69,10 +78,6 @@ using x86::reg32;
 using x86::sreg32;
 
 // The game's functions, by address.
-constexpr reg32 kCarClass = 0x439730;          // eax a car's number: 0, 1 or 2
-constexpr reg32 kCarHasNumericId = 0x439610;   // eax a car's number
-constexpr reg32 kFirstCar = 0x438af0;          // the first of the cars' list, or 0
-constexpr reg32 kNextCar = 0x438b10;           // the next one, or 0
 constexpr reg32 kFillZero = 0x4e070c;          // eax, edx bytes
 constexpr reg32 kMemset = 0x4e0640;            // eax, the byte in edx, ebx bytes
 constexpr reg32 kStrncpy = 0x4e0e30;           // eax from edx, ebx at most
@@ -112,7 +117,7 @@ reg32 entryAt(reg32 place)
     return SETTINGS_ADDRESS(entries) + place * kEntrySize;
 }
 
-/* A generated function's stack argument, by its place, before its frame. */
+/* A game function's stack argument, by its place, before its frame. */
 reg32 stackArgument(win32::WinApplication* app, const x86::CPU& cpu, reg32 place)
 {
     return app->getMemory<reg32>(cpu.esp + 4 + 4 * place);
@@ -176,10 +181,10 @@ sreg32 signedWord(const Guest& guest, reg32 address)
 template <std::size_t N>
 reg32 stepsWithChecks(win32::WinApplication* app, x86::CPU& cpu, Guest& guest, const reg32 (&steps)[N])
 {
-    reg32 left = guest.eax();
+    reg32 left = 0;
     for (const reg32 step : steps)
     {
-        guest.call(step);
+        fx::callAt(guest, step);
         left = guest::direct<0x4a33d0, frontend::loada::stopCheck>(app, cpu);
     }
     return left;
@@ -243,7 +248,6 @@ reg32 allCopsColour(Guest& guest)
     for (;;)
     {
         const reg32 random = fe::direct<kRand, watcom::clib::rand>(guest.app(), guest.cpu());
-        guest.cpu().eax = random;  // as the call by address leaves it: the code after reads it there
         const reg32 colour = random & 7;
         if (colour != 0 && colour != 2 && colour != 3)
             return colour;
@@ -257,13 +261,13 @@ x86::reg32 frontend::loada::rosterClearUsed(App* app, CPU& cpu)
 {
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 8);
-    return guest.call(kFillZero, args({ kUsedCounts, 0x400 }));
+    return fe::direct<kFillZero, ea::clearBytes>(guest.app(), guest.cpu(), kUsedCounts, 0x400);
 }
 
-void frontend::loadingRosterClearUsed(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingRosterClearUsed(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_473340", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::rosterClearUsed(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::rosterClearUsed(app, cpu); });
 }
 
 /* sub_473360: eax the kind of choice, edx which of the race's numbers, ebx how many there
@@ -284,16 +288,15 @@ x86::reg32 frontend::loada::rosterPickLeastUsed(App* app, CPU& cpu, reg32 kind, 
             ++level;
     }
     guest.setByte(counts + reg32(pick), std::uint8_t(guest.byte(counts + reg32(pick)) + 1));
-    guest.leaveEdx(reg32(pick));
     return reg32(pick);
 }
 
-void frontend::loadingRosterPickLeastUsed(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingRosterPickLeastUsed(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_473360", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 kind = cpu.eax, index = cpu.edx;
-    const sreg32 span = sreg32(cpu.ebx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::rosterPickLeastUsed(app, cpu, kind, index, span); });
+    const reg32 kind = args.eax, index = args.edx;
+    const sreg32 span = sreg32(args.ebx);
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::rosterPickLeastUsed(app, cpu, kind, index, span); });
 }
 
 /* sub_4733b0: eax the kind of choice, edx the one to mark. */
@@ -305,11 +308,11 @@ x86::reg32 frontend::loada::rosterMarkUsed(App* app, CPU& cpu, reg32 kind, reg32
     return row;
 }
 
-void frontend::loadingRosterMarkUsed(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingRosterMarkUsed(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4733b0", 0, 0, nullptr, 0, 0 };
-    const reg32 kind = cpu.eax, pick = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::rosterMarkUsed(app, cpu, kind, pick); });
+    const reg32 kind = args.eax, pick = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::rosterMarkUsed(app, cpu, kind, pick); });
 }
 
 /* sub_4734d0: an opponent's car: a car of the class chosen, or the one car chosen. */
@@ -329,11 +332,11 @@ x86::reg32 frontend::loada::rosterPickOpponentCar(App* app, CPU& cpu, reg32 inde
     return car;
 }
 
-void frontend::loadingRosterPickOpponentCar(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingRosterPickOpponentCar(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4734d0", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx | fe::kRestoreEsi };
-    const reg32 index = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::rosterPickOpponentCar(app, cpu, index); });
+    const reg32 index = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::rosterPickOpponentCar(app, cpu, index); });
 }
 
 /* sub_473550: an opponent's driver, of seven. */
@@ -344,11 +347,11 @@ x86::reg32 frontend::loada::rosterPickOpponentDriver(App* app, CPU& cpu, reg32 i
     return guest::direct<0x473360, rosterPickLeastUsed>(app, cpu, 2u, index, 7u);
 }
 
-void frontend::loadingRosterPickOpponentDriver(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingRosterPickOpponentDriver(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_473550", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEdx };
-    const reg32 index = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::rosterPickOpponentDriver(app, cpu, index); });
+    const reg32 index = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::rosterPickOpponentDriver(app, cpu, index); });
 }
 
 /* sub_473570: a cop's driver, of eight after the seven. */
@@ -359,11 +362,11 @@ x86::reg32 frontend::loada::rosterPickCopDriver(App* app, CPU& cpu, reg32 index)
     return guest::direct<0x473360, rosterPickLeastUsed>(app, cpu, 3u, index, 8u) + 7;
 }
 
-void frontend::loadingRosterPickCopDriver(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingRosterPickCopDriver(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_473570", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEdx };
-    const reg32 index = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::rosterPickCopDriver(app, cpu, index); });
+    const reg32 index = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::rosterPickCopDriver(app, cpu, index); });
 }
 
 /* sub_4735c0: a car of the traffic on this track: a table of a count and the cars,
@@ -382,11 +385,11 @@ x86::reg32 frontend::loada::rosterPickTrafficCar(App* app, CPU& cpu, reg32 index
     return guest.byte(pick + table + 1);
 }
 
-void frontend::loadingRosterPickTrafficCar(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingRosterPickTrafficCar(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4735c0", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEdx };
-    const reg32 index = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::rosterPickTrafficCar(app, cpu, index); });
+    const reg32 index = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::rosterPickTrafficCar(app, cpu, index); });
 }
 
 /* sub_4736c0: a tournament's finalist in the car its winner has. */
@@ -404,11 +407,11 @@ x86::reg32 frontend::loada::rosterEntryFinalist(App* app, CPU& cpu, reg32 entry)
     return extras;
 }
 
-void frontend::loadingRosterEntryFinalist(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingRosterEntryFinalist(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4736c0", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEdx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 entry = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::rosterEntryFinalist(app, cpu, entry); });
+    const reg32 entry = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::rosterEntryFinalist(app, cpu, entry); });
 }
 
 /* sub_473710: a person's entry: eax the entry, edx its place, ebx which player. */
@@ -417,7 +420,7 @@ x86::reg32 frontend::loada::rosterEntryHuman(App* app, CPU& cpu, reg32 entry, re
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0x34);
     // Past the two players, what esi held: no caller has more.
-    const reg32 settings = player == 0 ? SETTINGS_ADDRESS(players[0].car) : player == 1 ? SETTINGS_ADDRESS(players[1].car) : cpu.esi;
+    const reg32 settings = player == 0 ? SETTINGS_ADDRESS(players[0].car) : player == 1 ? SETTINGS_ADDRESS(players[1].car) : 0;
     guest.setDword(entry + kEntryFlag8, 0);
     guest.setDword(entry + kEntryCar, guest.dword(settings));
     guest.setDword(entry + kEntryKindOfDriver, guest.dword(settings + 0x18));
@@ -427,11 +430,11 @@ x86::reg32 frontend::loada::rosterEntryHuman(App* app, CPU& cpu, reg32 entry, re
         fe::direct<0x438ad0, load::makeId>(app, cpu, frame, 0xfu);
         const reg32 copCar = fe::direct<0x439990, load::placeById>(app, cpu, frame);
         guest.setDword(entry + kEntryCar, copCar);
-        cpu.eax = copCar;   // as the code has it at rand's call
         const reg32 colour = allCopsColour(guest);
         guest.setDword(kLastRandomColour, colour);
-        guest.call(kCarColourRgb, args({ guest.dword(entry + kEntryCar), colour, 0, frame + 0x20 },
-                                        { frame + 0x18, frame + 0x1c, frame + 0x14 }));
+        fe::direct<kCarColourRgb, port::fields::carColourBytes>(app, cpu, cpu.esp - 4 - 4 * 3, guest.dword(entry + kEntryCar),
+                                                                 sreg32(colour), 0, frame + 0x20, frame + 0x18, frame + 0x1c,
+                                                                 frame + 0x14);
         guest.setByte(entry + kEntryColour, guest.byte(frame + 0x20));
         guest.setByte(entry + kEntryColour + 1, guest.byte(frame + 0x18));
         guest.setByte(entry + kEntryColour + 2, guest.byte(frame + 0x1c));
@@ -450,15 +453,14 @@ x86::reg32 frontend::loada::rosterEntryHuman(App* app, CPU& cpu, reg32 entry, re
     copyDwords(guest, entry + kEntryTuning, ownTuning ? settings + 0x50 : kDefaultTuning, 7);
     const reg32 extras = guest::direct<0x439510, carExtras>(app, cpu, guest.dword(entry + kEntryCar));
     copyDwords(guest, entry + kEntryExtras, extras, 3);
-    guest.leaveEdx(entry);
     return extras;
 }
 
-void frontend::loadingRosterEntryHuman(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingRosterEntryHuman(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_473710", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 entry = cpu.eax, place = cpu.edx, player = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::rosterEntryHuman(app, cpu, entry, place, player); });
+    const reg32 entry = args.eax, place = args.edx, player = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::rosterEntryHuman(app, cpu, entry, place, player); });
 }
 
 /* sub_473890: a cop's entry: eax the entry, edx the race's number for it, ebx nonzero for
@@ -478,17 +480,17 @@ x86::reg32 frontend::loada::rosterEntryCop(App* app, CPU& cpu, reg32 entry, reg3
     guest.setDword(entry + kEntryKindOfDriver, 1);
     guest.setDword(entry + kEntryKind, 8);
     guest.setDword(entry + 0x30, guest::direct<0x473570, rosterPickCopDriver>(app, cpu, index));
-    const reg32 name = guest.call(kDriverNameOf, args({ entry }));
+    const reg32 name = fe::direct<kDriverNameOf, airace::classValueOf>(guest.app(), guest.cpu(), entry);
     fe::direct<kStrncpy, watcom::clib::strncpy>(guest.app(), guest.cpu(), entry + kEntryName, name, 0xb);
     copyDefaultsAndExtras(guest, entry);
     return entry;
 }
 
-void frontend::loadingRosterEntryCop(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingRosterEntryCop(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_473890", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 entry = cpu.eax, index = cpu.edx, pursuit = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::rosterEntryCop(app, cpu, entry, index, pursuit); });
+    const reg32 entry = args.eax, index = args.edx, pursuit = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::rosterEntryCop(app, cpu, entry, index, pursuit); });
 }
 
 /* sub_473960: an opponent's entry: eax the entry, edx its place, which is also which of
@@ -504,7 +506,7 @@ x86::reg32 frontend::loada::rosterEntryOpponent(App* app, CPU& cpu, reg32 entry,
     guest.setDword(entry + kEntryKind, 2);
     guest.setDword(entry + 0x30, guest::direct<0x473550, rosterPickOpponentDriver>(app, cpu, place));
     guest.setDword(entry + kEntryPlace, place);
-    const reg32 name = guest.call(kDriverNameOf, args({ entry }));
+    const reg32 name = fe::direct<kDriverNameOf, airace::classValueOf>(guest.app(), guest.cpu(), entry);
     fe::direct<kStrncpy, watcom::clib::strncpy>(guest.app(), guest.cpu(), entry + kEntryName, name, 0xb);
     if (guest.byte(kRaceFlags) & kRaceFlagAllCops)
     {
@@ -512,33 +514,32 @@ x86::reg32 frontend::loada::rosterEntryOpponent(App* app, CPU& cpu, reg32 entry,
         fe::direct<0x438ad0, load::makeId>(app, cpu, frame, 0xfu);
         const reg32 copCar = fe::direct<0x439990, load::placeById>(app, cpu, frame);
         guest.setDword(entry + kEntryCar, copCar);
-        cpu.eax = copCar;   // as the code has it at rand's call
         reg32 colour;
         do
             colour = allCopsColour(guest);
         while (colour == guest.dword(kLastRandomColour));
-        guest.call(kCarColourRgb, args({ guest.dword(entry + kEntryCar), colour, 0, frame + 0x14 },
-                                        { frame + 0x18, frame + 0x1c, frame + 0x20 }));
+        fe::direct<kCarColourRgb, port::fields::carColourBytes>(app, cpu, cpu.esp - 4 - 4 * 3, guest.dword(entry + kEntryCar),
+                                                                 sreg32(colour), 0, frame + 0x14, frame + 0x18, frame + 0x1c,
+                                                                 frame + 0x20);
         guest.setByte(entry + kEntryColour, guest.byte(frame + 0x14));
         guest.setByte(entry + kEntryColour + 1, guest.byte(frame + 0x18));
         guest.setByte(entry + kEntryColour + 2, guest.byte(frame + 0x1c));
         guest.setByte(entry + kEntryColour + 3, guest.byte(frame + 0x20));
-        guest.leaveEdx(entry);
     }
     else
     {
-        const reg32 colour = guest.call(kDriverColourOf, args({ entry }));
-        guest.call(kNearestColour, args({ entry, colour }));
+        const reg32 colour = fx::callAt(guest, kDriverColourOf, args({ entry }));
+        fx::callAt(guest, kNearestColour, args({ entry, colour }));
     }
     copyDefaultsAndExtras(guest, entry);
     return entry;
 }
 
-void frontend::loadingRosterEntryOpponent(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingRosterEntryOpponent(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_473960", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 entry = cpu.eax, place = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::rosterEntryOpponent(app, cpu, entry, place); });
+    const reg32 entry = args.eax, place = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::rosterEntryOpponent(app, cpu, entry, place); });
 }
 
 /* sub_473a70: a traffic car's entry: eax the entry, edx which of the race's numbers. */
@@ -556,11 +557,11 @@ x86::reg32 frontend::loada::rosterEntryTraffic(App* app, CPU& cpu, reg32 entry, 
     return car;
 }
 
-void frontend::loadingRosterEntryTraffic(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingRosterEntryTraffic(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_473a70", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 entry = cpu.eax, index = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::rosterEntryTraffic(app, cpu, entry, index); });
+    const reg32 entry = args.eax, index = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::rosterEntryTraffic(app, cpu, entry, index); });
 }
 
 /* sub_473ac0: a tournament's seven tracks in the race's order: of nine, two left out,
@@ -596,10 +597,10 @@ x86::reg32 frontend::loada::rosterTournamentTracks(App* app, CPU& cpu)
     return track;
 }
 
-void frontend::loadingRosterTournamentTracks(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingRosterTournamentTracks(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_473ac0", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx | fe::kRestoreEsi };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::rosterTournamentTracks(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::rosterTournamentTracks(app, cpu); });
 }
 
 /* sub_473b70: the grid: eax entries, edx each one's rank by a table of 16, or 0 for as
@@ -628,16 +629,15 @@ x86::reg32 frontend::loada::rosterGridOrder(App* app, CPU& cpu, reg32 countWord,
                 gameSettings(guest).gridSlots[reg32(i)] = next++;
         }
     }
-    guest.leaveEdx(reg32(i));
     return eax;
 }
 
-void frontend::loadingRosterGridOrder(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingRosterGridOrder(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_473b70", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const sreg32 count = sreg32(cpu.eax);
-    const reg32 ranks = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::rosterGridOrder(app, cpu, count, ranks); });
+    const sreg32 count = sreg32(args.eax);
+    const reg32 ranks = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::rosterGridOrder(app, cpu, count, ranks); });
 }
 
 /* sub_473bf0: BuildRegularRaceRoster: the people, then the opponents, then the traffic. */
@@ -713,10 +713,10 @@ x86::reg32 frontend::loada::rosterBuildRegular(App* app, CPU& cpu)
     return result;
 }
 
-void frontend::loadingRosterBuildRegular(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingRosterBuildRegular(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_473bf0", 0, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::rosterBuildRegular(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::rosterBuildRegular(app, cpu); });
 }
 
 /* sub_473ee0: the tournament's stage: its people, those of them out by now in the winner's
@@ -787,7 +787,7 @@ x86::reg32 frontend::loada::rosterBuildTournament(App* app, CPU& cpu)
         gameSettings(guest).viewedPlayer = view;
         for (sreg32 i = 0; i < signedWord(guest, kNetworkCounts + 2); ++i)
         {
-            const sreg32 machine = sreg32(std::int16_t(guest.call(kPlayerMachine, args({ reg32(i) }))));
+            const sreg32 machine = sreg32(std::int16_t(fe::direct<kPlayerMachine, ea::machineOfPlayerNumber>(guest.app(), guest.cpu(), reg32(i))));
             if (machine == -1)
                 continue;
             const reg32 entry = entryAt(place);
@@ -837,10 +837,10 @@ x86::reg32 frontend::loada::rosterBuildTournament(App* app, CPU& cpu)
     return track;
 }
 
-void frontend::loadingRosterBuildTournament(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingRosterBuildTournament(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_473ee0", 0, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::rosterBuildTournament(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::rosterBuildTournament(app, cpu); });
 }
 
 /* sub_474310: knockout: the stage's track, the people, the opponents. */
@@ -896,7 +896,7 @@ x86::reg32 frontend::loada::rosterBuildKnockout(App* app, CPU& cpu)
         gameSettings(guest).viewedPlayer = view;
         for (sreg32 i = 0; i < signedWord(guest, kNetworkCounts + 2); ++i)
         {
-            const sreg32 machine = sreg32(std::int16_t(guest.call(kPlayerMachine, args({ reg32(i) }))));
+            const sreg32 machine = sreg32(std::int16_t(fe::direct<kPlayerMachine, ea::machineOfPlayerNumber>(guest.app(), guest.cpu(), reg32(i))));
             if (machine == -1)
                 continue;
             const reg32 entry = entryAt(place);
@@ -925,10 +925,10 @@ x86::reg32 frontend::loada::rosterBuildKnockout(App* app, CPU& cpu)
     return result;
 }
 
-void frontend::loadingRosterBuildKnockout(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingRosterBuildKnockout(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_474310", 0, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::rosterBuildKnockout(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::rosterBuildKnockout(app, cpu); });
 }
 
 /* sub_474640: BuildHotPursuitRoster: who drives a police car decides who the rest are. */
@@ -939,8 +939,8 @@ x86::reg32 frontend::loada::rosterBuildHotPursuit(App* app, CPU& cpu)
     clearCounts(guest);
     if (guest.byte(kRaceFlags) & kRaceFlagAllCops)
     {
-        guest.call(0x4f22b0, args({ 0 }));   // time
-        guest.call(0x4eb220);                // srand, of it
+        const reg32 now = fe::direct<0x4f22b0, watcom::clib::time>(app, cpu, 0u);   // time
+        fe::direct<0x4eb220, watcom::clib::srand>(app, cpu, now);   // srand, of it
         gameSettings(guest).seriesRace = 1;
     }
     gameSettings(guest).raceOptionComputerDrives = 0;
@@ -1123,10 +1123,10 @@ x86::reg32 frontend::loada::rosterBuildHotPursuit(App* app, CPU& cpu)
     return reg32(0);
 }
 
-void frontend::loadingRosterBuildHotPursuit(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingRosterBuildHotPursuit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_474640", 0, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::rosterBuildHotPursuit(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::rosterBuildHotPursuit(app, cpu); });
 }
 
 /* sub_474c60: the race's number at eax on from its seed, 0 to 255. */
@@ -1136,11 +1136,11 @@ x86::reg32 frontend::loada::rosterSeedByte(App* app, CPU& cpu, reg32 index)
     return guest.byte(kSeedBytes + reg32(sreg32(gameSettings(guest).raceSeed + index) % 0x100));
 }
 
-void frontend::loadingRosterSeedByte(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingRosterSeedByte(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_474c60", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEdx };
-    const reg32 index = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::rosterSeedByte(app, cpu, index); });
+    const reg32 index = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::rosterSeedByte(app, cpu, index); });
 }
 
 /* sub_474ca0: the race's cast, by the kind of race, seeded by the race's seed; the track's
@@ -1150,14 +1150,14 @@ x86::reg32 frontend::loada::rosterBuild(App* app, CPU& cpu)
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 8);
     fe::direct<0x4a6a10, frontend::neta::barrier>(app, cpu, 0x3cu, 0xdu);
-    guest.call(0x43a580);
+    fe::direct<0x43a580, load::classListsBuilt>(app, cpu);
     guest::direct<0x473340, rosterClearUsed>(app, cpu);
     fe::direct<0x4e0dee, ea::randomSeeded>(app, cpu, gameSettings(guest).raceSeed);
     gameSettings(guest).lastTickRaced = 0;
     static const reg32 kBuilders[4] = { 0x473bf0, 0x474310, 0x473ee0, 0x474640 };
     const reg32 kind = gameSettings(guest).raceType;
     if (kind <= 3)
-        guest.call(kBuilders[kind]);
+        fx::callAt(guest, kBuilders[kind]);
     const sreg32 holder = sreg32(std::int16_t(
         fe::direct<0x4cef00, misc::recordsHolder>(app, cpu, reg32(std::int32_t(std::int16_t(gameSettings(guest).track))))));
     gameSettings(guest).recordsHolder = reg32(holder);
@@ -1165,10 +1165,10 @@ x86::reg32 frontend::loada::rosterBuild(App* app, CPU& cpu)
     return guest::direct<0x4781b0, savedNameEntries>(app, cpu, reg32(SETTINGS_ADDRESS(fileSize)));
 }
 
-void frontend::loadingRosterBuild(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingRosterBuild(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_474ca0", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::rosterBuild(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::rosterBuild(app, cpu); });
 }
 
 /* ---------------------------------------------------------------------------
@@ -1204,7 +1204,7 @@ x86::reg32 frontend::loada::raceCarSteps(App* app, CPU& cpu)
         return 1;
     for (const reg32 step : kSteps)
     {
-        guest.call(step);
+        fx::callAt(guest, step);
         guest::direct<0x4a33d0, stopCheck>(app, cpu);
         if (guest.dword(kStopAsked) != 0)
             return 1;
@@ -1212,10 +1212,10 @@ x86::reg32 frontend::loada::raceCarSteps(App* app, CPU& cpu)
     return 0;
 }
 
-void frontend::loadingRaceCarSteps(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingRaceCarSteps(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4283d0", 0, 0, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::raceCarSteps(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::raceCarSteps(app, cpu); });
 }
 
 /* sub_4284e0: an event added to a car, while it has room for one: eax the car; edx, ebx,
@@ -1243,17 +1243,15 @@ x86::reg32 frontend::loada::carAddEvent(App* app, CPU& cpu, reg32 car, reg32 a, 
     guest.setDword(event + 0x10, reg32(fp::toInteger<sreg32>(fp::mul(clamped, doubleAt(guest, 0x5371a0)))));
     guest.setDword(event + 0x14, e);
     guest.setDword(car + kCarEvents, count + 1);
-    guest.leaveEcx(count);
-    guest.leaveEdx(e);
     return count * 3;
 }
 
-void frontend::loadingCarAddEvent(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingCarAddEvent(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4284e0", 0xc, 0, nullptr, 0, fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 car = cpu.eax, a = cpu.edx, b = cpu.ebx, c = cpu.ecx;
+    const reg32 car = args.eax, a = args.edx, b = args.ebx, c = args.ecx;
     const reg32 d = stackArgument(app, cpu, 0), time = stackArgument(app, cpu, 1), e = stackArgument(app, cpu, 2);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::carAddEvent(app, cpu, car, a, b, c, d, time, e); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::carAddEvent(app, cpu, car, a, b, c, d, time, e); });
 }
 
 /* sub_4285f0: a car's block of driving state at +0x224 cleared. */
@@ -1283,11 +1281,11 @@ x86::reg32 frontend::loada::carClearDriving(App* app, CPU& cpu, reg32 car)
     return block;
 }
 
-void frontend::loadingCarClearDriving(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingCarClearDriving(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4285f0", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    const reg32 car = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::carClearDriving(app, cpu, car); });
+    const reg32 car = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::carClearDriving(app, cpu, car); });
 }
 
 /* sub_428700: a car put on the race's lists its entry's kind says. */
@@ -1377,11 +1375,11 @@ x86::reg32 frontend::loada::carJoinLists(App* app, CPU& cpu, reg32 car)
     return roster;
 }
 
-void frontend::loadingCarJoinLists(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingCarJoinLists(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_428700", 0, 0 };
-    const reg32 car = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::carJoinLists(app, cpu, car); });
+    const reg32 car = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::carJoinLists(app, cpu, car); });
 }
 
 /* sub_428970: a car's state for the start of a race, or after a reset. */
@@ -1405,21 +1403,22 @@ x86::reg32 frontend::loada::carReset(App* app, CPU& cpu, reg32 car)
     guest.setDword(car + 0x174, guest.dword(0x5efdc8));
     guest.setByte(car + 0x621, guest.byte(car + 0x621) & 0xbf);
     fe::direct<0x4aa79f, handling::resetDrive>(app, cpu, car);
-    guest.call(0x4015b0, args({ car }));
-    guest.call(0x42cc20, args({ car }));
-    return guest.call(0x42ce10, args({ car }));
+    fe::direct<0x4015b0, airace::carStoppedIfCopNear>(guest.app(), guest.cpu(), car);
+    fe::direct<0x42cc20, raceload::lapsCounted>(app, cpu, car);
+    fe::direct<0x42ce10, raceload::setRaceDistance>(app, cpu, car);
+    return 0;
 }
 
-void frontend::loadingCarReset(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingCarReset(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_428970", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEdx };
-    const reg32 car = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::carReset(app, cpu, car); });
+    const reg32 car = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::carReset(app, cpu, car); });
 }
 
 /* sub_428ad0: eax a car, edx a slice, the stack three numbers of which the first and third
  * are how far along each of the slice's two vectors: whether the car can be set down there.
- * What it hands on through its frame is laid out where the generated code has it. */
+ * What it hands on through its frame is laid out where the game's code has it. */
 x86::reg32 frontend::loada::carPlaceIsClear(App* app, CPU& cpu, reg32 car, reg32 slice, reg32 across, reg32 up, reg32 right)
 {
     Guest guest(app, cpu);
@@ -1433,7 +1432,7 @@ x86::reg32 frontend::loada::carPlaceIsClear(App* app, CPU& cpu, reg32 car, reg32
     const reg32 side = frame + 0x9c;
 
     const reg32 lane = fe::direct<0x40e2b0, aiplan::roadSlice>(app, cpu, slice, floatOf(across));
-    if (guest.call(kSliceHasLane, args({ slice, lane })) == 0)
+    if (fe::direct<kSliceHasLane, aiplan::hasLane>(guest.app(), guest.cpu(), slice, lane) == 0)
         return 0;
     for (sreg32 i = 0; i < sreg32(guest.dword(kRaceCarCount)); ++i)
     {
@@ -1452,7 +1451,6 @@ x86::reg32 frontend::loada::carPlaceIsClear(App* app, CPU& cpu, reg32 car, reg32
             after -= sreg32(guest.dword(kSliceCount));
         if (slice == otherSlice || sreg32(slice) == before || sreg32(slice) == after)
         {
-            guest.leaveEdx(reg32(i));
             return 0;
         }
     }
@@ -1477,12 +1475,9 @@ x86::reg32 frontend::loada::carPlaceIsClear(App* app, CPU& cpu, reg32 car, reg32
     guest.setFloat(sum, float(x));
     guest.setFloat(sum + 4, float(y));
     guest.setFloat(sum + 8, float(z));
-    guest.setEsi(place);
-    // By address: what it leaves in edx goes on to the end, which does not restore edx.
-    guest.call(kSnapToTrack, args({ sum, 1, slice }));
+    fe::direct<0x4205a0, trackdata::snapPlace>(app, cpu, sum, place, 1u, slice);
     if (guest.dword(place + 0x14) == 0 || guest.dword(place + 0x18) == 0)
         return 0;
-    guest.leaveEdx(1);   // as the call by address leaves it
     const reg32 surface = fe::direct<0x4207e0, trackdata::placeSurface>(app, cpu, place, 1u);
     if ((surface & 0x40) || (surface & 0x80) || !(surface & 0x3f) || (surface & 0x3f) == 0xe)
         return 0;
@@ -1492,19 +1487,18 @@ x86::reg32 frontend::loada::carPlaceIsClear(App* app, CPU& cpu, reg32 car, reg32
     else
     {
         const reg32 slices = guest.dword(kSlices);
-        guest.leaveEdx(slices);
         height = reg32(sreg32(guest.dword(slices + guest.dword(place + 0x10) * kSliceSize + 0xe)) >> 0x18) << 9;
     }
     return isBelow(fp::compare(Float(sreg32(height)), doubleAt(guest, 0x5371b0))) ? 0 : 1;
 }
 
-void frontend::loadingCarPlaceIsClear(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingCarPlaceIsClear(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_428ad0", 0xc, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 car = cpu.eax, slice = cpu.edx;
+    const reg32 car = args.eax, slice = args.edx;
     const reg32 across = stackArgument(app, cpu, 0), right = stackArgument(app, cpu, 2);
     const reg32 up = stackArgument(app, cpu, 1);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::carPlaceIsClear(app, cpu, car, slice, across, up, right); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::carPlaceIsClear(app, cpu, car, slice, across, up, right); });
 }
 
 /* sub_428d60: eax a car, edx a slice: the car set down where there is room near it: first
@@ -1586,11 +1580,11 @@ x86::reg32 frontend::loada::carPlaceOnRoad(App* app, CPU& cpu, reg32 car, reg32 
     return putDown(wanted, 0, 0, 0);
 }
 
-void frontend::loadingCarPlaceOnRoad(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingCarPlaceOnRoad(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_428d60", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 car = cpu.eax, wanted = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::carPlaceOnRoad(app, cpu, car, wanted); });
+    const reg32 car = args.eax, wanted = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::carPlaceOnRoad(app, cpu, car, wanted); });
 }
 
 /* ---------------------------------------------------------------------------
@@ -1611,17 +1605,17 @@ x86::reg32 frontend::loada::carBefore(App* app, CPU& cpu, reg32 next)
 {
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 8);
-    reg32 car = guest.call(kFirstCar);
+    reg32 car = fe::direct<0x438af0, load::firstListedCar>(app, cpu);
     while (car != 0 && next != guest.dword(car))
-        car = guest.call(kNextCar);
+        car = fe::direct<0x438b10, load::nextListedCar>(app, cpu);
     return car;
 }
 
-void frontend::loadingCarBefore(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingCarBefore(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_438b70", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    const reg32 next = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::carBefore(app, cpu, next); });
+    const reg32 next = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::carBefore(app, cpu, next); });
 }
 
 /* sub_438f60: eax a car's number, edx which of its four stats, a byte each; 0 past them. */
@@ -1635,11 +1629,11 @@ x86::reg32 frontend::loada::carStat(App* app, CPU& cpu, reg32 number, reg32 whic
     return guest.byte(record + 0x38f + which);
 }
 
-void frontend::loadingCarStat(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingCarStat(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_438f60", 0, 0, nullptr, 0, fe::kRestoreEcx };
-    const reg32 number = cpu.eax, which = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::carStat(app, cpu, number, which); });
+    const reg32 number = args.eax, which = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::carStat(app, cpu, number, which); });
 }
 
 /* sub_439510: the three words at +0x394 of a car's record. */
@@ -1650,11 +1644,11 @@ x86::reg32 frontend::loada::carExtras(App* app, CPU& cpu, reg32 number)
     return fe::direct<0x439a50, load::recordAt>(app, cpu, number) + 0x394;
 }
 
-void frontend::loadingCarExtras(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingCarExtras(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_439510", 0, 0, nullptr, 0, 0 };
-    const reg32 number = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::carExtras(app, cpu, number); });
+    const reg32 number = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::carExtras(app, cpu, number); });
 }
 
 /* sub_439530: eax an id's text: 1 for a car with neither of two marks. */
@@ -1663,18 +1657,18 @@ x86::reg32 frontend::loada::carIdIsPlain(App* app, CPU& cpu, reg32 id)
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 8);
     const reg32 number = fe::direct<0x439990, load::placeById>(app, cpu, id);
-    if (guest.call(0x439570, args({ number })) != 0)
+    if (*fe::direct<0x439570, load::flag40Of>(app, cpu, number) != 0)
         return 0;
-    if (guest.call(0x439680, args({ number })) != 0)
+    if (*fe::direct<0x439680, load::bonusFlagOf>(app, cpu, number) != 0)
         return 0;
     return 1;
 }
 
-void frontend::loadingCarIdIsPlain(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingCarIdIsPlain(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_439530", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    const reg32 id = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::carIdIsPlain(app, cpu, id); });
+    const reg32 id = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::carIdIsPlain(app, cpu, id); });
 }
 
 /* sub_4395a0: a car's kept mark, 8 or 0. */
@@ -1685,11 +1679,11 @@ x86::reg32 frontend::loada::carIsKept(App* app, CPU& cpu, reg32 number)
     return guest.dword(fe::direct<0x439a50, load::recordAt>(app, cpu, number) + kCarFlags) & 8;
 }
 
-void frontend::loadingCarIsKept(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingCarIsKept(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4395a0", 0, 0, nullptr, 0, 0 };
-    const reg32 number = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::carIsKept(app, cpu, number); });
+    const reg32 number = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::carIsKept(app, cpu, number); });
 }
 
 /* sub_4395e0: a car's mark 2. */
@@ -1700,11 +1694,11 @@ x86::reg32 frontend::loada::carFlag2(App* app, CPU& cpu, reg32 number)
     return guest.dword(fe::direct<0x439a50, load::recordAt>(app, cpu, number) + kCarFlags) & 2;
 }
 
-void frontend::loadingCarFlag2(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingCarFlag2(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4395e0", 0, 0, nullptr, 0, 0 };
-    const reg32 number = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::carFlag2(app, cpu, number); });
+    const reg32 number = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::carFlag2(app, cpu, number); });
 }
 
 /* sub_439710: a byte of a car's record, at +0x3a0. */
@@ -1715,11 +1709,11 @@ x86::reg32 frontend::loada::carByte3a0(App* app, CPU& cpu, reg32 number)
     return guest.byte(fe::direct<0x439a50, load::recordAt>(app, cpu, number) + 0x3a0);
 }
 
-void frontend::loadingCarByte3a0(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingCarByte3a0(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_439710", 0, 0, nullptr, 0, 0 };
-    const reg32 number = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::carByte3a0(app, cpu, number); });
+    const reg32 number = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::carByte3a0(app, cpu, number); });
 }
 
 /* sub_439a10: the first player in the car at eax on the list at 0x554f84. */
@@ -1730,16 +1724,16 @@ x86::reg32 frontend::loada::playerToListedCar(App* app, CPU& cpu, reg32 index)
     fe::direct<0x438ad0, load::makeId>(app, cpu, reg32(SETTINGS_ADDRESS(players[0].carId)), guest.dword(0x554f84 + 4 * index));
     const reg32 number = fe::direct<0x439990, load::placeById>(app, cpu, reg32(SETTINGS_ADDRESS(players[0].carId)));
     gameSettings(guest).players[0].car = number;
-    const reg32 kind = guest.call(kCarClass, args({ number }));
+    const reg32 kind = *fe::direct<0x439730, load::classOfCar>(app, cpu, number);
     gameSettings(guest).players[0].carClass = kind;
     return kind;
 }
 
-void frontend::loadingPlayerToListedCar(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingPlayerToListedCar(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_439a10", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    const reg32 index = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::playerToListedCar(app, cpu, index); });
+    const reg32 index = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::playerToListedCar(app, cpu, index); });
 }
 
 /* sub_439b70: every kept car freed, its folder removed first when it says so. */
@@ -1759,10 +1753,10 @@ x86::reg32 frontend::loada::freeCars(App* app, CPU& cpu)
     return 0;
 }
 
-void frontend::loadingFreeCars(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingFreeCars(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_439b70", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::freeCars(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::freeCars(app, cpu); });
 }
 
 /* sub_439bb0: a car's block freed: -1 for no car. */
@@ -1776,11 +1770,11 @@ x86::reg32 frontend::loada::carFreeData(App* app, CPU& cpu, reg32 car)
     return 0;
 }
 
-void frontend::loadingCarFreeData(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingCarFreeData(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_439bb0", 0, 0, nullptr, 0, 0 };
-    const reg32 car = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::carFreeData(app, cpu, car); });
+    const reg32 car = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::carFreeData(app, cpu, car); });
 }
 
 /* sub_439bf0: the block at eax's +4 freed, if there is one. */
@@ -1794,11 +1788,11 @@ x86::reg32 frontend::loada::carFreeBlock(App* app, CPU& cpu, reg32 holder)
     return 0;
 }
 
-void frontend::loadingCarFreeBlock(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingCarFreeBlock(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_439bf0", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    const reg32 holder = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::carFreeBlock(app, cpu, holder); });
+    const reg32 holder = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::carFreeBlock(app, cpu, holder); });
 }
 
 /* sub_43a4d0: qsort's comparison of two cars by their names (strcmp's answer). */
@@ -1810,11 +1804,11 @@ x86::reg32 frontend::loada::carCompareNames(App* app, CPU& cpu, reg32 a, reg32 b
     return fe::direct<0x4ee310, watcom::clib::strcmp>(guest.app(), guest.cpu(), guest.dword(a) + 0x10, second);
 }
 
-void frontend::loadingCarCompareNames(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingCarCompareNames(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_43a4d0", 0, 0, nullptr, 0, 0 };
-    const reg32 a = cpu.eax, b = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::carCompareNames(app, cpu, a, b); });
+    const reg32 a = args.eax, b = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::carCompareNames(app, cpu, a, b); });
 }
 
 /* sub_43a6b0: the number of the car at eax in the class at edx; 0 for none.  Leaves edx at
@@ -1824,18 +1818,17 @@ x86::reg32 frontend::loada::carInClass(App* app, CPU& cpu, reg32 index, reg32 wa
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 8);
     const reg32 row = wantedClass * 200;
-    guest.leaveEdx(row);
     const reg32 record = guest.dword(row + kClassCars + index * 4);
     if (record == 0)
         return reg32(0);
     return fe::direct<0x439990, load::placeById>(app, cpu, record + kClassCarIdOffset);
 }
 
-void frontend::loadingCarInClass(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingCarInClass(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_43a6b0", 0, 0, nullptr, 0, fe::kRestoreEcx };
-    const reg32 index = cpu.eax, wantedClass = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::carInClass(app, cpu, index, wantedClass); });
+    const reg32 index = args.eax, wantedClass = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::carInClass(app, cpu, index, wantedClass); });
 }
 
 namespace
@@ -1848,9 +1841,6 @@ constexpr reg32 kCarsShown = 0x55500a;
 constexpr reg32 kCarLockedColourA = 0x55506c;
 constexpr reg32 kCarLockedColourB = 0x555214;
 constexpr std::uint32_t kLockedColour = 0x908080;
-constexpr reg32 kBonusCarLocked = 0x439c10;
-constexpr reg32 kCarFlag4 = 0x4395c0;
-constexpr reg32 kCarIsBonus = 0x439680;
 
 /* What the filter goes on with: its registers, the ones no save keeps. */
 struct FilterLeft
@@ -1867,16 +1857,14 @@ x86::reg32 frontend::loada::carFilterLists(App* app, CPU& cpu, reg32 flags, reg3
 {
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0x14);
-    const sreg32 count = sreg32(guest.call(0x438bd0) - guest.dword(0x554f50));
+    const sreg32 count = sreg32(fe::direct<0x438bd0, load::carsListed>(app, cpu) - guest.dword(0x554f50));
     FilterLeft left{ reg32(count) * 2 + 8, guest.dword(0x554f50) };
     const auto finish = [&]() {
-        guest.leaveEdx(left.edx);
         return left.eax;
     };
     const auto memset1 = [&](reg32 at, reg32 bytes) {
         left.eax = fe::direct<kMemset, watcom::clib::memset>(guest.app(), guest.cpu(), at, 1, bytes);
-        left.edx = guest.edx();
-    };
+        };
     if (flags & 2)
     {
         if (flags & 4)
@@ -1895,7 +1883,7 @@ x86::reg32 frontend::loada::carFilterLists(App* app, CPU& cpu, reg32 flags, reg3
         for (sreg32 i = 0; i < count; ++i, left.edx = reg32(i))
         {
             const reg32 record = fe::direct<0x439a50, load::recordAt>(app, cpu, reg32(i));
-            left.eax = guest.call(kBonusCarLocked, args({ record }));   // of the record, in eax
+            left.eax = fe::direct<0x439c10, load::bonusLocked>(app, cpu, record);   // of the record, in eax
             if (left.eax != 0)
             {
                 guest.setWord(kCarsShown + 2 * reg32(i), 0);
@@ -1938,10 +1926,6 @@ x86::reg32 frontend::loada::carFilterLists(App* app, CPU& cpu, reg32 flags, reg3
             }
         }
     };
-    // `ask` is the game's function, by address or its core: its eax for a car's number.
-    const auto byAddress = [&](reg32 function) {
-        return [&, function](reg32 car) { return guest.call(function, args({ car })); };
-    };
     const auto whenZero = [&](auto ask) {
         return [&, ask](reg32 car) {
             left.eax = ask(car);
@@ -1956,7 +1940,7 @@ x86::reg32 frontend::loada::carFilterLists(App* app, CPU& cpu, reg32 flags, reg3
     };
     const auto ofClass = [&](reg32 wanted) {
         return [&, wanted](reg32 car) {
-            left.eax = guest.call(kCarClass, args({ car }));
+            left.eax = *fe::direct<0x439730, load::classOfCar>(app, cpu, car);
             return left.eax == wanted;
         };
     };
@@ -1964,25 +1948,27 @@ x86::reg32 frontend::loada::carFilterLists(App* app, CPU& cpu, reg32 flags, reg3
     filter(0x20, ofClass(1), true);
     filter(0x40, ofClass(2), true);
     filter(0x40000, [&](reg32 car) {
-        left.eax = guest.call(kCarFlag4, args({ car }));
+        left.eax = *fe::direct<0x4395c0, load::flag4Of>(app, cpu, car);
         if (left.eax != 0)
             return true;
-        left.eax = guest.call(kCarHasNumericId, args({ car }));
+        left.eax = *fe::direct<0x439610, load::numericIdOf>(app, cpu, car);
         return left.eax == 0;
     }, false);
     const auto artExists = [&](reg32 car) { return fe::direct<0x4530c0, frontend::menub::carArtExists>(app, cpu, car); };
     const auto hasSlides = [&](reg32 car) { return fe::direct<0x453200, frontend::showcase::hasSlides>(app, cpu, car); };
     const auto hasHistory = [&](reg32 car) { return fe::direct<0x453290, frontend::showcase::hasHistory>(app, cpu, car); };
+    const auto isBonus = [&](reg32 car) { return *fe::direct<0x439680, load::bonusFlagOf>(app, cpu, car); };
+    const auto hasNumeric = [&](reg32 car) { return *fe::direct<0x439610, load::numericIdOf>(app, cpu, car); };
     const auto isMaker = [&](reg32 car) { return *fe::direct<0x4396e0, load::makerFlag>(app, cpu, car); };
     const auto flag2 = [&](reg32 car) { return guest::direct<0x4395e0, carFlag2>(app, cpu, car); };
     filter(0x80000, whenZero(artExists), false);
     filter(0x100000, whenZero(hasSlides), false);
     filter(0x200000, whenZero(hasHistory), false);
-    filter(0x1000, whenSet(byAddress(kCarIsBonus)), false);
+    filter(0x1000, whenSet(isBonus), false);
     filter(0x2000, whenSet(isMaker), false);
     filter(0x4000, whenSet(isPolice), false);
     filter(0x8000, whenZero(isPolice), false);
-    filter(0x10000, whenZero(byAddress(kCarHasNumericId)), false);
+    filter(0x10000, whenZero(hasNumeric), false);
     filter(0x20000, whenZero(flag2), false);
 
     if (flags & 0x80)
@@ -2021,7 +2007,7 @@ x86::reg32 frontend::loada::carFilterLists(App* app, CPU& cpu, reg32 flags, reg3
         {
             if (yields)
             {
-                // The port's yield at these two loops (disassemble_nfs3hp.py's THREAD_SEGMENTS).
+                // The port's yield at these two loops.
                 app->unlockContext(cpu);
                 win32::Thread::sleep(0);
                 app->lockContext(cpu);
@@ -2043,12 +2029,12 @@ x86::reg32 frontend::loada::carFilterLists(App* app, CPU& cpu, reg32 flags, reg3
     return finish();
 }
 
-void frontend::loadingCarFilterLists(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingCarFilterLists(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_43a6e0", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const std::uint32_t flags = cpu.eax;
-    const reg32 pick = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::carFilterLists(app, cpu, flags, pick); });
+    const std::uint32_t flags = args.eax;
+    const reg32 pick = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::carFilterLists(app, cpu, flags, pick); });
 }
 
 /* sub_43b2a0: a kept car's folder removed: its name under the kept cars' folder. */
@@ -2058,17 +2044,17 @@ x86::reg32 frontend::loada::carRemoveFolder(App* app, CPU& cpu, reg32 car)
     const fe::Frame ownFrame(guest, cpu, 0x140);
     const reg32 path = guest.frame();
     guest.copyString(path, 0x7a28b4);
-    guest.call(0x438340, args({ path }));
+    fe::direct<0x438340, load::slashAdded>(app, cpu, path);
     guest.copyString(path + guest.length(path), car + 0x110);
-    guest.call(0x4389d0, args({ path }));
+    fe::direct<0x4389d0, load::folderRemoved>(app, cpu, path);
     return 0;
 }
 
-void frontend::loadingCarRemoveFolder(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingCarRemoveFolder(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_43b2a0", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEdx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 car = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::carRemoveFolder(app, cpu, car); });
+    const reg32 car = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::carRemoveFolder(app, cpu, car); });
 }
 
 /* sub_43b390: every kept car off the list and freed, and the list read again. */
@@ -2076,12 +2062,12 @@ x86::reg32 frontend::loada::removeKeptCars(App* app, CPU& cpu)
 {
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0xc);
-    reg32 car = guest.call(kFirstCar);
+    reg32 car = fe::direct<0x438af0, load::firstListedCar>(app, cpu);
     while (car != 0)
     {
         if (!(guest.byte(car + kCarFlags) & kCarKept))
         {
-            car = guest.call(kNextCar);
+            car = fe::direct<0x438b10, load::nextListedCar>(app, cpu);
             continue;
         }
         const reg32 before = guest::direct<0x438b70, carBefore>(app, cpu, car);
@@ -2091,17 +2077,17 @@ x86::reg32 frontend::loada::removeKeptCars(App* app, CPU& cpu)
             guest.setDword(kCarListHead, guest.dword(car));
         guest::direct<0x439bb0, carFreeData>(app, cpu, car);
         fe::direct<0x4e1890, ea::purgeBlock>(app, cpu, car);
-        car = guest.call(kFirstCar);
+        car = fe::direct<0x438af0, load::firstListedCar>(app, cpu);
     }
     fe::direct<0x43bcf0, frontend::sime::removeNumberedFolders>(app, cpu);
     fe::direct<0x439d90, load::loadCars>(app, cpu);
     return 0;
 }
 
-void frontend::loadingRemoveKeptCars(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingRemoveKeptCars(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_43b390", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::removeKeptCars(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::removeKeptCars(app, cpu); });
 }
 
 /* ---------------------------------------------------------------------------
@@ -2116,18 +2102,18 @@ x86::reg32 frontend::loada::diskHasRoom(App* app, CPU& cpu, reg32 wantedWord)
     const sreg32 wanted = sreg32(wantedWord);
     const reg32 path = guest.frame();
     const reg32 free = path + 0xfc;   // what getdiskfree fills: three words multiplied at +4, +8, +0xc
-    guest.call(0x4f0730, args({ path, 0xfa }));
-    if (guest.call(0x4f07d0, args({ reg32(guest.byte(path)) - 0x40, free })) != 0)
+    fe::direct<0x4f0730, watcom::clib::getcwd>(app, cpu, path, 0xfau);
+    if (fe::direct<0x4f07d0, watcom::clib::getdiskfree>(app, cpu, reg32(guest.byte(path)) - 0x40, free) != 0)
         return 0;
     const sreg32 room = sreg32(guest.dword(free + 4) * guest.dword(free + 0xc) * guest.dword(free + 8));
     return room < wanted ? 0 : 1;
 }
 
-void frontend::loadingDiskHasRoom(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingDiskHasRoom(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4516a0", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEdx };
-    const sreg32 wanted = sreg32(cpu.eax);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::diskHasRoom(app, cpu, wanted); });
+    const sreg32 wanted = sreg32(args.eax);
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::diskHasRoom(app, cpu, wanted); });
 }
 
 /* sub_452a00: eax to, edx from: a copy of a file in pieces of 512 bytes.  -1 for a file not
@@ -2149,7 +2135,7 @@ x86::reg32 frontend::loada::copyFile(App* app, CPU& cpu, reg32 to, reg32 from)
         const reg32 got = fe::direct<0x4e9200, watcom::clib::fread>(guest.app(), guest.cpu(), buffer, 1, 0x200, source);
         if (got == 0)
             break;
-        if (got != guest.call(0x4eebd0, args({ buffer, 1, got, target })))
+        if (got != fe::direct<0x4eebd0, watcom::clib::fwrite>(guest.app(), guest.cpu(), buffer, 1, got, target))
         {
             failed = 1;
             break;
@@ -2160,11 +2146,11 @@ x86::reg32 frontend::loada::copyFile(App* app, CPU& cpu, reg32 to, reg32 from)
     return failed;
 }
 
-void frontend::loadingCopyFile(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingCopyFile(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_452a00", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 to = cpu.eax, from = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::copyFile(app, cpu, to, from); });
+    const reg32 to = args.eax, from = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::copyFile(app, cpu, to, from); });
 }
 
 namespace
@@ -2200,11 +2186,11 @@ x86::reg32 frontend::loada::savedResolvePlayers(App* app, CPU& cpu, reg32 saved)
     return 1;
 }
 
-void frontend::loadingSavedResolvePlayers(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingSavedResolvePlayers(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_478090", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    const reg32 saved = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::savedResolvePlayers(app, cpu, saved); });
+    const reg32 saved = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::savedResolvePlayers(app, cpu, saved); });
 }
 
 /* sub_478100: a kept race's entries' cars found by their ids; a car not found is fine for
@@ -2231,11 +2217,11 @@ x86::reg32 frontend::loada::savedResolveEntries(App* app, CPU& cpu, reg32 saved)
     return 1;
 }
 
-void frontend::loadingSavedResolveEntries(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingSavedResolveEntries(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_478100", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx | fe::kRestoreEsi };
-    const reg32 saved = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::savedResolveEntries(app, cpu, saved); });
+    const reg32 saved = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::savedResolveEntries(app, cpu, saved); });
 }
 
 /* sub_4781b0: a race's entries' cars' ids written beside them, for a kept race. */
@@ -2262,11 +2248,11 @@ x86::reg32 frontend::loada::savedNameEntries(App* app, CPU& cpu, reg32 saved)
     return 1;
 }
 
-void frontend::loadingSavedNameEntries(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingSavedNameEntries(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4781b0", 0, 0 };
-    const reg32 saved = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::savedNameEntries(app, cpu, saved); });
+    const reg32 saved = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::savedNameEntries(app, cpu, saved); });
 }
 
 /* sub_4bcb00: a replay's file read, every setting of the game kept as it was but the
@@ -2282,7 +2268,7 @@ x86::reg32 frontend::loada::readReplayKeepingSettings(App* app, CPU& cpu)
     gameSettings(guest).replayMode = 2;
     guest.setDword(kReadingB, 2);
     copyDwords(guest, kept, SETTINGS_ADDRESS(language), kSettingsWords);
-    const reg32 read = guest.call(0x4bd2e0) != 0 ? 1 : 0;
+    const reg32 read = *fe::direct<0x4bd2e0, load::replayRead>(app, cpu) != 0 ? 1 : 0;
     copyDwords(guest, SETTINGS_ADDRESS(fileSize), kReplayState, kStateWords);
     copyDwords(guest, SETTINGS_ADDRESS(language), kept, kSettingsWords);
     guest.setDword(0x55fe40, guest.dword(0x7a5f44));
@@ -2295,10 +2281,10 @@ x86::reg32 frontend::loada::readReplayKeepingSettings(App* app, CPU& cpu)
     return read;
 }
 
-void frontend::loadingReadReplayKeepingSettings(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingReadReplayKeepingSettings(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4bcb00", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEdx | fe::kRestoreEsi | fe::kRestoreEdi };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::readReplayKeepingSettings(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::readReplayKeepingSettings(app, cpu); });
 }
 
 /* sub_4be2f0: eax a list, edx and ebx a record's keys: that record taken out, and the last
@@ -2306,7 +2292,6 @@ void frontend::loadingReadReplayKeepingSettings(win32::WinApplication* app, x86:
 x86::reg32 frontend::loada::listRemove(App* app, CPU& cpu, reg32 list, reg32 keyA, reg32 keyB)
 {
     Guest guest(app, cpu);
-    guest.leaveEdx(keyB);
     if (list == 0 || guest.dword(list + 4) == 0)
         return list;
     const sreg32 count = sreg32(guest.dword(list + 4));
@@ -2319,21 +2304,19 @@ x86::reg32 frontend::loada::listRemove(App* app, CPU& cpu, reg32 list, reg32 key
         sreg32 at = i;
         for (; at < count - 1; ++at)
             copyDwords(guest, records + reg32(at) * 0x10, records + reg32(at) * 0x10 + 0x10, 4);
-        guest.leaveEdx(reg32(at));
         break;
     }
     const reg32 end = reg32(count) * 0x10 + list;
     guest.setDword(end + 8, 0x7ffe);
     guest.setDword(list + 4, reg32(count) - 1);
-    guest.leaveEbx(list);
     return end;
 }
 
-void frontend::loadingListRemove(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingListRemove(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4be2f0", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 list = cpu.eax, keyA = cpu.edx, keyB = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::listRemove(app, cpu, list, keyA, keyB); });
+    const reg32 list = args.eax, keyA = args.edx, keyB = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::listRemove(app, cpu, list, keyA, keyB); });
 }
 
 /* sub_4dc550: eax which player's tunings, edx a car's id: its tuning there, or 0. */
@@ -2344,18 +2327,17 @@ x86::reg32 frontend::loada::tuningOf(App* app, CPU& cpu, reg32 player, reg32 id)
     const reg32 tunings = player == 0 ? 0x8b9200 : player == 1 ? 0x8b88a0 : 0;
     if (tunings == 0 || id == 0)
         return 0;
-    const reg32 index = guest.call(0x4dc490, args({ player, id }));
+    const reg32 index = fe::direct<0x4dc490, load::specIndexOf>(app, cpu, player, id);
     if (index == 0xffffffffu)
         return 0;
-    guest.leaveEdx(index);
     return index * 0x30 + tunings + 0x14;
 }
 
-void frontend::loadingTuningOf(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingTuningOf(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4dc550", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx };
-    const reg32 player = cpu.eax, id = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::tuningOf(app, cpu, player, id); });
+    const reg32 player = args.eax, id = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::tuningOf(app, cpu, player, id); });
 }
 
 /* sub_4dcbc0: both players' tunings copied in: the car's own edited one, or the default. */
@@ -2383,10 +2365,10 @@ x86::reg32 frontend::loada::tuningForPlayers(App* app, CPU& cpu)
     return 0x1c;   // the byte count, which rep movs's setting up left in eax
 }
 
-void frontend::loadingTuningForPlayers(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingTuningForPlayers(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4dcbc0", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEdx | fe::kRestoreEsi | fe::kRestoreEdi };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::tuningForPlayers(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::tuningForPlayers(app, cpu); });
 }
 
 /* ---------------------------------------------------------------------------
@@ -2400,10 +2382,10 @@ x86::reg32 frontend::loada::screenSizeChosen(App* app, CPU& cpu)
     return gameSettings(guest).language;
 }
 
-void frontend::loadingScreenSizeChosen(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingScreenSizeChosen(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_478280", 0, 0, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::screenSizeChosen(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::screenSizeChosen(app, cpu); });
 }
 
 /* sub_478290: the number of the Screen Size chosen. */
@@ -2414,10 +2396,10 @@ x86::reg32 frontend::loada::screenSizeNumber(App* app, CPU& cpu)
     return guest.dword(guest::direct<0x478280, screenSizeChosen>(app, cpu) * 4 + 0x55d12c);
 }
 
-void frontend::loadingScreenSizeNumber(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingScreenSizeNumber(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_478290", 0, 0, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::screenSizeNumber(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::screenSizeNumber(app, cpu); });
 }
 
 /* sub_4782b0: the number of the Screen Size at eax. */
@@ -2427,11 +2409,11 @@ x86::reg32 frontend::loada::screenSizeNumberOf(App* app, CPU& cpu, reg32 size)
     return guest.dword(size * 4 + 0x55d12c);
 }
 
-void frontend::loadingScreenSizeNumberOf(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingScreenSizeNumberOf(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4782b0", 0, 0, nullptr, 0, 0 };
-    const reg32 size = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::screenSizeNumberOf(app, cpu, size); });
+    const reg32 size = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::screenSizeNumberOf(app, cpu, size); });
 }
 
 /* sub_4782c0: on to the horizon's setting up. */
@@ -2442,10 +2424,10 @@ x86::reg32 frontend::loada::horizonStartCall(App* app, CPU& cpu)
     return guest::direct<0x478c70, horizonStart>(app, cpu);
 }
 
-void frontend::loadingHorizonStartCall(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingHorizonStartCall(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4782c0", 0, 0, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::horizonStartCall(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::horizonStartCall(app, cpu); });
 }
 
 /* sub_4782d0: on to the horizon's freeing. */
@@ -2456,10 +2438,10 @@ x86::reg32 frontend::loada::horizonFreeCall(App* app, CPU& cpu)
     return guest::direct<0x478c80, horizonFree>(app, cpu);
 }
 
-void frontend::loadingHorizonFreeCall(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingHorizonFreeCall(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4782d0", 0, 0, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::horizonFreeCall(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::horizonFreeCall(app, cpu); });
 }
 
 /* sub_4782e0: eax a view, esi where its two words go, from sub_47a880 through the frame. */
@@ -2468,19 +2450,17 @@ x86::reg32 frontend::loada::skyViewTo(App* app, CPU& cpu, reg32 view, reg32 out)
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0x14);
     const reg32 words = guest.frame();
-    guest.setEsi(words);
-    guest.call(0x47a880, args({ view }));
+    fe::direct<0x47a880, render::viewSkyMade>(app, cpu, view, words);
     guest.setDword(out, guest.dword(words));
     guest.setDword(out + 4, guest.dword(words + 4));
-    guest.setEsi(words + 8);
     return out;
 }
 
-void frontend::loadingSkyViewTo(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingSkyViewTo(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4782e0", 0, 0, nullptr, 0, fe::kRestoreEdx | fe::kRestoreEdi };
-    const reg32 view = cpu.eax, out = cpu.esi;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::skyViewTo(app, cpu, view, out); });
+    const reg32 view = args.eax, out = args.esi;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::skyViewTo(app, cpu, view, out); });
 }
 
 /* sub_478320: eax a piece's shape, edx and ebx where its width and height go. */
@@ -2493,11 +2473,11 @@ x86::reg32 frontend::loada::shapeSize(App* app, CPU& cpu, reg32 shape, reg32 wid
     return tall;
 }
 
-void frontend::loadingShapeSize(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingShapeSize(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_478320", 0, 0, nullptr, 0, fe::kRestoreEcx };
-    const reg32 shape = cpu.eax, width = cpu.edx, height = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::shapeSize(app, cpu, shape, width, height); });
+    const reg32 shape = args.eax, width = args.edx, height = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::shapeSize(app, cpu, shape, width, height); });
 }
 
 /* sub_478b70: the horizon's eight pieces, of 44 bytes each from eax. */
@@ -2510,11 +2490,11 @@ x86::reg32 frontend::loada::horizonSetPieces(App* app, CPU& cpu, reg32 pieces)
     return 7 * kPieceSize;
 }
 
-void frontend::loadingHorizonSetPieces(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingHorizonSetPieces(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_478b70", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx };
-    const reg32 pieces = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::horizonSetPieces(app, cpu, pieces); });
+    const reg32 pieces = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::horizonSetPieces(app, cpu, pieces); });
 }
 
 /* sub_478bb0: the horizon's sixteen pieces, the second eight the first again, mirrored
@@ -2550,10 +2530,10 @@ x86::reg32 frontend::loada::horizonMeasure(App* app, CPU& cpu)
     return last;
 }
 
-void frontend::loadingHorizonMeasure(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingHorizonMeasure(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_478bb0", 0, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::horizonMeasure(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::horizonMeasure(app, cpu); });
 }
 
 /* sub_478c70: the horizon's setting up. */
@@ -2564,10 +2544,10 @@ x86::reg32 frontend::loada::horizonStart(App* app, CPU& cpu)
     return guest::direct<0x478bb0, horizonMeasure>(app, cpu);
 }
 
-void frontend::loadingHorizonStart(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingHorizonStart(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_478c70", 0, 0, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::horizonStart(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::horizonStart(app, cpu); });
 }
 
 /* sub_478c80: the horizon's block freed, and a render state set back. */
@@ -2582,13 +2562,13 @@ x86::reg32 frontend::loada::horizonFree(App* app, CPU& cpu)
         fe::direct<0x4e1890, ea::purgeBlock>(app, cpu, block);
         guest.setDword(kBlock, 0);
     }
-    return guest.call(0x431900, args({ 0x15, 0 }));
+    return fe::direct<0x431900, graphics::sendState>(app, cpu, 0x15, 0) ? 1 : 0;
 }
 
-void frontend::loadingHorizonFree(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingHorizonFree(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_478c80", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::horizonFree(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::horizonFree(app, cpu); });
 }
 
 /* sub_4a33d0: whether to stop loading: asked for, [0x55e88c] is set and the screen says so. */
@@ -2600,14 +2580,14 @@ x86::reg32 frontend::loada::stopCheck(App* app, CPU& cpu)
     if (fe::direct<0x4eb1c0, frontend::eaa::keyStateByte>(app, cpu, 1u) == 0)
         return 0;
     guest.setDword(kStopAsked, 1);
-    guest.call(0x494bd0);
+    fe::direct<0x494bd0, graphics::loadingAborted>(app, cpu);
     return 1;
 }
 
-void frontend::loadingStopCheck(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingStopCheck(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4a33d0", 0, 0, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::stopCheck(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::stopCheck(app, cpu); });
 }
 
 /* sub_4b7c20: the cop's light kept. */
@@ -2619,10 +2599,10 @@ x86::reg32 frontend::loada::copKeepLight(App* app, CPU& cpu)
     return light;
 }
 
-void frontend::loadingCopKeepLight(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingCopKeepLight(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4b7c20", 0, 0, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::copKeepLight(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::copKeepLight(app, cpu); });
 }
 
 /* sub_4b7c60: the track's cop's model loaded, by the track: "%scopN". */
@@ -2634,20 +2614,20 @@ x86::reg32 frontend::loada::copLoadModel(App* app, CPU& cpu)
     static const reg32 kFormats[9] = { 0x53ff88, 0x53ff90, 0x53ff98, 0x53ffa0, 0x53ff88,
                                        0x53ff90, 0x53ff98, 0x53ffa0, 0x53ffa8 };
     const reg32 name = guest.frame();
-    guest.call(0x49d640);
+    fx::callAt(guest, 0x49d640);
     guest.setDword(0x55fe28, guest.dword(0x7d3684));
     const reg32 track = gameSettings(guest).track;
     const reg32 format = track > 8 ? 0x53ff90 : kFormats[track];
     fe::direct<0x4df690, watcom::clib::sprintf>(guest.app(), guest.cpu(), name, format, guest::Words{kCarsFolder});
-    const reg32 model = guest.call(0x49d450, args({ name, 0x20, 0 }));
+    const reg32 model = *fe::direct<0x49d450, load::modelLoaded>(app, cpu, name, 0x20, 0);
     guest.setDword(0x55fe2c, model);
     return model;
 }
 
-void frontend::loadingCopLoadModel(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingCopLoadModel(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4b7c60", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::copLoadModel(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::copLoadModel(app, cpu); });
 }
 
 /* sub_4bc830: the race's things loaded, a stop looked for after each. */
@@ -2659,10 +2639,10 @@ x86::reg32 frontend::loada::raceSteps(App* app, CPU& cpu)
     return stepsWithChecks(app, cpu, guest, kSteps);
 }
 
-void frontend::loadingRaceSteps(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingRaceSteps(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4bc830", 0, 0, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::raceSteps(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::raceSteps(app, cpu); });
 }
 
 /* sub_4bc870: the same for the race's resetting; the last two without a check. */
@@ -2676,10 +2656,10 @@ x86::reg32 frontend::loada::raceResetSteps(App* app, CPU& cpu)
     return guest::direct<0x4bbd70, rendd::arenaRewind>(app, cpu);
 }
 
-void frontend::loadingRaceResetSteps(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::loadingRaceResetSteps(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4bc870", 0, 0, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return loada::raceResetSteps(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return loada::raceResetSteps(app, cpu); });
 }
 
 }

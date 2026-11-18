@@ -1,4 +1,6 @@
 #include "port_snd.h"
+#include "port_snd_stream.h"
+#include "port_snd_stream_calls.h"
 
 #include <cstdint>
 
@@ -11,15 +13,17 @@
  * numbers by event, then each node's offset in the file, big-endian.
  *
  * Pathfinder's state lies where the game has it (0x5645c0..0x56480c); the
- * stream it queues the stretches on is the CD stream's (native_snd_cdstream.cpp,
- * called by address), and its system task and top-up hook are the game's code's
- * for the stream to call.  Each function is here as C++ and as the adapter
- * around it the game's code calls; the adapters give back what the game's
- * callers read of the registers besides eax: SNDpathstartstream's ebx and edx
- * (the music's start passes them up), SNDpathevent's edx past an error. */
+ * streamer it queues the stretches on (port_snd_stream.cpp) is called as C++,
+ * and its system task and top-up hook are the game's code's for the stream to
+ * call.  Each function is here as C++ and as the thunk around it the game's
+ * code calls; the thunks give back what the game's callers read of the
+ * registers besides eax: SNDpathstartstream's ebx and edx (as its last calls
+ * leave them), SNDpathevent's edx past an error. */
 namespace nfs3hp
 {
 namespace port
+{
+namespace stream
 {
 
 namespace
@@ -72,28 +76,16 @@ constexpr Where kInitError{kPathFile, 0x54a8c8}, kStartError{kPathFile, 0x54a98c
 constexpr Where kControlError{kPathFile, 0x54a9d4}, kEventError{kPathFile, 0x54aa48};
 constexpr Where kInterruptError{kPathFile, 0x54aaa8};
 
-// Its own functions the game's code calls, and what it calls of the stream's.
+// Its own functions the game's code calls.  What it calls of the streamer's
+// (endsSeen, bufferedTime, queueStreamFile, interruptStream, setUpStreamer,
+// restoreStreamer, scheduleTask, unscheduleTask) is a rewrite too, called as
+// C++.
 constexpr reg32 kPathTask = 0x4e6d68, kPathHook = 0x4e6d94, kPathRestoreFunction = 0x4e7388;
-constexpr reg32 kStreamEnds = 0x4e8320, kBuffered = 0x4e7ce0, kQueueFile = 0x4e78a0, kInterruptFile = 0x4e7a14;
-constexpr reg32 kStreamSetup = 0x4e7750, kStreamRestore = 0x4e784c;
-constexpr reg32 kAddSystemTask = 0x4e7520, kRemoveSystemTask = 0x4e75e0;
 
 // Its answers: before SNDinit or SNDpathinit; set up already; the map's magic
 // and version; the streamer would not.
 constexpr int32_t kNoPathfinder = -14, kSetUp = -1, kNoMap = -7, kBadVersion = -11, kStreamerRefused = -18;
 constexpr reg32 kMagic = 0x78444650;  // 'PFDx'
-
-/* A call with eax and edx, the other registers as they are. */
-bool callWith(App* app, CPU& cpu, reg32 esp, reg32 target, reg32 eax, reg32 edx, reg32& result)
-{
-    return callGame(app, cpu, esp, target, {eax, edx, cpu.ebx, cpu.ecx}, {}, result);
-}
-
-bool callWith(App* app, CPU& cpu, reg32 esp, reg32 target, reg32 eax, reg32 edx)
-{
-    reg32 ignored;
-    return callWith(app, cpu, esp, target, eax, edx, ignored);
-}
 
 uint8_t byteAt(App* app, reg32 at) { return app->getMemory<uint8_t>(at); }
 
@@ -151,13 +143,12 @@ Result stepOn(App* app, CPU& cpu, reg32 esp)
         }
     }
     kEnds.set(app, kEnds(app) + 1);
-    if (!callWith(app, cpu, f, kQueueFile, kNameAt, nodeOffset(app, playing(app))))
+    if (!queueStreamFile(app, cpu, f - 4, kNameAt, nodeOffset(app, playing(app))))
         return {};
     reg32 result = playing(app) * kNodeSize;
     if (record<Node>(app, kNodes(app) + result).branches == 0 && kCurrent(app).event < 0)
     {
-        if (!callGame(app, cpu, f, kRemoveSystemTask, {kPathTask, cpu.edx, cpu.ebx, 0}, {}, result))
-            return {};
+        result = unscheduleTask(app, kPathTask);
         kTopupHook.set(app, 0);
     }
     return int32_t(result);
@@ -167,16 +158,14 @@ Result stepOn(App* app, CPU& cpu, reg32 esp)
  * waited for and holds less than the time wanted, the next node.  0. */
 Result runPathTask(App* app, CPU& cpu, reg32 esp)
 {
-    reg32 ends;
-    if (!callGame(app, cpu, esp, kStreamEnds, {}, {}, ends))
-        return {};
+    const reg32 ends = endsSeen(app);
     if (int32_t(ends) < kEnds(app))
         return 0;
     const reg32 wanted = kWaitTime(app);
-    reg32 buffered;
-    if (!callWith(app, cpu, esp, kBuffered, ends, wanted, buffered))
+    const Result buffered = bufferedTime(app, cpu, esp - 4);
+    if (!buffered)
         return {};
-    if (int32_t(buffered) < int32_t(wanted) && !stepOn(app, cpu, esp - 4))
+    if (*buffered < int32_t(wanted) && !stepOn(app, cpu, esp - 4))
         return {};
     return 0;
 }
@@ -188,6 +177,8 @@ reg32 topUpHook(App* app, reg32 extra)
     kWaitTime.set(app, uint16_t(extra == 0 ? kBufTime(app) : extra + kBufTime(app)));
     return kBufTime(app);
 }
+
+}  // namespace
 
 /* 0x4e6dc8's (SNDpathinit): Pathfinder set up on map `map`.  0; -14 before
  * SNDinit, -1 when set up already, -7 for no map, -11 for its version. */
@@ -243,10 +234,7 @@ Result startPathStream(App* app, CPU& cpu, reg32 esp, reg32 stream, reg32 name, 
     clearEvents(app);
     kController.set(app, 0);
     kNode.set(app, int16_t(byteAt(app, kMap(app) + 5)));
-    reg32 ends;
-    if (!callGame(app, cpu, f - 4, kStreamEnds, {}, {}, ends))
-        return {};
-    kEnds.set(app, int32_t(ends));
+    kEnds.set(app, int32_t(endsSeen(app)));
     for (reg32 i = 0;; ++i)
     {
         const uint8_t c = byteAt(app, name + i);
@@ -257,9 +245,9 @@ Result startPathStream(App* app, CPU& cpu, reg32 esp, reg32 stream, reg32 name, 
     kEnds.set(app, kEnds(app) + 1);
     // The play's options made on the stack, for the stream's setup.
     playDefaults(record<PlayOptions>(app, f));
-    if (!callWith(app, cpu, f - 4, kStreamSetup, kPathStream(app), f)
-        || !callGame(app, cpu, f - 4, kQueueFile, {name, nodeOffset(app, playing(app)), 1, cpu.ecx})
-        || !callGame(app, cpu, f - 4, kAddSystemTask, {kPathTask, 0, 1, cpu.ecx}))
+    if (!setUpStreamer(app, cpu, f - 8, kPathStream(app), f)
+        || !queueStreamFile(app, cpu, f - 8, name, nodeOffset(app, playing(app)))
+        || !scheduleTask(app, cpu, f - 8, kPathTask, 0, 1))
         return {};
     kTopupHook.set(app, kPathHook);
     return 0;
@@ -342,19 +330,16 @@ Result pathEventInterrupt(App* app, CPU& cpu, reg32 esp, int32_t event)
     if (!enterAudio(app, cpu, f - 4))
         return {};
     const reg32 node = nodeAfter(app, reg32(event));
-    reg32 refused;
-    if (!callGame(app, cpu, f, kInterruptFile, {kNameAt, nodeOffset(app, node), node, cpu.ecx}, {}, refused))
+    const Result refused = interruptStream(app, cpu, f - 4, kNameAt, nodeOffset(app, node));
+    if (!refused)
         return {};
-    if (refused != 0)
+    if (*refused != 0)
     {
         if (!leaveAudio(app, cpu, f - 4))
             return {};
         return kStreamerRefused;
     }
-    reg32 ends;
-    if (!callGame(app, cpu, f, kStreamEnds, {}, {}, ends))
-        return {};
-    kEnds.set(app, int32_t(ends));
+    kEnds.set(app, int32_t(endsSeen(app)));
     kNode.set(app, int16_t(node));
     clearEvents(app);
     if (!leaveAudio(app, cpu, f - 4))
@@ -369,91 +354,92 @@ Result pathRestore(App* app, CPU& cpu, reg32 esp)
     if (kInited(app) == 0 || kPathRestore(app) == 0)
         return kNoPathfinder;
     const reg32 f = esp - 4;
-    if (!callGame(app, cpu, f, kStreamRestore))
+    if (!restoreStreamer(app, cpu, f - 4))
         return {};
-    if (!callGame(app, cpu, f, kRemoveSystemTask, {kPathTask, cpu.edx, cpu.ebx, 0}))
-        return {};
+    unscheduleTask(app, kPathTask);
     kMap.set(app, 0);
     kTopupHook.set(app, 0);
     kPathRestore.set(app, 0);
     return 0;
 }
 
-}  // namespace
+}  // namespace stream
 
-/* The game's entries: each its adapter -- the game's registers and stack in,
+/* The game's entries: each its thunk -- the game's registers and stack in,
  * the result in eax out -- around what it does. */
 
-void pathStep(App* app, CPU& cpu)
+x86::reg32 pathStep(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, stepOn(app, cpu, e.esp));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, stream::stepOn(app, cpu, e.esp));
 }
 
-void pathTask(App* app, CPU& cpu)
+x86::reg32 pathTask(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, runPathTask(app, cpu, e.esp));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, stream::runPathTask(app, cpu, e.esp));
 }
 
-void pathHook(App* app, CPU& cpu)
+x86::reg32 pathHook(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, topUpHook(app, e.eax));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, stream::topUpHook(app, e.eax));
 }
 
-void SNDpathinit(App* app, CPU& cpu)
+x86::reg32 SNDpathinit(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, pathInit(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, stream::pathInit(app, cpu, e.esp, e.eax));
 }
 
 /* The stream eax from the file edx, time ebx buffered ahead.  ebx and edx are
- * left as the calls leave them once it is done: 1, and the system task's. */
-void SNDpathstartstream(App* app, CPU& cpu)
+ * left as the last calls leave them once it is done: the queue's 1 in ebx,
+ * the system task's thunk's 0 in edx (its code's own edx it does not keep). */
+x86::reg32 SNDpathstartstream(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    const Result r = startPathStream(app, cpu, e.esp, e.eax, e.edx, e.ebx);
+    const Entry e(cpu, args);
+    const Result r = stream::startPathStream(app, cpu, e.esp, e.eax, e.edx, e.ebx);
     if (!r)
-        return;
-    const reg32 ebx = cpu.ebx, edx = cpu.edx;
-    e.back(cpu, reg32(*r));
+        return args.eax;
+    e.back(cpu, args, reg32(*r));
     if (*r == 0)
     {
-        cpu.ebx = ebx;
-        cpu.edx = edx;
+        args.ebx = 1;
+        args.edx = 0;
     }
+    return args.eax;
 }
 
-void SNDpathcontrol(App* app, CPU& cpu)
+x86::reg32 SNDpathcontrol(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, pathControl(app, cpu, e.esp, int32_t(e.eax)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, stream::pathControl(app, cpu, e.esp, int32_t(e.eax)));
 }
 
 /* Past an error for Pathfinder not set up, edx is left the error's line. */
-void SNDpathevent(App* app, CPU& cpu)
+x86::reg32 SNDpathevent(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    const bool notSetUp = kInited(app) != 0 && kPathRestore(app) == 0;
-    const Result r = pathEvent(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx));
+    const Entry e(cpu, args);
+    const bool notSetUp = kInited(app) != 0 && stream::kPathRestore(app) == 0;
+    const Result r = stream::pathEvent(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx));
     if (!r)
-        return;
-    e.back(cpu, reg32(*r));
+        return args.eax;
+    e.back(cpu, args, reg32(*r));
     if (notSetUp)
-        cpu.edx = 0x2d0;
+        args.edx = 0x2d0;
+    return args.eax;
 }
 
-void SNDpatheventinterrupt(App* app, CPU& cpu)
+x86::reg32 SNDpatheventinterrupt(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, pathEventInterrupt(app, cpu, e.esp, int32_t(e.eax)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, stream::pathEventInterrupt(app, cpu, e.esp, int32_t(e.eax)));
 }
 
-void SNDpathrestore(App* app, CPU& cpu)
+x86::reg32 SNDpathrestore(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, pathRestore(app, cpu, e.esp));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, stream::pathRestore(app, cpu, e.esp));
 }
 
 }  // namespace port

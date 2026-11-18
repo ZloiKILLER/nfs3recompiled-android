@@ -2,6 +2,7 @@
 #include "native_ea_memory.h"
 #include "native_ea_support.h"
 #include "native_watcom.h"
+#include "port_snd_calls.h"
 #include "port_sound_slice.h"
 
 #include <cstdint>
@@ -49,14 +50,18 @@ constexpr Records<GameBank> kGameBanks{0x571124};
  * units' one (0x412950's names) of the audio folder -- for speaker edx (a
  * name of 0x412920's, now and then the plain one; all for 0x63) into bank
  * slot ebx.  eax as the code leaves it: the memory the bank is kept in. */
-void voiceBankLoad(App* app, CPU& cpu)
+static std::optional<reg32> voiceBankLoadWith(App* app, CPU& cpu, const Entry& e)
 {
-    const Entry e(cpu);
     const reg32 frame = e.frame(4);  // ebp as the code has it
     const reg32 name = frame - 0x16c, speakers = frame - 0x6c, units = frame - 0x3c;
     const reg32 fileAt = frame - 0x14, sizeAt = frame - 0x18, offsetAt = frame - 0x1c, handleAt = frame - 0x20;
-    const HeldEbp ebp(cpu, frame);
     Game g(app, cpu, name);
+    reg32 eax;
+    // SND's bank added from the memory at `memory` (0x4e8d20), its handle to the word at handleAt.
+    const auto bankAdd = [&](reg32 memory) {
+        g.atCall();
+        return tookEax(guest::direct<kBankAdd, bankAdded>(app, cpu, g.esp - 4, handleAt, memory), eax);
+    };
     const reg32 archive = e.eax;
     const int32_t speaker = int32_t(e.edx), slot = int32_t(e.ebx);
     // The code's two arrays of names on its stack (an index past their ends
@@ -65,12 +70,9 @@ void voiceBankLoad(App* app, CPU& cpu)
         store<reg32>(app, speakers + 4 * k, kSpeakerNames(app, int32_t(k)));
     for (reg32 k = 0; k < 7; ++k)
         store<reg32>(app, units + 4 * k, kUnitNames(app, int32_t(k)));
-    g.esi = kUnitNames.at + 0x1c;
-    g.edi = units + 0x1c;
-    reg32 eax;
     g.atCall();
     if (!tookEax(guest::direct<kFileExists, ea::fileThere>(app, cpu, archive), eax))
-        return;
+        return std::nullopt;
     reg32 path = archive;
     if (eax == 0)
     {
@@ -80,14 +82,13 @@ void voiceBankLoad(App* app, CPU& cpu)
         g.atCall();
         if (!tookEax(cpu, guest::direct<kSprintf, watcom::clib::sprintf>(app, cpu, name, 0x536a28, guest::Words{kAudioFolder, unit}),
                      eax))
-            return;
+            return std::nullopt;
         path = name;
     }
     g.atCall();
     if (!tookEax(guest::direct<kOpenArchive, ea::vivOpened>(app, cpu, path, fileAt), eax))
-        return;
+        return std::nullopt;
     const reg32 file = eax;
-    g.edi = file;
     bool plain = speaker == 0x63;
     if (!plain)
     {
@@ -102,90 +103,117 @@ void voiceBankLoad(App* app, CPU& cpu)
         g.atCall();
         if (!tookEax(cpu, guest::direct<kSprintf, watcom::clib::sprintf>(app, cpu, name, 0x536a48, guest::Words{speakerName}),
                      eax))
-            return;
+            return std::nullopt;
     }
     else
     {
         g.atCall();
         if (!tookEax(cpu, guest::direct<kSprintf, watcom::clib::sprintf>(app, cpu, name, 0x536a38, guest::Words{}), eax))
-            return;
+            return std::nullopt;
     }
     // Found or not, its eax is not read: the size word says.
     g.atCall();
     if (!guest::direct<kFindInArchive, ea::vivFileFound>(app, cpu, file, name, offsetAt, sizeAt))
-        return;
+        return std::nullopt;
     const reg32 size = load<reg32>(app, sizeAt);
-    g.esi = size;
     if (size == 0)
     {
         // The archive has no such bank: it is closed again and nothing loaded.
         g.atCall();
         if (!tookEax(guest::direct<kCloseArchive, ea::vivClosed>(app, cpu, file, fileAt), eax))
-            return;
-        return e.back(cpu, eax);
+            return std::nullopt;
+        cpu.esp = e.esp + 4;
+        return eax;
     }
     g.atCall();
     if (!tookEax(guest::direct<kReserveMemory, ea::reserved>(app, cpu, kAllocName, size, 0), eax))
-        return;
+        return std::nullopt;
     reg32 memory = eax;
-    g.esi = memory;
     // The bank read from its place in the archive.
     g.atCall();
     if (!tookEax(cpu, guest::direct<kSeek, watcom::clib::fseek>(app, cpu, load<reg32>(app, fileAt),
                                                                   load<reg32>(app, offsetAt), 0),
                  eax))
-        return;
+        return std::nullopt;
     g.atCall();
     if (!tookEax(cpu, guest::direct<kRead, watcom::clib::fread>(app, cpu, memory, load<reg32>(app, sizeAt), 1,
                                                                   load<reg32>(app, fileAt)),
                  eax))
-        return;
+        return std::nullopt;
     g.atCall();
     if (!tookEax(guest::direct<kCloseArchive, ea::vivClosed>(app, cpu, file, fileAt), eax)
-        || !g.call(kBankAdd, {handleAt, memory}, eax))
-        return;
+        || !bankAdd(memory))
+        return std::nullopt;
     if (eax == kBankNotKept)
     {
         // SND keeps no bank but its header: that copied out, the bank's memory freed.
         const reg32 handle = load<reg32>(app, handleAt);
-        if (!g.call(kBankHeaderSize, {handle}, eax))
-            return;
+        g.atCall();
+        if (!tookEax(guest::direct<kBankHeaderSize, bankHeaderSize>(app, cpu, g.esp - 4, int32_t(handle)), eax))
+            return std::nullopt;
         g.atCall();
         if (!tookEax(guest::direct<kReserveMemory, ea::reserved>(app, cpu, kAllocName, eax, 0), eax))
-            return;
+            return std::nullopt;
         const reg32 copy = eax;
-        if (!g.call(kBankHeaderCopy, {copy, load<reg32>(app, handleAt), copy}, eax))
-            return;
+        g.atCall();
+        if (!tookEax(guest::direct<kBankHeaderCopy, copyBankHeader>(app, cpu, g.esp - 4, copy,
+                                                                    int32_t(load<reg32>(app, handleAt))),
+                     eax))
+            return std::nullopt;
         g.atCall();
         if (!tookEax(guest::direct<kPurgeMemory, ea::purgeBlock>(app, cpu, memory), eax))
-            return;
+            return std::nullopt;
         memory = copy;
     }
     GameBank& bank = kGameBanks(app, slot);
     bank.handle = int32_t(load<reg32>(app, handleAt));
     bank.copy = memory;
-    e.back(cpu, memory);
+    cpu.esp = e.esp + 4;
+    return memory;
 }
 
-/* 0x4138e0: player edx's car bank of archive eax -- the second player's in
- * the split screen, the first's, or another's (surround or not) -- or,
- * missing from the archive, the audio folder's bank file of that name. */
-void carBankLoad(App* app, CPU& cpu)
+x86::reg32 voiceBankLoad(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    const reg32 frame = e.frame(5);  // ebp as the code has it
+    const std::optional<reg32> memory = voiceBankLoadWith(app, cpu, Entry(cpu, args));
+    if (memory)
+        args.eax = *memory;
+    return args.eax;
+}
+
+/* 0x413750's core: voiceBankLoad of archive `archive` for speaker `speaker` into slot `slot`; the memory the
+ * bank is kept in (what eax holds), nullopt when the game stopped; esp the frame base. */
+std::optional<reg32> voiceBankLoaded(App* app, CPU& cpu, reg32 esp, reg32 archive, int32_t speaker, int32_t slot)
+{
+    x86::Args args;
+    args.eax = archive;
+    args.edx = reg32(speaker);
+    args.ebx = reg32(slot);
+    Entry e(cpu, args);
+    e.esp = esp;
+    return voiceBankLoadWith(app, cpu, e);
+}
+
+/* 0x4138e0's: player `player`'s car bank of archive `archiveName` -- the
+ * second player's in the split screen, the first's, or another's (surround or
+ * not) -- or, missing from the archive, the audio folder's bank file of that
+ * name.  eax as the code leaves it. */
+Result carBankLoaded(App* app, CPU& cpu, reg32 esp, reg32 archiveName, int32_t player)
+{
+    const reg32 frame = esp - 5 * 4;  // ebp as the code has it
     const reg32 name = frame - 0x11c;
     const reg32 fileAt = frame - 0x10, handleAt = frame - 0x14, sizeAt = frame - 0x1c, offsetAt = frame - 0x18;
-    const HeldEbp ebp(cpu, frame);
     Game g(app, cpu, name);
-    const int32_t player = int32_t(e.edx);
     reg32 eax;
+    // SND's bank added from the memory at `memory` (0x4e8d20), its handle to the word at handleAt.
+    const auto bankAdd = [&](reg32 memory) {
+        g.atCall();
+        return tookEax(guest::direct<kBankAdd, bankAdded>(app, cpu, g.esp - 4, handleAt, memory), eax);
+    };
     g.atCall();
-    if (!tookEax(guest::direct<kOpenArchive, ea::vivOpened>(app, cpu, e.eax, fileAt), eax))
-        return;
+    if (!tookEax(guest::direct<kOpenArchive, ea::vivOpened>(app, cpu, archiveName, fileAt), eax))
+        return {};
     const reg32 archive = eax;
     // The bank's name in the archive, and the file's ending without it.
-    bool first = false;
     reg32 inArchive, ending;
     const int32_t split = gameSettings(app).playMode;
     if (split == 1 && split != player)
@@ -195,7 +223,6 @@ void carBankLoad(App* app, CPU& cpu)
     }
     else if (player == 0)
     {
-        first = true;
         inArchive = 0x536a70;
         ending = 0x536a78;
     }
@@ -207,67 +234,72 @@ void carBankLoad(App* app, CPU& cpu)
     // Found or not, its eax is not read: the size word says.
     g.atCall();
     if (!guest::direct<kFindInArchive, ea::vivFileFound>(app, cpu, archive, inArchive, offsetAt, sizeAt))
-        return;
+        return {};
     const reg32 size = load<reg32>(app, sizeAt);
-    if (first)
-        g.edi = size;
     if (size != 0)
     {
         g.atCall();
         if (!tookEax(guest::direct<kReserveMemory, ea::reserved>(app, cpu, kAllocName, size, 0), eax))
-            return;
+            return {};
         reg32 memory = eax;
-        g.esi = memory;
         // The bank read from its place in the archive.
         g.atCall();
         if (!tookEax(cpu, guest::direct<kSeek, watcom::clib::fseek>(app, cpu, load<reg32>(app, fileAt),
                                                                       load<reg32>(app, offsetAt), 0),
                      eax))
-            return;
+            return {};
         g.atCall();
         if (!tookEax(cpu, guest::direct<kRead, watcom::clib::fread>(app, cpu, memory, load<reg32>(app, sizeAt), 1,
                                                                       load<reg32>(app, fileAt)),
                      eax))
-            return;
+            return {};
         g.atCall();
         if (!tookEax(guest::direct<kCloseArchive, ea::vivClosed>(app, cpu, archive, fileAt), eax)
-            || !g.call(kBankAdd, {handleAt, memory}, eax))
-            return;
+            || !bankAdd(memory))
+            return {};
         if (eax == kBankNotKept)
         {
             // SND keeps no bank but its header: that copied out, the bank's memory freed.
             const reg32 handle = load<reg32>(app, handleAt);
-            if (!g.call(kBankHeaderSize, {handle}, eax))
-                return;
+            g.atCall();
+            if (!tookEax(guest::direct<kBankHeaderSize, bankHeaderSize>(app, cpu, g.esp - 4, int32_t(handle)), eax))
+                return {};
             g.atCall();
             if (!tookEax(guest::direct<kReserveMemory, ea::reserved>(app, cpu, kAllocName, eax, 0), eax))
-                return;
+                return {};
             const reg32 copy = eax;
-            if (!g.call(kBankHeaderCopy, {copy, load<reg32>(app, handleAt), 0, copy}, eax))
-                return;
+            g.atCall();
+            if (!tookEax(guest::direct<kBankHeaderCopy, copyBankHeader>(app, cpu, g.esp - 4, copy,
+                                                                        int32_t(load<reg32>(app, handleAt))),
+                         eax))
+                return {};
             g.atCall();
             if (!tookEax(guest::direct<kPurgeMemory, ea::purgeBlock>(app, cpu, memory), eax))
-                return;
+                return {};
             memory = copy;
-            g.esi = copy;
         }
         GameBank& bank = kGameBanks(app, player);
         bank.copy = memory;
         const reg32 handle = load<reg32>(app, handleAt);
         bank.handle = int32_t(handle);
-        return e.back(cpu, handle);
+        return int32_t(handle);
     }
     // The archive has no such bank: the audio folder's file of its own.
-    g.esi = copyText(app, name, kAudioFolder);
-    appendText(app, name, ending, &g.esi);
-    g.edi = name;
-    g.sync();
+    copyText(app, name, kAudioFolder);
+    appendText(app, name, ending);
     if (!bankLoaded(app, cpu, g.esp - 4, name, player, 0, name))
-        return;
+        return {};
     g.atCall();
     if (!tookEax(guest::direct<kCloseArchive, ea::vivClosed>(app, cpu, archive, fileAt), eax))
-        return;
-    e.back(cpu, eax);
+        return {};
+    return int32_t(eax);
+}
+
+/* 0x4138e0: player edx's car bank of archive eax. */
+x86::reg32 carBankLoad(App* app, CPU& cpu, x86::Args& args)
+{
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, carBankLoaded(app, cpu, e.esp, e.eax, int32_t(e.edx)));
 }
 
 }  // namespace port

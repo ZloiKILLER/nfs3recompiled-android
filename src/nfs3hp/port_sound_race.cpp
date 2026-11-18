@@ -1,5 +1,6 @@
 #include "game_settings.h"
 #include "port_snd.h"
+#include "port_sound_calls.h"
 
 #include <cmath>
 #include <cstdint>
@@ -11,9 +12,7 @@
  * at random; the car bank's effect 15.
  *
  * Each plays through bankEffect (port_sound_effects.cpp) as the game's code
- * calls 0x4182b0.  That code reads esi and edi, which its callers here set
- * (a pan, a flag) for their own use and nobody for it, so these rewrites set
- * them the same way before each effect. */
+ * calls 0x4182b0. */
 namespace nfs3hp
 {
 namespace port
@@ -62,14 +61,10 @@ int32_t scaled(App* app, reg32 at)
 
 int32_t bankHandle(App* app, int32_t i) { return kBankHandles(app, i); }
 
-/* An effect of the game's played at `volume`, `pan`, pitch 0x40, with esi and
- * edi as the code that plays it has them; `esp` is the code's after its
- * pushes. */
-Result startEffect(App* app, CPU& cpu, reg32 esp, reg32 esi, reg32 edi, int32_t bank, int32_t effect,
-                   int32_t volume, uint32_t pan)
+/* An effect of the game's played at `volume`, `pan`, pitch 0x40; `esp` is the
+ * code's after its pushes. */
+Result startEffect(App* app, CPU& cpu, reg32 esp, int32_t bank, int32_t effect, int32_t volume, uint32_t pan)
 {
-    cpu.esi = esi;
-    cpu.edi = edi;
     return bankEffect(app, cpu, esp - 8, bank, effect, volume, pan, 0x40);
 }
 
@@ -78,7 +73,6 @@ Result startEffect(App* app, CPU& cpu, reg32 esp, reg32 esi, reg32 edi, int32_t 
  * same one, behind).  eax as it leaves, the call's handle once it played. */
 Result farEffectPlayed(App* app, CPU& cpu, reg32 esp, reg32 eax)
 {
-    const HeldEbp ebp(cpu, esp - 5 * 4);
     if (gameSettings(app).weather == 0)
         return int32_t(eax);
     reg32 pan = nextRandom(app) & 0x7fff;
@@ -95,57 +89,59 @@ Result farEffectPlayed(App* app, CPU& cpu, reg32 esp, reg32 eax)
             pan = 0u - pan;
     }
     const int32_t bank = bankHandle(app, kCrowdBank);
-    return startEffect(app, cpu, esp - 5 * 4, reg32(bank), cpu.edi, bank, kFarEffect(app), 0x7f, pan);
+    return startEffect(app, cpu, esp - 5 * 4, bank, kFarEffect(app), 0x7f, pan);
 }
 
 }  // namespace
 
-/* 0x414830: the engines' sounds as the race starts, where their slots are
+/* 0x414830's: the engines' sounds as the race starts, where their slots are
  * empty: effects 0 and 1 of the first bank and 0 of the car's bank in slots
  * 0, 2 and 12 -- and the second player's (bank 22, on the right) in 1, 3 and
  * 13 in the split screen.  eax as the code leaves it: 0 after the first
- * slots, the last effect's handle after the second player's. */
-void engineSoundsStart(App* app, CPU& cpu)
+ * slots, the last effect's handle after the second player's, else `eax`. */
+Result engineSoundsStarted(App* app, CPU& cpu, reg32 esp, reg32 eax)
 {
-    const Entry e(cpu);
-    const reg32 frame = e.frame(6);
-    const HeldEbp ebp(cpu, frame);
-    reg32 eax = e.eax, edi = e.edi;
+    const reg32 frame = esp - 6 * 4;
     const bool split = gameSettings(app).playMode == 1;
     if (kSlots(app, 0).sound == -1)
     {
         const reg32 pan = split ? kLeft : 0;
         const int32_t menu = bankHandle(app, kMenuBank), car = bankHandle(app, kCarBank);
-        Result r = startEffect(app, cpu, frame, pan, edi, menu, 0, 0, pan);
+        Result r = startEffect(app, cpu, frame, menu, 0, 0, pan);
         if (!r)
-            return;
+            return {};
         kSlots.set(app, 0, {*r, 0});
-        edi = 1;
-        if (!(r = startEffect(app, cpu, frame, pan, edi, menu, 1, 0, pan)))
-            return;
+        if (!(r = startEffect(app, cpu, frame, menu, 1, 0, pan)))
+            return {};
         kSlots.set(app, 2, {*r, 1});
-        if (!(r = startEffect(app, cpu, frame, pan, edi, car, 0, 0, pan)))
-            return;
+        if (!(r = startEffect(app, cpu, frame, car, 0, 0, pan)))
+            return {};
         kSlots.set(app, 12, {*r, 0});
         eax = 0;
     }
     if (split && kSlots(app, 1).sound == -1)
     {
         const int32_t second = bankHandle(app, kSecondPlayerBank), car = bankHandle(app, kCarBank);
-        Result r = startEffect(app, cpu, frame, 1, edi, second, 0, 0, kRight);
+        Result r = startEffect(app, cpu, frame, second, 0, 0, kRight);
         if (!r)
-            return;
+            return {};
         kSlots.set(app, 1, {*r, 0});
-        edi = 0;
-        if (!(r = startEffect(app, cpu, frame, 1, edi, second, 1, 0, kRight)))
-            return;
+        if (!(r = startEffect(app, cpu, frame, second, 1, 0, kRight)))
+            return {};
         kSlots.set(app, 3, {*r, 1});
-        if (!(r = startEffect(app, cpu, frame, 1, edi, car, 0, 0, kRight)))
-            return;
+        if (!(r = startEffect(app, cpu, frame, car, 0, 0, kRight)))
+            return {};
         kSlots.set(app, 13, {*r, 0});
         eax = reg32(*r);
     }
-    e.back(cpu, eax);
+    return int32_t(eax);
+}
+
+/* 0x414830: the engines' sounds as the race starts. */
+x86::reg32 engineSoundsStart(App* app, CPU& cpu, x86::Args& args)
+{
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, engineSoundsStarted(app, cpu, e.esp, e.eax));
 }
 
 /* 0x414e10: the far-off effect aimed, if none is: from the player's car
@@ -153,11 +149,11 @@ void engineSoundsStart(App* app, CPU& cpu)
  * far, 7 when near, 10 more when the point is behind -- to play in half the
  * distance's ticks.  eax as the code leaves it: the car's last coordinate
  * scaled. */
-void farEffectAim(App* app, CPU& cpu)
+x86::reg32 farEffectAim(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     if (kFarTicks(app) != -1)
-        return e.back(cpu, e.eax);
+        return e.back(cpu, args, e.eax);
     const reg32 car = kCars(app, std::int32_t(gameSettings(app).localPlayer));
     const int32_t acrossFrom = int32_t(e.eax), alongFrom = int32_t(e.edx);
     const int32_t z = scaled(app, car + 0xa0);
@@ -176,48 +172,52 @@ void farEffectAim(App* app, CPU& cpu)
         effect += 0xa;
     kFarEffect.set(app, effect);
     kFarTicks.set(app, distance >> 1);
-    e.back(cpu, reg32(z));
+    return e.back(cpu, args, reg32(z));
 }
 
 /* 0x414ef0: the far-off effect played. */
-void farEffectPlay(App* app, CPU& cpu)
+x86::reg32 farEffectPlay(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, farEffectPlayed(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, farEffectPlayed(app, cpu, e.esp, e.eax));
 }
 
-/* 0x414f60: the far-off effect's tick: played when its ticks are up. */
-void farEffectTick(App* app, CPU& cpu)
+/* 0x414f60's: the far-off effect's tick: played when its ticks are up.  `eax`
+ * as the code has it. */
+Result farEffectTicked(App* app, CPU& cpu, reg32 esp, reg32 eax)
 {
-    const Entry e(cpu);
-    const HeldEbp ebp(cpu, e.frame(2));
     int32_t ticks = kFarTicks(app);
-    Result r = int32_t(e.eax);
+    Result r = int32_t(eax);
     if (ticks > 0)
         --ticks;
     else if (ticks == 0)
     {
-        if (!(r = farEffectPlayed(app, cpu, e.frame(2) - 4, e.eax)))
-            return;
+        if (!(r = farEffectPlayed(app, cpu, esp - 2 * 4 - 4, eax)))
+            return {};
         ticks = -1;
     }
     kFarTicks.set(app, ticks);
-    e.finish(cpu, r);
+    return r;
+}
+
+/* 0x414f60: the far-off effect's tick. */
+x86::reg32 farEffectTick(App* app, CPU& cpu, x86::Args& args)
+{
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, farEffectTicked(app, cpu, e.esp, e.eax));
 }
 
 /* 0x414f90: effect edx of the crowd's bank (below 0: one of 4 at random, at a
  * random volume of 0x5a on), at random pan -- the player's side in the split
  * screen, by eax. */
-void crowdEffect(App* app, CPU& cpu)
+Result crowdEffectOf(App* app, CPU& cpu, reg32 esp, reg32 sideWanted, int32_t effect)
 {
-    const Entry e(cpu);
-    const reg32 frame = e.frame(5);
+    const reg32 frame = esp - 4 * 5;
     const HeldEbp ebp(cpu, frame);
-    int32_t effect = int32_t(e.edx);
     const bool split = gameSettings(app).playMode == 1;
     reg32 side = 0;
     if (split)
-        side = e.eax != 0 ? kRight : kLeft;
+        side = sideWanted != 0 ? kRight : kLeft;
     int32_t volume = 0x77;
     if (effect < 0)
     {
@@ -227,19 +227,24 @@ void crowdEffect(App* app, CPU& cpu)
         volume = int32_t(second % 0x1e) + 0x5a;
     }
     const reg32 pan = split ? side : nextRandom(app) % 0xffff;
-    e.finish(cpu, startEffect(app, cpu, frame, reg32(effect), split ? side : e.edi, bankHandle(app, kCrowdBank),
-                              effect, volume, pan));
+    return startEffect(app, cpu, frame, bankHandle(app, kCrowdBank), effect, volume, pan);
+}
+
+x86::reg32 crowdEffect(App* app, CPU& cpu, x86::Args& args)
+{
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, crowdEffectOf(app, cpu, e.esp, e.eax, int32_t(e.edx)));
 }
 
 /* 0x415010: the car bank's effect 15 at full volume -- the player's side in
  * the split screen, by eax. */
-void carEffectFifteen(App* app, CPU& cpu)
+x86::reg32 carEffectFifteen(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     const reg32 frame = e.frame(4);
     const HeldEbp ebp(cpu, frame);
     const reg32 pan = gameSettings(app).playMode == 1 ? (e.eax != 0 ? kRight : kLeft) : 0;
-    e.finish(cpu, startEffect(app, cpu, frame, e.esi, e.edi, bankHandle(app, kCarBank), 0xf, 0x7f, pan));
+    return e.finish(cpu, args, startEffect(app, cpu, frame, bankHandle(app, kCarBank), 0xf, 0x7f, pan));
 }
 
 }  // namespace port

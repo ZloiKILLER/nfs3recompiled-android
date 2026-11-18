@@ -125,7 +125,7 @@ x86::reg32 currentThread(App* app)
 
 x86::reg32 currentThreadId(App* app, x86::CPU& cpu)
 {
-    return app->getMemory<x86::reg32>(cpu.efs + 0x4);
+    return app->getMemory<x86::reg32>(cpu.threadBlock + 0x4);
 }
 
 x86::reg32 duplicateThread(App* app, x86::reg32 sourceProcess, x86::reg32 source, x86::reg32 targetProcess,

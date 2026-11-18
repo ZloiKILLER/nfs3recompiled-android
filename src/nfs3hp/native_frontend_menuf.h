@@ -7,9 +7,8 @@
 
 /* native_frontend_menuf.cpp's typed functions (the HUD editor's element, the front end's start, a
  * screen's effects, a pause's and a race's small ones), which other files call as C++
- * (guest::direct), and how the game's code calls each by address (ByAddress, for the checks'
- * stand-ins).  Each calls the game's other functions by address on `cpu` and throws fe::Terminated
- * when the game stopped in one, as Guest::call does; its result is what the game's function leaves
+ * (guest::direct), and how the game's code calls each by address.  Each calls the game's other functions by address on `cpu` and throws fe::Terminated
+ * when the game stopped in one, as a call by address does; its result is what the game's function leaves
  * in eax. */
 namespace nfs3hp
 {
@@ -46,102 +45,6 @@ reg32 pauseMenuAgain(App* app, CPU& cpu);
 
 namespace guest
 {
-
-// The element in eax.
-template <>
-struct ByAddress<frontend::menuf::pickResizeCursor>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 element)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({ element }));
-    }
-};
-
-// The element in eax, whether it is dragged in edx.
-template <>
-struct ByAddress<frontend::menuf::drawElement>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 element, x86::reg32 dragging)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({ element, dragging }));
-    }
-};
-
-// The element in eax, the screen in edx, the key in ebx.
-template <>
-struct ByAddress<frontend::menuf::elementKey>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 element, x86::reg32 menu,
-                           std::uint16_t key)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({ element, menu, key }));
-    }
-};
-
-// The element in eax.
-template <>
-struct ByAddress<frontend::menuf::elementToRecord>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 element)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({ element }));
-    }
-};
-
-template <>
-struct ByAddress<frontend::menuf::frontEndStart>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({}));
-    }
-};
-
-template <>
-struct ByAddress<frontend::menuf::raceEndEmpty>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({}));
-    }
-};
-
-// The item in eax, nonzero in edx to keep its art.
-template <>
-struct ByAddress<frontend::menuf::startScreenEffects>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 item, x86::reg32 keepArt)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({ item, keepArt }));
-    }
-};
-
-template <>
-struct ByAddress<frontend::menuf::resetRaceMouse>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({}));
-    }
-};
-
-template <>
-struct ByAddress<frontend::menuf::pauseMenuAgain>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({}));
-    }
-};
 
 }  // namespace guest
 }  // namespace nfs3hp

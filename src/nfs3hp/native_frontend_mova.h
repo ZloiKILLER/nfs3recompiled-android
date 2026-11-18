@@ -5,9 +5,8 @@
 #include "native_guest.h"
 
 /* native_frontend_mova.cpp's typed functions (the movie's display, the integer projection), which
- * other files call as C++ (guest::direct), and how the game's code calls each by address
- * (ByAddress, for the checks' stand-ins).  Each calls the game's other functions by address on
- * `cpu` and throws fe::Terminated when the game stopped in one, as Guest::call does; its result is
+ * other files call as C++ (guest::direct), and how the game's code calls each by address.  Each calls the game's other functions by address on
+ * `cpu` and throws fe::Terminated when the game stopped in one, as a call by address does; its result is
  * what the game's function leaves in eax. */
 namespace nfs3hp
 {
@@ -42,93 +41,6 @@ reg32 projectionViewDegrees(App* app, CPU& cpu, reg32 degreesX, reg32 degreesY, 
 
 namespace guest
 {
-
-template <>
-struct ByAddress<frontend::mova::screenDevice>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({}));
-    }
-};
-
-template <>
-struct ByAddress<frontend::mova::directDraw>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({}));
-    }
-};
-
-template <>
-struct ByAddress<frontend::mova::displayMode>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({}));
-    }
-};
-
-template <>
-struct ByAddress<frontend::mova::displayClose>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({}));
-    }
-};
-
-// x in eax, y in edx, the width in ebx, the height in ecx, the quality and software on the stack.
-template <>
-struct ByAddress<frontend::mova::displayOpen>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 x, x86::reg32 y, x86::reg32 width,
-                           x86::reg32 height, x86::reg32 quality, x86::reg32 software)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({ x, y, width, height }, { quality, software }));
-    }
-};
-
-// x in eax, y in edx.
-template <>
-struct ByAddress<frontend::mova::projectionCentre>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 x, x86::reg32 y)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({ x, y }));
-    }
-};
-
-// The angles in eax and edx, the width in ebx, the height in ecx.
-template <>
-struct ByAddress<frontend::mova::projectionView>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 angleX, x86::reg32 angleY,
-                           x86::reg32 width, x86::reg32 height)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({ angleX, angleY, width, height }));
-    }
-};
-
-// The degrees in eax and edx, the width in ebx, the height in ecx.
-template <>
-struct ByAddress<frontend::mova::projectionViewDegrees>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 degreesX, x86::reg32 degreesY,
-                           x86::reg32 width, x86::reg32 height)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({ degreesX, degreesY, width, height }));
-    }
-};
 
 }  // namespace guest
 }  // namespace nfs3hp

@@ -9,6 +9,8 @@
 #include "native_load_cardb.h"
 #include "native_load_carmodels.h"
 #include "native_load_saves.h"
+#include "native_loading.h"
+#include "port_menus.h"
 #include "native_vertices.h"
 #include "native_windows.h"
 #include "port_thrash.h"
@@ -27,9 +29,7 @@
  * cars' .fce models with their colours and their textures, from the .art,
  * the 00.tga or the car's .viv (0x49c700 to 0x49d596, 0x4b7a60, 0x4b7ba0),
  * and the players' own specs, carspecs\player1.spc and player2.spc (0x4dc3a0
- * to 0x4dcae1).  disassemble_nfs3hp.py binds each address to the function
- * of that name here (LOAD_CARMODELS_NATIVES), and the generated code calls it
- * by name.  tools/game_checks holds each against its generated code.
+ * to 0x4dcae1).  The game's code calls each function here by name.
  *
  * A car's carp.txt goes over the network as a header of 0x1c bytes (0 its
  * kind, 1 the car's id of 16 bytes, 0x14 its record's +0x380, 0x18 the
@@ -57,10 +57,10 @@
  * the default).  The file is the table whole; one not of this machine
  * (0x472940, by the game's module's name) is deleted and made anew.
  *
- * Each is a typed function (its core) under a name of its own, with an adapter under the game's
- * name for the callers still on registers and the dispatch: it leaves eax, ebx, ecx, edx and the
+ * Each is a typed function (its core) under a name of its own, with a thunk under the game's
+ * name for the callers still on registers and for the calls by address: it leaves eax, ebx, ecx, edx and the
  * x87's stack as the game's code does -- these functions keep few of them, and what a callee
- * leaves there (a stand-in may change what it is handed) is passed back up.  A core calls
+ * leaves there is passed back up.  A core calls
  * another of this file's as C++, and the other typed files' their headers declare as C++ too
  * (guest::direct) -- but where the code passes on what such a callee leaves in a register
  * beyond its answer; every other function of the game's, and Windows' through its imports, is
@@ -87,6 +87,8 @@ using x86::reg32;
 using x86::reg8;
 using x86::sreg32;
 using App = win32::WinApplication;
+
+using guest::EspKept;
 using CPU = x86::CPU;
 using i32 = std::int32_t;
 
@@ -114,21 +116,14 @@ constexpr reg32 kBlackVisible = 0x7a3a6c;
 constexpr reg32 kFirstSpecs = 0x8b9200, kSecondSpecs = 0x8b88a0, kSpecsBytes = 0x960, kSpecBytes = 0x30;
 constexpr reg32 kSpecCount = 0x32, kFirstPlayer = 0x549784, kSecondPlayer = 0x54978c, kDefaultSpec = 0x55d024;
 constexpr reg32 kSpecPath = 0x564188, kSpecFolder = 0x7a2fb4, kSpecsFolder = 0x549770, kSpecExtension = 0x54977c;
-// What is called by address: the paths' backslash, a file copied, the
-// .viv's name the new car goes into; fopen, fclose, fwrite, mkdir, strrchr;
-// sprintf; a file found in a .viv (where what it leaves in ecx is passed
-// on); fseek, fread; memmove (where what it leaves is); a model made ready;
-// a texture allocated, its pixels given (where what they leave is); vectors
-// less another (what it leaves in edx is); __CHP; memset; a player's name
-// valid; GetModuleFileNameA; unlink, a file's size, access, chmod.  Of these the runtime's
-// (fopen, fclose, mkdir, strrchr, sprintf, fseek, fread, memset), the menus' (a file copied, a
-// file's size: feCore) and a player's name valid are typed, called as C++ (gameCalls).
-constexpr reg32 kEndPath = 0x4529a0, kNewCarName = 0x43ba20;
-constexpr reg32 kFwrite = 0x4eebd0;
-constexpr reg32 kFindInViv = 0x43b9d0, kMoveMemory = 0x4ea4f0;
-constexpr reg32 kModelReady = 0x49cfa0, kAllocTexture = 0x49c600, kUpdateTexture = 0x49c620, kSubtract = 0x4e0000;
-constexpr reg32 kChop = 0x4dfd56, kAccess = 0x4f05f0, kChmod = 0x4ee3c0;
-constexpr reg32 kGetModuleFileName = 0x534544, kUnlink = 0x4e28a0;
+// What is called: the paths' backslash, a file copied, the .viv's name the new car goes into;
+// fopen, fclose, fwrite, mkdir, strrchr; sprintf; a file found in a .viv; fseek, fread; memmove; a
+// model made ready; a texture allocated, its pixels given; vectors less another; __CHP; memset; a
+// player's name valid; GetModuleFileNameA; unlink, a file's size, access, chmod.  All typed,
+// called as C++ (guest::direct); the constants are the host's and the vectors'.
+constexpr reg32 kSubtract = 0x4e0000;
+constexpr reg32 kChop = 0x4dfd56;
+constexpr reg32 kGetModuleFileName = 0x534544;
 // The rest are the other typed files' (native_load_cardb.h, native_load_saves.h,
 // native_ea_support.h, native_ea_memory.h, native_ea_net.h, native_graphics.h,
 // native_vertices.h), called as C++ (guest::direct): the car's folder marked, a car's record, id,
@@ -136,13 +131,6 @@ constexpr reg32 kGetModuleFileName = 0x534544, kUnlink = 0x4e28a0;
 // state; a .viv opened, a file found in it, closed; a packet sent; the game's trace; the game's
 // memory, memmove; a file loaded, there, loaded quietly; a texture allocated; a vector's length;
 // a file's place in a .viv in memory; a spec file of this machine's; a file saved.
-
-bool byAddress(win32::WinApplication* app, x86::CPU& cpu, reg32 target)
-{
-    cpu.esp -= 4;
-    app->dynamic_call(target, cpu);
-    return !cpu.terminate;
-}
 
 reg16 half(win32::WinApplication* app, reg32 address)
 {
@@ -170,30 +158,6 @@ reg32 specsOf(reg32 player)
     return player == 0 ? kFirstSpecs : player == 1 ? kSecondSpecs : 0;
 }
 
-/* The registers but eax and esp, kept across what the scope does: what Watcom's callers count
- * on of a callee, and what an adapter's code pops on leaving. */
-class KeptRegisters
-{
-public:
-    explicit KeptRegisters(CPU& cpu)
-        : cpu_(cpu), ebx_(cpu.ebx), ecx_(cpu.ecx), edx_(cpu.edx), esi_(cpu.esi), edi_(cpu.edi), ebp_(cpu.ebp)
-    {
-    }
-    ~KeptRegisters()
-    {
-        cpu_.ebx = ebx_;
-        cpu_.ecx = ecx_;
-        cpu_.edx = edx_;
-        cpu_.esi = esi_;
-        cpu_.edi = edi_;
-        cpu_.ebp = ebp_;
-    }
-
-private:
-    CPU& cpu_;
-    reg32 ebx_, ecx_, edx_, esi_, edi_, ebp_;
-};
-
 /* Room on the guest's stack for what a callee is handed the address of: the game's frame
  * (`pushed` bytes of registers under esp on entry, then `bytes`), esp under it while the core
  * runs and back after. */
@@ -218,42 +182,6 @@ constexpr reg32 kSpecInUse = 0, kSpecCarId = 4, kSpecCar = 0x14, kCarIdBytes = 0
 // The return address's slot on the guest's stack.
 constexpr reg32 kReturnSlot = 4;
 
-/* A function of the game's called by address, Watcom's way: eax, edx, ebx and ecx as given, in
- * that order, those left out as they are; every register but eax kept.  What it gives back in
- * eax, or nullopt when the game stopped in it. */
-std::optional<reg32> callGame(App* app, CPU& cpu, reg32 target, std::initializer_list<reg32> registers)
-{
-    const KeptRegisters kept(cpu);
-    reg32* const slots[] = {&cpu.eax, &cpu.edx, &cpu.ebx, &cpu.ecx};
-    std::size_t n = 0;
-    for (const reg32 value : registers)
-        *slots[n++] = value;
-    if (!byAddress(app, cpu, target))
-        return std::nullopt;
-    return cpu.eax;
-}
-
-/* A typed core called as C++ where the code calls it as callGame does: eax, edx, ebx and ecx
- * loaded from `registers` as the code loads them for the call (a stand-in of the checks may log
- * them), every register but eax kept across it, and eax after it the core's result (`call`'s),
- * as callGame leaves them.  Nothing when the game stopped. */
-template <typename Call>
-std::optional<reg32> gameCalls(CPU& cpu, std::initializer_list<reg32> registers, Call call)
-{
-    std::optional<reg32> result;
-    {
-        const KeptRegisters kept(cpu);
-        reg32* const slots[] = {&cpu.eax, &cpu.edx, &cpu.ebx, &cpu.ecx};
-        std::size_t n = 0;
-        for (const reg32 value : registers)
-            *slots[n++] = value;
-        result = call();
-    }
-    if (result)
-        cpu.eax = *result;
-    return result;
-}
-
 // A runtime's core's result, nothing when the game stopped in it.
 std::optional<reg32> unlessStopped(CPU& cpu, reg32 result)
 {
@@ -263,50 +191,28 @@ std::optional<reg32> unlessStopped(CPU& cpu, reg32 result)
 }
 
 /* A native_frontend_* file's typed core called as C++ (guest::direct): nothing (false) when the
- * game stopped in it (its calls into the game throw fe::Terminated).  tools/game_checks does not
- * build those files: there it goes by address, through its ByAddress, as the game's code calls it,
- * every register but eax kept.  A reg32 result is the eax the function leaves: eax set to it (in the
- * game too); after any other, eax spoilt there, so that code still reading what the callee left in
- * eax differs there. */
+ * game stopped in it (its calls into the game throw fe::Terminated), every register but eax kept.  A reg32 result is the eax the function leaves: eax set to it. */
 template <reg32 Address, auto Core, typename... Args>
 auto feCore(App* app, CPU& cpu, Args... args)
 {
-    const auto run = [&] {
-#ifdef NFS_GAME_CHECKS
-        const guest::KeptRegisters kept(cpu);
-        return guest::ByAddress<Core>::template call<Address>(app, cpu, args...);
-#else
-        return guest::direct<Address, Core>(app, cpu, args...);
-#endif
-    };
-    using Result = decltype(run());
-    const auto spoil = [&] {
-#ifdef NFS_GAME_CHECKS
-        cpu.eax = 0x5b0115edu;
-#endif
-    };
+    using Result = decltype(guest::direct<Address, Core>(app, cpu, args...));
     if constexpr (std::is_void_v<Result>)
     {
         try
         {
-            run();
+            guest::direct<Address, Core>(app, cpu, args...);
         }
         catch (const fe::Terminated&)
         {
             return false;
         }
-        spoil();
         return !cpu.terminate;
     }
     else
     {
         try
         {
-            const Result result = run();
-            if constexpr (std::is_same_v<Result, x86::reg32>)
-                cpu.eax = result;  // a menu core's result: the eax it leaves, as the call by address does
-            else
-                spoil();
+            const Result result = guest::direct<Address, Core>(app, cpu, args...);
             return cpu.terminate ? std::optional<Result>() : std::optional<Result>(result);
         }
         catch (const fe::Terminated&)
@@ -316,72 +222,89 @@ auto feCore(App* app, CPU& cpu, Args... args)
     }
 }
 
-/* 0x4e0640: memset of `count` bytes at `to` to 0, as the code calls it (it gives `to` back and
- * keeps every other register); false when the game stopped. */
+/* 0x4e0640: memset of `count` bytes at `to` to 0 (it gives `to` back); false when the game stopped. */
 bool clearBytes(App* app, CPU& cpu, reg32 to, reg32 count)
 {
-    return gameCalls(cpu, {to, 0, count}, [&] {
-               return unlessStopped(cpu, guest::direct<0x4e0640, watcom::clib::memset>(app, cpu, to, 0u, count));
-           }).has_value();
+    return unlessStopped(cpu, guest::direct<0x4e0640, watcom::clib::memset>(app, cpu, to, 0u, count)).has_value();
 }
 
-/* The runtime's fopen, fclose, strrchr, mkdir, fseek and fread (native_watcom.h), as the code
- * calls them; nothing when the game stopped. */
+/* The runtime's fopen, fclose, strrchr, mkdir, fseek and fread (native_watcom.h); nothing when the
+ * game stopped. */
 std::optional<reg32> openFile(App* app, CPU& cpu, reg32 name, reg32 mode)
 {
-    return gameCalls(cpu, {name, mode}, [&] {
-        return unlessStopped(cpu, guest::direct<0x4edfe8, watcom::clib::fopen>(app, cpu, name, mode));
-    });
+    return unlessStopped(cpu, guest::direct<0x4edfe8, watcom::clib::fopen>(app, cpu, name, mode));
 }
 
 std::optional<reg32> closeFile(App* app, CPU& cpu, reg32 stream)
 {
-    return gameCalls(cpu, {stream}, [&] {
-        return unlessStopped(cpu, guest::direct<0x4ee100, watcom::clib::fclose>(app, cpu, stream));
-    });
+    return unlessStopped(cpu, guest::direct<0x4ee100, watcom::clib::fclose>(app, cpu, stream));
 }
 
 std::optional<reg32> lastOf(App* app, CPU& cpu, reg32 string, reg32 c)
 {
-    return gameCalls(cpu, {string, c}, [&] {
-        return unlessStopped(cpu, guest::direct<0x4ee2f0, watcom::clib::strrchr>(app, cpu, string, c));
-    });
+    return unlessStopped(cpu, guest::direct<0x4ee2f0, watcom::clib::strrchr>(app, cpu, string, c));
 }
 
 std::optional<reg32> makeFolder(App* app, CPU& cpu, reg32 path)
 {
-    return gameCalls(cpu, {path}, [&] {
-        return unlessStopped(cpu, guest::direct<0x4eb1d0, watcom::clib::mkdir>(app, cpu, path));
-    });
+    return unlessStopped(cpu, guest::direct<0x4eb1d0, watcom::clib::mkdir>(app, cpu, path));
 }
 
 std::optional<reg32> seekFile(App* app, CPU& cpu, reg32 stream, reg32 offset, reg32 whence)
 {
-    return gameCalls(cpu, {stream, offset, whence}, [&] {
-        return unlessStopped(cpu, guest::direct<0x4e9088, watcom::clib::fseek>(app, cpu, stream, offset, whence));
-    });
+    return unlessStopped(cpu, guest::direct<0x4e9088, watcom::clib::fseek>(app, cpu, stream, offset, whence));
 }
 
 std::optional<reg32> readFile(App* app, CPU& cpu, reg32 buffer, reg32 size, reg32 count, reg32 stream)
 {
-    return gameCalls(cpu, {buffer, size, count, stream}, [&] {
-        return unlessStopped(cpu, guest::direct<0x4e9200, watcom::clib::fread>(app, cpu, buffer, size, count, stream));
-    });
+    return unlessStopped(cpu, guest::direct<0x4e9200, watcom::clib::fread>(app, cpu, buffer, size, count, stream));
+}
+
+/* The runtime's access, chmod and unlink on a path; nothing when the game stopped. */
+std::optional<reg32> accessFile(App* app, CPU& cpu, reg32 path, reg32 mode)
+{
+    return unlessStopped(cpu, guest::direct<0x4f05f0, watcom::clib::access>(app, cpu, path, mode));
+}
+
+std::optional<reg32> chmodFile(App* app, CPU& cpu, reg32 path, reg32 mode)
+{
+    return unlessStopped(cpu, guest::direct<0x4ee3c0, watcom::clib::chmod>(app, cpu, path, mode));
+}
+
+std::optional<reg32> unlinkFile(App* app, CPU& cpu, reg32 path)
+{
+    return unlessStopped(cpu, guest::direct<0x4e28a0, watcom::clib::unlink>(app, cpu, path));
+}
+
+/* 0x4529a0 (port::menus'): the path ended with a backslash; false when the game stopped. */
+bool endPath(App* app, CPU& cpu, reg32 path)
+{
+    return unlessStopped(cpu, guest::direct<0x4529a0, port::menus::backslashEnded>(app, cpu, path)).has_value();
+}
+
+/* 0x49cfa0: the FCE at `fce` made ready; the FCE, nothing when the game stopped. */
+std::optional<reg32> modelReady(App* app, CPU& cpu, reg32 fce)
+{
+    return guest::direct<0x49cfa0, loader::fceModelReady>(app, cpu, fce);
+}
+
+/* 0x49c620: `texture` given the pixels; false when the game stopped. */
+bool textureGiven(App* app, CPU& cpu, reg32 texture, reg32 pixels, reg32 width, reg32 height)
+{
+    return guest::direct<0x49c620, graphics::textureUpdated>(app, cpu, texture, pixels, width, height) && !cpu.terminate;
 }
 
 /* 0x4721f0 (native_frontend_text's): whether `name` will do for a player's, 1 or 0; nothing when
  * the game stopped. */
 std::optional<reg32> nameWillDo(App* app, CPU& cpu, reg32 name)
 {
-    return gameCalls(cpu, {name}, [&] {
-        return unlessStopped(cpu, guest::direct<0x4721f0, frontend::text::nameValid>(app, cpu, name));
-    });
+    return unlessStopped(cpu, guest::direct<0x4721f0, frontend::text::nameValid>(app, cpu, name));
 }
 
 /* The menus' 0x452a00 (loada's): the file `from` copied to `to`; nothing when the game stopped. */
 std::optional<reg32> copyFile(App* app, CPU& cpu, reg32 to, reg32 from)
 {
-    return gameCalls(cpu, {to, from}, [&] { return feCore<0x452a00, frontend::loada::copyFile>(app, cpu, to, from); });
+    return feCore<0x452a00, frontend::loada::copyFile>(app, cpu, to, from);
 }
 
 /* 0x439a50: car `car`'s record, or 0 past the last. */
@@ -431,33 +354,33 @@ void appendText(App* app, reg32 to, reg32 from)
 
 }  // namespace
 
-void beginCarpReceive(win32::WinApplication* app, x86::CPU& cpu);
-void receiveCarpChunk(win32::WinApplication* app, x86::CPU& cpu);
-void beginCarpSend(win32::WinApplication* app, x86::CPU& cpu);
-void readCarColors(win32::WinApplication* app, x86::CPU& cpu);
-void rgbToHsv(win32::WinApplication* app, x86::CPU& cpu);
-void hsvToRgb(win32::WinApplication* app, x86::CPU& cpu);
-void tintPixel(win32::WinApplication* app, x86::CPU& cpu);
-void scaleTexture(win32::WinApplication* app, x86::CPU& cpu);
-void fitTexture(win32::WinApplication* app, x86::CPU& cpu);
-void loadArtTextures(win32::WinApplication* app, x86::CPU& cpu);
-void nearestModelColor(win32::WinApplication* app, x86::CPU& cpu);
-void loadTgaTexture(win32::WinApplication* app, x86::CPU& cpu);
-void loadCarModel(win32::WinApplication* app, x86::CPU& cpu);
-void loadVivCarModel(win32::WinApplication* app, x86::CPU& cpu);
-void copyVivCarModel(win32::WinApplication* app, x86::CPU& cpu);
-void setSpecUsed(win32::WinApplication* app, x86::CPU& cpu);
-void specUsed(win32::WinApplication* app, x86::CPU& cpu);
-void specCarName(win32::WinApplication* app, x86::CPU& cpu);
-void findSpec(win32::WinApplication* app, x86::CPU& cpu);
-void freeSpecSlot(win32::WinApplication* app, x86::CPU& cpu);
-void setSpec(win32::WinApplication* app, x86::CPU& cpu);
-void defaultSpecs(win32::WinApplication* app, x86::CPU& cpu);
-void refreshSpecs(win32::WinApplication* app, x86::CPU& cpu);
-void specPath(win32::WinApplication* app, x86::CPU& cpu);
-void readSpecs(win32::WinApplication* app, x86::CPU& cpu);
-void loadPlayerSpecs(win32::WinApplication* app, x86::CPU& cpu);
-void savePlayerSpecs(win32::WinApplication* app, x86::CPU& cpu);
+x86::reg32 beginCarpReceive(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 receiveCarpChunk(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 beginCarpSend(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 readCarColors(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 rgbToHsv(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 hsvToRgb(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 tintPixel(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 scaleTexture(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 fitTexture(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 loadArtTextures(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 nearestModelColor(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 loadTgaTexture(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 loadCarModel(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 loadVivCarModel(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 copyVivCarModel(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 setSpecUsed(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 specUsed(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 specCarName(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 findSpec(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 freeSpecSlot(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 setSpec(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 defaultSpecs(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 refreshSpecs(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 specPath(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 readSpecs(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 loadPlayerSpecs(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 savePlayerSpecs(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
 
 namespace
 {
@@ -480,7 +403,7 @@ std::optional<reg32> beginReceive(App* app, CPU& cpu, reg32 record, reg32 bytes,
         return 0;
     }
     copyText(app, kCarpFile, kDataPath);
-    if (!callGame(app, cpu, kEndPath, {kCarpFile}))
+    if (!endPath(app, cpu, kCarpFile))
         return std::nullopt;
     appendText(app, kCarpFile, kCarpName);
     const std::optional<reg32> file = openFile(app, cpu, kCarpFile, kWriteMode);
@@ -510,10 +433,10 @@ std::optional<reg32> receiveChunk(App* app, CPU& cpu, reg32 record, reg32 data, 
     const reg32 file = at(app, record + kReceiverFile);
     if (file != 0)
     {
-        const std::optional<reg32> written = callGame(app, cpu, kFwrite, {data, count, 1, file});
-        if (!written)
+        const reg32 written = guest::direct<0x4eebd0, watcom::clib::fwrite>(app, cpu, data, count, 1u, file);
+        if (cpu.terminate)
             return std::nullopt;
-        if (*written == 0)
+        if (written == 0)
         {
             if (!closeFile(app, cpu, at(app, record + kReceiverFile)))
                 return std::nullopt;
@@ -540,11 +463,11 @@ std::optional<reg32> receiveChunk(App* app, CPU& cpu, reg32 record, reg32 data, 
     }
     put(app, record + kReceiverDone, 1);
     copyText(app, folder, kDataPath);
-    if (!callGame(app, cpu, kEndPath, {folder, kBackslash}))
+    if (!endPath(app, cpu, folder))
         return std::nullopt;
     const std::optional<reg32> last = lastOf(app, cpu, folder, kBackslash);
     if (!last || !guest::direct<0x4385a0, freePlayerFolder>(app, cpu, *last + 1) || !makeFolder(app, cpu, folder)
-        || !callGame(app, cpu, kEndPath, {folder, kCarpFile}))
+        || !endPath(app, cpu, folder))
         return std::nullopt;
     appendText(app, folder, kCarpName);
     if (!copyFile(app, cpu, folder, kCarpFile))
@@ -554,9 +477,7 @@ std::optional<reg32> receiveChunk(App* app, CPU& cpu, reg32 record, reg32 data, 
     if (!carpName)
         return std::nullopt;
     copyText(app, *carpName + 1, kCarVivName);
-    // eax as the inlined copy leaves it, the last byte copied (0) in al: the name's stand-in may
-    // give it back.
-    const std::optional<reg32> viv = callGame(app, cpu, kNewCarName, {*carpName & ~0xffu});
+    const std::optional<reg32> viv = unlessStopped(cpu, guest::direct<0x43ba20, load::placeholderViv>(app, cpu));
     if (!viv || !copyFile(app, cpu, carp, *viv) || !guest::direct<0x43baa0, appendCarp>(app, cpu, carp)
         || !guest::direct<0x439d90, loadCars>(app, cpu))
         return std::nullopt;
@@ -576,26 +497,28 @@ std::optional<reg32> receiveChunk(App* app, CPU& cpu, reg32 record, reg32 data, 
 
 /* 0x49b540: beginReceive for the record eax, ebx bytes, the buffer edx; edx the record when
  * there is no buffer. */
-void beginCarpReceive(App* app, CPU& cpu)
+x86::reg32 beginCarpReceive(App* app, CPU& cpu, x86::Args& args)
 {
-    const reg32 record = cpu.eax, buffer = cpu.edx;
-    const std::optional<reg32> result = beginReceive(app, cpu, record, cpu.ebx, buffer);
+    const reg32 record = args.eax, buffer = args.edx;
+    const std::optional<reg32> result = beginReceive(app, cpu, record, args.ebx, buffer);
     if (!result)
-        return;
-    cpu.eax = *result;
+        return args.eax;
+    args.eax = *result;
     if (buffer == 0)
-        cpu.edx = record;
+        args.edx = record;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x49b5f0: receiveChunk for the record eax, the ebx bytes at edx. */
-void receiveCarpChunk(App* app, CPU& cpu)
+x86::reg32 receiveCarpChunk(App* app, CPU& cpu, x86::Args& args)
 {
-    const std::optional<reg32> result = receiveChunk(app, cpu, cpu.eax, cpu.edx, cpu.ebx);
+    const std::optional<reg32> result = receiveChunk(app, cpu, args.eax, args.edx, args.ebx);
     if (!result)
-        return;
-    cpu.eax = *result;
+        return args.eax;
+    args.eax = *result;
     cpu.esp += 4;
+    return args.eax;
 }
 
 namespace
@@ -618,9 +541,8 @@ bool print(App* app, CPU& cpu, std::initializer_list<reg32> arguments)
     guest::Words rest({});
     for (std::size_t i = 2; i < arguments.size(); ++i)
         rest.word[rest.count++] = word[i];
-    return gameCalls(cpu, {}, [&] {
-               return unlessStopped(cpu, guest::direct<0x4df690, watcom::clib::sprintf>(app, cpu, word[0], word[1], rest));
-           }).has_value();
+    return unlessStopped(cpu, guest::direct<0x4df690, watcom::clib::sprintf>(app, cpu, word[0], word[1], rest))
+        .has_value();
 }
 
 /* 0x4ea290: the file named `name` in the .viv at `viv` found, its place to [place] and its size
@@ -630,17 +552,21 @@ bool findVivEntry(App* app, CPU& cpu, reg32 viv, reg32 name, reg32 place, reg32 
     return guest::direct<0x4ea290, locatedEntry>(app, cpu, viv, name, reg32(0), place, size).has_value();
 }
 
-/* 0x4ea4f0: `count` bytes from `from` to `to`, as the code calls it; it may leave eax, edx and ebx
- * changed: what it leaves in ebx to `countLeft`.  False when the game stopped. */
+/* Whether a copy of `count` bytes from `from` to `to` lands on its source from above (memmove's
+ * backwards: it leaves eax and edx where they were and ebx all ones; forwards, eax and edx past the
+ * bytes and ebx 0). */
+bool movesBackwards(reg32 from, reg32 to, reg32 count)
+{
+    return to > from && to < from + count;
+}
+
+/* 0x4ea4f0: `count` bytes from `from` to `to`; what it leaves in ebx to `countLeft`.  False when the
+ * game stopped. */
 bool moveMemory(App* app, CPU& cpu, reg32 from, reg32 to, reg32 count, reg32& countLeft)
 {
-    const KeptRegisters kept(cpu);
-    cpu.eax = from;
-    cpu.edx = to;
-    cpu.ebx = count;
-    if (!byAddress(app, cpu, kMoveMemory))
+    if (!guest::direct<0x4ea4f0, ea::moveMemory>(app, cpu, to, from, count) || cpu.terminate)
         return false;
-    countLeft = cpu.ebx;
+    countLeft = movesBackwards(from, to, count) ? 0xffffffffu : 0u;
     return true;
 }
 
@@ -662,7 +588,7 @@ std::optional<reg32> beginSend(App* app, CPU& cpu, reg32 header, reg32 car, reg3
         return std::nullopt;
     copyGuest(app, header + kHeaderCarId, *id, kCarIdBytes);
     copyText(app, path, kDataPath);
-    if (!callGame(app, cpu, kEndPath, {path}))
+    if (!endPath(app, cpu, path))
         return std::nullopt;
     const std::optional<reg32> folder = guest::direct<0x4392b0, folderOf>(app, cpu, car);
     if (!folder)
@@ -697,15 +623,16 @@ std::optional<reg32> beginSend(App* app, CPU& cpu, reg32 header, reg32 car, reg3
 }  // namespace
 
 /* 0x49b800: beginSend for the header eax, car edx; edx as the packet's sending leaves it. */
-void beginCarpSend(App* app, CPU& cpu)
+x86::reg32 beginCarpSend(App* app, CPU& cpu, x86::Args& args)
 {
-    reg32 packetLeft = cpu.edx;
-    const std::optional<reg32> file = beginSend(app, cpu, cpu.eax, cpu.edx, packetLeft);
+    reg32 packetLeft = args.edx;
+    const std::optional<reg32> file = beginSend(app, cpu, args.eax, args.edx, packetLeft);
     if (!file)
-        return;
-    cpu.eax = *file;
-    cpu.edx = packetLeft;
+        return args.eax;
+    args.eax = *file;
+    args.edx = packetLeft;
     cpu.esp += 4;
+    return args.eax;
 }
 
 namespace
@@ -719,7 +646,7 @@ constexpr reg32 kHue = 0, kSaturation = 4, kBrightness = 8;
 constexpr i32 kGreenThird = 0x20000, kBlueThird = 0x40000, kSixths = 6, kTurn = 0x100, kTop = 0xff;
 
 /* cdq; idiv: `dividend` over `divisor`, the quotient and the remainder -- worked in 64 bits as
- * the generated code does, the quotient's low half. */
+ * the game's code does, the quotient's low half. */
 std::pair<reg32, reg32> divide(x86::sreg64 dividend, reg32 divisor)
 {
     const x86::sreg64 by = sreg32(divisor);
@@ -801,12 +728,13 @@ HsvLeft rgbToHsvAt(App* app, reg32 rgb, reg32 hsv)
 
 /* 0x49c880: rgbToHsvAt for the colour at eax, to edx; eax the brightness stored, edx the brightest
  * of the three before it was held to 255. */
-void rgbToHsv(App* app, CPU& cpu)
+x86::reg32 rgbToHsv(App* app, CPU& cpu, x86::Args& args)
 {
-    const HsvLeft left = rgbToHsvAt(app, cpu.eax, cpu.edx);
-    cpu.eax = left.brightness;
-    cpu.edx = left.brightest;
+    const HsvLeft left = rgbToHsvAt(app, args.eax, args.edx);
+    args.eax = left.brightness;
+    args.edx = left.brightest;
     cpu.esp += 4;
+    return args.eax;
 }
 
 namespace
@@ -905,14 +833,15 @@ std::optional<HsvLeft> hsvToRgbAt(App* app, CPU& cpu, reg32 hsv, reg32 rgb)
 
 /* 0x49ca50: hsvToRgbAt for the colour at eax, to edx; eax the blue stored, edx the blue before it
  * was held to 255. */
-void hsvToRgb(App* app, CPU& cpu)
+x86::reg32 hsvToRgb(App* app, CPU& cpu, x86::Args& args)
 {
-    const std::optional<HsvLeft> left = hsvToRgbAt(app, cpu, cpu.eax, cpu.edx);
+    const std::optional<HsvLeft> left = hsvToRgbAt(app, cpu, args.eax, args.edx);
     if (!left)
-        return;
-    cpu.eax = left->brightness;
-    cpu.edx = left->brightest;
+        return args.eax;
+    args.eax = left->brightness;
+    args.edx = left->brightest;
     cpu.esp += 4;
+    return args.eax;
 }
 
 namespace
@@ -1014,22 +943,15 @@ std::optional<NearestLeft> nearestColor(App* app, CPU& cpu, reg32 model, reg32 c
         if (!hsvToRgbAt(app, cpu, model + kModelColor + (index << kColorShift), rgb))
             return std::nullopt;
         rgbToFloats(app, rgb, tried);
-        {
-            const KeptRegisters kept(cpu);
-            cpu.eax = 1;
-            cpu.edx = wanted;
-            cpu.ebx = tried;
-            cpu.ecx = difference;
-            if (!byAddress(app, cpu, kSubtract))
-                return std::nullopt;
-            lastLeft = cpu.edx;
-        }
+        guest::direct<0x4e0000, vertices::offsetVectorList<false>>(app, cpu, 1, wanted, tried, difference);
+        if (cpu.terminate)
+            return std::nullopt;
+        lastLeft = wanted;  // the edx it leaves, the vectors' first
         const double length = guest::direct<0x4e06a0, vertices::vectorLength>(app, cpu, difference);
         if (cpu.terminate)
             return std::nullopt;
         const float distance = float(length);
-        cpu.fpu.compare(x86::Float(length), x86::Float(best));
-        const bool below = (cpu.fpu.status.word & 0x100) != 0;
+        const bool below = (fp::compare(x86::Float(length), x86::Float(best)) & 0x100) != 0;
         if (below)
         {
             nearest = index;
@@ -1043,26 +965,28 @@ std::optional<NearestLeft> nearestColor(App* app, CPU& cpu, reg32 model, reg32 c
 
 /* 0x49cc50: tint for the pixel eax, the colour at edx; edx its red and green (as it was, for a
  * pixel without its top bit). */
-void tintPixel(App* app, CPU& cpu)
+x86::reg32 tintPixel(App* app, CPU& cpu, x86::Args& args)
 {
-    const std::optional<TintLeft> left = tint(app, cpu, cpu.eax, cpu.edx);
+    const std::optional<TintLeft> left = tint(app, cpu, args.eax, args.edx);
     if (!left)
-        return;
-    if ((cpu.eax & kPixelTop) != 0)
-        cpu.edx = left->redGreen;
-    cpu.eax = left->pixel;
+        return args.eax;
+    if ((args.eax & kPixelTop) != 0)
+        args.edx = left->redGreen;
+    args.eax = left->pixel;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x49d240: nearestColor for the model eax, the colour at edx; edx as the code leaves it. */
-void nearestModelColor(App* app, CPU& cpu)
+x86::reg32 nearestModelColor(App* app, CPU& cpu, x86::Args& args)
 {
-    const std::optional<NearestLeft> left = nearestColor(app, cpu, cpu.eax, cpu.edx);
+    const std::optional<NearestLeft> left = nearestColor(app, cpu, args.eax, args.edx);
     if (!left)
-        return;
-    cpu.eax = left->index;
-    cpu.edx = left->left;
+        return args.eax;
+    args.eax = left->index;
+    args.edx = left->left;
     cpu.esp += 4;
+    return args.eax;
 }
 
 namespace
@@ -1101,19 +1025,12 @@ std::optional<ColorsLeft> readColors(App* app, CPU& cpu, reg32 name, reg32 color
     const std::optional<reg32> viv = guest::direct<0x43b830, ea::vivOpened>(app, cpu, vivName, file);
     if (!viv)
         return std::nullopt;
-    reg32 findLeft;
-    {
-        // It may leave ecx changed: kept for where the code leaves it so (by address: its typed
-        // function's glue gives back only whether it found it).
-        const KeptRegisters kept(cpu);
-        cpu.eax = *viv;
-        cpu.edx = kFceName;
-        cpu.ebx = place;
-        cpu.ecx = found;
-        if (!byAddress(app, cpu, kFindInViv))
-            return std::nullopt;
-        findLeft = cpu.ecx;
-    }
+    // What it leaves in ecx, the entry, for the thunk that gives it on.
+    const std::optional<ea::VivSearch> search =
+        guest::direct<0x43b9d0, ea::vivFile>(app, cpu, *viv, kFceName, place, found);
+    if (!search)
+        return std::nullopt;
+    const reg32 findLeft = search->entry;
     if (at(app, found) == 0)
     {
         const std::optional<reg32> closed = guest::direct<0x43b9b0, ea::vivClosed>(app, cpu, *viv, file);
@@ -1163,17 +1080,18 @@ std::optional<ColorsLeft> readColors(App* app, CPU& cpu, reg32 name, reg32 color
 
 /* 0x49c700: readColors for the .viv named eax, the colours to edx, ebx of them, their count to
  * [ecx], the 12 bytes to [esp+4]; eax, ebx, ecx and edx as the code leaves them. */
-void readCarColors(App* app, CPU& cpu)
+x86::reg32 readCarColors(App* app, CPU& cpu, x86::Args& args)
 {
     const std::optional<ColorsLeft> left =
-        readColors(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx, at(app, cpu.esp + kReturnSlot));
+        readColors(app, cpu, args.eax, args.edx, args.ebx, args.ecx, at(app, cpu.esp + kReturnSlot));
     if (!left)
-        return;
-    cpu.eax = left->eax;
-    cpu.ebx = left->ebx;
-    cpu.ecx = left->ecx;
-    cpu.edx = left->edx;
+        return args.eax;
+    args.eax = left->eax;
+    args.ebx = left->ebx;
+    args.ecx = left->ecx;
+    args.edx = left->edx;
     cpu.esp += kReturnSlot + 4;
+    return args.eax;
 }
 
 namespace
@@ -1302,34 +1220,36 @@ std::optional<Left> fitInto(App* app, CPU& cpu, reg32 texture, reg32 pixels, reg
 
 /* 0x49cd00: scaleInto for the ebx by ecx pixels at edx, to eax, [esp+4] by [esp+8], the colours
  * [esp+0xc] and [esp+0x10]; eax, ebx, ecx and edx as the code leaves them. */
-void scaleTexture(App* app, CPU& cpu)
+x86::reg32 scaleTexture(App* app, CPU& cpu, x86::Args& args)
 {
     const reg32 words = cpu.esp + kReturnSlot;
-    const std::optional<Left> left = scaleInto(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx, at(app, words),
+    const std::optional<Left> left = scaleInto(app, cpu, args.eax, args.edx, args.ebx, args.ecx, at(app, words),
                                                at(app, words + 4), at(app, words + 8), at(app, words + 0xc));
     if (!left)
-        return;
-    cpu.eax = left->eax;
-    cpu.ebx = left->ebx;
-    cpu.ecx = left->ecx;
-    cpu.edx = left->edx;
+        return args.eax;
+    args.eax = left->eax;
+    args.ebx = left->ebx;
+    args.ecx = left->ecx;
+    args.edx = left->edx;
     cpu.esp += kReturnSlot + kScaleWords;
+    return args.eax;
 }
 
 /* 0x49cea0: fitInto for the ebx by ecx pixels at edx, to eax, [esp+4] asked, the colours [esp+8]
  * and [esp+0xc]; eax, ebx, ecx and edx as the scaling leaves them. */
-void fitTexture(App* app, CPU& cpu)
+x86::reg32 fitTexture(App* app, CPU& cpu, x86::Args& args)
 {
     const reg32 words = cpu.esp + kReturnSlot;
-    const std::optional<Left> left = fitInto(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx, at(app, words),
+    const std::optional<Left> left = fitInto(app, cpu, args.eax, args.edx, args.ebx, args.ecx, at(app, words),
                                              at(app, words + 4), at(app, words + 8));
     if (!left)
-        return;
-    cpu.eax = left->eax;
-    cpu.ebx = left->ebx;
-    cpu.ecx = left->ecx;
-    cpu.edx = left->edx;
+        return args.eax;
+    args.eax = left->eax;
+    args.ebx = left->ebx;
+    args.ecx = left->ecx;
+    args.edx = left->edx;
     cpu.esp += kReturnSlot + 0xc;
+    return args.eax;
 }
 
 namespace
@@ -1359,18 +1279,13 @@ reg32 textureBytes(reg32 most)
     return most * most * 2 + kTexturePixels;
 }
 
-/* A call by address with eax, edx, ebx and ecx `first` to `fourth`, which may change them: what it leaves in
- * the four; every other register kept.  nullopt when the game stopped. */
-std::optional<Left> callLeaving(App* app, CPU& cpu, reg32 target, reg32 first, reg32 second, reg32 third, reg32 fourth)
+/* What the memmove of `count` bytes from `from` to `to` leaves in eax, ebx, ecx and edx (ecx
+ * as it was). */
+Left movedLeft(reg32 from, reg32 to, reg32 count, reg32 ecx)
 {
-    const KeptRegisters kept(cpu);
-    cpu.eax = first;
-    cpu.edx = second;
-    cpu.ebx = third;
-    cpu.ecx = fourth;
-    if (!byAddress(app, cpu, target))
-        return std::nullopt;
-    return Left{cpu.eax, cpu.ebx, cpu.ecx, cpu.edx};
+    if (movesBackwards(from, to, count))
+        return Left{from, 0xffffffffu, ecx, to};
+    return Left{to + count, 0, ecx, from + count};
 }
 
 /* fitInto as the code calls it, three words on the guest's stack under the caller's frame. */
@@ -1412,12 +1327,10 @@ std::optional<Left> loadArt(App* app, CPU& cpu, reg32 model, reg32 picture, reg3
             if (!texture)
                 return std::nullopt;
             put(app, handle, *texture);
-            const std::optional<Left> given =
-                callLeaving(app, cpu, kUpdateTexture, *texture, *block + kTexturePixels,
-                            at(app, *block + kTextureWidth), at(app, *block + kTextureHeight));
-            if (!given)
+            if (!textureGiven(app, cpu, *texture, *block + kTexturePixels, at(app, *block + kTextureWidth),
+                              at(app, *block + kTextureHeight)))
                 return std::nullopt;
-            left.edx = given->edx;
+            left.edx = *block + kTexturePixels;
         }
         else
         {
@@ -1487,12 +1400,11 @@ std::optional<Left> loadTga(App* app, CPU& cpu, reg32 model, reg32 tga, reg32 mo
             left = *fitted;
             if (texture == 0)
             {
-                const std::optional<Left> allocated =
-                    callLeaving(app, cpu, kAllocTexture, at(app, *block + kTextureWidth),
-                                at(app, *block + kTextureHeight), left.ebx, left.ecx);
-                if (!allocated)
+                const std::optional<reg32> handle = guest::direct<0x49c600, graphics::allocatedTexture>(
+                    app, cpu, at(app, *block + kTextureWidth), at(app, *block + kTextureHeight));
+                if (!handle)
                     return std::nullopt;
-                left = *allocated;
+                left = Left{*handle, left.ebx, left.ecx, at(app, *block + kTextureHeight)};
                 texture = left.eax;
             }
             else
@@ -1504,12 +1416,11 @@ std::optional<Left> loadTga(App* app, CPU& cpu, reg32 model, reg32 tga, reg32 mo
             put(app, model + kModelTexture, texture);
             if (upload != 0)
             {
-                const std::optional<Left> given =
-                    callLeaving(app, cpu, kUpdateTexture, texture, *block + kTexturePixels,
-                                at(app, *block + kTextureWidth), at(app, *block + kTextureHeight));
-                if (!given)
+                if (!textureGiven(app, cpu, texture, *block + kTexturePixels, at(app, *block + kTextureWidth),
+                                  at(app, *block + kTextureHeight)))
                     return std::nullopt;
-                left = *given;
+                left = Left{texture, at(app, *block + kTextureWidth), at(app, *block + kTextureHeight),
+                            *block + kTexturePixels};
             }
         }
         else
@@ -1518,11 +1429,10 @@ std::optional<Left> loadTga(App* app, CPU& cpu, reg32 model, reg32 tga, reg32 mo
     if (copyTo != 0)
     {
         const reg32 bytes = (at(app, *block + kTextureWidth) * 2) * at(app, *block + kTextureHeight);
-        const std::optional<Left> copied =
-            callLeaving(app, cpu, kMoveMemory, *block + kTexturePixels, copyTo, bytes, left.ecx);
-        if (!copied)
+        reg32 ebxLeft;
+        if (!moveMemory(app, cpu, *block + kTexturePixels, copyTo, bytes, ebxLeft))
             return std::nullopt;
-        left = *copied;
+        left = movedLeft(*block + kTexturePixels, copyTo, bytes, left.ecx);
     }
     if (*block != 0)
     {
@@ -1555,7 +1465,7 @@ std::optional<Left> loadModel(App* app, CPU& cpu, reg32 name, reg32 most, reg32 
     const std::optional<reg32> fce = guest::direct<0x4e0ec0, ea::loadWhole>(app, cpu, path, kLoadPlain);
     if (!fce)
         return std::nullopt;
-    const std::optional<reg32> model = callGame(app, cpu, kModelReady, {*fce});
+    const std::optional<reg32> model = modelReady(app, cpu, *fce);
     if (!model || !print(app, cpu, {path, kTgaFormat, name}))
         return std::nullopt;
     bool fromTga = false;
@@ -1607,46 +1517,49 @@ std::optional<Left> loadModel(App* app, CPU& cpu, reg32 name, reg32 most, reg32 
 
 /* 0x49d130: loadArt for the model eax, the pictures at edx, ebx at most, the colour ecx; eax, ebx,
  * ecx and edx as the code leaves them. */
-void loadArtTextures(App* app, CPU& cpu)
+x86::reg32 loadArtTextures(App* app, CPU& cpu, x86::Args& args)
 {
-    const std::optional<Left> left = loadArt(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx);
+    const std::optional<Left> left = loadArt(app, cpu, args.eax, args.edx, args.ebx, args.ecx);
     if (!left)
-        return;
-    cpu.eax = left->eax;
-    cpu.ebx = left->ebx;
-    cpu.ecx = left->ecx;
-    cpu.edx = left->edx;
+        return args.eax;
+    args.eax = left->eax;
+    args.ebx = left->ebx;
+    args.ecx = left->ecx;
+    args.edx = left->edx;
     cpu.esp += kReturnSlot;
+    return args.eax;
 }
 
 /* 0x49d320: loadTga for the model eax, the .tga at edx, ebx at most, the texture ecx, the colour
  * [esp+4], whether to upload [esp+8], where to copy [esp+0xc]; eax, ebx, ecx and edx as the code
  * leaves them. */
-void loadTgaTexture(App* app, CPU& cpu)
+x86::reg32 loadTgaTexture(App* app, CPU& cpu, x86::Args& args)
 {
     const reg32 words = cpu.esp + kReturnSlot;
-    const std::optional<Left> left = loadTga(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx, at(app, words),
+    const std::optional<Left> left = loadTga(app, cpu, args.eax, args.edx, args.ebx, args.ecx, at(app, words),
                                              at(app, words + 4), at(app, words + 8));
     if (!left)
-        return;
-    cpu.eax = left->eax;
-    cpu.ebx = left->ebx;
-    cpu.ecx = left->ecx;
-    cpu.edx = left->edx;
+        return args.eax;
+    args.eax = left->eax;
+    args.ebx = left->ebx;
+    args.ecx = left->ecx;
+    args.edx = left->edx;
     cpu.esp += kReturnSlot + kThreeWords;
+    return args.eax;
 }
 
 /* 0x49d450: loadModel for the name at eax, edx at most, the colour ebx; ebx and edx as the
  * texture's loading leaves them. */
-void loadCarModel(App* app, CPU& cpu)
+x86::reg32 loadCarModel(App* app, CPU& cpu, x86::Args& args)
 {
-    const std::optional<Left> left = loadModel(app, cpu, cpu.eax, cpu.edx, cpu.ebx);
+    const std::optional<Left> left = loadModel(app, cpu, args.eax, args.edx, args.ebx);
     if (!left)
-        return;
-    cpu.eax = left->eax;
-    cpu.ebx = left->ebx;
-    cpu.edx = left->edx;
+        return args.eax;
+    args.eax = left->eax;
+    args.ebx = left->ebx;
+    args.edx = left->edx;
     cpu.esp += kReturnSlot;
+    return args.eax;
 }
 
 namespace
@@ -1684,7 +1597,7 @@ std::optional<Left> loadVivModel(App* app, CPU& cpu, reg32 car, reg32 name, reg3
     const reg32 fce = viv + at(app, place);
     const std::optional<reg32> block = guest::direct<0x4e1620, ea::reserved>(app, cpu, kVivNoName, at(app, size), reg32(0));
     if (!block || !guest::direct<0x4ea4f0, ea::moveMemory>(app, cpu, *block, fce, at(app, size))
-        || !callGame(app, cpu, kModelReady, {*block})
+        || !modelReady(app, cpu, *block)
         || !print(app, cpu, {path, kVivTgaFormat, name}) || !findVivEntry(app, cpu, viv, path, place, size))
         return std::nullopt;
     const reg32 tga = viv + at(app, place);
@@ -1722,39 +1635,41 @@ std::optional<reg32> copyVivModel(App* app, CPU& cpu, reg32 car, reg32 name, reg
     if (!block || !moveMemory(app, cpu, fce, *block, at(app, size), copyLeft))
         return std::nullopt;
     put(app, *block + kModelTexture, at(app, at(app, car + kCarModel) + kModelTexture));
-    if (!callGame(app, cpu, kModelReady, {*block}))
+    if (!modelReady(app, cpu, *block))
         return std::nullopt;
     return *block;
 }
 
 /* 0x4b7a60: loadVivModel for car eax, the name at edx, ebx at most, the colour at ecx, the .viv
  * at [esp+4]; ebx, ecx and edx as the texture's loading leaves them. */
-void loadVivCarModel(App* app, CPU& cpu)
+x86::reg32 loadVivCarModel(App* app, CPU& cpu, x86::Args& args)
 {
     const std::optional<Left> left =
-        loadVivModel(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx, at(app, cpu.esp + kReturnSlot));
+        loadVivModel(app, cpu, args.eax, args.edx, args.ebx, args.ecx, at(app, cpu.esp + kReturnSlot));
     if (!left)
-        return;
-    cpu.eax = left->eax;
-    cpu.ebx = left->ebx;
-    cpu.ecx = left->ecx;
-    cpu.edx = left->edx;
+        return args.eax;
+    args.eax = left->eax;
+    args.ebx = left->ebx;
+    args.ecx = left->ecx;
+    args.edx = left->edx;
     cpu.esp += kReturnSlot + 4;
+    return args.eax;
 }
 
 /* 0x4b7ba0: copyVivModel for car eax, the name at edx, the .viv at ebx; edx the texture given,
  * ebx as the copy leaves it. */
-void copyVivCarModel(App* app, CPU& cpu)
+x86::reg32 copyVivCarModel(App* app, CPU& cpu, x86::Args& args)
 {
-    const reg32 car = cpu.eax;
-    reg32 copyLeft = cpu.ebx;
-    const std::optional<reg32> block = copyVivModel(app, cpu, car, cpu.edx, cpu.ebx, copyLeft);
+    const reg32 car = args.eax;
+    reg32 copyLeft = args.ebx;
+    const std::optional<reg32> block = copyVivModel(app, cpu, car, args.edx, args.ebx, copyLeft);
     if (!block)
-        return;
-    cpu.eax = *block;
-    cpu.edx = at(app, *block + kModelTexture);
-    cpu.ebx = copyLeft;
+        return args.eax;
+    args.eax = *block;
+    args.edx = at(app, *block + kModelTexture);
+    args.ebx = copyLeft;
     cpu.esp += 4;
+    return args.eax;
 }
 
 namespace
@@ -1995,10 +1910,10 @@ std::optional<reg32> saveSpecs(App* app, CPU& cpu, reg32 player)
         return std::nullopt;
     if (*exists)
     {
-        const std::optional<reg32> locked = callGame(app, cpu, kAccess, {path, kWritable});
+        const std::optional<reg32> locked = accessFile(app, cpu, path, kWritable);
         if (!locked)
             return std::nullopt;
-        if (*locked != 0 && !callGame(app, cpu, kChmod, {path, kReadWrite}))
+        if (*locked != 0 && !chmodFile(app, cpu, path, kReadWrite))
             return std::nullopt;
     }
     if (!refreshSpecsOf(app, cpu, player))
@@ -2031,7 +1946,6 @@ std::optional<reg32> playerSpecs(App* app, CPU& cpu, reg32 player)
         return std::nullopt;
     const reg32 path = makeSpecPath(app, name);
     {
-        const KeptRegisters kept(cpu);
         if (!guest::windows<kGetModuleFileName, &host::moduleFileName>(app, cpu, 0, module, kModuleSize))
             return std::nullopt;
     }
@@ -2046,7 +1960,7 @@ std::optional<reg32> playerSpecs(App* app, CPU& cpu, reg32 player)
             return std::nullopt;
         if (*foreign != 0)
         {
-            if (!callGame(app, cpu, kUnlink, {path}))
+            if (!unlinkFile(app, cpu, path))
                 return std::nullopt;
             anew = true;
         }
@@ -2058,9 +1972,7 @@ std::optional<reg32> playerSpecs(App* app, CPU& cpu, reg32 player)
         const GuestFrame call(cpu, kReturnSlot, 0);
         return saveSpecs(app, cpu, player);
     }
-    // The mode in edx as the code loads it, which the size's core does not take.
-    const std::optional<reg32> size =
-        gameCalls(cpu, {path, kSizeMode}, [&] { return feCore<0x4e43a0, frontend::eaa::fileSize>(app, cpu, path); });
+    const std::optional<reg32> size = feCore<0x4e43a0, frontend::eaa::fileSize>(app, cpu, path);
     if (!size)
         return std::nullopt;
     const std::optional<reg32> file = guest::direct<0x4e0fe0, ea::loadQuietly>(app, cpu, path, kSizeMode);
@@ -2088,159 +2000,229 @@ std::optional<reg32> playerSpecs(App* app, CPU& cpu, reg32 player)
 
 /* 0x4dc3a0: markSpec for player eax, spec edx, bl; eax, ebx and edx as the game's code leaves
  * them. */
-void setSpecUsed(App* app, CPU& cpu)
+x86::reg32 setSpecUsed(App* app, CPU& cpu, x86::Args& args)
 {
-    const reg32 player = cpu.eax, index = cpu.edx;
-    const reg8 inUse = cpu.bl;
+    const reg32 player = args.eax, index = args.edx;
+    const reg8 inUse = reg8(args.ebx);
     markSpec(app, player, i32(index), inUse);
     const reg32 slot = specSlot(player, i32(index));
     if (slot != 0)
     {
-        cpu.eax = slot;
-        cpu.ebx = index;
-        cpu.edx = (specsOf(player) & ~0xffu) | inUse;
+        args.eax = slot;
+        args.ebx = index;
+        args.edx = (specsOf(player) & ~0xffu) | inUse;
     }
     else
     {
-        cpu.eax = index;
-        cpu.edx = specsOf(player);
+        args.eax = index;
+        args.edx = specsOf(player);
     }
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4dc3f0: specInUse for player eax, spec edx, in al; eax's top as the code leaves it (the
  * slot's offset, or the index), edx the table. */
-void specUsed(App* app, CPU& cpu)
+x86::reg32 specUsed(App* app, CPU& cpu, x86::Args& args)
 {
-    const reg32 player = cpu.eax, index = cpu.edx;
+    const reg32 player = args.eax, index = args.edx;
     const reg8 used = specInUse(app, player, i32(index));
     const reg32 offset = specSlot(player, i32(index)) != 0 ? index * kSpecBytes : index;
-    cpu.eax = (offset & ~0xffu) | used;
-    cpu.edx = specsOf(player);
+    args.eax = (offset & ~0xffu) | used;
+    args.edx = specsOf(player);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4dc440: specCarId for player eax, spec edx; edx the table. */
-void specCarName(App*, CPU& cpu)
+x86::reg32 specCarName(App*, CPU& cpu, x86::Args& args)
 {
-    const reg32 player = cpu.eax;
-    cpu.eax = specCarId(player, i32(cpu.edx));
-    cpu.edx = specsOf(player);
+    const reg32 player = args.eax;
+    args.eax = specCarId(player, i32(args.edx));
+    args.edx = specsOf(player);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4dc490: specOfCar for player eax, the id at edx; edx where the search stopped (-1 with no
  * table, 50 with no spec found). */
-void findSpec(App* app, CPU& cpu)
+x86::reg32 findSpec(App* app, CPU& cpu, x86::Args& args)
 {
-    const reg32 player = cpu.eax;
-    const i32 found = specOfCar(app, player, cpu.edx);
-    cpu.eax = reg32(found);
-    cpu.edx = specsOf(player) == 0 ? 0xffffffff : found >= 0 ? reg32(found) : kSpecCount;
+    const reg32 player = args.eax;
+    const i32 found = specOfCar(app, player, args.edx);
+    args.eax = reg32(found);
+    args.edx = specsOf(player) == 0 ? 0xffffffff : found >= 0 ? reg32(found) : kSpecCount;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4dc500: firstFreeSpec for player eax. */
-void freeSpecSlot(App* app, CPU& cpu)
+x86::reg32 freeSpecSlot(App* app, CPU& cpu, x86::Args& args)
 {
-    cpu.eax = reg32(firstFreeSpec(app, cpu.eax));
+    args.eax = reg32(firstFreeSpec(app, args.eax));
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4dc5a0: storeSpec for player eax, spec edx, the id at ebx, the spec at ecx; eax, ebx, ecx and
  * edx as the code leaves them: with the spec there, the copies' (the count, ecx 0) or the
  * clearings' (where it cleared, the count, edx 0). */
-void setSpec(App* app, CPU& cpu)
+x86::reg32 setSpec(App* app, CPU& cpu, x86::Args& args)
 {
-    const reg32 player = cpu.eax, index = cpu.edx, id = cpu.ebx, spec = cpu.ecx;
+    const reg32 player = args.eax, index = args.edx, id = args.ebx, spec = args.ecx;
     if (!storeSpec(app, cpu, player, i32(index), id, spec))
-        return;
+        return args.eax;
     const reg32 table = specsOf(player);
     if (table == 0)
     {
-        cpu.edx = 0;
+        args.edx = 0;
     }
     else if (specSlot(player, i32(index)) == 0)
     {
-        cpu.eax = index;
-        cpu.edx = 0;
+        args.eax = index;
+        args.edx = 0;
     }
     else
     {
-        cpu.eax = spec != 0 ? kCarSpecBytes : specSlot(player, i32(index)) + kSpecCar;
-        cpu.ebx = spec != 0 ? table : kCarSpecBytes;
-        cpu.ecx = 0;
-        cpu.edx = spec != 0 && id != 0 ? index : 0;
+        args.eax = spec != 0 ? kCarSpecBytes : specSlot(player, i32(index)) + kSpecCar;
+        args.ebx = spec != 0 ? table : kCarSpecBytes;
+        args.ecx = 0;
+        args.edx = spec != 0 && id != 0 ? index : 0;
     }
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4dc670: makeDefaultSpecs for player eax. */
-void defaultSpecs(App* app, CPU& cpu)
+x86::reg32 defaultSpecs(App* app, CPU& cpu, x86::Args& args)
 {
-    const std::optional<i32> made = makeDefaultSpecs(app, cpu, cpu.eax);
+    const std::optional<i32> made = makeDefaultSpecs(app, cpu, args.eax);
     if (!made)
-        return;
-    cpu.eax = reg32(*made);
+        return args.eax;
+    args.eax = reg32(*made);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4dc710: refreshSpecsOf for player eax, in al. */
-void refreshSpecs(App* app, CPU& cpu)
+x86::reg32 refreshSpecs(App* app, CPU& cpu, x86::Args& args)
 {
-    const std::optional<bool> changed = refreshSpecsOf(app, cpu, cpu.eax);
+    const std::optional<bool> changed = refreshSpecsOf(app, cpu, args.eax);
     if (!changed)
-        return;
-    cpu.eax = *changed ? 1 : 0;
+        return args.eax;
+    args.eax = *changed ? 1 : 0;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4dc800: makeSpecPath for the name at eax. */
-void specPath(App* app, CPU& cpu)
+x86::reg32 specPath(App* app, CPU& cpu, x86::Args& args)
 {
-    cpu.eax = makeSpecPath(app, cpu.eax);
+    args.eax = makeSpecPath(app, args.eax);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4dc8b0: readSpecsFrom for player eax, the ebx bytes at edx; eax, ebx and edx as the code
  * leaves them: ebx the table, edx the bytes read, eax the player when none were, else the last
  * copy's count -- or 50, stopped by the table's end with bytes left. */
-void readSpecs(App* app, CPU& cpu)
+x86::reg32 readSpecs(App* app, CPU& cpu, x86::Args& args)
 {
-    const reg32 player = cpu.eax, file = cpu.edx, bytes = cpu.ebx;
+    const reg32 player = args.eax, file = args.edx, bytes = args.ebx;
     const i32 read = readSpecsFrom(app, player, file, bytes);
     const reg32 offset = reg32(read) * kSpecBytes;
-    cpu.ebx = specsOf(player);
-    cpu.edx = offset;
+    args.ebx = specsOf(player);
+    args.edx = offset;
     if (read == 0)
-        cpu.eax = player;
+        args.eax = player;
     else if (read == i32(kSpecCount) && sreg32(offset) < sreg32(bytes))
-        cpu.eax = kSpecCount;
+        args.eax = kSpecCount;
     else
-        cpu.eax = kSpecBytes;
+        args.eax = kSpecBytes;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4dc940: playerSpecs for player eax. */
-void loadPlayerSpecs(App* app, CPU& cpu)
+x86::reg32 loadPlayerSpecs(App* app, CPU& cpu, x86::Args& args)
 {
-    const KeptRegisters kept(cpu);
-    const std::optional<reg32> result = playerSpecs(app, cpu, cpu.eax);
+    const EspKept kept(cpu);
+    const std::optional<reg32> result = playerSpecs(app, cpu, args.eax);
     if (!result)
-        return;
-    cpu.eax = *result;
+        return args.eax;
+    args.eax = *result;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4dca50: saveSpecs for player eax. */
-void savePlayerSpecs(App* app, CPU& cpu)
+x86::reg32 savePlayerSpecs(App* app, CPU& cpu, x86::Args& args)
 {
-    const KeptRegisters kept(cpu);
-    const std::optional<reg32> result = saveSpecs(app, cpu, cpu.eax);
+    const EspKept kept(cpu);
+    const std::optional<reg32> result = saveSpecs(app, cpu, args.eax);
     if (!result)
-        return;
-    cpu.eax = *result;
+        return args.eax;
+    args.eax = *result;
     cpu.esp += 4;
+    return args.eax;
+}
+
+/* The typed cores of the thunks above, for callers that call them as C++ (native_load_carmodels.h). */
+reg32 colourToHsv(App* app, reg32 rgb, reg32 hsv)
+{
+    return rgbToHsvAt(app, rgb, hsv).brightness;
+}
+
+std::optional<reg32> hsvToColour(App* app, CPU& cpu, reg32 hsv, reg32 rgb)
+{
+    const std::optional<HsvLeft> left = hsvToRgbAt(app, cpu, hsv, rgb);
+    if (!left)
+        return std::nullopt;
+    return left->brightness;
+}
+
+std::optional<reg32> tgaLoaded(App* app, CPU& cpu, reg32 model, reg32 tga, reg32 most, reg32 texture, reg32 color,
+                               reg32 upload, reg32 copyTo)
+{
+    const std::optional<Left> left = loadTga(app, cpu, model, tga, most, texture, color, upload, copyTo);
+    if (!left)
+        return std::nullopt;
+    return left->eax;
+}
+
+std::optional<reg32> modelLoaded(App* app, CPU& cpu, reg32 name, reg32 most, reg32 color)
+{
+    const std::optional<Left> left = loadModel(app, cpu, name, most, color);
+    if (!left)
+        return std::nullopt;
+    return left->eax;
+}
+
+reg32 specIndexOf(App* app, reg32 player, reg32 id)
+{
+    return reg32(specOfCar(app, player, id));
+}
+
+std::optional<reg32> specsSavedOf(App* app, CPU& cpu, reg32 player)
+{
+    const EspKept kept(cpu);
+    return saveSpecs(app, cpu, player);
+}
+
+std::optional<reg32> carpReceiveBegun(App* app, CPU& cpu, reg32 record, reg32 bytes, reg32 buffer)
+{
+    return beginReceive(app, cpu, record, bytes, buffer);
+}
+
+std::optional<reg32> carpChunkReceived(App* app, CPU& cpu, reg32 record, reg32 data, reg32 count)
+{
+    return receiveChunk(app, cpu, record, data, count);
+}
+
+std::optional<reg32> carpSendBegun(App* app, CPU& cpu, reg32 header, reg32 car)
+{
+    reg32 packetLeft = car;
+    return beginSend(app, cpu, header, car, packetLeft);
 }
 
 }  // namespace load

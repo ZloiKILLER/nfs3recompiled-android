@@ -3,6 +3,7 @@
 #include "native_game.h"
 #include "native_ea_memory.h"
 #include "native_ea_threads.h"
+#include "native_ea_files.h"
 #include "native_frontend_eaa.h"
 #include "native_frontend_eab.h"
 #include "native_frontend_netb.h"
@@ -24,6 +25,38 @@
 #include <initializer_list>
 #include <optional>
 #include <utility>
+#include "native_guest.h"
+
+namespace nfs3hp
+{
+namespace
+{
+
+/* A call through a pointer or to a function of the game's that has no typed core: Watcom's register
+ * arguments (eax, edx, ebx, ecx in turn) and the stack words as `arguments` have them, through
+ * guest::pointerCall; its eax, and Terminated when the game stopped in it. */
+x86::reg32 callAt(fe::Guest& guest, x86::reg32 target, const fe::Arguments& arguments = fe::Arguments())
+{
+    x86::CPU& cpu = guest.cpu();
+    x86::Args registers;
+    x86::reg32* const into[4] = { &registers.eax, &registers.edx, &registers.ebx, &registers.ecx };
+    for (std::size_t i = 0; i < arguments.registerCount; ++i)
+        *into[i] = arguments.registers[i];
+    const x86::reg32 esp = cpu.esp;
+    for (std::size_t i = arguments.stackCount; i-- > 0;)
+    {
+        cpu.esp -= 4;
+        guest.setDword(cpu.esp, arguments.stack[i]);
+    }
+    const std::optional<x86::reg32> result = guest::pointerCall(guest.app(), cpu, target, registers);
+    if (!result)
+        throw fe::Terminated();
+    cpu.esp = esp;
+    return *result;
+}
+
+}  // namespace
+}  // namespace nfs3hp
 
 /* What was left between the larger modules once they went native.  The rough map called
  * it menus, input and loop only because of its neighbours; it is EA's libraries' small
@@ -54,12 +87,12 @@
  * fe::direct), the registers the game's code hands them by way of the calls before put in
  * their arguments -- not reservememadr from sub_508c70, whose ebx its failure hands on, nor the
  * runtime's doubles of sub_52c88a to sub_52c8a7 (edx:eax); Windows'
- * functions and DirectDraw's methods are the port's own, called as C++ (callImport, callCom),
- * in the checks through their slots and tables; what each function leaves in eax and in the
+ * functions and DirectDraw's methods are the port's own, called as C++ (callImport, callCom);
+ * what each function leaves in eax and in the
  * registers it does not save is kept.
  *
  * Plan step 5: each function a typed core in frontend::menz (native_frontend_menz.h), in a frame of
- * its own where the game's function has one (fe::Frame), and an adapter under the game's name that
+ * its own where the game's function has one (fe::Frame), and a thunk under the game's name that
  * reads the arguments from the registers and the stack for the calls by address.  A core of this
  * file calls another as C++ (guest::direct) but where its caller goes on with the registers the
  * call leaves: sub_51f2a0's doubles (edx:eax).  A core whose game's code reads an argument's
@@ -69,59 +102,59 @@ namespace nfs3hp
 
 namespace frontend
 {
-void ddrawRelockSurface(win32::WinApplication* app, x86::CPU& cpu);
-void ddrawMakeSurface(win32::WinApplication* app, x86::CPU& cpu);
-void ddrawFreeSurface(win32::WinApplication* app, x86::CPU& cpu);
-void ddrawBackSurface(win32::WinApplication* app, x86::CPU& cpu);
-void ddrawSurfaceSize(win32::WinApplication* app, x86::CPU& cpu);
-void ddrawEnumModeCallback(win32::WinApplication* app, x86::CPU& cpu);
-void ddrawNoteChange(win32::WinApplication* app, x86::CPU& cpu);
-void singleInstanceCheck(win32::WinApplication* app, x86::CPU& cpu);
-void memClassNoPurge(win32::WinApplication* app, x86::CPU& cpu);
-void memClassCreateRam(win32::WinApplication* app, x86::CPU& cpu);
-void fileDeviceStart(win32::WinApplication* app, x86::CPU& cpu);
-void fileOpFind(win32::WinApplication* app, x86::CPU& cpu);
-void fileOpStatus(win32::WinApplication* app, x86::CPU& cpu);
-void fileOpComplete(win32::WinApplication* app, x86::CPU& cpu);
-void fileOpWait(win32::WinApplication* app, x86::CPU& cpu);
-void fileLockEnter(win32::WinApplication* app, x86::CPU& cpu);
-void fileLockLeave(win32::WinApplication* app, x86::CPU& cpu);
-void videoWindowMake(win32::WinApplication* app, x86::CPU& cpu);
-void videoWindowUpdate(win32::WinApplication* app, x86::CPU& cpu);
-void videoWindowFree(win32::WinApplication* app, x86::CPU& cpu);
-void eaTextStart(win32::WinApplication* app, x86::CPU& cpu);
-void eaTextEnd(win32::WinApplication* app, x86::CPU& cpu);
-void keyboardIsPc98(win32::WinApplication* app, x86::CPU& cpu);
-void debugKeyDisplayFlag(win32::WinApplication* app, x86::CPU& cpu);
-void debugKeyScreenshot(win32::WinApplication* app, x86::CPU& cpu);
-void debugKeysBind(win32::WinApplication* app, x86::CPU& cpu);
-void eaSetLoadHook(win32::WinApplication* app, x86::CPU& cpu);
-void videoBuffersStart(win32::WinApplication* app, x86::CPU& cpu);
-void fontFindGlyph(win32::WinApplication* app, x86::CPU& cpu);
-void fontGlyph(win32::WinApplication* app, x86::CPU& cpu);
-void fontBitsPerPixel(win32::WinApplication* app, x86::CPU& cpu);
-void fontCreate(win32::WinApplication* app, x86::CPU& cpu);
-void fontSetProperty(win32::WinApplication* app, x86::CPU& cpu);
-void fontGetProperty(win32::WinApplication* app, x86::CPU& cpu);
-void paletteFrom6Bits(win32::WinApplication* app, x86::CPU& cpu);
-void paletteFrom8Bits(win32::WinApplication* app, x86::CPU& cpu);
-void debugBoxCopyScreen(win32::WinApplication* app, x86::CPU& cpu);
-void debugBoxPutBack(win32::WinApplication* app, x86::CPU& cpu);
-void debugBoxAsk(win32::WinApplication* app, x86::CPU& cpu);
-void debugBanner(win32::WinApplication* app, x86::CPU& cpu);
-void debugKeyPause(win32::WinApplication* app, x86::CPU& cpu);
-void debugKeyViewerFirst(win32::WinApplication* app, x86::CPU& cpu);
-void debugKeyViewerSecond(win32::WinApplication* app, x86::CPU& cpu);
-void textBackgroundBox(win32::WinApplication* app, x86::CPU& cpu);
-void longDoubleKind(win32::WinApplication* app, x86::CPU& cpu);
-void fdivBugCheck(win32::WinApplication* app, x86::CPU& cpu);
-void doubleDivide(win32::WinApplication* app, x86::CPU& cpu);
-void doubleSubtract(win32::WinApplication* app, x86::CPU& cpu);
-void doubleMultiply(win32::WinApplication* app, x86::CPU& cpu);
-void doubleCompare(win32::WinApplication* app, x86::CPU& cpu);
-void safeDivide(win32::WinApplication* app, x86::CPU& cpu);
-void safeDivideCall(win32::WinApplication* app, x86::CPU& cpu);
-void doubleProductFromX87(win32::WinApplication* app, x86::CPU& cpu);
+x86::reg32 ddrawRelockSurface(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 ddrawMakeSurface(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 ddrawFreeSurface(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 ddrawBackSurface(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 ddrawSurfaceSize(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 ddrawEnumModeCallback(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 ddrawNoteChange(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 singleInstanceCheck(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 memClassNoPurge(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 memClassCreateRam(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 fileDeviceStart(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 fileOpFind(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 fileOpStatus(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 fileOpComplete(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 fileOpWait(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 fileLockEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 fileLockLeave(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 videoWindowMake(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 videoWindowUpdate(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 videoWindowFree(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 eaTextStart(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 eaTextEnd(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 keyboardIsPc98(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 debugKeyDisplayFlag(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 debugKeyScreenshot(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 debugKeysBind(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 eaSetLoadHook(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 videoBuffersStart(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 fontFindGlyph(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 fontGlyph(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 fontBitsPerPixel(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 fontCreate(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 fontSetProperty(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 fontGetProperty(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 paletteFrom6Bits(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 paletteFrom8Bits(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 debugBoxCopyScreen(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 debugBoxPutBack(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 debugBoxAsk(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 debugBanner(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 debugKeyPause(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 debugKeyViewerFirst(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 debugKeyViewerSecond(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 textBackgroundBox(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 longDoubleKind(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 fdivBugCheck(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 doubleDivide(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 doubleSubtract(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 doubleMultiply(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 doubleCompare(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 safeDivide(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 safeDivideCall(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 doubleProductFromX87(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
 }
 
 namespace
@@ -135,7 +168,6 @@ using fe::kRestoreEcx;
 using fe::kRestoreEdi;
 using fe::kRestoreEdx;
 using fe::kRestoreEsi;
-using fe::runWhole;
 using fe::Site;
 using x86::Float;
 using x86::reg32;
@@ -144,7 +176,7 @@ using x86::sreg32;
 constexpr std::uint8_t kBx = kRestoreEbx, kCx = kRestoreEcx, kDx = kRestoreEdx, kSi = kRestoreEsi, kDi = kRestoreEdi;
 constexpr std::uint8_t kAllSaved = kBx | kCx | kDx | kSi | kDi;
 
-// Windows, the import table's slots: the port's own functions, called as C++ (in the checks through them).
+// Windows, the import table's slots: the port's own functions, called as C++.
 constexpr reg32 kEnterLock = 0x5344b8, kLeaveLock = 0x534588, kGetTickCount = 0x534568;
 constexpr reg32 kCreateMutexA = 0x5344a0, kGetLastError = 0x534534, kFindWindowA = 0x534734;
 constexpr reg32 kShowWindow = 0x534798, kSetForegroundWindow = 0x534788, kGetKeyboardType = 0x534748;
@@ -171,8 +203,8 @@ constexpr reg32 kMainDisplay = 0x9f38d0;
 constexpr reg32 kDescSize = 0x6c, kDescFlags = 0x04, kDescHeight = 0x08, kDescWidth = 0x0c, kDescPitch = 0x10, kDescBackBuffers = 0x14;
 constexpr reg32 kDescBits = 0x24, kDescFormat = 0x48, kDescFormatBits = 0x54, kDescRedMask = 0x58, kDescGreenMask = 0x5c, kDescBlueMask = 0x60, kDescCaps = 0x68;
 
-/* A function of Windows', its words handed: the port's own, called as C++ (native_windows.h); in
- * the check through its import's slot.  Terminated when the game stopped in it, as Guest::call. */
+/* A function of Windows', its words handed: the port's own, called as C++ (native_windows.h).
+ * Terminated when the game stopped in it, as Guest::call. */
 template <reg32 Slot, auto Function, typename... Words>
 reg32 callImport(Guest& guest, x86::CPU& cpu, Words... words)
 {
@@ -183,7 +215,7 @@ reg32 callImport(Guest& guest, x86::CPU& cpu, Words... words)
 }
 
 /* A method of a DirectDraw object, by its offset in the object's table, the object first on the
- * stack: the host's method called as C++ where the table has it there, else, and in the check,
+ * stack: the host's method called as C++ where the table has it there, else
  * through the table (host_video.h, guest::ddraw).  Terminated when the game stopped in it, as
  * Guest::call. */
 template <reg32 Offset, auto Method, typename... Words>
@@ -195,7 +227,7 @@ reg32 callCom(Guest& guest, x86::CPU& cpu, reg32 object, Words... words)
     return *eax;
 }
 
-/* A stand-in's stack word, counted from the first above the return address. */
+/* A function's stack word, counted from the first above the return address. */
 reg32 stackWord(win32::WinApplication* app, const x86::CPU& cpu, reg32 index)
 {
     return app->getMemory<reg32>(cpu.esp + 4 + 4 * index);
@@ -218,11 +250,11 @@ void failAt(Guest& guest, reg32 file, reg32 function, reg32 line, std::initializ
 /* A line of the DirectDraw report: its level, its format, what it says. */
 void report(Guest& guest, std::initializer_list<reg32> levelFormatAndValues)
 {
-    Arguments a;
-    a.stack[a.stackCount++] = kReportChannel;
-    for (const reg32 value : levelFormatAndValues)
-        a.stack[a.stackCount++] = value;
-    guest.call(kReport, a);
+        const reg32 level = *levelFormatAndValues.begin(), format = *(levelFormatAndValues.begin() + 1);
+    guest::Words words({});
+    for (const reg32* value = levelFormatAndValues.begin() + 2; value != levelFormatAndValues.end(); ++value)
+        words.word[words.count++] = *value;
+    fe::direct<kReport, ea::reportedAt>(guest.app(), guest.cpu(), kReportChannel, level, format, words);
 }
 
 }  // namespace
@@ -259,7 +291,6 @@ reg32 frontend::menz::ddrawRelockSurface(App* app, CPU& cpu, reg32 display)
             g.setDword(display + kDisplayLocked, surface);
             return 1;
         }
-        g.leaveEdx(bits);
         callCom<kUnlock, &host::ddraw::surfaceUnlock>(g, cpu, surface, bits);
     }
     g.setDword(display + kDisplayLockedBits, 0);
@@ -271,11 +302,11 @@ reg32 frontend::menz::ddrawRelockSurface(App* app, CPU& cpu, reg32 display)
     return 0;
 }
 
-void frontend::ddrawRelockSurface(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::ddrawRelockSurface(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4ed330", 0, 0, nullptr, 0, kAllSaved };
-    const reg32 display = cpu.eax;
-    runWhole(app, cpu, site, [&](Guest&) { return menz::ddrawRelockSurface(app, cpu, display); });
+    const reg32 display = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menz::ddrawRelockSurface(app, cpu, display); });
 }
 
 /* sub_4ed480: makesurface: a DirectDraw surface; eax the display, edx and ebx its size, ecx
@@ -323,10 +354,9 @@ reg32 frontend::menz::ddrawMakeSurface(App* app, CPU& cpu, reg32 display, reg32 
     report(g, { 0xb, 0x54c120, width, height, pages, backBuffers + 1 });
     g.setDword(f + kDescCaps, caps);
     const reg32 failure = callCom<kCreateSurface, &host::ddraw::drawCreateSurface>(g, cpu, directDraw, f, f + kMade, 0) & 0xffff;
-    cpu.ebx = failure;
+    reg32 ebx = failure;
     if (failure != 0)
     {
-        g.leaveEdx(0);
         g.setDword(f + kMade, 0);
     }
     else
@@ -336,7 +366,7 @@ reg32 frontend::menz::ddrawMakeSurface(App* app, CPU& cpu, reg32 display, reg32 
         {
             callImport<kEnterLock, &host::enterLock>(g, cpu, g.dword(kDrawLock));
             const reg32 lockFailure = guest::direct<0x4eb5e0, eaa::ddrawLockSurface>(app, cpu, 0u, g.dword(f + kMade), f);
-            cpu.ebx = lockFailure;
+            ebx = lockFailure;
             if (lockFailure != 0)
                 report(g, { 0xb, 0x54c168, lockFailure });
             else
@@ -345,7 +375,6 @@ reg32 frontend::menz::ddrawMakeSurface(App* app, CPU& cpu, reg32 display, reg32 
             if (lockFailure != 0 && g.byte(display + kDisplayKeepOnFail) == 0)
             {
                 callCom<kRelease, &host::ddraw::release>(g, cpu, g.dword(f + kMade));
-                g.leaveEcx(0);
                 g.setDword(f + kMade, 0);
             }
             else
@@ -364,22 +393,22 @@ reg32 frontend::menz::ddrawMakeSurface(App* app, CPU& cpu, reg32 display, reg32 
         }
     }
     if (g.dword(f + kMade) == 0)
-        report(g, { 0xa, 0x54c194, cpu.ebx });
+        report(g, { 0xa, 0x54c194, ebx });
     return g.dword(f + kMade);
 }
 
-void frontend::ddrawMakeSurface(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::ddrawMakeSurface(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4ed480", 0x10, 0, nullptr, 0, kSi | kDi };
-    const reg32 display = cpu.eax;
-    const reg32 width = cpu.edx;
-    const reg32 height = cpu.ebx;
-    const reg32 pages = cpu.ecx;
+    const reg32 display = args.eax;
+    const reg32 width = args.edx;
+    const reg32 height = args.ebx;
+    const reg32 pages = args.ecx;
     const reg32 backBuffers = stackWord(app, cpu, 0);
     const reg32 formatWanted = stackWord(app, cpu, 1);
     const reg32 capsAsked = stackWord(app, cpu, 2);
     const reg32 palette = stackWord(app, cpu, 3);
-    runWhole(app, cpu, site, [&](Guest&) {
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
         return menz::ddrawMakeSurface(app, cpu, display, width, height, pages, backBuffers, formatWanted, capsAsked, palette);
     });
 }
@@ -390,19 +419,18 @@ reg32 frontend::menz::ddrawFreeSurface(App* app, CPU& cpu, reg32 display, reg32 
 {
     Guest g(app, cpu);
     const fe::Frame frame(g, cpu, 4);
-    cpu.edx = surface;  // read again after sub_4ed2a0, as the game's code reads it
     if (display == 0)
         display = kMainDisplay;
     if (surface == g.dword(display + kDisplayLocked))
         guest::direct<0x4ed2a0, eab::ddrawUnlockBitmap>(app, cpu, display);
-    return callCom<kRelease, &host::ddraw::release>(g, cpu, g.edx());
+    return callCom<kRelease, &host::ddraw::release>(g, cpu, surface);
 }
 
-void frontend::ddrawFreeSurface(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::ddrawFreeSurface(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4ed730", 0, 0, nullptr, 0, kCx };
-    const reg32 display = cpu.eax, surface = cpu.edx;
-    runWhole(app, cpu, site, [&](Guest&) { return menz::ddrawFreeSurface(app, cpu, display, surface); });
+    const reg32 display = args.eax, surface = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menz::ddrawFreeSurface(app, cpu, display, surface); });
 }
 
 /* sub_4ed770: the surface attached to one (eax) as its back buffer. */
@@ -418,11 +446,11 @@ reg32 frontend::menz::ddrawBackSurface(App* app, CPU& cpu, reg32 surface)
     return g.dword(f);
 }
 
-void frontend::ddrawBackSurface(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::ddrawBackSurface(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4ed770", 0, 0, nullptr, 0, kCx | kDx };
-    const reg32 surface = cpu.eax;
-    runWhole(app, cpu, site, [&](Guest&) { return menz::ddrawBackSurface(app, cpu, surface); });
+    const reg32 surface = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menz::ddrawBackSurface(app, cpu, surface); });
 }
 
 /* sub_4ed820: a surface's (eax) width, height, bits a pixel, pitch and video memory's
@@ -435,7 +463,6 @@ reg32 frontend::menz::ddrawSurfaceSize(App* app, CPU& cpu, reg32 surface, reg32 
     const reg32 f = g.frame();
     g.setDword(f, kDescSize);
     reg32 result = callCom<kGetSurfaceDesc, &host::ddraw::surfaceGetSurfaceDesc>(g, cpu, surface, f);
-    cpu.ebx = bitsOut;
     if ((result & 0xffff) != 0)
     {
         if (widthOut != 0)
@@ -444,7 +471,6 @@ reg32 frontend::menz::ddrawSurfaceSize(App* app, CPU& cpu, reg32 surface, reg32 
             g.setDword(heightOut, 0);
         if (bitsOut != 0)
             g.setDword(bitsOut, 0);
-        g.leaveEcx(pitchOut);
         if (pitchOut != 0)
             g.setDword(pitchOut, 0);
         if (memoryOut != 0)
@@ -466,27 +492,27 @@ reg32 frontend::menz::ddrawSurfaceSize(App* app, CPU& cpu, reg32 surface, reg32 
             reg32 bits = guest::direct<0x4eb880, eaa::countBits>(app, cpu, g.dword(f + kDescRedMask));
             bits += guest::direct<0x4eb880, eaa::countBits>(app, cpu, g.dword(f + kDescGreenMask));
             result = guest::direct<0x4eb880, eaa::countBits>(app, cpu, g.dword(f + kDescBlueMask));
-            g.setDword(cpu.ebx, bits + result);
+            g.setDword(bitsOut, bits + result);
         }
         else
         {
             result = g.byte(f + kDescFormatBits);
-            g.setDword(cpu.ebx, result);
+            g.setDword(bitsOut, result);
         }
     }
     return result;
 }
 
-void frontend::ddrawSurfaceSize(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::ddrawSurfaceSize(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4ed820", 8, 0, nullptr, 0, kSi | kDi };
-    const reg32 surface = cpu.eax;
-    const reg32 widthOut = cpu.edx;
-    const reg32 heightOut = cpu.ebx;
-    const reg32 bitsOut = cpu.ecx;
+    const reg32 surface = args.eax;
+    const reg32 widthOut = args.edx;
+    const reg32 heightOut = args.ebx;
+    const reg32 bitsOut = args.ecx;
     const reg32 pitchOut = stackWord(app, cpu, 0);
     const reg32 memoryOut = stackWord(app, cpu, 1);
-    runWhole(app, cpu, site, [&](Guest&) {
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
         return menz::ddrawSurfaceSize(app, cpu, surface, widthOut, heightOut, bitsOut, pitchOut, memoryOut);
     });
 }
@@ -500,10 +526,8 @@ reg32 frontend::menz::ddrawEnumModeCallback(App* app, CPU& cpu, reg32 desc, reg3
     const fe::Frame frame(g, cpu, 0x18);
     constexpr reg32 kModesSeen = 0x9f09a0, kDepths = 0x9f09a4;
     constexpr reg32 kListCheck = 0x10, kListRoom = 0x08;
-    cpu.edx = 1;
-    cpu.ecx = g.dword(desc + kDescFormatBits);
     reg32 bits;
-    if (cpu.ecx == 0x10)
+    if (g.dword(desc + kDescFormatBits) == 0x10)
     {
         bits = guest::direct<0x4eb880, eaa::countBits>(app, cpu, g.dword(desc + kDescRedMask));
         bits += guest::direct<0x4eb880, eaa::countBits>(app, cpu, g.dword(desc + kDescGreenMask));
@@ -531,7 +555,6 @@ reg32 frontend::menz::ddrawEnumModeCallback(App* app, CPU& cpu, reg32 desc, reg3
     {
         if (sreg32(g.dword(kModesSeen)) >= sreg32(g.dword(list + kListRoom)))
         {
-            g.leaveEdx(list);
             report(g, { 1, 0x54c1ec });
             return 0;
         }
@@ -544,19 +567,17 @@ reg32 frontend::menz::ddrawEnumModeCallback(App* app, CPU& cpu, reg32 desc, reg3
         const reg32 formatBits = g.dword(desc + kDescFormatBits);
         const reg32 height = g.dword(desc + kDescHeight);
         const reg32 width = g.dword(desc + kDescWidth);
-        g.leaveEdx(pitch);
-        g.leaveEcx(formatBits);
         report(g, { 8, 0x54c1b4, 0x20, width, height, formatBits, bits, pitch, backBuffers, modeX, fullscreen, fourcc });
     }
     g.setDword(kModesSeen, g.dword(kModesSeen) + 1);
     return 1;
 }
 
-void frontend::ddrawEnumModeCallback(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::ddrawEnumModeCallback(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4edbc0", 8, 0, nullptr, 0, kBx | kSi | kDi };
     const reg32 desc = stackWord(app, cpu, 0), list = stackWord(app, cpu, 1);
-    runWhole(app, cpu, site, [&](Guest&) { return menz::ddrawEnumModeCallback(app, cpu, desc, list); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menz::ddrawEnumModeCallback(app, cpu, desc, list); });
 }
 
 /* sub_4f9060: one more change to what the display shows, counted at 0x56717c. */
@@ -564,13 +585,15 @@ reg32 frontend::menz::ddrawNoteChange(App* app, CPU& cpu)
 {
     Guest g(app, cpu);
     g.setDword(0x56717c, g.dword(0x56717c) + 1);
-    return g.eax();
+    return 0;
 }
 
-void frontend::ddrawNoteChange(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::ddrawNoteChange(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4f9060", 0, 0, nullptr, 0, 0 };
-    runWhole(app, cpu, site, [&](Guest&) { return menz::ddrawNoteChange(app, cpu); });
+    // eax as it came: the code only counts.
+    const x86::reg32 eax = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { menz::ddrawNoteChange(app, cpu); return eax; });
 }
 
 /* ---------------------------------------------------------------------------
@@ -593,7 +616,6 @@ reg32 frontend::menz::singleInstanceCheck(App* app, CPU& cpu, reg32 name)
     if (callImport<kGetLastError, &host::lastError>(g, cpu) != kErrorAlreadyExists)
         return 0;
     const reg32 window = callImport<kFindWindowA, &host::findWindow>(g, cpu, 0, g.dword(kClassName));
-    cpu.ebx = window;
     if (window != 0)
     {
         callImport<kShowWindow, &host::showWindow>(g, cpu, window, 9);
@@ -605,11 +627,11 @@ reg32 frontend::menz::singleInstanceCheck(App* app, CPU& cpu, reg32 name)
     return 0;
 }
 
-void frontend::singleInstanceCheck(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::singleInstanceCheck(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4f91d0", 0, 0, nullptr, 0, kBx | kCx | kDx };
-    const reg32 name = cpu.eax;
-    runWhole(app, cpu, site, [&](Guest&) { return menz::singleInstanceCheck(app, cpu, name); });
+    const reg32 name = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menz::singleInstanceCheck(app, cpu, name); });
 }
 
 /* sub_4f9260: the RAM class's purge callback: nothing can be purged. */
@@ -618,10 +640,10 @@ reg32 frontend::menz::memClassNoPurge(App*, CPU&)
     return 0;
 }
 
-void frontend::memClassNoPurge(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::memClassNoPurge(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4f9260", 0, 0, nullptr, 0, 0 };
-    runWhole(app, cpu, site, [&](Guest&) { return menz::memClassNoPurge(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menz::memClassNoPurge(app, cpu); });
 }
 
 /* sub_4f9270: the memory class "RAM" (eax its base, edx its size). */
@@ -630,18 +652,17 @@ reg32 frontend::menz::memClassCreateRam(App* app, CPU& cpu, reg32 base, reg32 si
     Guest g(app, cpu);
     const fe::Frame frame(g, cpu, 8);
     constexpr reg32 kCreateMemClass = 0x4e1230, kPools = 0x9ef5c0;
-    const reg32 result = g.call(kCreateMemClass, args({ 0, 0x54d92c, base, size }, { 8, 0x20, 0x10, 1, 1, 1, 1, 0x4f9260 }));
+    const reg32 result = callAt(g, kCreateMemClass, args({ 0, 0x54d92c, base, size }, { 8, 0x20, 0x10, 1, 1, 1, 1, 0x4f9260 }));
     const reg32 pools = g.dword(kPools);
     g.setDword(kPools + 4, pools);
-    g.leaveEdx(pools);
     return result;
 }
 
-void frontend::memClassCreateRam(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::memClassCreateRam(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4f9270", 0, 0, nullptr, 0, kBx | kCx };
-    const reg32 base = cpu.eax, size = cpu.edx;
-    runWhole(app, cpu, site, [&](Guest&) { return menz::memClassCreateRam(app, cpu, base, size); });
+    const reg32 base = args.eax, size = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menz::memClassCreateRam(app, cpu, base, size); });
 }
 
 /* sub_517b30: the text library's state cleared, once, and its end (sub_517b70) to run at exit. */
@@ -651,16 +672,16 @@ reg32 frontend::menz::eaTextStart(App* app, CPU& cpu)
     const fe::Frame frame(g, cpu, 8);
     constexpr reg32 kStarted = 0x568f30, kState = 0x5671f4, kStateBytes = 0xb8;
     if (g.dword(kStarted) != 0)
-        return g.eax();
+        return 0;  // eax as it came in the game's code, which no caller reads
     fe::direct<kFillZero, ea::clearBytes>(g.app(), g.cpu(), kState, kStateBytes);
     g.setDword(kStarted, 1);
     return guest::direct<0x4f2a78, eab::atexitJump>(app, cpu, 0x517b70u);
 }
 
-void frontend::eaTextStart(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::eaTextStart(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_517b30", 0, 0, nullptr, 0, kCx | kDx };
-    runWhole(app, cpu, site, [&](Guest&) { return menz::eaTextStart(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menz::eaTextStart(app, cpu); });
 }
 
 /* sub_517b70: the text library's end. */
@@ -670,17 +691,17 @@ reg32 frontend::menz::eaTextEnd(App* app, CPU& cpu)
     const fe::Frame frame(g, cpu, 8);
     constexpr reg32 kStarted = 0x568f30, kState = 0x5671f4, kStateBytes = 0xb8;
     if (g.dword(kStarted) == 0)
-        return g.eax();
+        return 0;  // eax as it came in the game's code, which no caller reads
     fe::direct<0x50c1e0, watb::freeTextDraw>(app, cpu);
-    g.call(kFillZero, args({ kState, kStateBytes }));
+        const reg32 filled = fe::direct<kFillZero, ea::clearBytes>(g.app(), g.cpu(), kState, kStateBytes);
     g.setDword(kStarted, 0);
-    return g.eax();
+    return filled;
 }
 
-void frontend::eaTextEnd(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::eaTextEnd(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_517b70", 0, 0, nullptr, 0, kCx | kDx };
-    runWhole(app, cpu, site, [&](Guest&) { return menz::eaTextEnd(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menz::eaTextEnd(app, cpu); });
 }
 
 /* sub_517ba0: 1 and the NEC PC-98's scan codes when the keyboard is one (Japanese, subtype
@@ -698,10 +719,10 @@ reg32 frontend::menz::keyboardIsPc98(App* app, CPU& cpu)
     return 1;
 }
 
-void frontend::keyboardIsPc98(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::keyboardIsPc98(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_517ba0", 0, 0, nullptr, 0, kBx | kCx | kDx };
-    runWhole(app, cpu, site, [&](Guest&) { return menz::keyboardIsPc98(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menz::keyboardIsPc98(app, cpu); });
 }
 
 /* sub_518040: the load's hook (see native_ea_support.cpp) set to sub_517f10. */
@@ -709,13 +730,13 @@ reg32 frontend::menz::eaSetLoadHook(App* app, CPU& cpu)
 {
     Guest g(app, cpu);
     g.setDword(0x567868, 0x517f10);
-    return g.eax();
+    return 0;  // eax as it came in the game's code, which no caller reads
 }
 
-void frontend::eaSetLoadHook(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::eaSetLoadHook(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_518040", 0, 0, nullptr, 0, 0 };
-    runWhole(app, cpu, site, [&](Guest&) { return menz::eaSetLoadHook(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menz::eaSetLoadHook(app, cpu); });
 }
 
 /* sub_518fd0: the video buffers' table, once: eax of them, 400 by default, 32 bytes each,
@@ -732,12 +753,12 @@ reg32 frontend::menz::videoBuffersStart(App* app, CPU& cpu, reg32 asked)
     const reg32 count = result != 0 ? result : 400;
     g.setDword(kCount, count);
     reg32 driver = g.dword(kDriver);
-    g.setDword(kRecords, g.call(g.dword(driver + kAllocate), args({ count << 5, driver, count })));
+    g.setDword(kRecords, callAt(g, g.dword(driver + kAllocate), args({ count << 5, driver, count })));
     const reg32 total = g.dword(kCount);
     driver = g.dword(kDriver);
-    const reg32 list = g.call(g.dword(driver + kAllocate), args({ total * 4, driver, total, 0 }));
+    const reg32 list = callAt(g, g.dword(driver + kAllocate), args({ total * 4, driver, total, 0 }));
     const reg32 lastCount = g.dword(kCount);
-    g.setDword(kUsed, cpu.ecx);
+    g.setDword(kUsed, 0);  // ecx as the allocation (sub_518f80 through the driver's pointer, which keeps ecx) was given it
     result = 0;
     for (; sreg32(result) < sreg32(lastCount); ++result)
         g.setDword(list + result * 4, result);
@@ -746,11 +767,11 @@ reg32 frontend::menz::videoBuffersStart(App* app, CPU& cpu, reg32 asked)
     return result;
 }
 
-void frontend::videoBuffersStart(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::videoBuffersStart(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_518fd0", 0, 0, nullptr, 0, kBx | kCx | kDx | kSi };
-    const reg32 count = cpu.eax;
-    runWhole(app, cpu, site, [&](Guest&) { return menz::videoBuffersStart(app, cpu, count); });
+    const reg32 count = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menz::videoBuffersStart(app, cpu, count); });
 }
 
 /* ---------------------------------------------------------------------------
@@ -766,10 +787,10 @@ reg32 frontend::menz::debugKeyDisplayFlag(App* app, CPU& cpu)
     return fe::direct<0x5089d0, rendf::setDisplayMode>(app, cpu, g.dword(0x564384), g.dword(0x564388), g.dword(0x56438c));
 }
 
-void frontend::debugKeyDisplayFlag(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::debugKeyDisplayFlag(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_517d70", 0, 0, nullptr, 0, kBx | kDx };
-    runWhole(app, cpu, site, [&](Guest&) { return menz::debugKeyDisplayFlag(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menz::debugKeyDisplayFlag(app, cpu); });
 }
 
 /* sub_517da0: key 0x16: the screen saved as snap.tga, and a banner that says so. */
@@ -785,10 +806,10 @@ reg32 frontend::menz::debugKeyScreenshot(App* app, CPU& cpu)
     return fe::direct<0x4f4700, wata::windowRestore>(app, cpu, g.frame());
 }
 
-void frontend::debugKeyScreenshot(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::debugKeyScreenshot(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_517da0", 0, 0, nullptr, 0, kDx };
-    runWhole(app, cpu, site, [&](Guest&) { return menz::debugKeyScreenshot(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menz::debugKeyScreenshot(app, cpu); });
 }
 
 /* sub_517de0: the debug keys bound, Ctrl+Escape set to leave. */
@@ -805,10 +826,10 @@ reg32 frontend::menz::debugKeysBind(App* app, CPU& cpu)
     return fe::direct<0x50c5d4, watb::registerKey>(app, cpu, 0x17u, 0x517d70u);
 }
 
-void frontend::debugKeysBind(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::debugKeysBind(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_517de0", 0, 0, nullptr, 0, kDx };
-    runWhole(app, cpu, site, [&](Guest&) { return menz::debugKeysBind(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menz::debugKeysBind(app, cpu); });
 }
 
 /* sub_524930: what is on the screen copied into the bitmap (eax): edx, ebx where. */
@@ -816,16 +837,15 @@ reg32 frontend::menz::debugBoxCopyScreen(App* app, CPU& cpu, reg32 bitmap, reg32
 {
     Guest g(app, cpu);
     const fe::Frame frame(g, cpu, 4);
-    cpu.ecx = bitmap;  // as the game's code has it for what sub_4ead20 calls
     fe::direct<0x4ead20, wata::windowApply>(app, cpu);
     return guest::direct<0x4f2cb0, eab::shapeMoveWithSpot>(app, cpu, g.dword(bitmap + 0x20), x, y);
 }
 
-void frontend::debugBoxCopyScreen(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::debugBoxCopyScreen(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_524930", 0, 0, nullptr, 0, kCx };
-    const reg32 bitmap = cpu.eax, x = cpu.edx, y = cpu.ebx;
-    runWhole(app, cpu, site, [&](Guest&) { return menz::debugBoxCopyScreen(app, cpu, bitmap, x, y); });
+    const reg32 bitmap = args.eax, x = args.edx, y = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menz::debugBoxCopyScreen(app, cpu, bitmap, x, y); });
 }
 
 /* sub_524950: the bitmap (eax) back on the screen: edx, ebx where. */
@@ -833,21 +853,17 @@ reg32 frontend::menz::debugBoxPutBack(App* app, CPU& cpu, reg32 bitmap, reg32 x,
 {
     Guest g(app, cpu);
     const fe::Frame frame(g, cpu, 4);
-    cpu.ecx = bitmap;  // as the game's code has it for what sub_4ead20 calls
     fe::direct<0x4ead20, wata::windowApply>(app, cpu);
     // sub_4f09c0 hands the registers as they are on to the blitter it chose: the shape, x, y.
-    cpu.eax = g.dword(bitmap + 0x20);
-    g.leaveEdx(x);
-    g.leaveEbx(y);
-    fe::direct<0x4f09c0, wata::blitDispatch>(app, cpu);
+    fe::direct<0x4f09c0, wata::blitDispatchAt>(app, cpu, g.dword(bitmap + 0x20), x, y);
     return guest::direct<0x4ead90, eaa::bitmapDrawToScreen>(app, cpu);
 }
 
-void frontend::debugBoxPutBack(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::debugBoxPutBack(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_524950", 0, 0, nullptr, 0, kCx };
-    const reg32 bitmap = cpu.eax, x = cpu.edx, y = cpu.ebx;
-    runWhole(app, cpu, site, [&](Guest&) { return menz::debugBoxPutBack(app, cpu, bitmap, x, y); });
+    const reg32 bitmap = args.eax, x = args.edx, y = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menz::debugBoxPutBack(app, cpu, bitmap, x, y); });
 }
 
 /* sub_524970: a box of text (eax) at edx, ebx, ecx wide and the first stack argument high,
@@ -873,7 +889,7 @@ reg32 frontend::menz::debugBoxAsk(App* app, CPU& cpu, reg32 text, reg32 x, reg32
     guest::direct<0x4ef520, eab::fontUse>(app, cpu, 0x5662e4u);
     const reg32 bottom = height + y, right = x + width;
     fe::direct<0x52b6c0, watc::setRectClip>(app, cpu, kView, x, y, right, bottom);
-    g.call(g.dword(kDriverBegin));
+    callAt(g, g.dword(kDriverBegin));
     guest::direct<0x4eada0, eaa::bitmapDrawInto>(app, cpu, bitmap);  // x in edx too, not read
     guest::direct<0x524930, debugBoxCopyScreen>(app, cpu, bitmap, x, y);  // the height in ecx too, not read
     fe::direct<0x4ead20, wata::windowApply>(app, cpu);
@@ -884,30 +900,27 @@ reg32 frontend::menz::debugBoxAsk(App* app, CPU& cpu, reg32 text, reg32 x, reg32
     const reg32 white = guest::direct<0x4ef760, eab::colourPack>(app, cpu, 0xffffffffu);
     guest::direct<0x4ef830, eab::fontSetColours>(app, cpu, white, 0u);
     fe::direct<0x52b860, watc::textCentred>(app, cpu, text, y + 9);
-    g.call(g.dword(kDriverEnd));
+    callAt(g, g.dword(kDriverEnd));
     fe::direct<0x52b8b0, watc::clipWholeRect>(app, cpu, kView);
     guest::direct<0x4ead90, eaa::bitmapDrawToScreen>(app, cpu);
-    while ((g.call(g.dword(kButtons)) & mask) != 0)
+    while ((callAt(g, g.dword(kButtons)) & mask) != 0)
     {
     }
-    reg32 answer;
+    reg32 answer, key;
     for (;;)
     {
-        const reg32 key = guest::direct<0x4f00d0, eab::keyNextLow16>(app, cpu);
-        cpu.edx = key;
-        cpu.ecx = key;
-        answer = g.call(g.dword(kButtons)) & mask;
-        if (cpu.edx != 0 || answer != 0)
+        key = guest::direct<0x4f00d0, eab::keyNextLow16>(app, cpu);
+        answer = callAt(g, g.dword(kButtons)) & mask;
+        if (key != 0 || answer != 0)
             break;
     }
-    cpu.ecx |= 0x20;
     answer &= 1;
-    if (cpu.ecx == 0x79)
+    if ((key | 0x20) == 0x79)
         answer = 1;
     fe::direct<0x52b6c0, watc::setRectClip>(app, cpu, kView, x, y, right, y + height);
-    g.call(g.dword(kDriverBeginCopy));
+    callAt(g, g.dword(kDriverBeginCopy));
     guest::direct<0x524950, debugBoxPutBack>(app, cpu, bitmap, x, y);
-    g.call(g.dword(kDriverEnd));
+    callAt(g, g.dword(kDriverEnd));
     fe::direct<0x4f4760, wata::textStateRestore>(app, cpu, f);
     fe::direct<0x4f4700, wata::windowRestore>(app, cpu, f + 0xb8);
     guest::direct<0x4eff00, eab::windowBitmapFree>(app, cpu, bitmap);
@@ -915,16 +928,16 @@ reg32 frontend::menz::debugBoxAsk(App* app, CPU& cpu, reg32 text, reg32 x, reg32
     return answer;
 }
 
-void frontend::debugBoxAsk(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::debugBoxAsk(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_524970", 8, 0, nullptr, 0, kSi | kDi };
-    const reg32 text = cpu.eax;
-    const reg32 x = cpu.edx;
-    const reg32 y = cpu.ebx;
-    const reg32 width = cpu.ecx;
+    const reg32 text = args.eax;
+    const reg32 x = args.edx;
+    const reg32 y = args.ebx;
+    const reg32 width = args.ecx;
     const reg32 height = stackWord(app, cpu, 0);
     const reg32 mask = stackWord(app, cpu, 1);
-    runWhole(app, cpu, site, [&](Guest&) { return menz::debugBoxAsk(app, cpu, text, x, y, width, height, mask); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menz::debugBoxAsk(app, cpu, text, x, y, width, height, mask); });
 }
 
 /* sub_524c30: a line of text (eax) along the foot of the screen for edx of time, what it
@@ -950,7 +963,7 @@ reg32 frontend::menz::debugBanner(App* app, CPU& cpu, reg32 text, reg32 time)
     const reg32 screenHeight = g.dword(kScreenHeight);
     fe::direct<0x52b6c0, watc::setRectClip>(app, cpu, kView, 0u, screenHeight - kBannerHeight, g.dword(kScreenWidth),
                                             screenHeight);
-    g.call(g.dword(kDriverBegin));
+    callAt(g, g.dword(kDriverBegin));
     guest::direct<0x524930, debugBoxCopyScreen>(app, cpu, bitmap, 0, g.dword(kScreenHeight) - kBannerHeight);
     fe::direct<0x4ead20, wata::windowApply>(app, cpu);
     const reg32 black = guest::direct<0x4ef760, eab::colourPack>(app, cpu, 0xff000000u);
@@ -959,25 +972,25 @@ reg32 frontend::menz::debugBanner(App* app, CPU& cpu, reg32 text, reg32 time)
     const reg32 white = guest::direct<0x4ef760, eab::colourPack>(app, cpu, 0xffffffffu);
     guest::direct<0x4ef830, eab::fontSetColours>(app, cpu, white, 0u);
     fe::direct<0x52b860, watc::textCentred>(app, cpu, text, g.dword(kScreenHeight) - 9);
-    g.call(g.dword(kDriverEnd));
+    callAt(g, g.dword(kDriverEnd));
     guest::direct<0x4ead90, eaa::bitmapDrawToScreen>(app, cpu);
     guest::direct<0x4ead90, eaa::bitmapDrawToScreen>(app, cpu);
     fe::direct<0x4f06e0, wata::timerWait>(app, cpu, time);
     fe::direct<0x4ead20, wata::windowApply>(app, cpu);
-    g.call(g.dword(kDriverBeginCopy));
+    callAt(g, g.dword(kDriverBeginCopy));
     guest::direct<0x524950, debugBoxPutBack>(app, cpu, bitmap, 0u, g.dword(kScreenHeight) - kBannerHeight);
-    g.call(g.dword(kDriverEnd));
+    callAt(g, g.dword(kDriverEnd));
     fe::direct<0x4f4760, wata::textStateRestore>(app, cpu, f);
     fe::direct<0x4f4700, wata::windowRestore>(app, cpu, f + 0xb8);
     guest::direct<0x4eff00, eab::windowBitmapFree>(app, cpu, bitmap);
     return fe::direct<0x4feffc, watb::returnZero>(app, cpu);
 }
 
-void frontend::debugBanner(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::debugBanner(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_524c30", 0, 0, nullptr, 0, kBx | kCx | kSi | kDi };
-    const reg32 text = cpu.eax, time = cpu.edx;
-    runWhole(app, cpu, site, [&](Guest&) { return menz::debugBanner(app, cpu, text, time); });
+    const reg32 text = args.eax, time = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menz::debugBanner(app, cpu, text, time); });
 }
 
 /* sub_524d90: key 0x10: pause: the box in the middle of the screen until a key. */
@@ -990,10 +1003,10 @@ reg32 frontend::menz::debugKeyPause(App* app, CPU& cpu)
     return guest::direct<0x524970, debugBoxAsk>(app, cpu, 0x551e80, x, y, 0x120, 0x18, 1);
 }
 
-void frontend::debugKeyPause(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::debugKeyPause(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_524d90", 0, 0, nullptr, 0, kBx | kCx | kDx };
-    runWhole(app, cpu, site, [&](Guest&) { return menz::debugKeyPause(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menz::debugKeyPause(app, cpu); });
 }
 
 /* sub_524dd0, sub_524de0: keys 4 and 5: the memory viewer's two ways in. */
@@ -1003,10 +1016,10 @@ reg32 frontend::menz::debugKeyViewerFirst(App* app, CPU& cpu)
     return fe::direct<0x52b8d0, watc::viewerOnWindow>(app, cpu);
 }
 
-void frontend::debugKeyViewerFirst(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::debugKeyViewerFirst(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_524dd0", 0, 0, nullptr, 0, 0 };
-    runWhole(app, cpu, site, [&](Guest&) { return menz::debugKeyViewerFirst(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menz::debugKeyViewerFirst(app, cpu); });
 }
 
 reg32 frontend::menz::debugKeyViewerSecond(App* app, CPU& cpu)
@@ -1015,10 +1028,10 @@ reg32 frontend::menz::debugKeyViewerSecond(App* app, CPU& cpu)
     return fe::direct<0x52bb20, watc::viewerOnMono>(app, cpu);
 }
 
-void frontend::debugKeyViewerSecond(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::debugKeyViewerSecond(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_524de0", 0, 0, nullptr, 0, 0 };
-    runWhole(app, cpu, site, [&](Guest&) { return menz::debugKeyViewerSecond(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menz::debugKeyViewerSecond(app, cpu); });
 }
 
 /* sub_52e440: text (eax) with a filled box behind it, at the text state's position. */
@@ -1040,11 +1053,11 @@ reg32 frontend::menz::textBackgroundBox(App* app, CPU& cpu, reg32 text)
     return guest::direct<0x4efb50, eab::textDrawAtPen>(app, cpu, text);
 }
 
-void frontend::textBackgroundBox(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::textBackgroundBox(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_52e440", 0, 0, nullptr, 0, kBx | kCx | kDx | kSi };
-    const reg32 text = cpu.eax;
-    runWhole(app, cpu, site, [&](Guest&) { return menz::textBackgroundBox(app, cpu, text); });
+    const reg32 text = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menz::textBackgroundBox(app, cpu, text); });
 }
 
 /* ---------------------------------------------------------------------------
@@ -1075,7 +1088,7 @@ reg32 frontend::menz::fileDeviceStart(App* app, CPU& cpu, reg32 index)
     fe::direct<0x50dd60, netb::qinitpeer>(app, cpu, device() + kFileDeviceDone, 0u, 0u, device() + kFileDeviceLock);
     const reg32 event = *fe::direct<0x4dfb00, ea::newAutoEvent>(app, cpu);
     g.setDword(device() + 0x54, event);
-    const reg32 manualEvent = g.call(0x4dfc10);
+    const reg32 manualEvent = *fe::direct<0x4dfc10, ea::newManualEvent>(app, cpu);
     g.setDword(device() + 0x5c, manualEvent);
     const reg32 lock = *fe::direct<0x4eb2e0, ea::newLock>(app, cpu);
     const reg32 context = device() + 4;
@@ -1083,19 +1096,19 @@ reg32 frontend::menz::fileDeviceStart(App* app, CPU& cpu, reg32 index)
     g.setDword(context + 0x54, lock);
     g.setDword(context + 0x60, 0xff);
     g.setDword(kFileDeviceStarting, index);
-    const reg32 thread = g.call(0x4df7a0, args({ 0x4fbda0, 0, 1, 0xffffffff }, { context }));
+    const reg32 thread = *fe::direct<0x4df7a0, ea::threadStarted>(app, cpu, 0x4fbda0u, 0u, 1u, context);
     if (thread == 0)
         failAt(g, 0x54dcac, 0x54dcb8, 0xb6, { 0x54dccc });
     else if (g.dword(device()) == 0)
-        g.call(0x4dfc60, args({ g.dword(device() + 0x5c) }));
+        fe::direct<0x4dfc60, ea::eventWaited>(app, cpu, g.dword(device() + 0x5c));
     return guest::direct<0x50ea40, fileLockLeave>(app, cpu, kFileListLock, token);
 }
 
-void frontend::fileDeviceStart(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::fileDeviceStart(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4fb860", 0, 0, nullptr, 0, kAllSaved };
-    const reg32 index = cpu.eax;
-    runWhole(app, cpu, site, [&](Guest&) { return menz::fileDeviceStart(app, cpu, index); });
+    const reg32 index = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menz::fileDeviceStart(app, cpu, index); });
 }
 
 /* sub_4fbd10: an operation by its id (edx) on a device (eax): the one under way (and -1 to
@@ -1120,11 +1133,11 @@ reg32 frontend::menz::fileOpFind(App* app, CPU& cpu, reg32 device, reg32 id, reg
     return fe::direct<0x50e3f0, netb::qfind>(app, cpu, device + kFileDeviceDone, kFileCompareId, id);
 }
 
-void frontend::fileOpFind(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::fileOpFind(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4fbd10", 0, 0, nullptr, 0, kCx | kSi | kDi };
-    const reg32 device = cpu.eax, id = cpu.edx, where = cpu.ebx;
-    runWhole(app, cpu, site, [&](Guest&) { return menz::fileOpFind(app, cpu, device, id, where); });
+    const reg32 device = args.eax, id = args.edx, where = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menz::fileOpFind(app, cpu, device, id, where); });
 }
 
 /* sub_4fc340: an operation's state (eax its id): 0 still going, -1 it failed, -3 no such,
@@ -1150,11 +1163,11 @@ reg32 frontend::menz::fileOpStatus(App* app, CPU& cpu, reg32 id)
     return status;
 }
 
-void frontend::fileOpStatus(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::fileOpStatus(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4fc340", 0, 0, nullptr, 0, kBx | kCx | kDx | kSi };
-    const reg32 id = cpu.eax;
-    runWhole(app, cpu, site, [&](Guest&) { return menz::fileOpStatus(app, cpu, id); });
+    const reg32 id = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menz::fileOpStatus(app, cpu, id); });
 }
 
 /* sub_4fc600: FILE_completeop: a finished operation (eax its id) taken off its device's list
@@ -1167,7 +1180,7 @@ reg32 frontend::menz::fileOpComplete(App* app, CPU& cpu, reg32 id)
     constexpr reg32 kOpKind = 0x08, kOpSucceeded = 0x10, kOpHandle = 0x18, kOpCount = 0x24, kOpPosition = 0x28, kOpBlock = 0x2c;
     constexpr reg32 kFreeBlocks = 0x9f4f90;
     const reg32 device = g.dword(kFileDevices) + (id & 0x1f) * kFileDeviceSize;
-    cpu.ecx = 0;
+    reg32 ecx = 0;
     reg32 op = 0;
     if (device != 0)
         op = fe::direct<0x50e5a0, watb::queueFetch>(app, cpu, device + kFileDeviceDone, kFileCompareId, id);
@@ -1177,23 +1190,23 @@ reg32 frontend::menz::fileOpComplete(App* app, CPU& cpu, reg32 id)
     {
     case 0:
         if ((g.dword(op + kOpFlags) & 2) != 0 && g.dword(op + kOpHandle) != 0)
-            g.call(kCloseHandleSlot, args({ g.dword(op + kOpHandle) }));
+                        fe::direct<kCloseHandleSlot, ea::slotClosed>(app, cpu, g.dword(op + kOpHandle));
         else
-            cpu.ecx = g.dword(op + kOpHandle);
+            ecx = g.dword(op + kOpHandle);
         break;
     case 1:
-        cpu.ecx = g.call(kCloseHandleSlot, args({ g.dword(op + kOpHandle) }));
+                ecx = *fe::direct<kCloseHandleSlot, ea::slotClosed>(app, cpu, g.dword(op + kOpHandle));
         break;
     case 2:
     case 3:
-        cpu.ecx = g.dword(op + kOpPosition);
+        ecx = g.dword(op + kOpPosition);
         break;
     case 4:
     case 6:
-        cpu.ecx = g.dword(op + kOpCount);
+        ecx = g.dword(op + kOpCount);
         break;
     case 8:
-        cpu.ecx = 0;
+        ecx = 0;
         break;
     case 9:
     {
@@ -1203,12 +1216,12 @@ reg32 frontend::menz::fileOpComplete(App* app, CPU& cpu, reg32 id)
         if ((g.dword(op + kOpFlags) & 2) == 0 && g.byte(op + kOpSucceeded) == 1)
         {
             fe::direct<0x50ded0, netb::qbottom>(app, cpu, kFreeBlocks, block);
-            cpu.ecx = g.dword(block + 4);
+            ecx = g.dword(block + 4);
         }
         else
         {
             if (g.dword(block + 0xc) != 0)
-                g.call(kCloseHandleSlot, args({ g.dword(block + 0xc) }));
+                fe::direct<kCloseHandleSlot, ea::slotClosed>(app, cpu, g.dword(block + 0xc));
             fe::direct<0x4e1890, ea::purgeBlock>(app, cpu, block);
         }
         break;
@@ -1218,27 +1231,27 @@ reg32 frontend::menz::fileOpComplete(App* app, CPU& cpu, reg32 id)
         const reg32 block = g.dword(op + kOpBlock);
         if (block == 0)
             break;
-        g.call(kCloseHandleSlot, args({ g.dword(block + 0xc) }));
-        cpu.ecx = 1;
+        fe::direct<kCloseHandleSlot, ea::slotClosed>(app, cpu, g.dword(block + 0xc));
+        ecx = 1;
         fe::direct<0x4e1890, ea::purgeBlock>(app, cpu, block);
         break;
     }
     default:  // 5, 7 and past the table
-        cpu.ecx = g.byte(op + kOpSucceeded) == 1 ? 1 : 0;
+        ecx = g.byte(op + kOpSucceeded) == 1 ? 1 : 0;
         break;
     }
     if (g.dword(op + kOpFlags) & 1)
-        g.call(0x501180, args({ g.dword(op + kOpBlock) }));
+        fe::direct<0x501180, ea::pagesFreed>(app, cpu, g.dword(op + kOpBlock));
     g.setDword(op + 4, 0);
     fe::direct<0x50ded0, netb::qbottom>(app, cpu, kFileListLock, op);
-    return cpu.ecx;
+    return ecx;
 }
 
-void frontend::fileOpComplete(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::fileOpComplete(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4fc600", 0, 0, nullptr, 0, kBx | kCx | kDx | kSi };
-    const reg32 id = cpu.eax;
-    runWhole(app, cpu, site, [&](Guest&) { return menz::fileOpComplete(app, cpu, id); });
+    const reg32 id = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menz::fileOpComplete(app, cpu, id); });
 }
 
 /* sub_4fc780: waits until an operation (eax its id) has finished, on the device's thread
@@ -1269,18 +1282,18 @@ reg32 frontend::menz::fileOpWait(App* app, CPU& cpu, reg32 id)
             }
             else
             {
-                g.call(0x4dfc60, args({ g.dword(g.dword(kFileDevices) + offset + 0x5c) }));
+                fe::direct<0x4dfc60, ea::eventWaited>(app, cpu, g.dword(g.dword(kFileDevices) + offset + 0x5c));
             }
         }
     } while (g.dword(found) != 0);
     return guest::direct<0x4fc340, fileOpStatus>(app, cpu, id);
 }
 
-void frontend::fileOpWait(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::fileOpWait(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4fc780", 0, 0, nullptr, 0, kAllSaved };
-    const reg32 id = cpu.eax;
-    runWhole(app, cpu, site, [&](Guest&) { return menz::fileOpWait(app, cpu, id); });
+    const reg32 id = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menz::fileOpWait(app, cpu, id); });
 }
 
 /* sub_50ea20: the critical section of a lock (eax) entered; 0, the token sub_50ea40 is given. */
@@ -1292,11 +1305,11 @@ reg32 frontend::menz::fileLockEnter(App* app, CPU& cpu, reg32 lock)
     return 0;
 }
 
-void frontend::fileLockEnter(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::fileLockEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_50ea20", 0, 0, nullptr, 0, kCx | kDx };
-    const reg32 lock = cpu.eax;
-    runWhole(app, cpu, site, [&](Guest&) { return menz::fileLockEnter(app, cpu, lock); });
+    const reg32 lock = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menz::fileLockEnter(app, cpu, lock); });
 }
 
 /* sub_50ea40: and left. */
@@ -1304,15 +1317,14 @@ reg32 frontend::menz::fileLockLeave(App* app, CPU& cpu, reg32 lock, reg32 /*toke
 {
     Guest g(app, cpu);
     const fe::Frame frame(g, cpu, 4);
-    cpu.edx = g.dword(lock + 0x18);
-    return callImport<kLeaveLock, &host::leaveLock>(g, cpu, cpu.edx);
+    return callImport<kLeaveLock, &host::leaveLock>(g, cpu, g.dword(lock + 0x18));
 }
 
-void frontend::fileLockLeave(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::fileLockLeave(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_50ea40", 0, 0, nullptr, 0, kCx };
-    const reg32 lock = cpu.eax, token = cpu.edx;
-    runWhole(app, cpu, site, [&](Guest&) { return menz::fileLockLeave(app, cpu, lock, token); });
+    const reg32 lock = args.eax, token = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menz::fileLockLeave(app, cpu, lock, token); });
 }
 
 /* ---------------------------------------------------------------------------
@@ -1335,12 +1347,9 @@ reg32 frontend::menz::videoWindowMake(App* app, CPU& cpu, reg32 width, reg32 hei
     constexpr reg32 kFunction = 0x54f594, kMaxWidth = 0x960, kMaxHeight = 0x640, kRecordSize = 0x38;
     if (sreg32(width) < 0 || sreg32(width) > sreg32(kMaxWidth) || sreg32(height) < 0 || sreg32(height) > sreg32(kMaxHeight))
     {
-        cpu.ecx = kWindowFile;
-        cpu.ebx = kFunction;
         failAt(g, kWindowFile, kFunction, 0x32, { 0x54f5a4, width, height, kMaxWidth, kMaxHeight });
         return 0;
     }
-    cpu.ebx = where;
     reg32 window;
     if (where == 0xffffffff)
     {
@@ -1355,16 +1364,15 @@ reg32 frontend::menz::videoWindowMake(App* app, CPU& cpu, reg32 width, reg32 hei
         g.setDword(kErrorFile, kWindowFile);
         g.setDword(kErrorFunction, kFunction);
         g.setDword(kErrorLine, 0x3d);
-        // By address: reservememadr leaves ebx, which the failure below hands on.
-        window = g.call(0x4e1620, args({ 0x54f5f4, kRecordSize }));
+        // reservememadr: its third word the caller's ebx, `where`.
+        window = *fe::direct<0x4e1620, ea::reserved>(app, cpu, 0x54f5f4u, kRecordSize, where);
     }
     if (window == 0)
     {
         g.setDword(kErrorFile, kWindowFile);
         g.setDword(kErrorFunction, kFunction);
         g.setDword(kErrorLine, 0x41);
-        g.leaveEdx(0x41);
-        const reg32 largest = g.call(0x4e1580, args({ kFunction }));
+        const reg32 largest = fe::direct<0x4e1580, ea::defaultLargest>(app, cpu);
         fe::direct<kError, ea::error>(g.app(), g.cpu(), 0x54f5fc, guest::Words{width, height, largest});
         return 0;
     }
@@ -1372,17 +1380,17 @@ reg32 frontend::menz::videoWindowMake(App* app, CPU& cpu, reg32 width, reg32 hei
     return window;
 }
 
-void frontend::videoWindowMake(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::videoWindowMake(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_508c70", 0xc, 0, nullptr, 0, kSi | kDi };
-    const reg32 width = cpu.eax;
-    const reg32 height = cpu.edx;
-    const reg32 bits = cpu.ebx;
-    const reg32 passedOn = cpu.ecx;
+    const reg32 width = args.eax;
+    const reg32 height = args.edx;
+    const reg32 bits = args.ebx;
+    const reg32 passedOn = args.ecx;
     const reg32 where = stackWord(app, cpu, 0);
     const reg32 passedOn2 = stackWord(app, cpu, 1);
     const reg32 passedOn3 = stackWord(app, cpu, 2);
-    runWhole(app, cpu, site, [&](Guest&) {
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
         return menz::videoWindowMake(app, cpu, width, height, bits, passedOn, where, passedOn2, passedOn3);
     });
 }
@@ -1423,16 +1431,14 @@ reg32 frontend::menz::videoWindowUpdate(App* app, CPU& cpu, reg32 window, reg32 
         g.setDword(window + kClipBottom, g.dword(window + kHeight));
     else if (sreg32(bottom) < sreg32(g.dword(window + kClipTop)))
         g.setDword(window + kClipBottom, g.dword(window + kClipTop));
-    g.leaveEdx(g.dword(window + kWidth));
-    cpu.ebx = g.dword(window + kHeight);
     return bottom;
 }
 
-void frontend::videoWindowUpdate(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::videoWindowUpdate(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_508da0", 0, 0, nullptr, 0, kCx | kSi | kDi };
-    const reg32 window = cpu.eax, rowBytes = cpu.edx, bits = cpu.ebx;
-    runWhole(app, cpu, site, [&](Guest&) { return menz::videoWindowUpdate(app, cpu, window, rowBytes, bits); });
+    const reg32 window = args.eax, rowBytes = args.edx, bits = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menz::videoWindowUpdate(app, cpu, window, rowBytes, bits); });
 }
 
 /* sub_508e70: a window's (eax) row tables freed, and its record unless it is a fixed one. */
@@ -1458,11 +1464,11 @@ reg32 frontend::menz::videoWindowFree(App* app, CPU& cpu, reg32 window)
     return *fe::direct<0x4e1890, ea::purgeBlock>(app, cpu, window);
 }
 
-void frontend::videoWindowFree(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::videoWindowFree(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_508e70", 0, 0, nullptr, 0, kBx | kCx | kDx };
-    const reg32 window = cpu.eax;
-    runWhole(app, cpu, site, [&](Guest&) { return menz::videoWindowFree(app, cpu, window); });
+    const reg32 window = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menz::videoWindowFree(app, cpu, window); });
 }
 
 /* ---------------------------------------------------------------------------
@@ -1487,13 +1493,10 @@ reg32 frontend::menz::fontFindGlyph(App* app, CPU& cpu, reg32 character, reg32 t
 {
     Guest g(app, cpu);
     reg32 left = count;
-    g.leaveEdx(left);
     while (left != 0)
     {
         const reg32 probe = table + reg32(sreg32(left) >> 1) * size;
         const reg32 difference = character - g.word(probe);
-        cpu.ebx = probe;
-        cpu.ecx = difference;
         if (difference == 0)
             return probe;
         if (sreg32(difference) > 0)
@@ -1502,16 +1505,15 @@ reg32 frontend::menz::fontFindGlyph(App* app, CPU& cpu, reg32 character, reg32 t
             table = probe + size;
         }
         left = reg32(sreg32(left) >> 1);
-        g.leaveEdx(left);
     }
     return 0;
 }
 
-void frontend::fontFindGlyph(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::fontFindGlyph(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_5199b0", 0, 0, nullptr, 0, kSi | kDi };
-    const reg32 character = cpu.eax, table = cpu.edx, count = cpu.ebx, size = cpu.ecx;
-    runWhole(app, cpu, site, [&](Guest&) { return menz::fontFindGlyph(app, cpu, character, table, count, size); });
+    const reg32 character = args.eax, table = args.edx, count = args.ebx, size = args.ecx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menz::fontFindGlyph(app, cpu, character, table, count, size); });
 }
 
 /* sub_519a50: FONT_getcharacter: the glyph of a character (edx) in a font (eax): 11 bytes a
@@ -1525,17 +1527,16 @@ reg32 frontend::menz::fontGlyph(App* app, CPU& cpu, reg32 font, reg32 character)
     if (sreg32(g.dword(font + kFontVersion)) < sreg32(kOldestVersion))
         failAt(g, 0x5507ac, 0x5507bc, 0x160, { 0x5507d0 });
     const reg32 place = glyphs + (character - kFirstCharacter) * kRecord;
-    g.leaveEdx(place);
     if (g.word(place) == character)
         return place;
     return guest::direct<0x5199b0, fontFindGlyph>(app, cpu, character, glyphs, g.dword(font + kFontRowCount), kRecord);
 }
 
-void frontend::fontGlyph(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::fontGlyph(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_519a50", 0, 0, nullptr, 0, kBx | kCx | kSi | kDi };
-    const reg32 font = cpu.eax, character = cpu.edx;
-    runWhole(app, cpu, site, [&](Guest&) { return menz::fontGlyph(app, cpu, font, character); });
+    const reg32 font = args.eax, character = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menz::fontGlyph(app, cpu, font, character); });
 }
 
 /* sub_519ea0: how many bits a pixel a shape's type (the byte at eax) gives a font's glyph:
@@ -1547,11 +1548,11 @@ reg32 frontend::menz::fontBitsPerPixel(App* app, CPU& cpu, reg32 shape)
     return type == 0x01 || type == 0x44 || type == 0x56 || type == 0x60 || type == 0x79 ? 1 : 4;
 }
 
-void frontend::fontBitsPerPixel(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::fontBitsPerPixel(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_519ea0", 0, 0, nullptr, 0, kDx };
-    const reg32 shape = cpu.eax;
-    runWhole(app, cpu, site, [&](Guest&) { return menz::fontBitsPerPixel(app, cpu, shape); });
+    const reg32 shape = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menz::fontBitsPerPixel(app, cpu, shape); });
 }
 
 /* sub_519f10: FONT_create: a font's record for a .FNT in memory (eax): 0 without memory. */
@@ -1564,10 +1565,9 @@ reg32 frontend::menz::fontCreate(App* app, CPU& cpu, reg32 data)
     constexpr reg32 kDrawAny = 0x525670, kDrawAscii = 0x525630;
     const reg32 shape = g.dword(data + 0x1c) + data;
     const reg32 driver = g.dword(kDriver);
-    const reg32 font = g.call(g.dword(driver + kAllocate), args({ kRecordSize, driver }));
+    const reg32 font = callAt(g, g.dword(driver + kAllocate), args({ kRecordSize, driver }));
     if (font == 0)
         return 0;
-    const reg32 keptEbx = cpu.ebx, keptEcx = cpu.ecx;
     cpu.esp -= 8;  // those two, saved only here
     const reg32 first = g.dword(data);
     const reg32 signature = ((first >> 24) | ((first >> 8) & 0xff00) | ((first << 8) & 0xff0000) | (first << 24)) & 0xffffff00;
@@ -1587,11 +1587,10 @@ reg32 frontend::menz::fontCreate(App* app, CPU& cpu, reg32 data)
     g.setDword(font + 0x2c, data);
     g.setDword(font + 0x34, shape);
     g.setDword(font + kFontGlyphs, data + g.dword(data + 0x14));
-    cpu.edx = shape;
     const reg32 bits = guest::direct<0x519ea0, fontBitsPerPixel>(app, cpu, shape);
     g.setDword(font + 0x0c, bits);
-    cpu.edx = reg32(sreg32(g.dword(g.edx() + 2)) >> 16);
-    const reg32 rowBits = guest::direct<0x519ea0, fontBitsPerPixel>(app, cpu, shape) * cpu.edx;
+    const reg32 shapeRows = reg32(sreg32(g.dword(shape + 2)) >> 16);
+    const reg32 rowBits = guest::direct<0x519ea0, fontBitsPerPixel>(app, cpu, shape) * shapeRows;
     g.setDword(font + 0x24, reg32(sreg32((rowBits + 7) & 0xfffffff8) >> 3));
     reg32 draw = kDrawAny;
     if ((reg32(sreg32(g.dword(data + 0xc)) >> 16) & 3) != 2 && sreg32(g.dword(font + kFontRowCount)) <= 0xff && g.word(data + 0x20) <= 0xff)
@@ -1612,16 +1611,14 @@ reg32 frontend::menz::fontCreate(App* app, CPU& cpu, reg32 data)
     const reg32 capHeight = g.byte(glyph + 3) + signedByte(glyph + 10);
     g.setDword(font + 0x14, g.dword(font + 0x10) - capHeight);
     g.setDword(font + 0x10, capHeight);
-    cpu.ebx = keptEbx;
-    cpu.ecx = keptEcx;
     return font;
 }
 
-void frontend::fontCreate(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::fontCreate(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_519f10", 0, 0, nullptr, 0, kDx | kSi | kDi };
-    const reg32 data = cpu.eax;
-    runWhole(app, cpu, site, [&](Guest&) { return menz::fontCreate(app, cpu, data); });
+    const reg32 data = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menz::fontCreate(app, cpu, data); });
 }
 
 /* sub_5257c0: a font's (eax) property (edx) set to ebx: the scales in 16.16, the spacing
@@ -1650,7 +1647,6 @@ reg32 frontend::menz::fontSetProperty(App* app, CPU& cpu, reg32 font, reg32 prop
         guest::direct<0x5257c0, fontSetProperty>(app, cpu, font, 2, 0x10000);
         value = 0x10000;
         property = 3;
-        g.leaveEdx(3);
     }
     switch (property)
     {
@@ -1661,12 +1657,10 @@ reg32 frontend::menz::fontSetProperty(App* app, CPU& cpu, reg32 font, reg32 prop
         g.setFloat(font + kFontScaleY, float(scaled(value)));
         break;
     case 3:
-        cpu.ebx = 0;
         g.setFloat(font + kFontScale, float(scaled(value)));
         break;
     case 4:
     {
-        g.leaveEdx(0);
         const Float pixels = fp::div(scaled(value), Float(g.floatAt(font + kFontScale)));
         value = reg32(fp::toInteger<sreg32>(pixels));
         g.setDword(font + 0x18, value);
@@ -1694,20 +1688,19 @@ reg32 frontend::menz::fontSetProperty(App* app, CPU& cpu, reg32 font, reg32 prop
     return value;
 }
 
-void frontend::fontSetProperty(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::fontSetProperty(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_5257c0", 0, 0, nullptr, 0, kCx | kSi | kDi };
-    const reg32 font = cpu.eax, property = cpu.edx, value = cpu.ebx;
-    runWhole(app, cpu, site, [&](Guest&) { return menz::fontSetProperty(app, cpu, font, property, value); });
+    const reg32 font = args.eax, property = args.edx, value = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menz::fontSetProperty(app, cpu, font, property, value); });
 }
 
 /* sub_5259d0: a font's (eax) property (edx) read back, as sub_5257c0 sets it; ecx for one
  * it has not.  Nothing in the game calls it. */
-reg32 frontend::menz::fontGetProperty(App* app, CPU& cpu, reg32 font, reg32 asked)
+reg32 frontend::menz::fontGetProperty(App* app, CPU& cpu, reg32 font, reg32 asked, reg32 ecx)
 {
     Guest g(app, cpu);
     const reg32 property = asked - 1;
-    g.leaveEdx(property);
     const auto fixed = [&](reg32 field) {
         return reg32(fp::toInteger<sreg32>(fp::mul(Float(g.floatAt(font + field)), Float(doubleAt(g, kFloatToFixed)))));
     };
@@ -1734,15 +1727,15 @@ reg32 frontend::menz::fontGetProperty(App* app, CPU& cpu, reg32 font, reg32 aske
     case 0xd: return g.dword(font + 0x60);
     case 0xe: return g.dword(font + 0x64);
     case 0xf: return g.dword(font + 0x68);
-    default: return cpu.ecx;
+    default: return ecx;
     }
 }
 
-void frontend::fontGetProperty(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::fontGetProperty(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_5259d0", 0, 0, nullptr, 0, kCx };
-    const reg32 font = cpu.eax, property = cpu.edx;
-    runWhole(app, cpu, site, [&](Guest&) { return menz::fontGetProperty(app, cpu, font, property); });
+    const reg32 font = args.eax, property = args.edx, ecx = args.ecx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menz::fontGetProperty(app, cpu, font, property, ecx); });
 }
 
 /* ---------------------------------------------------------------------------
@@ -1757,7 +1750,6 @@ reg32 frontend::menz::paletteFrom6Bits(App* app, CPU& cpu, reg32 count, reg32 fr
     reg32 result = to;
     const auto widen = [&](reg32 at) -> reg32 {
         const sreg32 sum = sreg32(g.byte(at)) * 0xff + 0x20;
-        g.leaveEdx(reg32(sum % 0x3f));
         return reg32(sum / 0x3f);
     };
     for (reg32 i = 0; sreg32(i) < sreg32(count); ++i)
@@ -1769,16 +1761,15 @@ reg32 frontend::menz::paletteFrom6Bits(App* app, CPU& cpu, reg32 count, reg32 fr
         g.setByte(to, std::uint8_t(result));
         to += 4;
         from += 3;
-        cpu.ebx = from;
     }
     return result;
 }
 
-void frontend::paletteFrom6Bits(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::paletteFrom6Bits(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_51de60", 0, 0, nullptr, 0, kCx | kSi | kDi };
-    const reg32 count = cpu.eax, from = cpu.edx, to = cpu.ebx;
-    runWhole(app, cpu, site, [&](Guest&) { return menz::paletteFrom6Bits(app, cpu, count, from, to); });
+    const reg32 count = args.eax, from = args.edx, to = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menz::paletteFrom6Bits(app, cpu, count, from, to); });
 }
 
 /* sub_51df60: eax colours of 3 bytes (edx) to 4 (ebx), the last colour's alpha 0. */
@@ -1793,20 +1784,18 @@ reg32 frontend::menz::paletteFrom8Bits(App* app, CPU& cpu, reg32 count, reg32 fr
         g.setByte(to + 1, g.byte(from + 1));
         const std::uint8_t last = g.byte(from + 2);
         g.setByte(to, last);
-        cpu.ebx = (cpu.ebx & 0xffffff00) | last;
         to += 4;
         from += 3;
         result = to;
     }
-    g.leaveEdx(from);
     return result;
 }
 
-void frontend::paletteFrom8Bits(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::paletteFrom8Bits(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_51df60", 0, 0, nullptr, 0, kCx | kSi | kDi };
-    const reg32 count = cpu.eax, from = cpu.edx, to = cpu.ebx;
-    runWhole(app, cpu, site, [&](Guest&) { return menz::paletteFrom8Bits(app, cpu, count, from, to); });
+    const reg32 count = args.eax, from = args.edx, to = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menz::paletteFrom8Bits(app, cpu, count, from, to); });
 }
 
 /* ---------------------------------------------------------------------------
@@ -1826,11 +1815,11 @@ reg32 frontend::menz::longDoubleKind(App* app, CPU& cpu, reg32 value)
     return fractionHigh == 0 && fractionLow == 0 ? 0 : 4;
 }
 
-void frontend::longDoubleKind(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::longDoubleKind(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_52448c", 0, 0, nullptr, 0, kDx };
-    const reg32 value = cpu.eax;
-    runWhole(app, cpu, site, [&](Guest&) { return menz::longDoubleKind(app, cpu, value); });
+    const reg32 value = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menz::longDoubleKind(app, cpu, value); });
 }
 
 namespace
@@ -1933,7 +1922,6 @@ inline reg32 answerFromX87(Guest& g, double value)
     reg32 high = reg32(bits >> 32), low = reg32(bits);
     if (high == 0x80000000)
         high = low = 0;
-    g.leaveEdx(high);
     return low;
 }
 
@@ -1953,18 +1941,16 @@ inline void normaliseDenormal(Carry& c, reg32& high, reg32& low, reg32& exponent
 
 /* sub_52643c: edx:eax divided by ecx:ebx, Watcom's __FDD: through the x87 where there is one
  * (through sub_52700c where it has the bug), else long division a word at a time. */
-reg32 frontend::menz::doubleDivide(App* app, CPU& cpu, reg32 low, reg32 high, reg32 divisorLow, reg32 divisorHigh)
+reg32 frontend::menz::doubleDivide(App* app, CPU& cpu, reg32 low, reg32 high, reg32 divisorLow, reg32 divisorHigh, double top)
 {
     Guest g(app, cpu);
     const fe::Frame frame(g, cpu, 8);
     if (divisorLow == 0 && (divisorHigh << 1) == 0)
     {
-        cpu.ecx = 0;
-        return g.call(kDivideByZero);
+        return reg32(fe::direct<0x52c89b, watc::doubleInfinityHook>(app, cpu));
     }
     if (low == 0 && (high << 1) == 0)
     {
-        g.leaveEdx(0);
         return 0;
     }
     if (g.byte(kFpuKind) != 0)
@@ -1973,8 +1959,8 @@ reg32 frontend::menz::doubleDivide(App* app, CPU& cpu, reg32 low, reg32 high, re
         if (g.byte(kFdivBug) & 1)
         {
             // sub_52700c divides st(0), its st(1) what the caller's x87 has on top: that one is
-            // read here, the x87's stack the caller's interface.
-            const double below = double(g.fpu().st(0));
+            // is `top`, the x87's stack the caller's interface.
+            const double below = top;
             quotient = guest::direct<0x52700c, safeDivide>(app, cpu, double(quotient), below, divisorLow, divisorHigh);
             if (cpu.terminate)
                 throw fe::Terminated();
@@ -2001,21 +1987,13 @@ reg32 frontend::menz::doubleDivide(App* app, CPU& cpu, reg32 low, reg32 high, re
     else
         normaliseDenormal(c, divisorHigh, divisorLow, divisorExponent);
     exponent = withLow16(exponent, std::uint32_t(low16(exponent)) - low16(divisorExponent) + 0x3ff);
-    const auto setRegisters = [&](reg32 eax, reg32 edx, reg32 ebx, reg32 ecx) {
-        cpu.eax = eax;
-        cpu.edx = edx;
-        cpu.ebx = ebx;
-        cpu.ecx = ecx;
-    };
     if ((low16(exponent) & 0x8000) == 0 && low16(exponent) >= 0x7ff)
     {
-        setRegisters(divisorExponent, high, divisorLow, divisorExponent);
-        return g.call(kOverflow);
+        return reg32(fe::direct<0x52c8a7, watc::doubleInfinity>(app, cpu, divisorExponent));
     }
     if (std::int16_t(low16(exponent)) < -0x34)
     {
-        setRegisters(low, high, divisorLow, divisorExponent);
-        return g.call(kUnderflow);
+        return reg32(fe::direct<0x52c88a, watc::doubleZero>(app, cpu));
     }
 
     // The mantissas at the top of 64 bits, and the quotient's three words by the first
@@ -2120,15 +2098,15 @@ reg32 frontend::menz::doubleDivide(App* app, CPU& cpu, reg32 low, reg32 high, re
     resultHigh &= 0xfffff;
     c.cf = (exponent >> 31) != 0;
     resultHigh |= c.rcr(ror(exponent, 11)) & 0xfff00000;
-    setRegisters(resultLow, resultHigh, leftover, count);
     return resultLow;
 }
 
-void frontend::doubleDivide(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::doubleDivide(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_52643c", 0, 0, nullptr, 0, kSi | kDi };
-    const reg32 low = cpu.eax, high = cpu.edx, otherLow = cpu.ebx, otherHigh = cpu.ecx;
-    runWhole(app, cpu, site, [&](Guest&) { return menz::doubleDivide(app, cpu, low, high, otherLow, otherHigh); });
+    const reg32 low = args.eax, high = args.edx, otherLow = args.ebx, otherHigh = args.ecx;
+    const double top = args.floatIn[0];
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menz::doubleDivide(app, cpu, low, high, otherLow, otherHigh, top); });
 }
 
 /* sub_526642: edx:eax less ecx:ebx, Watcom's __FDS. */
@@ -2137,15 +2115,12 @@ reg32 frontend::menz::doubleSubtract(App* app, CPU& cpu, reg32 low, reg32 high, 
     Guest g(app, cpu);
     const fe::Frame frame(g, cpu, 8);
     reg32 otherHigh = subtracted ^ 0x80000000;
-    cpu.ecx = otherHigh;
     if (otherLow == 0 && (otherHigh << 1) == 0)
     {
-        cpu.ecx = 0;
         return low;
     }
     if (low == 0 && (high << 1) == 0)
     {
-        g.leaveEdx(otherHigh);
         return otherLow;
     }
     if (g.byte(kFpuKind) != 0)
@@ -2153,9 +2128,6 @@ reg32 frontend::menz::doubleSubtract(App* app, CPU& cpu, reg32 low, reg32 high, 
 
     Carry c;
     const auto finish = [&](reg32 resultLow, reg32 resultHigh, reg32 ebx, reg32 ecx) -> reg32 {
-        g.leaveEdx(resultHigh);
-        cpu.ebx = ebx;
-        cpu.ecx = ecx;
         return resultLow;
     };
     const reg32 exponent = signAndExponent(high);
@@ -2254,11 +2226,7 @@ reg32 frontend::menz::doubleSubtract(App* app, CPU& cpu, reg32 low, reg32 high, 
         high = c.adc(high, high);
     }
     const auto overflow = [&]() -> reg32 {
-        cpu.edx = high;
-        cpu.ebx = scratch;
-        cpu.ecx = other;
-        cpu.eax = sign;
-        return g.call(kOverflow);
+        return reg32(fe::direct<0x52c8a7, watc::doubleInfinity>(app, cpu, sign));
     };
     if (high & 0x400000)
     {
@@ -2293,11 +2261,11 @@ reg32 frontend::menz::doubleSubtract(App* app, CPU& cpu, reg32 low, reg32 high, 
     return finish(low, high, scratch, sign << 1);
 }
 
-void frontend::doubleSubtract(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::doubleSubtract(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_526642", 0, 0, nullptr, 0, kSi | kDi };
-    const reg32 low = cpu.eax, high = cpu.edx, otherLow = cpu.ebx, otherHigh = cpu.ecx;
-    runWhole(app, cpu, site, [&](Guest&) { return menz::doubleSubtract(app, cpu, low, high, otherLow, otherHigh); });
+    const reg32 low = args.eax, high = args.edx, otherLow = args.ebx, otherHigh = args.ecx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menz::doubleSubtract(app, cpu, low, high, otherLow, otherHigh); });
 }
 
 /* sub_5267ff: edx:eax times ecx:ebx, Watcom's __FDM. */
@@ -2307,13 +2275,10 @@ reg32 frontend::menz::doubleMultiply(App* app, CPU& cpu, reg32 low, reg32 high, 
     const fe::Frame frame(g, cpu, 8);
     if (low == 0 && (high << 1) == 0)
     {
-        g.leaveEdx(0);
         return 0;
     }
     if (otherLow == 0 && (otherHigh << 1) == 0)
     {
-        cpu.ecx = 0;
-        g.leaveEdx(0);
         return 0;
     }
     if (g.byte(kFpuKind) != 0)
@@ -2338,22 +2303,13 @@ reg32 frontend::menz::doubleMultiply(App* app, CPU& cpu, reg32 low, reg32 high, 
     }
     otherHigh |= 0x100000;
     sum = withLow16(sum, std::uint32_t(low16(sum)) + low16(exponent) - 0x3ff);
-    const auto setRegisters = [&](reg32 edx, reg32 ebx, reg32 ecx) {
-        cpu.edx = edx;
-        cpu.ebx = ebx;
-        cpu.ecx = ecx;
-    };
     if ((low16(sum) & 0x8000) == 0 && low16(sum) >= 0x7ff)
     {
-        setRegisters(high, otherLow, sum);
-        cpu.eax = sum;
-        return g.call(kOverflow);
+        return reg32(fe::direct<0x52c8a7, watc::doubleInfinity>(app, cpu, sum));
     }
     if (std::int16_t(low16(sum)) < -0x35)
     {
-        setRegisters(high, otherLow, sum);
-        cpu.eax = low;
-        return g.call(kUnderflow);
+        return reg32(fe::direct<0x52c88a, watc::doubleZero>(app, cpu));
     }
     const reg32 aHigh = (high << 11) | (low >> 21), aLow = low << 11;
     const reg32 bHigh = (otherHigh << 11) | (otherLow >> 21), bLow = otherLow << 11;
@@ -2379,9 +2335,7 @@ reg32 frontend::menz::doubleMultiply(App* app, CPU& cpu, reg32 low, reg32 high, 
     resultLow = shiftInRight(resultLow, resultHigh, 10);
     resultHigh = shiftInRight(resultHigh, below, 10);
     const auto overflow = [&]() -> reg32 {
-        setRegisters(resultHigh, below, sum);
-        cpu.eax = sum;
-        return g.call(kOverflow);
+        return reg32(fe::direct<0x52c8a7, watc::doubleInfinity>(app, cpu, sum));
     };
     while (resultHigh & 0x200000)
     {
@@ -2426,19 +2380,18 @@ reg32 frontend::menz::doubleMultiply(App* app, CPU& cpu, reg32 low, reg32 high, 
     resultHigh &= 0xfffff;
     c.cf = (sum >> 31) != 0;
     const reg32 place = c.rcr(ror(sum, 11)) & 0xfff00000;
-    setRegisters(resultHigh | place, below, place);
     return resultLow;
 }
 
-void frontend::doubleMultiply(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::doubleMultiply(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_5267ff", 0, 0, nullptr, 0, kSi | kDi };
-    const reg32 low = cpu.eax, high = cpu.edx, otherLow = cpu.ebx, otherHigh = cpu.ecx;
-    runWhole(app, cpu, site, [&](Guest&) { return menz::doubleMultiply(app, cpu, low, high, otherLow, otherHigh); });
+    const reg32 low = args.eax, high = args.edx, otherLow = args.ebx, otherHigh = args.ecx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menz::doubleMultiply(app, cpu, low, high, otherLow, otherHigh); });
 }
 
 /* sub_526674: the x87's way's end for sub_5267ff, which has jumped here into sub_526642: the
- * answer `product` (st(0), which its adapter takes off), on the stack the other double and the
+ * answer `product` (st(0), which its thunk takes off), on the stack the other double and the
  * first, below the return address. */
 reg32 frontend::menz::doubleProductFromX87(App* app, CPU& cpu, double product)
 {
@@ -2446,10 +2399,12 @@ reg32 frontend::menz::doubleProductFromX87(App* app, CPU& cpu, double product)
     return answerFromX87(g, product);
 }
 
-void frontend::doubleProductFromX87(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::doubleProductFromX87(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_526674", 0x10, 0, nullptr, 0, 0 };
-    runWhole(app, cpu, site, [&](Guest&) { return menz::doubleProductFromX87(app, cpu, double(cpu.fpu.pop())); });
+    const double product = args.floatIn[0];
+    args.floatsTaken = 1;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menz::doubleProductFromX87(app, cpu, product); });
 }
 
 /* sub_52699c: edx:eax against ecx:ebx, a denormal taken for zero: -1, 0 or 1.  Its one
@@ -2461,8 +2416,6 @@ reg32 frontend::menz::doubleCompare(App* app, CPU& cpu, reg32 low, reg32 high, r
         high = 0;
     if ((otherHigh & 0x7ff00000) == 0)
         otherHigh = 0;
-    cpu.ecx = otherHigh;
-    g.leaveEdx(high);
     if (sreg32(otherHigh ^ high) >= 0)
     {
         // Of one sign: which is further from zero, the sign turning the answer over.
@@ -2473,26 +2426,24 @@ reg32 frontend::menz::doubleCompare(App* app, CPU& cpu, reg32 low, reg32 high, r
             below = low < otherLow;
         else
             return 0;
-        cpu.ecx = (otherHigh >> 1) | (below ? 0x80000000 : 0);
-        high ^= cpu.ecx;
+        high ^= (otherHigh >> 1) | (below ? 0x80000000 : 0);
     }
     const bool negative = (high >> 31) != 0;
-    g.leaveEdx(high << 1);
     return negative ? 0xffffffff : 1;
 }
 
-void frontend::doubleCompare(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::doubleCompare(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_52699c", 0, 0, nullptr, 0, 0 };
-    const reg32 low = cpu.eax, high = cpu.edx, otherLow = cpu.ebx, otherHigh = cpu.ecx;
-    runWhole(app, cpu, site, [&](Guest&) { return menz::doubleCompare(app, cpu, low, high, otherLow, otherHigh); });
+    const reg32 low = args.eax, high = args.edx, otherLow = args.ebx, otherHigh = args.ecx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menz::doubleCompare(app, cpu, low, high, otherLow, otherHigh); });
 }
 
 /* sub_51f2a0: the runtime's start-up test of the Pentium's FDIV bug on an x87 of the 80387's
  * or later: 4195835 / 3145727 * 3145727 taken from 4195835, which a sound one has within
  * 1e-8 of nothing.  A bad one sets bit 0 of 0x567858.  The answer's sign is what the
  * original's jump after sub_52699c reads, 1e-8 being positive. */
-reg32 frontend::menz::fdivBugCheck(App* app, CPU& cpu)
+reg32 frontend::menz::fdivBugCheck(App* app, CPU& cpu, reg32 eax, double top)
 {
     Guest g(app, cpu);
     const fe::Frame frame(g, cpu, 0x1c);
@@ -2500,31 +2451,31 @@ reg32 frontend::menz::fdivBugCheck(App* app, CPU& cpu)
     constexpr reg32 kByLow = 0x80000000, kByHigh = 0x4147ffff;      // 3145727.0
     constexpr reg32 kTinyLow = 0xe2308c3a, kTinyHigh = 0x3e45798e;  // 1e-8
     if (g.byte(kFpuKind) < 3)
-        return g.eax();
-    // The division's slot on the x87, as the original has it free: the x87's depth its callees see.
-    x86::FPU& fpu = g.fpu();
-    fpu.push(Float(fpu.st(0)));
-    g.call(0x52643c, args({ kBigLow, kBigHigh, kByLow, kByHigh }));
-    const Float top = fpu.take();
-    fpu.st(0) = top;
-    g.call(0x5267ff, args({ cpu.eax, cpu.edx, kByLow, kByHigh }));
-    g.call(0x526642, args({ kBigLow, kBigHigh, cpu.eax, cpu.edx }));
-    const reg32 order = guest::direct<0x52699c, doubleCompare>(app, cpu, cpu.eax, cpu.edx, kTinyLow, kTinyHigh);
+        return eax;
+    // The division's slot on the x87 holds a copy of the caller's st(0), `top`, for the callee.
+    // Each answer's high word stays where the call left it: in edx, the first dividend's (the x87's
+    // way hands back only the low word in eax).
+    const reg32 quotient = guest::direct<0x52643c, doubleDivide>(app, cpu, kBigLow, kBigHigh, kByLow, kByHigh, top);
+    const reg32 product = guest::direct<0x5267ff, doubleMultiply>(app, cpu, quotient, kBigHigh, kByLow, kByHigh);
+    const reg32 difference = guest::direct<0x526642, doubleSubtract>(app, cpu, kBigLow, kBigHigh, product, kBigHigh);
+    const reg32 order = guest::direct<0x52699c, doubleCompare>(app, cpu, difference, kBigHigh, kTinyLow, kTinyHigh);
     if (sreg32(order) > 0)
         g.setByte(kFdivBug, g.byte(kFdivBug) | 1);
     return order;
 }
 
-void frontend::fdivBugCheck(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::fdivBugCheck(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_51f2a0", 0, 0, nullptr, 0, kBx | kCx | kDx };
-    runWhole(app, cpu, site, [&](Guest&) { return menz::fdivBugCheck(app, cpu); });
+    const reg32 eax = args.eax;
+    const double top = args.floatIn[0];
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menz::fdivBugCheck(app, cpu, eax, top); });
 }
 
 /* sub_52700c: `top` (st(0)) divided by a double on the stack, safe from the bug: through the
  * runtime's careful division (sub_526f87), whose two x87 slots are made if the stack has
  * room, else `below` (st(1)) kept in memory for it.  A NaN or an infinity simply divides.  The
- * quotient, which its adapter leaves in st(0); st(1) as it was (a double through a long double
+ * quotient, which its thunk leaves in st(0); st(1) as it was (a double through a long double
  * is itself), eax as it came. */
 double frontend::menz::safeDivide(App* app, CPU& cpu, double top, double below, reg32 divisorLow, reg32 divisorHigh)
 {
@@ -2533,52 +2484,57 @@ double frontend::menz::safeDivide(App* app, CPU& cpu, double top, double below, 
     const Float divisor = Float(doubleOf(divisorHigh, divisorLow));
     if ((divisorHigh & 0x7ff00000) == 0x7ff00000)
         return fp::div(Float(top), divisor);
-    if ((g.fpu().status.word & 0x3800) == 0)
-    {
-        cpu.esp -= 0xc;
-        g.app()->getMemory<x86::IEEEf80>(cpu.esp) = Float(below);
-    }
+    // (the x87's stack always has room here: its status word's top is never moved)
+    cpu.esp -= 0xc;
+    g.app()->getMemory<x86::IEEEf80>(cpu.esp) = Float(below);
     const double quotient = guest::direct<0x526f87, safeDivideCall>(app, cpu, top, double(divisor));
     if (cpu.terminate)
         throw fe::Terminated();
     return quotient;
 }
 
-void frontend::safeDivide(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::safeDivide(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_52700c", 8, 0, nullptr, 0, 0 };
     const reg32 divisorLow = stackWord(app, cpu, 0), divisorHigh = stackWord(app, cpu, 1);
-    runWhole(app, cpu, site, [&](Guest&) {
-        const reg32 eax = cpu.eax;  // kept
-        const double below = double(cpu.fpu.st(1));
-        const double quotient = menz::safeDivide(app, cpu, double(cpu.fpu.st(0)), below, divisorLow, divisorHigh);
-        cpu.fpu.st(0) = x86::Float(quotient);
-        cpu.fpu.st(1) = x86::Float(below);  // as the code stores it back
+    const double top = args.floatIn[0], below = args.floatIn[1];
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
+        const reg32 eax = args.eax;  // kept
+        const double quotient = menz::safeDivide(app, cpu, top, below, divisorLow, divisorHigh);
+        // st(0) the quotient, st(1) as it was (stored back as it came).
+        args.floatsTaken = 1;
+        args.floatSet = true;
+        args.floatResult = quotient;
         return eax;
     });
 }
 
 /* sub_526f87: `divisor` (st(0)) and `dividend` (st(1)) put in memory as long doubles for the
  * careful division (sub_5269d4, by address: a stub, see native_dead), and its answer back, which
- * the adapter leaves in their place; eax as the division leaves it. */
+ * the thunk leaves in their place; eax as the division leaves it. */
 double frontend::menz::safeDivideCall(App* app, CPU& cpu, double dividend, double divisor)
 {
     Guest g(app, cpu);
     const fe::Frame frame(g, cpu, 0x2c);
     g.app()->getMemory<x86::IEEEf80>(g.frame()) = Float(divisor);
     g.app()->getMemory<x86::IEEEf80>(g.frame() + 0xc) = Float(dividend);
-    g.call(0x5269d4);
-    return double(g.fpu().take());
+    x86::Args none;
+    if (!guest::pointerCall(app, cpu, 0x5269d4, none))
+        throw fe::Terminated();
+    return none.floatResult;
 }
 
-void frontend::safeDivideCall(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::safeDivideCall(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_526f87", 0, 0, nullptr, 0, 0 };
-    runWhole(app, cpu, site, [&](Guest&) {
-        const double answer = menz::safeDivideCall(app, cpu, double(cpu.fpu.st(1)), double(cpu.fpu.st(0)));
-        cpu.fpu.count -= 1;
-        cpu.fpu.st(0) = x86::Float(answer);
-        return cpu.eax;
+    const double divisor = args.floatIn[0], dividend = args.floatIn[1];
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
+        const double answer = menz::safeDivideCall(app, cpu, dividend, divisor);
+        // the two operands replaced by the answer
+        args.floatsTaken = 2;
+        args.floatSet = true;
+        args.floatResult = answer;
+        return args.eax;
     });
 }
 

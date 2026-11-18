@@ -8,7 +8,7 @@
 #include <optional>
 
 /* native_aiplan.cpp's typed functions that other files call as C++ (guest::direct), and how the
- * game's code calls each by address (ByAddress, for the check's stand-ins).  Those that take `cpu`
+ * game's code calls each by address.  Those that take `cpu`
  * may call the game's other functions by address on it, and are false or nullopt when the game
  * stopped in one. */
 namespace nfs3hp
@@ -17,7 +17,7 @@ namespace aiplan
 {
 
 // The game's 0x40c590: traffic car set going (its way along the track, the player car it keeps near), then placed.
-bool placeTraffic(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 car);
+std::optional<x86::reg32> placeTraffic(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 car);
 // The game's 0x40c9f0: a traffic car's driver, each tick (its loading steps, then its state's).
 bool driveTraffic(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 car);
 // The game's 0x40cb70: a traffic car reset (its record cleared, then linked).
@@ -26,6 +26,9 @@ bool resetTraffic(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 car);
 bool putOnTrack(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 car);
 // The game's 0x40ce70: a pulled-over car brought to a stop once on the ground and gripping; whether it was.
 std::optional<bool> stopPulledOver(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 car);
+// stopPulledOver with the eax the code leaves: the car, with the grip's compare's status word in ax where that
+// ended it, or the last scaling's; nullopt when the game stopped.
+std::optional<x86::reg32> stopPulledOverLeaving(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 car);
 // stopPulledOver for a caller that asks only whether the game went on.
 inline bool brakeToStopDone(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 car)
 {
@@ -62,6 +65,8 @@ x86::reg32 nodeAheadBySpeed(win32::WinApplication* app, x86::reg32 car, float sc
 x86::reg32 roadSlice(win32::WinApplication* app, x86::reg32 node, float offset);
 // The game's 0x40e350: car's three road slices (its middle's and its sides') written to it.
 void findCarSlices(win32::WinApplication* app, x86::reg32 car);
+// The same, and the eax the code leaves: the last slice.
+x86::reg32 findCarSlicesLeaving(win32::WinApplication* app, x86::reg32 car);
 // The game's 0x40eca0: whether the track's road is wide.
 x86::reg32 trackRoadWide(win32::WinApplication* app);
 // The game's 0x40ed40: the traffic's speed at node.
@@ -99,441 +104,33 @@ x86::reg32 animationSpans(win32::WinApplication* app, x86::reg32 slot, x86::reg3
 std::optional<x86::reg32> stepAnimation(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 slot,
                                         x86::reg32 blendWord, x86::reg32 pose);
 
+// resetTraffic with the eax the code leaves (0x404690's); nullopt when the game stopped.
+std::optional<x86::reg32> resetTrafficEax(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 car);
+// The game's 0x40da30: car's lane votes added up and the lane taken; eax as the code leaves it is no one's to read.
+void takeLane(win32::WinApplication* app, x86::reg32 car);
+// The game's 0x40daf0: car steered for its lane; eax as the code leaves it is no one's to read.
+void steerForLane(win32::WinApplication* app, x86::reg32 car);
+// The game's 0x40e220: the lane bits of `node` in slice `slice` (eax; 0 for none).
+x86::reg32 hasLane(win32::WinApplication* app, x86::reg32 node, x86::reg32 slice);
+// The game's 0x40ec40: the speeds table freed; eax, or `eax` as it came where there was none to free.
+std::optional<x86::reg32> freeSpeeds(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 eax);
+// The game's 0x40f6d0: path's place at `time` (mode bit 1: played once), the time within the path to
+// `timeOut` and its length to `lengthOut`; 1.
+std::optional<x86::reg32> placeAt(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 path, x86::reg32 mode,
+                                  std::int32_t time, x86::reg32 blendWord, x86::reg32 timeOut, x86::reg32 lengthOut);
+// The game's 0x40f8d0: the end pose of path `index` by `flags`, its place to `placeOut`, its matrix to `pose`.
+bool endPose(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 index, x86::reg32 flags, x86::reg32 placeOut,
+             x86::reg32 pose);
+// The game's 0x40fac0: whether slot is playing.
+bool animationOn(win32::WinApplication* app, x86::reg32 slot);
+// The game's 0x40fb10: the sound brought up at the race's start; `callerEdx` as its library start tests it.
+bool bringUpSound(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 callerEdx);
+// The game's 0x40fcf0: the sound restarted for `setup`; `callerEdx` as its library start tests it.
+bool restartLibrary(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 setup, x86::reg32 callerEdx);
 }  // namespace aiplan
 
 namespace guest
 {
-
-// The car in eax (so for each below with a car, a slice, a node, a slot, a path: in eax).
-template <>
-struct ByAddress<aiplan::placeTraffic>
-{
-    template <x86::reg32 Address>
-    static bool call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 car)
-    {
-        return watcom(app, cpu, Address, {car});
-    }
-};
-
-template <>
-struct ByAddress<aiplan::driveTraffic>
-{
-    template <x86::reg32 Address>
-    static bool call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 car)
-    {
-        return watcom(app, cpu, Address, {car});
-    }
-};
-
-template <>
-struct ByAddress<aiplan::resetTraffic>
-{
-    template <x86::reg32 Address>
-    static bool call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 car)
-    {
-        return watcom(app, cpu, Address, {car});
-    }
-};
-
-template <>
-struct ByAddress<aiplan::putOnTrack>
-{
-    template <x86::reg32 Address>
-    static bool call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 car)
-    {
-        return watcom(app, cpu, Address, {car});
-    }
-};
-
-template <>
-struct ByAddress<aiplan::brakeToStopDone>
-{
-    template <x86::reg32 Address>
-    static bool call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 car)
-    {
-        return watcom(app, cpu, Address, {car});
-    }
-};
-
-template <>
-struct ByAddress<aiplan::scoreObstacles>
-{
-    template <x86::reg32 Address>
-    static void call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 car)
-    {
-        watcom(app, cpu, Address, {car});
-    }
-};
-
-template <>
-struct ByAddress<aiplan::scoreCars>
-{
-    template <x86::reg32 Address>
-    static bool call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 car)
-    {
-        return watcom(app, cpu, Address, {car});
-    }
-};
-
-// Nothing handed over.
-template <>
-struct ByAddress<aiplan::penaliseCloseCars>
-{
-    template <x86::reg32 Address>
-    static void call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        watcom(app, cpu, Address, {});
-    }
-};
-
-template <>
-struct ByAddress<aiplan::beginPlanning>
-{
-    template <x86::reg32 Address>
-    static bool call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 car)
-    {
-        return watcom(app, cpu, Address, {car});
-    }
-};
-
-template <>
-struct ByAddress<aiplan::pickLane>
-{
-    template <x86::reg32 Address>
-    static bool call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 car)
-    {
-        return watcom(app, cpu, Address, {car});
-    }
-};
-
-template <>
-struct ByAddress<aiplan::soundHorn>
-{
-    template <x86::reg32 Address>
-    static void call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 car)
-    {
-        watcom(app, cpu, Address, {car});
-    }
-};
-
-template <>
-struct ByAddress<aiplan::endHorn>
-{
-    template <x86::reg32 Address>
-    static void call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 car)
-    {
-        watcom(app, cpu, Address, {car});
-    }
-};
-
-// The step's answer in eax.
-template <>
-struct ByAddress<aiplan::stepLoading>
-{
-    template <x86::reg32 Address>
-    static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 car)
-    {
-        return watcomEax(app, cpu, Address, {car});
-    }
-};
-
-// The speed left on the x87's stack.
-template <>
-struct ByAddress<aiplan::targetSpeed>
-{
-    template <x86::reg32 Address>
-    static float call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 slice)
-    {
-        return float(watcomFloat(app, cpu, Address, {slice}).value_or(x86::Float(0.0)));
-    }
-};
-
-// The kind in eax.
-template <>
-struct ByAddress<aiplan::roadKind>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 slice)
-    {
-        watcom(app, cpu, Address, {slice});
-        return cpu.eax;
-    }
-};
-
-// The node in eax, `from` in edx; the gap in eax.
-template <>
-struct ByAddress<aiplan::nodesBetween>
-{
-    template <x86::reg32 Address>
-    static std::int32_t call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 node, x86::reg32 from)
-    {
-        watcom(app, cpu, Address, {node, from});
-        return std::int32_t(cpu.eax);
-    }
-};
-
-// The steps in edx; the node in eax.
-template <>
-struct ByAddress<aiplan::nodeAhead>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 car, x86::reg32 steps)
-    {
-        watcom(app, cpu, Address, {car, steps});
-        return cpu.eax;
-    }
-};
-
-// Stdcall: the scale's bits, the least and the most pushed (in that order up the stack); the node in eax.
-template <>
-struct ByAddress<aiplan::nodeAheadBySpeed>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 car, float scale, std::int32_t least,
-                           std::int32_t most)
-    {
-        x86::reg32 bits;
-        std::memcpy(&bits, &scale, sizeof bits);
-        const KeptRegisters kept(cpu);
-        cpu.eax = car;
-        guest::call(app, cpu, Address, {bits, x86::reg32(least), x86::reg32(most)});
-        return cpu.eax;
-    }
-};
-
-// Stdcall: the offset's bits pushed; the slice in eax.
-template <>
-struct ByAddress<aiplan::roadSlice>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 node, float offset)
-    {
-        x86::reg32 bits;
-        std::memcpy(&bits, &offset, sizeof bits);
-        const KeptRegisters kept(cpu);
-        cpu.eax = node;
-        guest::call(app, cpu, Address, {bits});
-        return cpu.eax;
-    }
-};
-
-template <>
-struct ByAddress<aiplan::findCarSlices>
-{
-    template <x86::reg32 Address>
-    static void call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 car)
-    {
-        watcom(app, cpu, Address, {car});
-    }
-};
-
-// Nothing handed over; the answer in eax.
-template <>
-struct ByAddress<aiplan::trackRoadWide>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        watcom(app, cpu, Address, {});
-        return cpu.eax;
-    }
-};
-
-// The speed left on the x87's stack.
-template <>
-struct ByAddress<aiplan::trafficSpeed>
-{
-    template <x86::reg32 Address>
-    static float call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 node)
-    {
-        return float(watcomFloat(app, cpu, Address, {node}).value_or(x86::Float(0.0)));
-    }
-};
-
-// Nothing handed over; the speed left on the x87's stack.
-template <>
-struct ByAddress<aiplan::trackTuningSpeed>
-{
-    template <x86::reg32 Address>
-    static float call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        return float(watcomFloat(app, cpu, Address, {}).value_or(x86::Float(0.0)));
-    }
-};
-
-// Nothing handed over; the distance in eax.
-template <>
-struct ByAddress<aiplan::trackTuningDistance>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        watcom(app, cpu, Address, {});
-        return cpu.eax;
-    }
-};
-
-// Nothing handed over; the word in eax.
-template <>
-struct ByAddress<aiplan::trackTuningFirst>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        watcom(app, cpu, Address, {});
-        return cpu.eax;
-    }
-};
-
-// Node a in eax, b in edx; the product left on the x87's stack.
-template <>
-struct ByAddress<aiplan::directionDot>
-{
-    template <x86::reg32 Address>
-    static x86::Float call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 a, x86::reg32 b)
-    {
-        return watcomFloat(app, cpu, Address, {a, b}).value_or(x86::Float(0.0));
-    }
-};
-
-// `from` in edx, `run` in ebx; 1 or 0 in eax.
-template <>
-struct ByAddress<aiplan::nodeInRun>
-{
-    template <x86::reg32 Address>
-    static bool call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 node, x86::reg32 from, x86::reg32 run)
-    {
-        watcom(app, cpu, Address, {node, from, run});
-        return cpu.eax != 0;
-    }
-};
-
-// The distance in edx; 1 or 0 in eax.
-template <>
-struct ByAddress<aiplan::carInReach>
-{
-    template <x86::reg32 Address>
-    static bool call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 car, x86::reg32 distance)
-    {
-        watcom(app, cpu, Address, {car, distance});
-        return cpu.eax != 0;
-    }
-};
-
-// Nothing handed over; the answer in eax.
-template <>
-struct ByAddress<aiplan::answerOne>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        watcom(app, cpu, Address, {});
-        return cpu.eax;
-    }
-};
-
-// 1 or 0 in eax.
-template <>
-struct ByAddress<aiplan::boxedIn>
-{
-    template <x86::reg32 Address>
-    static bool call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 car)
-    {
-        watcom(app, cpu, Address, {car});
-        return cpu.eax != 0;
-    }
-};
-
-// Nothing handed over.
-template <>
-struct ByAddress<aiplan::freePaths>
-{
-    template <x86::reg32 Address>
-    static bool call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        return watcom(app, cpu, Address, {});
-    }
-};
-
-// The slot in eax.
-template <>
-struct ByAddress<aiplan::playAnimation>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 path)
-    {
-        watcom(app, cpu, Address, {path});
-        return cpu.eax;
-    }
-};
-
-// The mode in edx, the flags in ebx, the third word in ecx.
-template <>
-struct ByAddress<aiplan::setAnimation>
-{
-    template <x86::reg32 Address>
-    static void call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 slot, x86::reg32 mode, x86::reg32 flags,
-                     x86::reg32 third)
-    {
-        watcom(app, cpu, Address, {slot, mode, flags, third});
-    }
-};
-
-// The answer in eax.
-template <>
-struct ByAddress<aiplan::endAnimation>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 slot)
-    {
-        watcom(app, cpu, Address, {slot});
-        return cpu.eax;
-    }
-};
-
-// Stdcall: the mode in edx, the time in ebx, `blendWord` in ecx, the matrix's address pushed; the answer in eax.
-template <>
-struct ByAddress<aiplan::poseAt>
-{
-    template <x86::reg32 Address>
-    static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 path, x86::reg32 mode,
-                                          std::int32_t time, x86::reg32 blendWord, x86::reg32 matrix)
-    {
-        const KeptRegisters kept(cpu);
-        cpu.eax = path;
-        cpu.edx = mode;
-        cpu.ebx = x86::reg32(time);
-        cpu.ecx = blendWord;
-        if (!guest::call(app, cpu, Address, {matrix}))
-            return std::nullopt;
-        return cpu.eax;
-    }
-};
-
-// The frame's address in edx, the spans' in ebx; the spans in eax.
-template <>
-struct ByAddress<aiplan::animationSpans>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 slot, x86::reg32 frameOut,
-                           x86::reg32 spansOut)
-    {
-        watcom(app, cpu, Address, {slot, frameOut, spansOut});
-        return cpu.eax;
-    }
-};
-
-// `blendWord` in edx, the pose's address in ebx; the answer in eax.
-template <>
-struct ByAddress<aiplan::stepAnimation>
-{
-    template <x86::reg32 Address>
-    static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 slot,
-                                          x86::reg32 blendWord, x86::reg32 pose)
-    {
-        return watcomEax(app, cpu, Address, {slot, blendWord, pose});
-    }
-};
 
 }  // namespace guest
 }  // namespace nfs3hp

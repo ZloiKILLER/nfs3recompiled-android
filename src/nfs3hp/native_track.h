@@ -4,9 +4,9 @@
 #include "native_guest.h"
 
 /* native_track.cpp's typed functions that other files call as C++ (guest::direct), and how the
- * game's code calls each by address (ByAddress, for the check's stand-ins).  Each may call the
+ * game's code calls each by address.  Each may call the
  * game's other functions by address on `cpu`, and is false or nullopt when the game stopped in one;
- * one without `cpu` calls nothing, and through ByAddress leaves cpu.terminate to say it. */
+ * one without `cpu` calls nothing, and by address leaves cpu.terminate to say it. */
 namespace nfs3hp
 {
 namespace track
@@ -60,192 +60,20 @@ bool startViewsOver(win32::WinApplication* app, x86::CPU& cpu);
 // The game's 0x41e070: whether block `index` is drawn for the camera.
 std::optional<bool> blockDrawn(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 camera, x86::reg32 index);
 
+// The game's 0x418cc0: the file or address at `file` opened with the shell; false when the game stopped (eax 1).
+bool openWithShell(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 file);
+// The game's 0x41bb50: the ambient sounds around the camera; eax as the code leaves it.
+std::optional<x86::reg32> ambientAround(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 camera);
+// The game's 0x41bc20: whether the track's ambient sounds play (eax 1 or 0).
+bool ambientPlays(win32::WinApplication* app);
+// The game's 0x41d870: View Distance the next of its four, the views' distances worked out again; eax as it leaves it.
+std::optional<x86::reg32> viewDistanceOnward(win32::WinApplication* app, x86::CPU& cpu);
+// The game's 0x41de80: the views as a race starts; eax as the code leaves it.
+std::optional<x86::reg32> startTrackViews(win32::WinApplication* app, x86::CPU& cpu);
 }  // namespace track
 
 namespace guest
 {
-
-template <>
-struct ByAddress<track::startArena>
-{
-    template <x86::reg32 Address>
-    static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        return watcomEax(app, cpu, Address, {});
-    }
-};
-
-template <>
-struct ByAddress<track::loadTrackGeometry>
-{
-    template <x86::reg32 Address>
-    static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        return watcomEax(app, cpu, Address, {});
-    }
-};
-
-// The camera in eax, the view in edx; the group left in edx (eax the view drawn).
-template <>
-struct ByAddress<track::viewOnCameraBlock>
-{
-    template <x86::reg32 Address>
-    static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 camera,
-                                          x86::reg32 index)
-    {
-        const KeptRegisters kept(cpu);
-        cpu.eax = camera;
-        cpu.edx = index;
-        if (!guest::call(app, cpu, Address))
-            return std::nullopt;
-        return cpu.edx;
-    }
-};
-
-// The list in eax.
-template <>
-struct ByAddress<track::bracketOrdered>
-{
-    template <x86::reg32 Address>
-    static bool call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 list)
-    {
-        return watcom(app, cpu, Address, {list});
-    }
-};
-
-// The camera in eax, the list in edx, the buckets in ebx.
-template <>
-struct ByAddress<track::drawTrackBlocks>
-{
-    template <x86::reg32 Address>
-    static bool call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 camera, x86::reg32 list,
-                     x86::reg32 buckets)
-    {
-        return watcom(app, cpu, Address, {camera, list, buckets});
-    }
-};
-
-// The view in eax.
-template <>
-struct ByAddress<track::chooseView>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 index)
-    {
-        watcom(app, cpu, Address, {index});
-        return cpu.eax;
-    }
-};
-
-// The car in eax, the object in edx.
-template <>
-struct ByAddress<track::objectMoving>
-{
-    template <x86::reg32 Address>
-    static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 car,
-                                          x86::reg32 index)
-    {
-        return watcomEax(app, cpu, Address, {car, index});
-    }
-};
-
-// The distance in eax.
-template <>
-struct ByAddress<track::chooseViewDistance>
-{
-    template <x86::reg32 Address>
-    static void call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 distance)
-    {
-        watcom(app, cpu, Address, {distance});
-    }
-};
-
-// Called with `eax`, which it leaves where it clears no block.
-template <>
-struct ByAddress<track::modelsUnlimitedLeaving>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 eax)
-    {
-        watcom(app, cpu, Address, {eax});
-        return cpu.eax;
-    }
-};
-
-template <>
-struct ByAddress<track::letGoOfTrack>
-{
-    template <x86::reg32 Address>
-    static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        return watcomEax(app, cpu, Address, {});
-    }
-};
-
-template <>
-struct ByAddress<track::startObjectPool>
-{
-    template <x86::reg32 Address>
-    static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        return watcomEax(app, cpu, Address, {});
-    }
-};
-
-template <>
-struct ByAddress<track::takeTrackTextures>
-{
-    template <x86::reg32 Address>
-    static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        return watcomEax(app, cpu, Address, {});
-    }
-};
-
-// The name in eax; eax as it leaves it.
-template <>
-struct ByAddress<track::loadCollisionFile>
-{
-    template <x86::reg32 Address>
-    static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 name)
-    {
-        return watcomEax(app, cpu, Address, {name});
-    }
-};
-
-template <>
-struct ByAddress<track::stillObjects>
-{
-    template <x86::reg32 Address>
-    static bool call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        return watcom(app, cpu, Address, {});
-    }
-};
-
-template <>
-struct ByAddress<track::startViewsOver>
-{
-    template <x86::reg32 Address>
-    static bool call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        return watcom(app, cpu, Address, {});
-    }
-};
-
-// The camera in eax, the block in edx; 1 or 0 in eax.
-template <>
-struct ByAddress<track::blockDrawn>
-{
-    template <x86::reg32 Address>
-    static std::optional<bool> call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 camera, x86::reg32 index)
-    {
-        const std::optional<x86::reg32> drawn = watcomEax(app, cpu, Address, {camera, index});
-        if (!drawn)
-            return std::nullopt;
-        return *drawn != 0;
-    }
-};
 
 }  // namespace guest
 }  // namespace nfs3hp

@@ -1,4 +1,5 @@
 #include "game_settings.h"
+#include "native_game.h"
 #include "native_aiplan.h"
 #include "native_collide.h"
 #include "native_controls_pipeline.h"
@@ -10,6 +11,7 @@
 #include "native_frontend_loada.h"
 #include "native_frontend_menua.h"
 #include "native_frontend_rendd.h"
+#include "native_frontend_simb.h"
 #include "native_frontend_simd.h"
 #include "native_frontend_wata.h"
 #include "native_graphics.h"
@@ -23,6 +25,8 @@
 #include "native_windows.h"
 #include "host_threads.h"
 #include "native_watcom.h"
+#include "native_render.h"
+#include "port_timer.h"
 #include <lib/winapp.h>
 #include <winapi/types.h>
 
@@ -35,10 +39,7 @@
 #include <vector>
 
 /* The race's cars brought in and kept up, and what goes with them (the
- * game's code from 0x42c2a0 to 0x42f550).  disassemble_nfs3hp.py binds each
- * address to the function of that name here (RACELOAD_NATIVES), and the
- * generated code calls it by name.  tools/game_checks holds each against its
- * generated code.
+ * game's code from 0x42c2a0 to 0x42f550).
  *
  * The loading: [0x6fd510] cars, each a record of 0x9ac bytes at 0x5e1120 on
  * and one of 0x4ac at 0x5eabe0 on (its performance, [car + 0x528]), its
@@ -63,8 +64,8 @@
  * the spins.
  *
  * Each is a typed core -- its arguments named, its result returned, its
- * locals C++'s -- and an adapter under the game's name, for the dispatch and
- * the callers still on registers (adapts): every register but eax as the
+ * locals C++'s -- and a thunk under the game's name, for the calls through a pointer and
+ * the callers still on registers (asThunk): every register but eax as the
  * caller had it, eax what the core gives back -- what the code leaves there,
  * a callee's, a loop's count, an x87 status word in ax among it -- and the
  * x87's stack as the code leaves it.  The x87's arithmetic is fp:: in the
@@ -161,10 +162,9 @@ constexpr reg32 kThreeQuarters = 0x5373dc, kHalf = 0x5373e4, kFourFifths = 0x537
 // gives back no double); Watcom's __CHP; the messages' box closed; the
 // timers.
 constexpr reg32 kDotProduct = 0x4e01f0, kAddVectors = 0x4dffb0;
-constexpr reg32 kCarSpeed = 0x4a2bc0, kChop = 0x4dfd56;
+constexpr reg32 kChop = 0x4dfd56;
 constexpr reg32 kCloseMessageBox = 0x436cf0;
 constexpr reg32 kEnterCriticalSection = 0x5344b8, kLeaveCriticalSection = 0x534588;
-constexpr reg32 kAddTimer = 0x48ee30, kRemoveTimer = 0x48ee90;
 
 reg16 half(win32::WinApplication* app, reg32 address)
 {
@@ -195,10 +195,9 @@ struct Status
     bool below, equal;
 };
 
-Status compare(x86::CPU& cpu, const x86::Float& a, const x86::Float& b)
+Status compare(const x86::Float& a, const x86::Float& b)
 {
-    cpu.fpu.compare(a, b);
-    const reg16 word = cpu.fpu.status.word;
+    const reg16 word = fp::compare(a, b);
     return {word, (word & 0x100) != 0, (word & 0x4000) != 0};
 }
 
@@ -234,7 +233,7 @@ private:
     CPU& cpu_;
 };
 
-/* An adapter's run of its core: every register but eax as the caller had it
+/* A thunk's run of its core: every register but eax as the caller had it
  * after it (the code pushes and pops what it uses; its other registers are
  * its arguments, which no caller reads), eax what the core gives -- a core
  * that gives nothing, or answers only whether the game went on (a bool),
@@ -250,13 +249,15 @@ struct IsOptional<std::optional<T>> : std::true_type
 {
 };
 
+using guest::EspKept;
+
 template <typename Core>
-bool adapts(CPU& cpu, Core&& core, reg32 popped = 0)
+bool asThunk(CPU& cpu, x86::Args& args, Core&& core, reg32 popped = 0)
 {
     using Result = std::decay_t<decltype(core())>;
     std::optional<reg32> left;
     {
-        const guest::KeptRegisters kept(cpu);
+        const EspKept kept(cpu);
         if constexpr (std::is_void_v<Result>)
             core();
         else if constexpr (std::is_same_v<Result, bool>)
@@ -275,7 +276,7 @@ bool adapts(CPU& cpu, Core&& core, reg32 popped = 0)
             left = reg32(core());
     }
     if (left)
-        cpu.eax = *left;
+        args.eax = *left;
     cpu.esp += 4 + popped;
     return true;
 }
@@ -299,7 +300,7 @@ public:
     ~GuestFrame() { cpu_.esp = esp_; }
     reg32 operator-(reg32 offset) const { return base_ - offset; }
     /* The registers the code pushes, the first highest, where it pushes
-     * them: for a callee's stand-in that logs the words past a frame's. */
+     * them. */
     void pushed(App* app, std::initializer_list<reg32> registers) const
     {
         reg32 slot = esp_;
@@ -345,46 +346,28 @@ constexpr reg32 kBlockFlags = 0x10;
 
 
 /* A native_frontend_* file's typed core called as C++ (guest::direct): nothing (false) when the
- * game stopped in it (its calls into the game throw fe::Terminated).  tools/game_checks does not
- * build those files: there it goes by address, through its ByAddress, as the game's code calls it,
- * every register but eax kept.  A reg32 result is the eax the function leaves, given back; eax is
- * spoilt there after it, so that code still reading what the callee left in eax differs there. */
+ * game stopped in it (its calls into the game throw fe::Terminated). */
 template <reg32 Address, auto Core, typename... Args>
 auto feCore(App* app, CPU& cpu, Args... args)
 {
-    const auto run = [&] {
-#ifdef NFS_GAME_CHECKS
-        const guest::KeptRegisters kept(cpu);
-        return guest::ByAddress<Core>::template call<Address>(app, cpu, args...);
-#else
-        return guest::direct<Address, Core>(app, cpu, args...);
-#endif
-    };
-    using Result = decltype(run());
-    const auto spoil = [&] {
-#ifdef NFS_GAME_CHECKS
-        cpu.eax = 0x5b0115edu;
-#endif
-    };
+    using Result = decltype(guest::direct<Address, Core>(app, cpu, args...));
     if constexpr (std::is_void_v<Result>)
     {
         try
         {
-            run();
+            guest::direct<Address, Core>(app, cpu, args...);
         }
         catch (const fe::Terminated&)
         {
             return false;
         }
-        spoil();
         return !cpu.terminate;
     }
     else
     {
         try
         {
-            const Result result = run();
-            spoil();
+            const Result result = guest::direct<Address, Core>(app, cpu, args...);
             return cpu.terminate ? std::optional<Result>() : std::optional<Result>(result);
         }
         catch (const fe::Terminated&)
@@ -399,21 +382,6 @@ auto feCore(App* app, CPU& cpu, Args... args)
 // other typed files' as C++ (guest::direct, or feCore for the menu files').
 // Each gives back the eax it leaves where a caller of the code reads it on;
 // false or nullopt when the game stopped in one.
-
-/* A call by address with `registers` (eax, edx, ebx, ecx in turn) and `words` pushed, every
- * register but eax kept: the eax it leaves. */
-std::optional<reg32> callGame(App* app, CPU& cpu, reg32 target, std::initializer_list<reg32> registers,
-                              std::initializer_list<reg32> words = {})
-{
-    const guest::KeptRegisters kept(cpu);
-    reg32* const into[] = {&cpu.eax, &cpu.edx, &cpu.ebx, &cpu.ecx};
-    unsigned i = 0;
-    for (const reg32 value : registers)
-        *into[i++] = value;
-    if (!guest::call(app, cpu, target, words))
-        return std::nullopt;
-    return cpu.eax;
-}
 
 /* The loading's stop check (0x4a33d0, loada's). */
 std::optional<reg32> loadingTick(App* app, CPU& cpu)
@@ -449,24 +417,22 @@ std::optional<reg32> freeShapes(App* app, CPU& cpu, reg32 car)
 }
 
 /* The event `event` set (0x4dfb20), eax what is posted with it as the code
- * has it then (its stand-in's argument); what the setting gives back. */
+ * has it then; what the setting gives back. */
 std::optional<reg32> postEvent(App* app, CPU& cpu, reg32 posted, reg32 event)
 {
-    const guest::KeptRegisters kept(cpu);
-    cpu.eax = posted;
+    (void)posted;
     return guest::direct<0x4dfb20, ea::eventPosted>(app, cpu, event);
 }
 
 /* EnterCriticalSection or LeaveCriticalSection (`Function`) of the lock
- * `lock`: the port's own, called as C++ (native_windows.h); in the check
- * through its import's slot `Slot`.  The eax it leaves: `leftover`, the
+ * `lock`: the port's own, called as C++ (native_windows.h).  The eax it leaves: `leftover`, the
  * code's, which the port's void function leaves as it is. */
 template <reg32 Slot, auto Function>
 std::optional<reg32> lockCall(App* app, CPU& cpu, reg32 leftover, reg32 lock)
 {
-    const guest::KeptRegisters kept(cpu);
-    cpu.eax = leftover;
-    return guest::windows<Slot, Function>(app, cpu, lock);
+    if (!guest::windows<Slot, Function>(app, cpu, lock))
+        return std::nullopt;
+    return leftover;
 }
 
 /* The message lines' lock ([[0x5537a0]]) taken or let go of, the head the
@@ -476,12 +442,6 @@ std::optional<reg32> lockLines(App* app, CPU& cpu)
 {
     const reg32 head = at(app, kLines);
     return lockCall<Slot, Function>(app, cpu, head, at(app, head + kHeadLock));
-}
-
-/* A call of the game's on the car `car` in eax. */
-std::optional<reg32> carCall(App* app, CPU& cpu, reg32 target, reg32 car)
-{
-    return guest::watcomEax(app, cpu, target, {car});
 }
 
 /* The car's block of driving state cleared (0x4285f0, loada's). */
@@ -512,13 +472,13 @@ struct Product
 
 /* The dot product of the vectors at `a` and `b` (0x4e01f0), by address, for
  * a caller that reads what it leaves in eax, which vertices::dotProduct does
- * not give back (the check's row for it models it). */
+ * not give back. */
 std::optional<Product> dotProduct(App* app, CPU& cpu, reg32 a, reg32 b)
 {
-    const std::optional<reg32> left = guest::watcomEax(app, cpu, kDotProduct, {a, b});
-    if (!left)
+    const double dot = guest::direct<0x4e01f0, vertices::dotProduct>(app, cpu, a, b);
+    if (cpu.terminate)
         return std::nullopt;
-    return Product{cpu.fpu.take(), *left};
+    return Product{x86::Float(dot), a};  // eax as it leaves it: its first word
 }
 
 /* The same as C++, where nothing reads eax after it. */
@@ -547,13 +507,18 @@ std::optional<reg32> readPerformance(App* app, CPU& cpu, reg32 record, reg32 tex
 /* sprintf (cdecl): its words, the buffer first. */
 bool print(App* app, CPU& cpu, std::initializer_list<reg32> words)
 {
-    return callGame(app, cpu, kSprintf, {}, words).has_value();
+    const reg32* const word = words.begin();
+    guest::Words rest({});
+    for (std::size_t i = 2; i < words.size(); ++i)
+        rest.word[rest.count++] = word[i];
+    guest::direct<0x4df690, watcom::clib::sprintf>(app, cpu, word[0], word[1], rest);
+    return !cpu.terminate;
 }
 
 /* 0x4b7d30: the car's shapes made from the .viv `viv`. */
 bool carShapes(App* app, CPU& cpu, reg32 car, reg32 viv)
 {
-    return guest::watcom(app, cpu, kCarShapes, {car, viv});
+    return guest::direct<0x4b7d30, render::carTexturesMade>(app, cpu, car, viv);
 }
 
 /* loadFile: the file at `path` loaded whole into a block with the flags; the
@@ -566,13 +531,19 @@ std::optional<reg32> loadFile(App* app, CPU& cpu, reg32 path, reg32 flags)
 /* 0x4e070c: `bytes` bytes at `to` zeroed; the eax it leaves. */
 std::optional<reg32> fillZero(App* app, CPU& cpu, reg32 to, reg32 bytes)
 {
-    return guest::watcomEax(app, cpu, kFillZero, {to, bytes});
+    const reg32 left = guest::direct<0x4e070c, ea::clearBytes>(app, cpu, to, bytes);
+    if (cpu.terminate)
+        return std::nullopt;
+    return left;
 }
 
 /* 0x4a2bc0: a speed of the car's, off the x87's stack. */
 std::optional<Float> carSpeed(App* app, CPU& cpu, reg32 car)
 {
-    return guest::watcomFloat(app, cpu, kCarSpeed, {car});
+    const std::optional<double> speed = feCore<0x4a2bc0, frontend::simb::offsetAcrossValue>(app, cpu, car);
+    if (!speed)
+        return std::nullopt;
+    return Float(*speed);
 }
 
 /* aiplan::roadSliceIndex (stdcall): the road's slice of the node `node` at
@@ -612,7 +583,8 @@ bool addVectors(App* app, CPU& cpu, reg32 a, reg32 b, reg32 out)
 /* The same by address (1, `a`, `b`, `out`), as the collisions' code calls it. */
 bool addVectorsByAddress(App* app, CPU& cpu, reg32 a, reg32 b, reg32 out)
 {
-    return guest::watcom(app, cpu, kAddVectors, {1, a, b, out});
+    guest::direct<0x4dffb0, vertices::offsetVectorList<true>>(app, cpu, 1, a, b, out);
+    return !cpu.terminate;
 }
 
 /* 0x4e0050 (stdcall): the vector at `from` scaled by the float of those bits
@@ -726,71 +698,71 @@ std::optional<reg32> waitEvent(App* app, CPU& cpu, reg32 event)
  * tick of the game's timer, or no longer; the eax each leaves. */
 std::optional<reg32> addTimer(App* app, CPU& cpu, reg32 function)
 {
-    return guest::watcomEax(app, cpu, kAddTimer, {function});
+    return guest::direct<0x48ee30, port::timerCallbackAdded>(app, cpu, function);
 }
 
 std::optional<reg32> removeTimer(App* app, CPU& cpu, reg32 function)
 {
-    return guest::watcomEax(app, cpu, kRemoveTimer, {function});
+    return guest::direct<0x48ee90, port::timerCallbackRemoved>(app, cpu, function);
 }
 
 }  // namespace
 
-void loadCarPerformance(win32::WinApplication* app, x86::CPU& cpu);
-void loadRaceCar(win32::WinApplication* app, x86::CPU& cpu);
-void setCarHandlers(win32::WinApplication* app, x86::CPU& cpu);
-void freeCarShapes(win32::WinApplication* app, x86::CPU& cpu);
-void restartRaceCars(win32::WinApplication* app, x86::CPU& cpu);
-void clearCarSlots(win32::WinApplication* app, x86::CPU& cpu);
-void clearRaceCounts(win32::WinApplication* app, x86::CPU& cpu);
-void clearCarList(win32::WinApplication* app, x86::CPU& cpu);
-void loadRaceCars(win32::WinApplication* app, x86::CPU& cpu);
-void setTimeStep(win32::WinApplication* app, x86::CPU& cpu);
-void addCarTasks(win32::WinApplication* app, x86::CPU& cpu);
-void openCarViv(win32::WinApplication* app, x86::CPU& cpu);
-void closeCarViv(win32::WinApplication* app, x86::CPU& cpu);
-void removeCarTasks(win32::WinApplication* app, x86::CPU& cpu);
-void countLaps(win32::WinApplication* app, x86::CPU& cpu);
-void carAxesSpeed(win32::WinApplication* app, x86::CPU& cpu);
-void carForwardSpeed(win32::WinApplication* app, x86::CPU& cpu);
-void carRaceDistance(win32::WinApplication* app, x86::CPU& cpu);
-void updateRaceCars(win32::WinApplication* app, x86::CPU& cpu);
-void frameFraction(win32::WinApplication* app, x86::CPU& cpu);
-void placeHeadlights(win32::WinApplication* app, x86::CPU& cpu);
-void placeCarShadow(win32::WinApplication* app, x86::CPU& cpu);
-void sortRaceCars(win32::WinApplication* app, x86::CPU& cpu);
-void emptyHook(win32::WinApplication* app, x86::CPU& cpu);
-void emptyHook2(win32::WinApplication* app, x86::CPU& cpu);
-void showMessage(win32::WinApplication* app, x86::CPU& cpu);
-void sendMessage(win32::WinApplication* app, x86::CPU& cpu);
-void openMessages(win32::WinApplication* app, x86::CPU& cpu);
-void closeMessages(win32::WinApplication* app, x86::CPU& cpu);
-void clearMessages(win32::WinApplication* app, x86::CPU& cpu);
-void sendTypedMessage(win32::WinApplication* app, x86::CPU& cpu);
-void newMessageLine(win32::WinApplication* app, x86::CPU& cpu);
-void freeMessageLine(win32::WinApplication* app, x86::CPU& cpu);
-void insertMessageLine(win32::WinApplication* app, x86::CPU& cpu);
-void freeMessageLines(win32::WinApplication* app, x86::CPU& cpu);
-void clearMessageLines(win32::WinApplication* app, x86::CPU& cpu);
-void showMessageLines(win32::WinApplication* app, x86::CPU& cpu);
-void appendMessageLine(win32::WinApplication* app, x86::CPU& cpu);
-void closeMessageLines(win32::WinApplication* app, x86::CPU& cpu);
-void openMessageLines(win32::WinApplication* app, x86::CPU& cpu);
-void raceControlsThread(win32::WinApplication* app, x86::CPU& cpu);
-void wakeRaceControls(win32::WinApplication* app, x86::CPU& cpu);
-void raceControlsTick(win32::WinApplication* app, x86::CPU& cpu);
-void startRaceControlsTick(win32::WinApplication* app, x86::CPU& cpu);
-void stopRaceControlsTick(win32::WinApplication* app, x86::CPU& cpu);
-void cornerInBox(win32::WinApplication* app, x86::CPU& cpu);
-void cornerInBoxBack(win32::WinApplication* app, x86::CPU& cpu);
-void cornerInBox2(win32::WinApplication* app, x86::CPU& cpu);
-void cornerInBoxBack2(win32::WinApplication* app, x86::CPU& cpu);
-void clampSpin(win32::WinApplication* app, x86::CPU& cpu);
-void applyImpulse(win32::WinApplication* app, x86::CPU& cpu);
-void bounceOffWall(win32::WinApplication* app, x86::CPU& cpu);
-void hitWall(win32::WinApplication* app, x86::CPU& cpu);
-void boxHitsWall(win32::WinApplication* app, x86::CPU& cpu);
-void carsCollide(win32::WinApplication* app, x86::CPU& cpu);
+x86::reg32 loadCarPerformance(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 loadRaceCar(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 setCarHandlers(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 freeCarShapes(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 restartRaceCars(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 clearCarSlots(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 clearRaceCounts(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 clearCarList(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 loadRaceCars(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 setTimeStep(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 addCarTasks(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 openCarViv(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 closeCarViv(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 removeCarTasks(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 countLaps(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 carAxesSpeed(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 carForwardSpeed(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 carRaceDistance(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 updateRaceCars(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 frameFraction(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 placeHeadlights(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 placeCarShadow(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 sortRaceCars(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 emptyHook(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 emptyHook2(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 showMessage(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 sendMessage(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 openMessages(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 closeMessages(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 clearMessages(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 sendTypedMessage(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 newMessageLine(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 freeMessageLine(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 insertMessageLine(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 freeMessageLines(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 clearMessageLines(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 showMessageLines(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 appendMessageLine(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 closeMessageLines(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 openMessageLines(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 raceControlsThread(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 wakeRaceControls(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 raceControlsTick(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 startRaceControlsTick(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 stopRaceControlsTick(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 cornerInBox(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 cornerInBoxBack(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 cornerInBox2(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 cornerInBoxBack2(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 clampSpin(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 applyImpulse(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 bounceOffWall(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 hitWall(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 boxHitsWall(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 carsCollide(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
 
 // The cores other cores call before they are defined.
 std::optional<reg32> closeLines(App* app, CPU& cpu, reg32 eax);
@@ -851,17 +823,18 @@ std::optional<Left2> readCarPerformance(App* app, CPU& cpu, reg32 car, reg32 nam
 
 /* readCarPerformance of the car eax from the file edx; edx the text's block
  * as the code leaves it (no argument of its by its code's reading). */
-void loadCarPerformance(App* app, CPU& cpu)
+x86::reg32 loadCarPerformance(App* app, CPU& cpu, x86::Args& args)
 {
     std::optional<Left2> left;
-    adapts(cpu, [&, car = cpu.eax, name = cpu.edx]() -> std::optional<reg32> {
+    asThunk(cpu, args, [&, car = args.eax, name = args.edx]() -> std::optional<reg32> {
         left = readCarPerformance(app, cpu, car, name);
         if (!left)
             return std::nullopt;
         return left->eax;
     });
     if (left)
-        cpu.edx = left->edx;
+        args.edx = left->edx;
+    return args.eax;
 }
 
 /* 0x42c350: the race's car ebx (if there are that many), its record eax,
@@ -896,17 +869,17 @@ std::optional<reg32> loadCar(App* app, CPU& cpu, reg32 car, reg32 slot, reg32 pe
         return std::nullopt;
     if (!guest::direct<0x42bcb0, racestart::placeOnGridOf>(app, cpu, car, slot) || !loadingTick(app, cpu))
         return std::nullopt;
-    // The reset's by address: the eax it leaves is the car's loading's
-    // (resetTraffic gives back only whether the game went on).
-    return carCall(app, cpu, kCarReset, car);
+    // The eax the reset leaves is the car's loading's.
+    return guest::direct<kCarReset, aiplan::resetTrafficEax>(app, cpu, car);
 }
 
 /* loadCar eax at the slot ebx with the performance record edx. */
-void loadRaceCar(App* app, CPU& cpu)
+x86::reg32 loadRaceCar(App* app, CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax, slot = cpu.ebx, performance = cpu.edx] {
+    asThunk(cpu, args, [&, car = args.eax, slot = args.ebx, performance = args.edx] {
         return loadCar(app, cpu, car, slot, performance);
     });
+    return args.eax;
 }
 
 /* 0x42c400: the car eax's handlers -- what moves it, steers it, draws it --
@@ -954,15 +927,17 @@ void setHandlers(App* app, reg32 car)
 }
 
 /* setHandlers of eax. */
-void setCarHandlers(App* app, CPU& cpu)
+x86::reg32 setCarHandlers(App* app, CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { setHandlers(app, car); });
+    asThunk(cpu, args, [&, car = args.eax] { setHandlers(app, car); });
+    return args.eax;
 }
 
 /* 0x42c520: the car eax's shapes freed (0x4b7eb0); the eax that leaves. */
-void freeCarShapes(App* app, CPU& cpu)
+x86::reg32 freeCarShapes(App* app, CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { return freeShapes(app, cpu, car); });
+    asThunk(cpu, args, [&, car = args.eax] { return freeShapes(app, cpu, car); });
+    return args.eax;
 }
 
 /* 0x42c530: the race's cars back on the grid: the lists by place and by
@@ -992,9 +967,10 @@ std::optional<reg32> restartCars(App* app, CPU& cpu)
 }
 
 /* restartCars; eax what the last preparing leaves, 0 with no cars. */
-void restartRaceCars(App* app, CPU& cpu)
+x86::reg32 restartRaceCars(App* app, CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&] { return restartCars(app, cpu); });
+    asThunk(cpu, args, [&] { return restartCars(app, cpu); });
+    return args.eax;
 }
 
 /* 0x42c660: the cars' slots (0x258 bytes at 0x5ef6a0) cleared (memset). */
@@ -1004,9 +980,10 @@ std::optional<reg32> clearSlots(App* app, CPU& cpu)
 }
 
 /* clearSlots; eax the slots, as memset leaves it. */
-void clearCarSlots(App* app, CPU& cpu)
+x86::reg32 clearCarSlots(App* app, CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&] { return clearSlots(app, cpu); });
+    asThunk(cpu, args, [&] { return clearSlots(app, cpu); });
+    return args.eax;
 }
 
 /* 0x42c680: the loading bar's tick, and the race's counts -- the cars in
@@ -1022,9 +999,10 @@ std::optional<reg32> clearCounts(App* app, CPU& cpu)
 }
 
 /* clearCounts; eax as the tick leaves it. */
-void clearRaceCounts(App* app, CPU& cpu)
+x86::reg32 clearRaceCounts(App* app, CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&] { return clearCounts(app, cpu); });
+    asThunk(cpu, args, [&] { return clearCounts(app, cpu); });
+    return args.eax;
 }
 
 /* 0x42c6d0: the cars' list's 16 pointers 0. */
@@ -1035,12 +1013,13 @@ void clearList(App* app)
 }
 
 /* clearList; eax 16, the loop's count as the code leaves it. */
-void clearCarList(App* app, CPU& cpu)
+x86::reg32 clearCarList(App* app, CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&] {
+    asThunk(cpu, args, [&] {
         clearList(app);
         return 0x10;
     });
+    return args.eax;
 }
 
 /* 0x42c700: the race's cars loaded: the last race's freed (0x42bb80), the
@@ -1105,9 +1084,10 @@ std::optional<reg32> loadCars(App* app, CPU& cpu)
 
 /* loadCars; eax the last car's (as its handlers were set) when there are
  * cars. */
-void loadRaceCars(App* app, CPU& cpu)
+x86::reg32 loadRaceCars(App* app, CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&] { return loadCars(app, cpu); });
+    asThunk(cpu, args, [&] { return loadCars(app, cpu); });
+    return args.eax;
 }
 
 /* 0x42c7f0: the race's time step ([0x55307c]): 0.001 when the three
@@ -1122,12 +1102,13 @@ void pickTimeStep(App* app)
 }
 
 /* pickTimeStep; eax the third option's byte, as the code leaves it. */
-void setTimeStep(App* app, CPU& cpu)
+x86::reg32 setTimeStep(App* app, CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&] {
+    asThunk(cpu, args, [&] {
         pickTimeStep(app);
         return reg32(byte(app, kOption3));
     });
+    return args.eax;
 }
 
 /* 0x42c830: every car's handlers added to the race's task lists
@@ -1161,9 +1142,10 @@ std::optional<reg32> addTasks(App* app, CPU& cpu, reg32 eax)
 }
 
 /* addTasks; eax what the last adding leaves, the caller's with no cars. */
-void addCarTasks(App* app, CPU& cpu)
+x86::reg32 addCarTasks(App* app, CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, eax = cpu.eax] { return addTasks(app, cpu, eax); });
+    asThunk(cpu, args, [&, eax = args.eax] { return addTasks(app, cpu, eax); });
+    return args.eax;
 }
 
 /* 0x42c950: the .viv of the car whose choice is at eax loaded whole to
@@ -1211,9 +1193,10 @@ std::optional<reg32> openViv(App* app, CPU& cpu, reg32 choice)
 }
 
 /* openViv of the choice eax; eax the .viv. */
-void openCarViv(App* app, CPU& cpu)
+x86::reg32 openCarViv(App* app, CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, choice = cpu.eax] { return openViv(app, cpu, choice); });
+    asThunk(cpu, args, [&, choice = args.eax] { return openViv(app, cpu, choice); });
+    return args.eax;
 }
 
 /* 0x42ca80: the car's .viv ([0x553070]) freed, if there is one, and 0. */
@@ -1230,9 +1213,10 @@ std::optional<reg32> freeCarViv(App* app, CPU& cpu, reg32 eax)
 }
 
 /* freeCarViv; eax what the freeing leaves, the caller's with no .viv. */
-void closeCarViv(App* app, CPU& cpu)
+x86::reg32 closeCarViv(App* app, CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, eax = cpu.eax] { return freeCarViv(app, cpu, eax); });
+    asThunk(cpu, args, [&, eax = args.eax] { return freeCarViv(app, cpu, eax); });
+    return args.eax;
 }
 
 /* 0x42cab0: every car's handlers taken off the race's task lists (0x4be2f0:
@@ -1274,14 +1258,15 @@ std::optional<i32> removeTasks(App* app, CPU& cpu)
 
 /* removeTasks; eax the last car's place in the lists (its index times 4) as
  * the code leaves it, the caller's with no cars. */
-void removeCarTasks(App* app, CPU& cpu)
+x86::reg32 removeCarTasks(App* app, CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, eax = cpu.eax]() -> std::optional<reg32> {
+    asThunk(cpu, args, [&, eax = args.eax]() -> std::optional<reg32> {
         const std::optional<i32> cars = removeTasks(app, cpu);
         if (!cars)
             return std::nullopt;
         return *cars > 0 ? reg32(*cars - 1) * 4 : eax;
     });
+    return args.eax;
 }
 
 /* 0x42cc20: the car eax's laps counted as its node on the track (+0x1c)
@@ -1318,9 +1303,10 @@ void countLap(App* app, reg32 car)
 }
 
 /* countLap of eax. */
-void countLaps(App* app, CPU& cpu)
+x86::reg32 countLaps(App* app, CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { countLap(app, car); });
+    asThunk(cpu, args, [&, car = args.eax] { countLap(app, car); });
+    return args.eax;
 }
 
 /* 0x42cd00: the car eax's speed along its own axes, onto the x87's stack:
@@ -1370,16 +1356,18 @@ std::optional<AxesSpeed> axesSpeed(App* app, CPU& cpu, reg32 car)
 /* axesSpeed of eax onto the x87's stack; eax as the code leaves it: the last
  * part's bits when over 0 (or a NaN), else the x87's status word of that
  * compare in ax. */
-void carAxesSpeed(App* app, CPU& cpu)
+x86::reg32 carAxesSpeed(App* app, CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax]() -> std::optional<reg32> {
+    asThunk(cpu, args, [&, car = args.eax]() -> std::optional<reg32> {
         const std::optional<AxesSpeed> speed = axesSpeed(app, cpu, car);
         if (!speed)
             return std::nullopt;
-        const Status s = compare(cpu, 0.0, Float(speed->lastAlong));
-        cpu.fpu.push(speed->speed);
+        const Status s = compare(0.0, Float(speed->lastAlong));
+        args.floatSet = true;
+        args.floatResult = speed->speed;
         return s.below ? floatBits(speed->lastAlong) : withStatus(speed->eax, s);
     });
+    return args.eax;
 }
 
 /* 0x42cdd0: the car eax's velocity (+0xa4) along its forward axis (+0x13c),
@@ -1396,9 +1384,10 @@ Float forwardSpeed(App* app, reg32 car)
 }
 
 /* forwardSpeed of eax onto the x87's stack. */
-void carForwardSpeed(App* app, CPU& cpu)
+x86::reg32 carForwardSpeed(App* app, CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { cpu.fpu.push(forwardSpeed(app, car)); });
+    asThunk(cpu, args, [&, car = args.eax] { args.floatSet = true; args.floatResult = forwardSpeed(app, car); });
+    return args.eax;
 }
 
 /* 0x42ce10: the car eax's distance into the race (+8): its laps (+0x204)
@@ -1418,9 +1407,10 @@ void setRaceDistance(App* app, reg32 car)
 }
 
 /* setRaceDistance of eax. */
-void carRaceDistance(App* app, CPU& cpu)
+x86::reg32 carRaceDistance(App* app, CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { setRaceDistance(app, car); });
+    asThunk(cpu, args, [&, car = args.eax] { setRaceDistance(app, car); });
+    return args.eax;
 }
 
 /* 0x42ce70: each car's race state for the frame, for those that are in it
@@ -1497,13 +1487,14 @@ bool updateCars(App* app, CPU& cpu)
 }
 
 /* updateCars; eax as the places' sort leaves it. */
-void updateRaceCars(App* app, CPU& cpu)
+x86::reg32 updateRaceCars(App* app, CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&]() -> std::optional<reg32> {
+    asThunk(cpu, args, [&]() -> std::optional<reg32> {
         if (!updateCars(app, cpu))
             return std::nullopt;
         return sortedCount(app);
     });
+    return args.eax;
 }
 
 /* 0x42cff0: the frame counter ([0x7d3684]) modulo 32, in 32nds, onto the
@@ -1515,12 +1506,14 @@ Float fractionOfFrame(App* app)
 
 /* fractionOfFrame onto the x87's stack; eax the counter / 32 as the code
  * leaves it. */
-void frameFraction(App* app, CPU& cpu)
+x86::reg32 frameFraction(App* app, CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&] {
-        cpu.fpu.push(fractionOfFrame(app));
+    asThunk(cpu, args, [&] {
+        args.floatSet = true;
+        args.floatResult = fractionOfFrame(app);
         return reg32(i32(at(app, kFrameCounter)) / 0x20);
     });
+    return args.eax;
 }
 
 /* 0x42d020: the car eax's headlights' beam (if it has them, +0x734): its
@@ -1580,14 +1573,15 @@ std::optional<bool> placeLights(App* app, CPU& cpu, reg32 car)
 
 /* placeLights of eax; eax the address past the point's copy in the code's
  * frame as its product leaves it -- the car when it has no lights. */
-void placeHeadlights(App* app, CPU& cpu)
+x86::reg32 placeHeadlights(App* app, CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax, frameEnd = cpu.esp - 0x20]() -> std::optional<reg32> {
+    asThunk(cpu, args, [&, car = args.eax, frameEnd = cpu.esp - 0x20]() -> std::optional<reg32> {
         const std::optional<bool> placed = placeLights(app, cpu, car);
         if (!placed)
             return std::nullopt;
         return *placed ? frameEnd : car;
     });
+    return args.eax;
 }
 
 /* 0x42d160: the car eax's shadow and lights' frame (if +0x660; its
@@ -1650,14 +1644,15 @@ std::optional<bool> placeShadow(App* app, CPU& cpu, reg32 car)
 
 /* placeShadow of eax; eax the address past the point's copy in the code's
  * frame as its product leaves it -- the car when it has no shadow. */
-void placeCarShadow(App* app, CPU& cpu)
+x86::reg32 placeCarShadow(App* app, CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax, frameEnd = cpu.esp - 0x28]() -> std::optional<reg32> {
+    asThunk(cpu, args, [&, car = args.eax, frameEnd = cpu.esp - 0x28]() -> std::optional<reg32> {
         const std::optional<bool> placed = placeShadow(app, cpu, car);
         if (!placed)
             return std::nullopt;
         return *placed ? frameEnd : car;
     });
+    return args.eax;
 }
 
 /* 0x42d3e0: the race's places: the cars by place sorted (insertion) by
@@ -1707,12 +1702,13 @@ reg32 sortedCount(App* app)
     return count > 1 ? reg32(count) : 1;
 }
 
-void sortRaceCars(App* app, CPU& cpu)
+x86::reg32 sortRaceCars(App* app, CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&] {
+    asThunk(cpu, args, [&] {
         sortPlaces(app);
         return sortedCount(app);
     });
+    return args.eax;
 }
 
 /* 0x42d500: a hook of the game's that does nothing -- push ebp, mov ebp,
@@ -1722,9 +1718,10 @@ void noHook(App* app)
     (void)app;
 }
 
-void emptyHook(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 emptyHook(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&] { noHook(app); });
+    asThunk(cpu, args, [&] { noHook(app); });
+    return args.eax;
 }
 
 /* 0x42d520: another that does nothing, the same. */
@@ -1733,9 +1730,10 @@ void noHook2(App* app)
     (void)app;
 }
 
-void emptyHook2(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 emptyHook2(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&] { noHook2(app); });
+    asThunk(cpu, args, [&] { noHook2(app); });
+    return args.eax;
 }
 
 /* 0x42d620: the message text eax shown as the race's message lines
@@ -1790,9 +1788,10 @@ std::optional<reg32> showText(App* app, CPU& cpu, reg32 text)
 
 /* showText of eax; eax what the last line's adding leaves, 0 when it showed
  * nothing. */
-void showMessage(App* app, CPU& cpu)
+x86::reg32 showMessage(App* app, CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, text = cpu.eax] { return showText(app, cpu, text); });
+    asThunk(cpu, args, [&, text = args.eax] { return showText(app, cpu, text); });
+    return args.eax;
 }
 
 /* 0x42d710: the message text edx (ebx long, after its first byte) sent to
@@ -1818,15 +1817,15 @@ std::optional<reg32> sendToOthers(App* app, CPU& cpu, reg32 from, reg32 text, re
 
 /* sendToOthers from eax of edx, ebx long (ebx and edx, its arguments, as the
  * code leaves them are not compared). */
-void sendMessage(App* app, CPU& cpu)
+x86::reg32 sendMessage(App* app, CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, from = cpu.eax, text = cpu.edx, bytes = cpu.ebx] { return sendToOthers(app, cpu, from, text, bytes); });
+    asThunk(cpu, args, [&, from = args.eax, text = args.edx, bytes = args.ebx] { return sendToOthers(app, cpu, from, text, bytes); });
+    return args.eax;
 }
 
 /* 0x42d790: the message box opened (0x436c40, its description in the frame:
  * 1, 10, 100, 0, 0, 0, 7, 1) and the message lines made afresh.  `pushed`
- * the registers the code pushes (ebx, ecx, edx, esi, ebp), which memmove's
- * stand-in, called by the box's opening on the description, logs past it. */
+ * the registers the code pushes (ebx, ecx, edx, esi, ebp). */
 std::optional<reg32> openAllMessages(App* app, CPU& cpu, const std::array<reg32, 5>& pushed)
 {
     const GuestFrame frame(cpu, 0x14, 0x20);
@@ -1842,33 +1841,45 @@ std::optional<reg32> openAllMessages(App* app, CPU& cpu, const std::array<reg32,
 }
 
 /* openAllMessages; eax what the lines' making leaves. */
-void openMessages(App* app, CPU& cpu)
+x86::reg32 openMessages(App* app, CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, pushed = std::array<reg32, 5>{cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.ebp}] {
+    asThunk(cpu, args, [&, pushed = std::array<reg32, 5>{args.ebx, args.ecx, args.edx, args.esi, args.ebp}] {
         return openAllMessages(app, cpu, pushed);
     });
+    return args.eax;
 }
 
 /* 0x42d7f0: the message box closed (0x436cf0) and the message lines with
  * it.  The box's closing by address: what it leaves in eax goes on to the
  * lines' lock (collide::closeChannels gives back only whether the game went
  * on).  The eax the lines' closing leaves. */
-std::optional<reg32> closeAllMessagesEax(App* app, CPU& cpu)
+std::optional<reg32> closeAllMessagesEax(App* app, CPU& cpu, reg32 eax)
 {
-    const std::optional<reg32> closed = guest::watcomEax(app, cpu, kCloseMessageBox, {});
+    const std::optional<reg32> closed = guest::direct<kCloseMessageBox, collide::closeChannels>(app, cpu, eax);
     if (!closed)
         return std::nullopt;
     return closeLines(app, cpu, *closed);
 }
 
-bool closeAllMessages(App* app, CPU& cpu)
+std::optional<reg32> messagesClosed(App* app, CPU& cpu)
 {
-    return closeAllMessagesEax(app, cpu).has_value();
+    return closeAllMessagesEax(app, cpu, 0u);
 }
 
-void closeMessages(App* app, CPU& cpu)
+std::optional<reg32> messagesClosedAs(App* app, CPU& cpu, reg32 eax)
 {
-    adapts(cpu, [&] { return closeAllMessagesEax(app, cpu); });
+    return closeAllMessagesEax(app, cpu, eax);
+}
+
+bool closeAllMessages(App* app, CPU& cpu)
+{
+    return closeAllMessagesEax(app, cpu, 0u).has_value();
+}
+
+x86::reg32 closeMessages(App* app, CPU& cpu, x86::Args& args)
+{
+    asThunk(cpu, args, [&, eax = args.eax] { return closeAllMessagesEax(app, cpu, eax); });
+    return args.eax;
 }
 
 /* 0x42d800: the message box cleared (0x436d40) and the message lines after
@@ -1881,9 +1892,10 @@ std::optional<reg32> clearAllMessages(App* app, CPU& cpu)
     return clearLines(app, cpu);
 }
 
-void clearMessages(App* app, CPU& cpu)
+x86::reg32 clearMessages(App* app, CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&] { return clearAllMessages(app, cpu); });
+    asThunk(cpu, args, [&] { return clearAllMessages(app, cpu); });
+    return args.eax;
 }
 
 /* 0x42d810: the message text edx sent to the other machines (0x4a60e0, a
@@ -1901,9 +1913,10 @@ std::optional<reg32> sendTyped(App* app, CPU& cpu, reg32 text)
 }
 
 /* sendTyped of edx; eax as showMessage leaves it. */
-void sendTypedMessage(App* app, CPU& cpu)
+x86::reg32 sendTypedMessage(App* app, CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, text = cpu.edx] { return sendTyped(app, cpu, text); });
+    asThunk(cpu, args, [&, text = args.edx] { return sendTyped(app, cpu, text); });
+    return args.eax;
 }
 
 /* 0x42d860: a message line allocated (0x70 bytes) and cleared; or 0. */
@@ -1916,9 +1929,10 @@ std::optional<reg32> newLine(App* app, CPU& cpu)
 }
 
 /* newLine; eax the line. */
-void newMessageLine(App* app, CPU& cpu)
+x86::reg32 newMessageLine(App* app, CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&] { return newLine(app, cpu); });
+    asThunk(cpu, args, [&] { return newLine(app, cpu); });
+    return args.eax;
 }
 
 /* 0x42d8a0: the message line eax freed, if there is one; what the freeing
@@ -1931,9 +1945,10 @@ std::optional<reg32> freeLine(App* app, CPU& cpu, reg32 line)
 }
 
 /* freeLine of eax. */
-void freeMessageLine(App* app, CPU& cpu)
+x86::reg32 freeMessageLine(App* app, CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, line = cpu.eax] { return freeLine(app, cpu, line); });
+    asThunk(cpu, args, [&, line = args.eax] { return freeLine(app, cpu, line); });
+    return args.eax;
 }
 
 /* 0x42d8b0: a message line of the text edx (100 bytes of it, strncpy), from
@@ -1958,9 +1973,10 @@ std::optional<reg32> insertLine(App* app, CPU& cpu, reg32 from, reg32 text, reg3
 }
 
 /* insertLine from eax of edx after ebx; eax the line. */
-void insertMessageLine(App* app, CPU& cpu)
+x86::reg32 insertMessageLine(App* app, CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, from = cpu.eax, text = cpu.edx, after = cpu.ebx] { return insertLine(app, cpu, from, text, after); });
+    asThunk(cpu, args, [&, from = args.eax, text = args.edx, after = args.ebx] { return insertLine(app, cpu, from, text, after); });
+    return args.eax;
 }
 
 /* 0x42d910: the message line eax and every one after it freed; what the
@@ -1980,9 +1996,10 @@ std::optional<reg32> freeLines(App* app, CPU& cpu, reg32 line)
 }
 
 /* freeLines from eax. */
-void freeMessageLines(App* app, CPU& cpu)
+x86::reg32 freeMessageLines(App* app, CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, line = cpu.eax] { return freeLines(app, cpu, line); });
+    asThunk(cpu, args, [&, line = args.eax] { return freeLines(app, cpu, line); });
+    return args.eax;
 }
 
 /* The lines after the first, from `rest`, freed and the first the last
@@ -2031,9 +2048,10 @@ std::optional<reg32> clearLines(App* app, CPU& cpu)
     return lockLines<kLeaveCriticalSection, &host::leaveLock>(app, cpu);
 }
 
-void clearMessageLines(App* app, CPU& cpu)
+x86::reg32 clearMessageLines(App* app, CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&] { return clearLines(app, cpu); });
+    asThunk(cpu, args, [&] { return clearLines(app, cpu); });
+    return args.eax;
 }
 
 /* 0x42d9b0: each message line after the first shown (showMessage), and
@@ -2059,9 +2077,10 @@ std::optional<reg32> showLines(App* app, CPU& cpu)
     return lockLines<kLeaveCriticalSection, &host::leaveLock>(app, cpu);
 }
 
-void showMessageLines(App* app, CPU& cpu)
+x86::reg32 showMessageLines(App* app, CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&] { return showLines(app, cpu); });
+    asThunk(cpu, args, [&] { return showLines(app, cpu); });
+    return args.eax;
 }
 
 /* 0x42da30: the text eax added as the last message line, numbered by
@@ -2089,9 +2108,10 @@ std::optional<reg32> appendLine(App* app, CPU& cpu, reg32 text)
     return lockLines<kLeaveCriticalSection, &host::leaveLock>(app, cpu);
 }
 
-void appendMessageLine(App* app, CPU& cpu)
+x86::reg32 appendMessageLine(App* app, CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, text = cpu.eax] { return appendLine(app, cpu, text); });
+    asThunk(cpu, args, [&, text = args.eax] { return appendLine(app, cpu, text); });
+    return args.eax;
 }
 
 /* 0x42daf0: the message lines freed, under their lock, the lock freed
@@ -2116,9 +2136,10 @@ std::optional<reg32> closeLines(App* app, CPU& cpu, reg32 eax)
     return dropHead(app, cpu);
 }
 
-void closeMessageLines(App* app, CPU& cpu)
+x86::reg32 closeMessageLines(App* app, CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, eax = cpu.eax] { return closeLines(app, cpu, eax); });
+    asThunk(cpu, args, [&, eax = args.eax] { return closeLines(app, cpu, eax); });
+    return args.eax;
 }
 
 /* 0x42db70: the message lines made afresh: the old freed (closeLines of
@@ -2153,19 +2174,20 @@ std::optional<reg32> openLines(App* app, CPU& cpu, reg32 eax)
     return lockLines<kLeaveCriticalSection, &host::leaveLock>(app, cpu);
 }
 
-void openMessageLines(App* app, CPU& cpu)
+x86::reg32 openMessageLines(App* app, CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, eax = cpu.eax] { return openLines(app, cpu, eax); });
+    asThunk(cpu, args, [&, eax = args.eax] { return openLines(app, cpu, eax); });
+    return args.eax;
 }
 
 /* 0x42dc20: the race controls' thread: an event made ([0x5efdf0]), then
  * for ever the event waited for and the race's controls read (0x48f550).
- * Its loop's head the generated code's safepoint; it never returns. */
-void raceControlsThread(App* app, CPU& cpu)
+ * A safepoint at its loop's head; it never returns. */
+x86::reg32 raceControlsThread(App* app, CPU& cpu, x86::Args& args)
 {
     const std::optional<reg32> event = createEvent(app, cpu);
     if (!event)
-        return;
+        return args.eax;
     put(app, kControlsEvent, *event);
     for (;;)
     {
@@ -2173,8 +2195,9 @@ void raceControlsThread(App* app, CPU& cpu)
             app->yieldContext(cpu);
         const std::optional<reg32> waited = waitEvent(app, cpu, at(app, kControlsEvent));
         if (!waited || !guest::direct<0x48f550, controls::readControls>(app, cpu, *waited))
-            return;
+            return args.eax;
     }
+    return args.eax;
 }
 
 /* 0x42dc40: the race controls' event set (0x4dfb20, eax 0x7a3aac). */
@@ -2183,9 +2206,10 @@ std::optional<reg32> wakeControls(App* app, CPU& cpu)
     return postEvent(app, cpu, kControlsThread, at(app, kControlsEvent));
 }
 
-void wakeRaceControls(App* app, CPU& cpu)
+x86::reg32 wakeRaceControls(App* app, CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&] { return wakeControls(app, cpu); });
+    asThunk(cpu, args, [&] { return wakeControls(app, cpu); });
+    return args.eax;
 }
 
 /* 0x42dc60: the game's timer's call: the ticks counted ([0x5efdf4],
@@ -2207,9 +2231,10 @@ std::optional<reg32> countTick(App* app, CPU& cpu)
     return wakeControls(app, cpu);
 }
 
-void raceControlsTick(App* app, CPU& cpu)
+x86::reg32 raceControlsTick(App* app, CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&] { return countTick(app, cpu); });
+    asThunk(cpu, args, [&] { return countTick(app, cpu); });
+    return args.eax;
 }
 
 /* 0x42dcb0: the race controls' ticks from 0, and, the first time
@@ -2230,9 +2255,10 @@ std::optional<reg32> startTick(App* app, CPU& cpu, reg32 eax)
     return added;
 }
 
-void startRaceControlsTick(App* app, CPU& cpu)
+x86::reg32 startRaceControlsTick(App* app, CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, eax = cpu.eax] { return startTick(app, cpu, eax); });
+    asThunk(cpu, args, [&, eax = args.eax] { return startTick(app, cpu, eax); });
+    return args.eax;
 }
 
 /* 0x42dd00: raceControlsTick taken from the game's timer (0x48ee90), if it
@@ -2250,9 +2276,10 @@ bool stopTick(App* app, CPU& cpu)
     return stopTickEax(app, cpu, 0).has_value();
 }
 
-void stopRaceControlsTick(App* app, CPU& cpu)
+x86::reg32 stopRaceControlsTick(App* app, CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, eax = cpu.eax] { return stopTickEax(app, cpu, eax); });
+    asThunk(cpu, args, [&, eax = args.eax] { return stopTickEax(app, cpu, eax); });
+    return args.eax;
 }
 
 /* 0x42dd60: whether the corner ecx, ebx, [esp+4] (each -1, 0 or 1, as
@@ -2392,14 +2419,15 @@ bool cornerIn(App* app, reg32 box, reg32 other, i32 firstSign, i32 secondSign, i
 }
 
 /* cornerIn of eax, edx, the signs ebx, ecx and [esp+4]: eax 1 inside, else 0. */
-void cornerInBox(App* app, CPU& cpu)
+x86::reg32 cornerInBox(App* app, CPU& cpu, x86::Args& args)
 {
-    adapts(
-        cpu,
-        [&, box = cpu.eax, other = cpu.edx, first = i32(cpu.ebx), second = i32(cpu.ecx), third = i32(word(app, cpu, 1))] {
+    asThunk(
+        cpu, args,
+        [&, box = args.eax, other = args.edx, first = i32(args.ebx), second = i32(args.ecx), third = i32(word(app, cpu, 1))] {
             return cornerIn(app, box, other, first, second, third) ? 1u : 0u;
         },
         4);
+    return args.eax;
 }
 
 /* 0x42e010: cornerInBox the other way round: the corner of the car eax's
@@ -2538,14 +2566,15 @@ bool cornerInBack(App* app, reg32 box, reg32 other, i32 firstSign, i32 secondSig
 }
 
 /* cornerInBack of eax, edx, the signs ebx, ecx and [esp+4]: eax 1 inside, else 0. */
-void cornerInBoxBack(App* app, CPU& cpu)
+x86::reg32 cornerInBoxBack(App* app, CPU& cpu, x86::Args& args)
 {
-    adapts(
-        cpu,
-        [&, box = cpu.eax, other = cpu.edx, first = i32(cpu.ebx), second = i32(cpu.ecx), third = i32(word(app, cpu, 1))] {
+    asThunk(
+        cpu, args,
+        [&, box = args.eax, other = args.edx, first = i32(args.ebx), second = i32(args.ecx), third = i32(word(app, cpu, 1))] {
             return cornerInBack(app, box, other, first, second, third) ? 1u : 0u;
         },
         4);
+    return args.eax;
 }
 
 /* 0x42e2c0: cornerInBox with the corner from edx's axes worked out the
@@ -2656,14 +2685,15 @@ bool cornerIn2(App* app, reg32 box, reg32 other, i32 firstSign, i32 secondSign, 
 }
 
 /* cornerIn2 of eax, edx, the signs ebx, ecx and [esp+4]: eax 1 inside, else 0. */
-void cornerInBox2(App* app, CPU& cpu)
+x86::reg32 cornerInBox2(App* app, CPU& cpu, x86::Args& args)
 {
-    adapts(
-        cpu,
-        [&, box = cpu.eax, other = cpu.edx, first = i32(cpu.ebx), second = i32(cpu.ecx), third = i32(word(app, cpu, 1))] {
+    asThunk(
+        cpu, args,
+        [&, box = args.eax, other = args.edx, first = i32(args.ebx), second = i32(args.ecx), third = i32(word(app, cpu, 1))] {
             return cornerIn2(app, box, other, first, second, third) ? 1u : 0u;
         },
         4);
+    return args.eax;
 }
 
 /* 0x42e4f0: cornerInBoxBack worked out as cornerInBox2 is. */
@@ -2772,14 +2802,15 @@ bool cornerInBack2(App* app, reg32 box, reg32 other, i32 firstSign, i32 secondSi
 }
 
 /* cornerInBack2 of eax, edx, the signs ebx, ecx and [esp+4]: eax 1 inside, else 0. */
-void cornerInBoxBack2(App* app, CPU& cpu)
+x86::reg32 cornerInBoxBack2(App* app, CPU& cpu, x86::Args& args)
 {
-    adapts(
-        cpu,
-        [&, box = cpu.eax, other = cpu.edx, first = i32(cpu.ebx), second = i32(cpu.ecx), third = i32(word(app, cpu, 1))] {
+    asThunk(
+        cpu, args,
+        [&, box = args.eax, other = args.edx, first = i32(args.ebx), second = i32(args.ecx), third = i32(word(app, cpu, 1))] {
             return cornerInBack2(app, box, other, first, second, third) ? 1u : 0u;
         },
         4);
+    return args.eax;
 }
 
 /* 0x42e720: the car eax's spin (+0xe4, +0xe8, +0xec) held within plus and
@@ -2813,9 +2844,10 @@ reg32 holdSpin(App* app, reg32 car)
 }
 
 /* holdSpin of eax; eax the last component as held, as the code leaves it. */
-void clampSpin(App* app, CPU& cpu)
+x86::reg32 clampSpin(App* app, CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { return holdSpin(app, car); });
+    asThunk(cpu, args, [&, car = args.eax] { return holdSpin(app, car); });
+    return args.eax;
 }
 
 /* 0x42e820: an impulse on the car eax at a point, as the 7 words on the
@@ -2905,18 +2937,20 @@ std::optional<Impulse> impulse(App* app, CPU& cpu, reg32 car, reg32 words)
 
 /* impulse of the words above the return address on the car eax, onto the
  * x87's stack (ret 0x1c); eax the spin's last component as held. */
-void applyImpulse(App* app, CPU& cpu)
+x86::reg32 applyImpulse(App* app, CPU& cpu, x86::Args& args)
 {
-    adapts(
-        cpu,
-        [&, car = cpu.eax, words = cpu.esp + 4]() -> std::optional<reg32> {
+    asThunk(
+        cpu, args,
+        [&, car = args.eax, words = cpu.esp + 4]() -> std::optional<reg32> {
             const std::optional<Impulse> done = impulse(app, cpu, car, words);
             if (!done)
                 return std::nullopt;
-            cpu.fpu.push(done->sum);
+            args.floatSet = true;
+            args.floatResult = done->sum;
             return done->lastSpin;
         },
         0x1c);
+    return args.eax;
 }
 
 /* 0x42e9c0: the car eax bounced off a wall of normal edx with the strength
@@ -3013,16 +3047,17 @@ bool bounce(App* app, CPU& cpu, reg32 car, reg32 normal)
 /* bounce of the car eax off the normal edx; [esp+4], its strength, the code
  * does not read (ret 4).  eax past the spin's copy in its frame, as its last
  * product leaves it. */
-void bounceOffWall(App* app, CPU& cpu)
+x86::reg32 bounceOffWall(App* app, CPU& cpu, x86::Args& args)
 {
-    adapts(
-        cpu,
-        [&, car = cpu.eax, normal = cpu.edx, frameEnd = cpu.esp - 0x40]() -> std::optional<reg32> {
+    asThunk(
+        cpu, args,
+        [&, car = args.eax, normal = args.edx, frameEnd = cpu.esp - 0x40]() -> std::optional<reg32> {
             if (!bounce(app, cpu, car, normal))
                 return std::nullopt;
             return frameEnd;
         },
         4);
+    return args.eax;
 }
 
 /* 0x42ee10: the car eax hitting a wall at the point edx, its normal ebx,
@@ -3125,14 +3160,15 @@ std::optional<bool> hit(App* app, CPU& cpu, reg32 car, reg32 point, reg32 normal
 
 /* hit of the car eax at the point edx, the normal ebx, the wall's point ecx:
  * eax 1, or 0 when it moved away. */
-void hitWall(App* app, CPU& cpu)
+x86::reg32 hitWall(App* app, CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax, point = cpu.edx, normal = cpu.ebx, wall = cpu.ecx]() -> std::optional<reg32> {
+    asThunk(cpu, args, [&, car = args.eax, point = args.edx, normal = args.ebx, wall = args.ecx]() -> std::optional<reg32> {
         const std::optional<bool> hitIt = hit(app, cpu, car, point, normal, wall);
         if (!hitIt)
             return std::nullopt;
         return *hitIt ? 1 : 0;
     });
+    return args.eax;
 }
 
 /* 0x42efe0: the car eax's box against a wall of normal edx through the
@@ -3226,14 +3262,15 @@ std::optional<reg32> boxHits(App* app, CPU& cpu, reg32 car, reg32 normal, reg32 
 
 /* boxHits of the car eax against the normal edx through the point ebx
  * within [esp+4] (ret 4). */
-void boxHitsWall(App* app, CPU& cpu)
+x86::reg32 boxHitsWall(App* app, CPU& cpu, x86::Args& args)
 {
-    adapts(
-        cpu,
-        [&, car = cpu.eax, normal = cpu.edx, point = cpu.ebx, reach = cpu.esp + 4] {
+    asThunk(
+        cpu, args,
+        [&, car = args.eax, normal = args.edx, point = args.ebx, reach = cpu.esp + 4] {
             return boxHits(app, cpu, car, normal, point, reach);
         },
         4);
+    return args.eax;
 }
 
 /* 0x42f280: the cars eax and edx in collision at the point ebx: each one's
@@ -3260,7 +3297,7 @@ std::optional<reg32> impulseFrom(App* app, CPU& cpu, reg32 car, reg32 other, reg
         return std::nullopt;
     putFloat(app, car + kCarImpact, float(done->sum));
     // fcompp of 0 with it: none (or a NaN), no hit.
-    const Status none = compare(cpu, 0.0, done->sum);
+    const Status none = compare(0.0, done->sum);
     if (none.equal)
         return withStatus(car, none);
     put(app, car + kCarHitKind, kHitByCar);
@@ -3268,7 +3305,7 @@ std::optional<reg32> impulseFrom(App* app, CPU& cpu, reg32 car, reg32 other, reg
     for (reg32 k = 0; k < 0xc; k += 4)
         put(app, car + kCarHitAt + k, at(app, point + k));
     // fcomp with 5: over it (a NaN not), a hard hit.
-    const Status s = compare(cpu, f32(app, car + kCarImpact), f64(app, kFive));
+    const Status s = compare(f32(app, car + kCarImpact), f64(app, kFive));
     if (s.below || s.equal)
         return withStatus(car, s);
     putHalf(app, car + kCarHardHits, reg16(half(app, car + kCarHardHits) + 1));
@@ -3340,7 +3377,7 @@ std::optional<reg32> respondEax(App* app, CPU& cpu, reg32 a, reg32 b, reg32 poin
     if (!closing)
         return std::nullopt;
     // fcompp of 0 with it: under 0 (a NaN not), an impulse on the first car.
-    const Status s = compare(cpu, 0.0, *closing);
+    const Status s = compare(0.0, *closing);
     if (!s.below && !s.equal)
     {
         const GuestFrame words(cpu, 0, 0x1c);
@@ -3354,7 +3391,7 @@ std::optional<reg32> respondEax(App* app, CPU& cpu, reg32 a, reg32 b, reg32 poin
         return std::nullopt;
     // fcompp of 0 with it, its status word in ax as the code leaves it: over 0
     // (or a NaN), one on the second.
-    const Status t = compare(cpu, 0.0, opening->value);
+    const Status t = compare(0.0, opening->value);
     if (!t.below)
         return withStatus(opening->eax, t);
     const GuestFrame words(cpu, 0, 0x1c);
@@ -3362,15 +3399,89 @@ std::optional<reg32> respondEax(App* app, CPU& cpu, reg32 a, reg32 b, reg32 poin
     return impulseFrom(app, cpu, b, a, point, words - 0x1c);
 }
 
-bool respond(App* app, CPU& cpu, reg32 a, reg32 b, reg32 point)
+std::optional<reg32> respond(App* app, CPU& cpu, reg32 a, reg32 b, reg32 point)
 {
-    return respondEax(app, cpu, a, b, point).has_value();
+    return respondEax(app, cpu, a, b, point);
 }
 
 /* respondEax of the cars eax and edx at the point ebx. */
-void carsCollide(App* app, CPU& cpu)
+x86::reg32 carsCollide(App* app, CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, a = cpu.eax, b = cpu.edx, point = cpu.ebx] { return respondEax(app, cpu, a, b, point); });
+    asThunk(cpu, args, [&, a = args.eax, b = args.edx, point = args.ebx] { return respondEax(app, cpu, a, b, point); });
+    return args.eax;
+}
+
+/* The typed cores of the thunks above, for callers that call them as C++ (native_raceload.h). */
+std::optional<reg32> raceSlotsCleared(App* app, CPU& cpu)
+{
+    return clearSlots(app, cpu);
+}
+
+std::optional<reg32> raceCarsLoaded(App* app, CPU& cpu)
+{
+    return loadCars(app, cpu);
+}
+
+reg32 timeStepPicked(App* app)
+{
+    pickTimeStep(app);
+    return reg32(byte(app, kOption3));
+}
+
+std::optional<reg32> carTasksAdded(App* app, CPU& cpu, reg32 unchanged)
+{
+    return addTasks(app, cpu, unchanged);
+}
+
+std::optional<reg32> carTasksRemoved(App* app, CPU& cpu, reg32 unchanged)
+{
+    const std::optional<i32> cars = removeTasks(app, cpu);
+    if (!cars)
+        return std::nullopt;
+    return *cars > 0 ? reg32(*cars - 1) * 4 : unchanged;
+}
+
+void lapsCounted(App* app, reg32 car)
+{
+    countLap(app, car);
+}
+
+std::optional<reg32> raceCarsUpdated(App* app, CPU& cpu)
+{
+    if (!updateCars(app, cpu))
+        return std::nullopt;
+    return sortedCount(app);
+}
+
+std::optional<reg32> messagesOpened(App* app, CPU& cpu)
+{
+    // The registers the code pushes are dead data below its frame: none are handed.
+    return openAllMessages(app, cpu, std::array<reg32, 5>{});
+}
+
+std::optional<reg32> messagesCleared(App* app, CPU& cpu)
+{
+    return clearAllMessages(app, cpu);
+}
+
+std::optional<reg32> typedMessageSent(App* app, CPU& cpu, reg32 text)
+{
+    return sendTyped(app, cpu, text);
+}
+
+std::optional<reg32> messageLinesShown(App* app, CPU& cpu)
+{
+    return showLines(app, cpu);
+}
+
+std::optional<reg32> raceControlsWoken(App* app, CPU& cpu)
+{
+    return wakeControls(app, cpu);
+}
+
+std::optional<reg32> controlsTickStarted(App* app, CPU& cpu, reg32 unchanged)
+{
+    return startTick(app, cpu, unchanged);
 }
 
 }  // namespace raceload

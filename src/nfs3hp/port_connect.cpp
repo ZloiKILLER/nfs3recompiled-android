@@ -114,40 +114,48 @@ reg32 findItem(App* app, reg32 menu, const char* codelink)
 
 /* A button's handler, called as the game's are: it takes its return address's
  * slot off the stack.  2: the key is spent. */
-void portClicked(App* app, CPU& cpu)
+x86::reg32 portClicked(App* app, CPU& cpu, x86::Args& args)
 {
     const reg32 port = networkPort() == kPortModern ? kPortOriginal : kPortModern;
     setNetworkPort(port);
     rememberPort(port);
     showPort(app);
-    cpu.eax = fe::kDialogHandled;
+    args.eax = fe::kDialogHandled;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* Each pass of the menu loop: the address looked at again now and then, the
  * phone may join a network while the screen is up.  0 stays on the screen. */
-void screenFrame(App* app, CPU& cpu)
+x86::reg32 screenFrame(App* app, CPU& cpu, x86::Args& args)
 {
     if (SDL_GetTicks() >= s_nextAddress)
         showAddress(app);
     if (s_gameFrame != 0)
     {
-        app->dynamic_call(s_gameFrame, cpu);
-        return;
+        // The game's own handler in its place: called with what this one was handed, its return slot
+        // this one's (it takes it off, as this one would).
+        const reg32 esp = cpu.esp;
+        cpu.esp = esp + 4;
+        const std::optional<reg32> left = guest::pointerCall(app, cpu, s_gameFrame, args);
+        cpu.esp = esp + 4;
+        args.eax = left.value_or(0);
+        return args.eax;
     }
-    cpu.eax = 0;
+    args.eax = 0;
     cpu.esp += 4;
+    return args.eax;
 }
 
-void screenEnter(App* app, CPU& cpu)
+x86::reg32 screenEnter(App* app, CPU& cpu, x86::Args& args)
 {
-    const reg32 menu = cpu.eax;
-    frontend::connectOnEnter(app, cpu);
+    const reg32 menu = args.eax;
+    frontend::connectOnEnter(app, cpu, args);
     const reg32 button = findItem(app, menu, "NET_PORT");
     const reg32 port = findItem(app, menu, "NET_PORT_VALUE");
     const reg32 address = findItem(app, menu, "NET_ADDRESS_VALUE");
     if (button == 0 || port == 0 || address == 0)
-        return;
+        return args.eax;
     app->getMemory<reg32>(button + fe::item::kOnClick) = kPortClicked;
     s_portText = app->getMemory<reg32>(port + fe::item::kText);
     s_addressText = app->getMemory<reg32>(address + fe::item::kText);
@@ -159,6 +167,7 @@ void screenEnter(App* app, CPU& cpu)
         s_gameFrame = frame;
         app->getMemory<reg32>(menu + fe::menu::kOnFrame) = kScreenFrame;
     }
+    return args.eax;
 }
 
 }

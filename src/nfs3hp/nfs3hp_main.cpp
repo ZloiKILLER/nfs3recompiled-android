@@ -85,7 +85,7 @@ static bool requestMovieSkip()
 }
 
 /* NFS_CAR_DETAIL_FULL, read once: unset or anything but "0" means on.  The
- * generated code patched by tools/apply_car_detail.py asks it too. */
+ * game's code patched by the port's car detail change asks it too. */
 bool fullCarDetail()
 {
     static const bool full = []() {
@@ -95,7 +95,7 @@ bool fullCarDetail()
     return full;
 }
 
-/* The TCP/IP port a race is hosted and joined on (tools/apply_network_port.py):
+/* The TCP/IP port a race is hosted and joined on (the port's network port change):
  * NFS_NET_PORT to start with, 9803 as the Modern Patch has it unless the player
  * chose 1030, the original's, and the connection screen moves it from there
  * (port_connect.cpp).  Every player of one race needs the same. */
@@ -121,7 +121,7 @@ void setNetworkPort(x86::reg32 port)
 
 /* Whether the player is driving.  A race is one call of the game's own -- set
  * up by sub_4a3400, taken down again by sub_4a35d0, each called from one place
- * only -- and both are marked (tools/apply_race_state.py the first, the
+ * only -- and both are marked (the port's race state change the first, the
  * native graphics::takeDownRace the second), so this follows it exactly
  * rather than guessing from the screen or from what the car is doing. */
 static bool s_raceRunning = false;
@@ -213,7 +213,7 @@ void logResults(win32::WinApplication* app)
 }
 
 /* The loading screen at 4:3 in the middle of a wide screen, as the Modern Patch
- * shows it (tools/apply_loading_screen.py): from the start of the loading
+ * shows it (the port's loading screen change): from the start of the loading
  * picture, the whole picture black and everything drawn squeezed into the 4:3
  * rectangle in its middle; once the race is loaded, the whole screen again. */
 void loadingScreenFit(win32::WinApplication* app, x86::CPU& cpu, bool on)
@@ -230,7 +230,7 @@ bool loadingScreenUp()
 }
 
 /* The NFS emblem of a dialog box over a race -- the pause menu's "Quit to:" and
- * the like (tools/apply_widescreen.py, around its draw in sub_4438d0).  The
+ * the like (the port's widescreen change, around its draw in sub_4438d0).  The
  * game lays the box out for 640x480 and stretches it over the whole picture,
  * which the box and its buttons bear; the round emblem comes out an oval.  So
  * for its one draw each triangle narrows by the 4:3 factor towards its own left
@@ -247,7 +247,7 @@ bool raceIsRunning()
 }
 
 /* Whether the game is waiting for a name to be typed: the dialog that takes one
- * is up (tools/apply_text_entry.py).  Read once a frame by textEntryTick, which
+ * is up (the port's text entry change).  Read once a frame by textEntryTick, which
  * is what raises and lowers the phone's keyboard by it. */
 static bool s_takingText = false;
 
@@ -261,7 +261,7 @@ bool takingText()
     return s_takingText;
 }
 
-/* The depth a Screen Size entry reads (tools/apply_full_colour.py): the mode
+/* The depth a Screen Size entry reads (the port's full colour change): the mode
  * table's 16 is what the game keeps, but a race is drawn in full colour and,
  * with the game's 32-bit textures taken, in full colour throughout. */
 x86::reg32 shownDepth(x86::reg32 depth)
@@ -271,7 +271,7 @@ x86::reg32 shownDepth(x86::reg32 depth)
 
 /* View Distance at Full: the player's choice in the Graphics menu, [0x6fbc28],
  * Full to Close as 0 to 3.  At Full the game already draws the track at full
- * detail out to its far distance; tools/apply_track_detail.py has the ones below
+ * detail out to its far distance; the port's track detail change has the ones below
  * take that distance to 500 wherever the game held it shorter, and past it. */
 static bool viewDistanceFull(win32::WinApplication* app)
 {
@@ -310,7 +310,7 @@ x86::reg32 fullFarDistance(win32::WinApplication* app, x86::reg32 distance)
 }
 
 /* NFS_MIRROR_FULL, read once: unset or anything but "0" means the rear-view
- * mirror draws as the main view does (tools/apply_mirror_detail.py). */
+ * mirror draws as the main view does (the port's mirror detail change). */
 static bool fullMirror()
 {
     static const bool full = []() {
@@ -341,7 +341,7 @@ void mirrorFollowsMain(win32::WinApplication* app)
 
 /* A view pass's kind ([0x7a3d14], 1 for the mirror) where the game asks it to
  * leave something out of the mirror: with the mirror drawn in full, the main
- * view's 0 (tools/apply_mirror_detail.py). */
+ * view's 0 (the port's mirror detail change). */
 x86::reg32 mirrorAsMain(x86::reg32 kind)
 {
     return kind == 1 && fullMirror() ? 0 : kind;
@@ -359,7 +359,7 @@ double mirrorCarScale(double scale)
  * since one stamp shared by every car and every view (0x55fe28), written as
  * each view pass ends, so a car first drawn in a later pass of the same frame
  * -- the second split-screen view, the rear-view mirror -- saw no time pass and
- * its wheels stood still.  tools/apply_car_detail.py routes the three reads of
+ * its wheels stood still.  the port's car detail change routes the three reads of
  * that stamp here: sub_4b9140 and sub_4b9280 for the two wheel angles, and
  * sub_4b90e0, two ways, for the body.  Each keeps its own stamp per car, so a
  * car still advances once per frame, whichever view draws it first. */
@@ -394,7 +394,7 @@ x86::reg32 carWheelStamp(win32::WinApplication* app, x86::reg32 car, x86::reg32 
  * at the next one; during a race the picture keeps its shape and the
  * presenter puts it between bars.  The Graphics menu shows the mode as
  * "Dynamic Fullscreen", and the settings keep kDynamicFullscreenWidth for it
- * in place of a width, which sub_4bee80 (tools/apply_widescreen.py) turns
+ * in place of a width, which sub_4bee80 (the port's widescreen change) turns
  * back into the mode at start, on any screen. */
 constexpr x86::reg32 kModeTable = 0xa92018;       // voodoo2a's modes, 40 bytes each
 constexpr x86::reg32 kModeResolutions = 0xa922e8; // each mode's resolution id
@@ -471,7 +471,7 @@ bool dynamicFullscreenRefresh(win32::WinApplication* app)
 
 /* View Angle ([0x6fbc40]) in the Graphics menu: Normal, 0 -- the game's Wide,
  * 90 degrees -- Narrow, 1, 75, and Wide, 2, 105, the Modern Patch's widest
- * (tools/apply_view_angle.py). */
+ * (the port's View Angle change). */
 constexpr x86::reg32 kViewAngleList = 0x55675c;   // the settings record's (0x556758) list of its choices
 constexpr x86::reg16 kNormalText = 0xaf, kNarrowText = 0x113, kWideText = 0x112;
 
@@ -511,7 +511,7 @@ void dynamicFullscreenStart(win32::WinApplication* app)
 
 /* The Graphics menu's line for a mode as sub_448210 has just written it (a
  * list entry: the mode at +0, its line from +0x14 on, 0x100 bytes of room):
- * Dynamic Fullscreen's by its name (tools/apply_widescreen.py, 0x448291). */
+ * Dynamic Fullscreen's by its name (the port's widescreen change, 0x448291). */
 void dynamicFullscreenLabel(win32::WinApplication* app, x86::reg32 entry)
 {
     if (!dynamicFullscreenMode(app->getMemory<x86::reg32>(entry)))
@@ -520,7 +520,7 @@ void dynamicFullscreenLabel(win32::WinApplication* app, x86::reg32 entry)
     SDL_strlcpy(line, kDynamicFullscreenName, 0x100);
 }
 
-/* sub_4bee80's answer for the saved screen size (tools/apply_widescreen.py, at
+/* sub_4bee80's answer for the saved screen size (the port's widescreen change, at
  * 0x4bef35): Dynamic Fullscreen's mode where the settings keep its marker,
  * the nearest mode of that width otherwise. */
 x86::reg32 dynamicSavedMode(x86::reg32 found, x86::reg32 width)
@@ -530,7 +530,7 @@ x86::reg32 dynamicSavedMode(x86::reg32 found, x86::reg32 width)
 
 /* Screen sizes the Graphics menu may list.  sub_4bed90 passes the menu only
  * driver modes whose width is exactly 4/3 of their height, and
- * tools/apply_widescreen.py has it ask here too: an exact 16:9 is taken as
+ * the port's widescreen change has it ask here too: an exact 16:9 is taken as
  * well, which is the 1280x720 main() adds to the Voodoo2 driver's table, and
  * Dynamic Fullscreen's size, whatever its shape.  The driver's own 856x480 is
  * not quite 16:9 and stays unlisted. */
@@ -549,7 +549,7 @@ static bool letterboxed(win32::WinApplication* app)
 }
 
 /* A camera's horizontal half field of view, in whole degrees, for the view it
- * draws into (tools/apply_widescreen.py, in sub_4dbce0).
+ * draws into (the port's widescreen change, in sub_4dbce0).
  *
  * The projection takes both angles and works a focal length out of each --
  * half the width over the tangent of the horizontal, half the height over the
@@ -591,7 +591,7 @@ x86::reg32 widescreenHalfAngle(win32::WinApplication* app, x86::reg32 half, x86:
     return rounded > 0 && rounded < 90 ? x86::reg32(rounded) : half;
 }
 
-/* Wide Screen's view height (tools/apply_widescreen.py, in sub_4be5e0): the
+/* Wide Screen's view height (the port's widescreen change, in sub_4be5e0): the
  * game's half of the width -- a 2:1 view -- on a screen narrower than 2:1, where
  * that leaves bars above and below; on a wider one, where 2:1 was taller than
  * the screen, kLetterbox's -- 2.76:1, Ultra Panavision's. */
@@ -604,7 +604,7 @@ x86::reg32 letterboxHeight(x86::reg32 width, x86::reg32 height, x86::reg32 half)
     return x86::reg32(SDL_min(x86::sreg32(height), x86::sreg32(SDL_lround(double(width) / kLetterbox))));
 }
 
-/* The half width a zoomed camera's x scale is made of (tools/apply_widescreen.py,
+/* The half width a zoomed camera's x scale is made of (the port's widescreen change,
  * in sub_4dbde0).  The replay's and the finish's television cameras set their
  * projection from their zoom rather than an angle: x scale half the view's width
  * times the zoom, y scale half its height times the zoom and times 1.34834
@@ -624,7 +624,7 @@ float zoomHalfWidth(win32::WinApplication* app)
     return float(double(halfHeight) * app->getMemory<double>(0x54972c));
 }
 
-/* The rectangle the in-car cabin is drawn in (tools/apply_cabin_fit.py): field
+/* The rectangle the in-car cabin is drawn in (the port's cabin fit change): field
  * 0 to 3 of x, y, width and height.  The game takes the view's own rectangle
  * ([0x7cdb98]), and the cabin picture and the wheel over it are drawn for 4:3, so
  * on a wider screen they stretched with it.  Here the cabin keeps the view's
@@ -659,7 +659,7 @@ x86::reg32 cabinRect(win32::WinApplication* app, x86::reg32 field)
     }
 }
 
-/* The size the HUD works its sizes out from (tools/apply_hud_scale.py).  The
+/* The size the HUD works its sizes out from (the port's HUD scale change).  The
  * game takes them from the screen it draws on -- the frame around each element
  * and its insets, the gap beside it, the text -- as a fraction of its width,
  * which on a 4:3 screen is the same as a fraction of its height.  Any other
@@ -713,7 +713,7 @@ static bool widescreenHudScale(win32::WinApplication* app, x86::reg32 element, b
 }
 
 /* HUD elements the game draws as pictures keep their shape on a wide screen
- * (tools/apply_widescreen.py, at the end of sub_480910).  The game lays every
+ * (the port's widescreen change, at the end of sub_480910).  The game lays every
  * element out as a fraction of the screen -- the DashHud .POS files, kept in
  * config.dat -- and sub_480910 turns that into pixels by the screen's width and
  * height, so on 16:9 each came out a third wider than it was drawn.  The analog
@@ -744,7 +744,7 @@ void widescreenHudRect(win32::WinApplication* app, x86::reg32 slot)
 }
 
 /* The same change on an element's layout, the fractions of the screen the game
- * keeps it at: four floats, top, left, bottom and right (tools/apply_hud_editor.py).
+ * keeps it at: four floats, top, left, bottom and right (the port's HUD editor change).
  * By `scale` for as it is drawn, by its inverse for as it is laid out. */
 static void scaleHudLayout(win32::WinApplication* app, x86::reg32 rect, bool across, double scale)
 {
@@ -767,7 +767,7 @@ void hudLayoutDesigned(win32::WinApplication* app, x86::reg32 rect, x86::reg32 e
 }
 
 /* The standings table's rectangle made the panel it is drawn as
- * (tools/apply_hud_editor.py, at the end of sub_481c50).  The table's layout is
+ * (the port's HUD editor change, at the end of sub_481c50).  The table's layout is
  * a box half the screen wide and a third high, and sub_481c50 draws the table as
  * a panel only as big as its rows: at the box's left edge, as wide as the widest
  * row ([0x7925c8], or [0x7925cc] for the table's other layout), and from the
@@ -797,7 +797,7 @@ void hudTablePanel(win32::WinApplication* app, x86::reg32 player, bool otherLayo
 static x86::reg32 s_swaps = 0;
 
 /* Where each HUD element really is on the screen, as the HUD editor draws it
- * (tools/apply_hud_editor.py, around the call sub_45bcb0 makes to sub_45ab30 for
+ * (the port's HUD editor change, around the call sub_45bcb0 makes to sub_45ab30 for
  * every element, every frame).  An element's layout is a box, and what the game
  * draws in it is often far smaller -- a line of text at one side of it, a panel
  * at one corner -- yet the editor framed the box and measured every other element
@@ -837,7 +837,7 @@ static bool hudDrawnFresh(const HudDrawn& drawn)
 static bool s_hudMeasuring = false;
 static float s_hudX0, s_hudY0, s_hudX1, s_hudY1;
 
-/* One quad into one of the game's 2D queues (tools/apply_hud_editor.py, at the
+/* One quad into one of the game's 2D queues (the port's HUD editor change, at the
  * start of sub_49bd30): four vertex numbers into the queue's vertices, 32 bytes
  * each from list+0x10, x and y the first two floats. */
 void hudQueueQuad(win32::WinApplication* app, x86::reg32 list, x86::reg32 a, x86::reg32 b, x86::reg32 c, x86::reg32 d)
@@ -911,7 +911,7 @@ void hudEditorDraw(win32::WinApplication* app, x86::reg32 object, bool begin)
  * 1 right, 2 top, 3 bottom -- from its last measurement: what the box may lose
  * off the edge of the screen while the drawing stays on it.  The HUD editor
  * keeps the box itself on the screen while an element is dragged
- * (tools/apply_hud_editor.py, sub_45a120's four clamps), so a line of text in
+ * (the port's HUD editor change, sub_45a120's four clamps), so a line of text in
  * the middle of a box half the screen wide could never come near the edge.
  * Negative where the drawing spills out of the box: it stays on the screen
  * then.  0 for an element not measured, which leaves the game's own rule.
@@ -920,7 +920,7 @@ void hudEditorDraw(win32::WinApplication* app, x86::reg32 object, bool begin)
  * did underneath it: it re-decided every frame whether an element's text was
  * centred in it or put against one of its edges, and near an edge a pixel of
  * movement flipped the answer.  It does not any more -- an element's text is
- * always centred in it (tools/apply_hud_editor.py) -- so what an element draws
+ * always centred in it (the port's HUD editor change) -- so what an element draws
  * stands in the same place in its box wherever the box goes, which is what
  * makes this measurement worth anything. */
 x86::sreg32 hudDragSlack(win32::WinApplication* app, x86::reg32 object, x86::reg32 side)
@@ -980,11 +980,11 @@ void hudEditorFrame(win32::WinApplication* app, x86::reg32 object, bool drawn)
  * screen, or one refused for split screen's half, is said as such.  Read while
  * the layouts are still as the test saw them. */
 static void traceHudLayoutTest(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 element, x86::reg32 rect,
-                               x86::reg32 mode, x86::reg32 base)
+                               x86::reg32 mode, x86::reg32 base, bool answered, x86::reg32 blockerAt)
 {
     static int s_last = -2;
     static x86::reg32 s_lastElement = ~0u;
-    const bool fits = cpu.eax != 0;
+    const bool fits = answered;
     const float y0 = app->getMemory<float>(rect), x0 = app->getMemory<float>(rect + 4);
     const float y1 = app->getMemory<float>(rect + 8), x1 = app->getMemory<float>(rect + 12);
     int blocker = -1;
@@ -993,7 +993,7 @@ static void traceHudLayoutTest(win32::WinApplication* app, x86::CPU& cpu, x86::r
     {
         /* One of the front end's items, 0xbc bytes each from 0x604ee0 (the
          * array sub_459670 searches), or the local was never written. */
-        const x86::reg32 other = app->getMemory<x86::reg32>(cpu.ebp - 0x10);
+        const x86::reg32 other = app->getMemory<x86::reg32>(blockerAt);
         if (other >= 0x604ee0 && other < 0x604ee0 + 1024 * 0xbc && (other - 0x604ee0) % 0xbc == 0)
             blocker = int(app->getMemory<x86::reg32>(other + 0x3c) % 23);
     }
@@ -1043,10 +1043,11 @@ static void traceHudLayoutTest(win32::WinApplication* app, x86::CPU& cpu, x86::r
  *    element blinked red with nothing in its way.  Every other element is taken
  *    in by kSlack of the screen on each side, a quarter of its size at most, so
  *    two frames may touch, or overlap by that much.
- * Before the test cpu holds its arguments: the rectangle being tried in eax, the
- * player in edx, the element in ebx and the editor's mode in ecx; after it, its
- * answer in eax. */
-void hudLayoutsDrawn(win32::WinApplication* app, x86::CPU& cpu, bool drawn)
+ * Before the test it is handed its arguments (the rectangle being tried, the
+ * player, the element and the editor's mode); after it, its answer and the
+ * address of the local it hands the item in the way through. */
+void hudLayoutsDrawn(win32::WinApplication* app, x86::CPU& cpu, bool drawn, x86::reg32 rect, x86::reg32 playerIn,
+                     x86::reg32 elementIn, x86::reg32 modeIn, x86::reg32 fits, x86::reg32 blockerAt)
 {
     const x86::reg32 kElements = 23;
     const float kSlack = 0.01f;
@@ -1058,7 +1059,7 @@ void hudLayoutsDrawn(win32::WinApplication* app, x86::CPU& cpu, bool drawn)
     {
         if (!s_base)
             return;
-        traceHudLayoutTest(app, cpu, s_element, s_rect, s_mode, s_base);
+        traceHudLayoutTest(app, cpu, s_element, s_rect, s_mode, s_base, fits != 0, blockerAt);
         for (x86::reg32 layout = 0; layout < 2; ++layout)
             for (x86::reg32 element = 0; element < kElements; ++element)
                 for (x86::reg32 edge = 0; edge < 4; ++edge)
@@ -1070,10 +1071,10 @@ void hudLayoutsDrawn(win32::WinApplication* app, x86::CPU& cpu, bool drawn)
         s_base = 0;
         return;
     }
-    const x86::reg32 player = cpu.edx;
-    s_element = cpu.ebx;
-    s_rect = cpu.eax;
-    s_mode = cpu.ecx;
+    const x86::reg32 player = playerIn;
+    s_element = elementIn;
+    s_rect = rect;
+    s_mode = modeIn;
     const x86::reg32 slot = player + (gameSettings(app).playMode == 1 ? 1 : 0);
     s_base = SETTINGS_ADDRESS(hud[0].rects) + slot * 0x348;
     const x86::reg32 hudWidth = app->getMemory<x86::reg32>(0x7cdac8);
@@ -1156,7 +1157,7 @@ void hudLayoutsDrawn(win32::WinApplication* app, x86::CPU& cpu, bool drawn)
 }
 
 /* A race's music, played from the track's own file rather than from a copy of
- * it (tools/apply_music_stream.py).  The game copied the whole track -- 7 to 14
+ * it (the port's music stream change).  The game copied the whole track -- 7 to 14
  * MB -- into a file of its own at every race start and streamed from that; on a
  * phone that is megabytes written to flash and seconds of loading for nothing.
  *
@@ -1198,7 +1199,7 @@ void musicStreamFile(win32::WinApplication* app, x86::reg32 path)
     SDL_Log("[MUSIC] streaming %s", s_musicIndex);
 }
 
-/* A new player's settings (tools/apply_first_settings.py).  With no settings
+/* A new player's settings (the port's first settings change).  With no settings
  * file of its own -- data copied straight off the disc has none, the game makes
  * it the first time it runs -- or none it would take, the game starts its
  * settings over (sub_472980, sub_4723f0), and the first time the front end
@@ -1632,7 +1633,7 @@ void traceTicks(win32::WinApplication* app)
     /* And the x87's special cases this second, all threads together: compares
      * that met a NaN, and fistp with no integer to store. */
     static unsigned s_unordered = 0, s_indefinite = 0;
-    const unsigned unordered = x86::FPU::s_unordered, indefinite = x86::FPU::s_indefinite;
+    const unsigned unordered = x86::FloatEnv::s_unordered, indefinite = x86::FloatEnv::s_indefinite;
     /* The C runtime's rand() (sub_4eb1fc) keeps its seed at +0xc of the
      * thread's data, which it finds through the pointer at [0x567764]:
      * 0x4ff0ec returns the main thread's block [0x9f642c]; once a thread has
@@ -2229,7 +2230,7 @@ void raceControlsTick(win32::WinApplication* app)
  * keyboard (NFS3Activity).  Whichever way, the keyboard goes when the box
  * does, and a race lowers it whatever else is true -- nothing types while
  * driving, and a keyboard left up over one would be a keyboard nobody could
- * put away.  The car screen's own box (tools/apply_text_entry.py) counts as
+ * put away.  The car screen's own box (the port's text entry change) counts as
  * typing too.
  *
  * Android is asked on its own thread, which is where SDL's text input has to be
@@ -2695,7 +2696,7 @@ int main(int argc, char* argv[])
          * own in the table THRASH_setvideomode opens the window by (0xa922e8):
          * 1280x720, 1600x900, 1920x1080, then Dynamic Fullscreen last, the
          * order the menu lists them in (dynamicFullscreenStart).  The Graphics menu lists them once
-         * tools/apply_widescreen.py lets a 16:9 mode through sub_4bed90, which
+         * the port's widescreen change lets a 16:9 mode through sub_4bed90, which
          * still applies every other test of its own: 16 bits, at least two
          * colour buffers, and within the driver's memory limit, which at 8 MB
          * leaves 1920x1080 about fifty kilobytes to spare.  The driver's data is
@@ -2731,9 +2732,9 @@ int main(int argc, char* argv[])
         if (SDL_getenv("NFS_CHECK_GLIDE_MODES")) {
             for (const auto entry : {0x504e00u, 0xa83c60u}) {
                 x86::CPU cpu{};
-                app.runThread(cpu, entry);
-                const auto table = app.getMemory<x86::reg32>(cpu.eax + 0x40);
-                const auto count = app.getMemory<x86::reg32>(cpu.eax + 0x3c);
+                const x86::reg32 descriptor = app.runThread(cpu, entry);
+                const auto table = app.getMemory<x86::reg32>(descriptor + 0x40);
+                const auto count = app.getMemory<x86::reg32>(descriptor + 0x3c);
                 if (count != 16) return 2;
                 for (unsigned i = 1; i <= count; ++i) {
                     const auto* mode = &app.getMemory<x86::reg32>(table + i*40);

@@ -3,26 +3,19 @@
 
 #include "native_guest.h"
 
-#include <lib/thread.h>
-
 #include <cstdint>
-#include <initializer_list>
 
 /* What native_snd_*.cpp share: EA's SND library's state where nfs3.exe keeps
  * it, and the helpers their functions are written with.
  *
- * The game's sound code there is native at the register level: each function
- * does what the game's code does -- the same memory written in the same
- * order, the game's functions called with the same registers and stack, the
- * stack where the code had it (a pointer into a frame is compared), the
+ * What is left of the game's sound code at the register level here
+ * (native_snd_speech.cpp's description bank, native_snd_dead.cpp's stubs)
+ * does what the game's code does -- the same memory written in the same order,
+ * the game's functions called with the same registers and stack, the
  * registers its callers count on as the code leaves them, eax its result, and
- * the return address -- and what a stdcall ret takes -- popped.
- * disassemble_nfs3hp.py binds each address to the function of that name
- * (SND_NATIVES), and the generated code calls it by name; tools/game_checks
- * holds each against the game's code.  The names are EA's where the game's
- * messages give them.  The SND library itself -- voices, banks, playing -- is
- * rewritten as the port's own C++ (port_snd.h), and these call it by its
- * addresses, as the game's code does. */
+ * the return address popped.  Each address is bound to the
+ * function of that name (SND_NATIVES).  The SND library itself -- voices, banks, playing -- is
+ * rewritten as the port's own C++ (port_snd.h). */
 namespace nfs3hp
 {
 namespace snd
@@ -52,201 +45,8 @@ inline void putHalf(App* app, reg32 a, reg16 v) { app->getMemory<reg16>(a) = v; 
 inline i32 mul(i32 a, i32 b) { return i32(reg32(a) * reg32(b)); }
 inline i32 quotient(i32 a, i32 b) { return b == -1 ? i32(0u - reg32(a)) : a / b; }
 
-/* What a function keeps for its caller: the registers as on entry, esp past
- * the return address and what its ret takes. */
-struct Kept
-{
-    reg32 ebx, ecx, edx, esi, edi, ebp, esp;
-    explicit Kept(const CPU& c) : ebx(c.ebx), ecx(c.ecx), edx(c.edx), esi(c.esi), edi(c.edi), ebp(c.ebp), esp(c.esp) {}
-    void ret(CPU& c, reg32 eax, reg32 popped = 0) const
-    {
-        c.ebx = ebx;
-        c.ecx = ecx;
-        c.edx = edx;
-        c.esi = esi;
-        c.edi = edi;
-        c.ebp = ebp;
-        c.esp = esp + 4 + popped;
-        c.eax = eax;
-    }
-    /* esp where the code has it after `pushes` registers and `locals` bytes. */
-    reg32 frame(reg32 pushes, reg32 locals = 0) const { return esp - 4 * pushes - locals; }
-};
-
-/* The game's where-and-what of an error, then Error (0x401010) with
- * `arguments` pushed from `esp`, where the code has the stack. */
-constexpr reg32 kWhere = 0x552190;
-constexpr reg32 kError = 0x401010;
-inline bool fail(App* app, CPU& cpu, reg32 esp, reg32 file, reg32 function, reg32 line,
-          std::initializer_list<reg32> arguments)
-{
-    const reg32 before = cpu.esp;
-    cpu.esp = esp;
-    put(app, kWhere, file);
-    put(app, kWhere + 4, function);
-    put(app, kWhere + 8, line);
-    if (!call(app, cpu, kError, arguments))
-        return false;
-    cpu.esp = before;
-    return true;
-}
-
-/* A register call: the argument registers as given (those not given as they
- * are), `stack` pushed. */
-inline bool callWith(App* app, CPU& cpu, reg32 target, reg32 eax)
-{
-    cpu.eax = eax;
-    return call(app, cpu, target);
-}
-
-inline bool callWith(App* app, CPU& cpu, reg32 target, reg32 eax, reg32 edx)
-{
-    cpu.eax = eax;
-    cpu.edx = edx;
-    return call(app, cpu, target);
-}
-
-inline bool callWith(App* app, CPU& cpu, reg32 target, reg32 eax, reg32 edx, reg32 ebx)
-{
-    cpu.eax = eax;
-    cpu.edx = edx;
-    cpu.ebx = ebx;
-    return call(app, cpu, target);
-}
-
-inline bool callWith(App* app, CPU& cpu, reg32 target, reg32 eax, reg32 edx, reg32 ebx, reg32 ecx,
-              std::initializer_list<reg32> stack = {})
-{
-    cpu.eax = eax;
-    cpu.edx = edx;
-    cpu.ebx = ebx;
-    cpu.ecx = ecx;
-    return call(app, cpu, target, stack);
-}
-
-// The registers a function pushed, to be popped on its way out (leave).
-enum Pushed : unsigned
-{
-    kEbx = 1,
-    kEcx = 2,
-    kEdx = 4,
-    kEsi = 8,
-    kEdi = 16
-};
-
-/* The way out: the pushed registers (and ebp) popped, the others as they
- * are, esp past the return and `popped`. */
-inline void leave(CPU& cpu, const Kept& kept, unsigned pushed, reg32 popped = 0)
-{
-    if (pushed & kEbx)
-        cpu.ebx = kept.ebx;
-    if (pushed & kEcx)
-        cpu.ecx = kept.ecx;
-    if (pushed & kEdx)
-        cpu.edx = kept.edx;
-    if (pushed & kEsi)
-        cpu.esi = kept.esi;
-    if (pushed & kEdi)
-        cpu.edi = kept.edi;
-    cpu.ebp = kept.ebp;
-    cpu.esp = kept.esp + 4 + popped;
-}
-
 inline void setByte0(reg32& r, reg8 v) { r = (r & 0xffffff00) | v; }
 inline void setByte1(reg32& r, reg8 v) { r = (r & 0xffff00ff) | (reg32(v) << 8); }
-
-/* The code's signed shift towards 0 -- mov eax, edx; sar edx, 31; shl edx,
- * k; sbb eax, edx; sar eax, k -- of edx: eax the quotient, edx as it leaves it. */
-inline void towardZero(CPU& cpu, unsigned k)
-{
-    const bool negative = i32(cpu.edx) < 0;
-    cpu.eax = cpu.edx;
-    cpu.edx = negative ? 0xffffffffu << k : 0;
-    cpu.eax = reg32(i32(cpu.eax - cpu.edx - (negative ? 1 : 0)) >> k);
-}
-
-/* The code's cdq; idiv by: edx:eax divided, as x86 does. */
-inline void idiv(CPU& cpu, reg32 by)
-{
-    const i32 n = i32(cpu.eax);
-    cpu.eax = reg32(quotient(n, i32(by)));
-    cpu.edx = by == 0xffffffff ? 0 : reg32(n % i32(by));
-}
-
-/* The code's 16.16 division of eax by `by` -- cdq; idiv; mov ecx, eax; xor
- * eax, eax; shrd eax, edx, 16; sar edx, 16; idiv; shl ecx, 16; add eax,
- * ecx -- with what it leaves in ecx and edx. */
-inline void fixedDivide(CPU& cpu, reg32 by)
-{
-    idiv(cpu, by);
-    cpu.ecx = cpu.eax;
-    const std::int64_t n = std::int64_t(i32(cpu.edx)) * 0x10000;
-    cpu.eax = reg32(n / i32(by));
-    cpu.edx = reg32(n % i32(by));
-    cpu.ecx <<= 16;
-    cpu.eax += cpu.ecx;
-}
-
-/* The code's div by: edx:eax divided, unsigned. */
-inline void udiv(CPU& cpu, reg32 by)
-{
-    const std::uint64_t n = (std::uint64_t(cpu.edx) << 32) | cpu.eax;
-    cpu.eax = reg32(n / by);
-    cpu.edx = reg32(n % by);
-}
-
-/* fcomp; fnstsw ax: st(0) compared with m, the x87's status word left in ax
- * as the code has it; true where sahf would set the flag -- CF (C0) for
- * `below`, ZF (C3) for `equal`. */
-struct Compared
-{
-    bool below, equal;
-};
-inline Compared fcomp(CPU& cpu, const x86::Float& st0, const x86::Float& m)
-{
-    cpu.fpu.compare(st0, m);
-    const reg16 status = cpu.fpu.status.word;
-    cpu.eax = (cpu.eax & 0xffff0000) | status;
-    return {(status & 0x100) != 0, (status & 0x4000) != 0};
-}
-
-/* The game's inlined strcpy of `from` to `to`, two bytes a turn: al left 0,
- * esi where the copy stopped reading (edi is pushed and popped around it). */
-inline void copyString(App* app, CPU& cpu, reg32 to, reg32 from)
-{
-    cpu.esi = from;
-    for (reg32 at = to;; at += 2)
-    {
-        reg8 c = byte(app, cpu.esi);
-        putByte(app, at, c);
-        if (c == 0)
-            break;
-        c = byte(app, cpu.esi + 1);
-        cpu.esi += 2;
-        putByte(app, at + 1, c);
-        if (c == 0)
-            break;
-    }
-    cpu.eax &= 0xffffff00;
-}
-
-/* The game's inlined strcat of `from` to `to`: its repne scasb (ecx past
- * the end), then copyString's loop. */
-inline void appendString(App* app, CPU& cpu, reg32 to, reg32 from)
-{
-    reg32 end = to;
-    while (byte(app, end) != 0)
-        ++end;
-    cpu.ecx = reg32(-2 - i32(end - to));
-    copyString(app, cpu, end, from);
-}
-
-/* The game's sar-based halving towards 0 of eax; edx its sign. */
-inline void halve(CPU& cpu)
-{
-    cpu.edx = reg32(i32(cpu.eax) >> 31);
-    cpu.eax = reg32(i32(cpu.eax - cpu.edx) >> 1);
-}
 
 /* A pan (0..0xffff around) as stereo's (0..127), as the game's code makes it. */
 inline reg32 stereoPan(reg32 pan)
@@ -287,24 +87,6 @@ constexpr reg32 kDirectPos3d = 0x9ef644, kDirectVol = 0x9ef648, kDirectRate = 0x
 inline reg32 voice(reg32 index) { return kVoices + index * kVoiceSize; }
 inline reg32 platform(reg32 index) { return kPlatform + (index << 4); }
 inline reg32 channel(reg32 index) { return kChannels + index * kChannelSize; }
-
-/* A loop's safepoint, as the generated code has one at each loop's head: the
- * guest's context handed over when another thread waits for it. */
-inline void safepoint(App* app, CPU& cpu)
-{
-    if (app->contextWanted())
-        app->yieldContext(cpu);
-}
-
-/* A busy wait's turn, as disassemble_nfs3hp.py's THREAD_SEGMENTS have it: the
- * context let go of and the thread's slice given up, so that the thread the
- * wait waits on runs. */
-inline void giveWay(App* app, CPU& cpu)
-{
-    app->unlockContext(cpu);
-    win32::Thread::sleep(0);
-    app->lockContext(cpu);
-}
 
 }  // namespace snd
 }  // namespace nfs3hp

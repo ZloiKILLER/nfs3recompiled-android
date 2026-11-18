@@ -2,7 +2,9 @@
 #include "game_settings.h"
 #include "native_controls_host.h"
 #include "native_ea_memory.h"
+#include "native_ea_memory.h"
 #include "native_guest.h"
+#include "native_watcom.h"
 #include "port_shapes.h"
 #include "port_text.h"
 
@@ -11,32 +13,23 @@
 #include <iterator>
 
 /* What the menus' screens do around their items: the pointer put where the
- * keys moved the selection, the screens' art loaded.  disassemble_nfs3hp.py
- * binds each address to the function of that name here (FRONTEND_NATIVES).
+ * keys moved the selection, the screens' art loaded.  Each address
+ * is bound to the function of that name here (FRONTEND_NATIVES).
  *
  * Written as their code is, as native_frontend_text.cpp's: each push and pop
  * to the guest's stack, each call with the return address's slot, the
  * registers as the code leaves them.  The art's and the memory's functions
  * they call as C++ (guest::direct: every register but eax kept, as those
  * keep them), the shown screen's name by address; what they ask of the mouse
- * they ask of the port (controls::directInput).  tools/game_checks holds each
- * against its generated code.
+ * they ask of the port (controls::directInput).
  *
  * Plan step 5: each function a typed core in frontend::screen (native_frontend_screen.h) -- its
- * arguments into the registers, the code run, the ret left to the adapter under the game's name,
+ * arguments into the registers, the code run, the ret left to the thunk under the game's name,
  * which the calls by address enter. */
 namespace nfs3hp
 {
-namespace watcom
-{
-void memset(win32::WinApplication* app, x86::CPU& cpu);
-void strcmp(win32::WinApplication* app, x86::CPU& cpu);
-}
-
 namespace frontend
 {
-
-void placePointer(win32::WinApplication* app, x86::CPU& cpu);
 
 namespace
 {
@@ -91,46 +84,7 @@ void push(win32::WinApplication* app, x86::CPU& cpu, reg32 value)
     put(app, cpu.esp, value);
 }
 
-reg32 pop(win32::WinApplication* app, x86::CPU& cpu)
-{
-    const reg32 value = at(app, cpu.esp);
-    cpu.esp += 4;
-    return value;
-}
-
-bool direct(win32::WinApplication* app, x86::CPU& cpu, void (*function)(win32::WinApplication*, x86::CPU&))
-{
-    cpu.esp -= 4;
-    function(app, cpu);
-    return !cpu.terminate;
-}
-
-bool byAddress(win32::WinApplication* app, x86::CPU& cpu, reg32 target)
-{
-    cpu.esp -= 4;
-    app->dynamic_call(target, cpu);
-    return !cpu.terminate;
-}
-
-void enter(win32::WinApplication* app, x86::CPU& cpu, std::initializer_list<reg32*> saved, reg32 locals)
-{
-    for (reg32* r : saved)
-        push(app, cpu, *r);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= locals;
-}
-
-/* The registers popped, the ret left to the adapter (ret). */
-void leave(win32::WinApplication* app, x86::CPU& cpu, std::initializer_list<reg32*> saved)
-{
-    cpu.esp = cpu.ebp;
-    cpu.ebp = pop(app, cpu);
-    for (auto r = std::rbegin(saved); r != std::rend(saved); ++r)
-        **r = pop(app, cpu);
-}
-
-/* ret, the adapters' end: the return address popped, unless the game stopped
+/* ret, the thunks' end: the return address popped, unless the game stopped
  * in the function. */
 void ret(x86::CPU& cpu)
 {
@@ -138,222 +92,197 @@ void ret(x86::CPU& cpu)
         cpu.esp += 4;
 }
 
+using guest::EspKept;
+
 }  // namespace
 
 /* 0x435230: the pointer put at eax, edx, inside its bounds, what the mouse
- * has buffered taken first. */
-void screen::placePointer(App* app, CPU& cpu, reg32 x, reg32 y)
+ * has buffered taken first.  The eax it leaves. */
+reg32 screen::placePointer(App* app, CPU& cpu, reg32 x, reg32 y)
 {
-    cpu.eax = x;
-    cpu.edx = y;
-    enter(app, cpu, {&cpu.ebx, &cpu.ecx, &cpu.esi, &cpu.edi}, 4);
-    const reg32 ebp = cpu.ebp;
-    cpu.esi = cpu.eax;
-    cpu.ebx = cpu.edx;
-    cpu.edx = 0xffffffff;
-    cpu.ecx = at(app, kMouse);
-    put(app, ebp - 4, cpu.edx);
-    if (cpu.ecx != 0)
+    // ebx, ecx, esi, edi and ebp pushed by the code (ebp its base), and the local at [ebp - 4]: the
+    // frame; the registers they restore are kept across the host call that reads and spoils them.
+    const EspKept kept(cpu);
+    cpu.esp -= 4 * 5;
+    const reg32 ebp = cpu.esp;
+    cpu.esp -= 4;
+    reg32 eax = x;
+    const reg32 esi = x, ebx = y;
+    put(app, ebp - 4, 0xffffffff);
+    const reg32 device = at(app, kMouse);
+    if (device != 0)
     {
         // GetDeviceData(the device, 0x10, none, &(INFINITE), 0): the events dropped.
         push(app, cpu, 0);
-        cpu.eax = cpu.ecx;
-        cpu.edx = at(app, cpu.ecx);
-        cpu.ecx = ebp - 4;
-        push(app, cpu, cpu.ecx);
+        push(app, cpu, ebp - 4);
         push(app, cpu, 0);
         push(app, cpu, 0x10);
-        push(app, cpu, cpu.eax);
-        if (!controls::directInput(app, cpu, controls::Object::Device, kGetDeviceData))
-            return;
-        cpu.edi = at(app, kPointerLeft);
-        if (x86::sreg32(cpu.esi) < x86::sreg32(cpu.edi))
-            put(app, kPointerX, cpu.edi);
+        push(app, cpu, device);
+        const auto hostResult = controls::directInputResult(app, cpu, controls::Object::Device, kGetDeviceData);
+        if (!hostResult)
+            return eax;
+        eax = *hostResult;  // the host's result
+        const reg32 left = at(app, kPointerLeft);
+        if (x86::sreg32(esi) < x86::sreg32(left))
+            put(app, kPointerX, left);
         else
         {
-            cpu.eax = at(app, kPointerRight);
-            put(app, kPointerX, x86::sreg32(cpu.esi) > x86::sreg32(cpu.eax) ? cpu.eax : cpu.esi);
+            eax = at(app, kPointerRight);
+            put(app, kPointerX, x86::sreg32(esi) > x86::sreg32(eax) ? eax : esi);
         }
-        cpu.edx = at(app, kPointerTop);
-        if (x86::sreg32(cpu.ebx) < x86::sreg32(cpu.edx))
-            put(app, kPointerY, cpu.edx);
+        const reg32 top = at(app, kPointerTop);
+        if (x86::sreg32(ebx) < x86::sreg32(top))
+            put(app, kPointerY, top);
         else
         {
-            cpu.ecx = at(app, kPointerBottom);
-            put(app, kPointerY, x86::sreg32(cpu.ebx) > x86::sreg32(cpu.ecx) ? cpu.ecx : cpu.ebx);
+            const reg32 bottom = at(app, kPointerBottom);
+            put(app, kPointerY, x86::sreg32(ebx) > x86::sreg32(bottom) ? bottom : ebx);
         }
     }
-    leave(app, cpu, {&cpu.ebx, &cpu.ecx, &cpu.esi, &cpu.edi});
+    return eax;
 }
 
 /* 0x49bfc0: the menus' pointer to eax, edx on a 640 by 480 screen, and the
- * mouse's to there on the screen's own when the 3D card draws the menus. */
-void screen::setPointer(App* app, CPU& cpu, reg32 x, reg32 y)
+ * mouse's to there on the screen's own when the 3D card draws the menus.
+ * The eax it leaves (placePointer's). */
+reg32 screen::setPointer(App* app, CPU& cpu, reg32 x, reg32 y)
 {
-    cpu.eax = x;
-    cpu.edx = y;
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.ecx = cpu.eax;
-    cpu.ebx = at(app, kInRace);
-    put(app, kMouseY, cpu.edx);
-    put(app, kMouseX, cpu.eax);
-    if (cpu.ebx != 0)
+    cpu.esp -= 4 * 3;  // ebx, ecx and ebp pushed by the code
+    reg32 pointerX = x, pointerY = y;
+    put(app, kMouseY, y);
+    put(app, kMouseX, x);
+    if (at(app, kInRace) != 0)
     {
-        if (!direct(app, cpu, port::text::toScreenX))
-            return;
-        cpu.ecx = cpu.eax;
-        cpu.eax = cpu.edx;
-        if (!direct(app, cpu, port::text::toScreenY))
-            return;
-        cpu.edx = cpu.eax;
+        pointerX = reg32(port::text::screenX(app, x86::sreg32(x)));
+        pointerY = reg32(port::text::screenY(app, x86::sreg32(y)));
     }
-    cpu.eax = cpu.ecx;
-    // The adapter, not guest::direct: setPointer leaves edx as placePointer leaves it.
-    if (!direct(app, cpu, frontend::placePointer))
-        return;
-    cpu.ebp = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
+    const reg32 eax = guest::direct<0x435230, screen::placePointer>(app, cpu, pointerX, pointerY);
+    if (cpu.terminate)
+        return eax;
+    cpu.esp += 4 * 3;
+    return eax;
 }
 
 /* 0x440970: the screens' art for the one shown -- whether it is the network
  * game's, the shapes its items are drawn with (on the menus, not a race's
- * pause screens) -- and the items' buffers made anew, cleared. */
-void screen::loadScreenArt(App* app, CPU& cpu)
+ * pause screens) -- and the items' buffers made anew, cleared.  The eax it leaves. */
+reg32 screen::loadScreenArt(App* app, CPU& cpu)
 {
-    enter(app, cpu, {&cpu.ebx, &cpu.ecx, &cpu.edx, &cpu.esi, &cpu.edi}, 0);
-    cpu.edx = 0x251;
-    cpu.ecx = 0x87;
-    put(app, kArtTop, cpu.edx);
-    put(app, kArtLeft, cpu.ecx);
-    if (!byAddress(app, cpu, kCurrentMenuName))
-        return;
-    cpu.ebx = at(app, kInRace);
-    cpu.ecx = cpu.eax;
-    if (cpu.ebx != 0)
+    // ebx, ecx, edx, esi, edi and ebp pushed by the code: the frame the calls are made in.
+    cpu.esp -= 4 * 6;
+    put(app, kArtTop, 0x251);
+    put(app, kArtLeft, 0x87);
+    // 0x44ae00's: the shown screen's name, or none (a plain read of the loop's data: that file is not
+    // in the function checks).
+    const reg32 menu = at(app, 0x559230);
+    const reg32 name = menu != 0 ? at(app, menu + 0x14) : 0;
+    reg32 eax = name;
+    if (at(app, kInRace) != 0)
     {
-        if (cpu.eax != 0)
+        if (name != 0)
         {
-            cpu.edx = kPauseName;
-            if (!direct(app, cpu, watcom::strcmp))
-                return;
-            if (cpu.eax == 0)
-                put(app, kNetworkScreen, 1);
-            else
-            {
-                cpu.edi = 0;
-                put(app, kNetworkScreen, cpu.edi);
-            }
+            eax = guest::direct<0x4ee310, watcom::clib::strcmp>(app, cpu, name, kPauseName);
+            if (cpu.terminate)
+                return eax;
+            put(app, kNetworkScreen, eax == 0 ? 1 : 0);
         }
     }
-    else if (cpu.eax != 0)
+    else if (name != 0)
     {
-        cpu.edx = kMainMultName;
-        if (!direct(app, cpu, watcom::strcmp))
-            return;
-        if (cpu.eax == 0)
+        eax = guest::direct<0x4ee310, watcom::clib::strcmp>(app, cpu, name, kMainMultName);
+        if (cpu.terminate)
+            return eax;
+        if (eax == 0)
             put(app, kNetworkScreen, 1);
-        cpu.edx = kPostGameName;
-        cpu.eax = cpu.ecx;
-        if (!direct(app, cpu, watcom::strcmp))
-            return;
-        if (cpu.eax == 0)
-            put(app, kNetworkScreen, cpu.eax);
+        eax = guest::direct<0x4ee310, watcom::clib::strcmp>(app, cpu, name, kPostGameName);
+        if (cpu.terminate)
+            return eax;
+        if (eax == 0)
+            put(app, kNetworkScreen, eax);
     }
     if (at(app, kInRace) == 0)
     {
         // A shape of the menus' art by its name (port_shapes.cpp's).
         auto load = [&](const Shape& shape) {
-            cpu.eax = shape.name;
-            const port::Result found = guest::direct<0x4d5db0, port::shapes::shapeNamed>(app, cpu, cpu.esp - 4, cpu.eax);
+            const port::Result found = guest::direct<0x4d5db0, port::shapes::shapeNamed>(app, cpu, cpu.esp - 4, shape.name);
             if (!found)
                 return false;
-            cpu.eax = reg32(*found);
-            app->getMemory<x86::reg16>(shape.to) = cpu.ax;
+            eax = reg32(*found);
+            app->getMemory<x86::reg16>(shape.to) = x86::reg16(eax);
             return true;
         };
         for (const Shape& shape : kShapes)
             if (!load(shape))
-                return;
+                return eax;
         if (!(guest::byte(app, kDetail) & 2))
             for (const Shape& shape : kGlows)
                 if (!load(shape))
-                    return;
+                    return eax;
     }
-    // The items' buffers given back and made anew: the memory's (native_ea_memory.cpp's), eax a tag,
-    // edx bytes, ebx the class.
-    cpu.ebx = at(app, kItemLines);
-    if (cpu.ebx != 0)
+    // The items' buffers given back and made anew: the memory's (native_ea_memory.cpp's), a tag, the
+    // bytes, the class.
+    const reg32 oldLines = at(app, kItemLines);
+    if (oldLines != 0)
     {
-        cpu.eax = cpu.ebx;
-        const std::optional<reg32> freed = guest::direct<0x4e1890, ea::purgeBlock>(app, cpu, cpu.eax);
+        const std::optional<reg32> freed = guest::direct<0x4e1890, ea::purgeBlock>(app, cpu, oldLines);
         if (!freed)
-            return;
-        cpu.eax = *freed;
+            return eax;
+        eax = *freed;
     }
-    cpu.edx = kItemLinesBytes;
-    cpu.eax = kNoTag;
-    cpu.ebx = 0;
-    const std::optional<reg32> lines = guest::direct<0x4e1620, ea::reserved>(app, cpu, cpu.eax, cpu.edx, cpu.ebx);
+    const std::optional<reg32> lines = guest::direct<0x4e1620, ea::reserved>(app, cpu, kNoTag, kItemLinesBytes, 0);
     if (!lines)
-        return;
-    cpu.eax = *lines;
-    put(app, kItemLines, cpu.eax);
-    if (cpu.eax != 0)
+        return eax;
+    eax = *lines;
+    put(app, kItemLines, eax);
+    if (eax != 0)
     {
-        cpu.ebx = kItemLinesBytes;
-        cpu.edx = 0;
-        if (!direct(app, cpu, watcom::memset))
-            return;
+        eax = guest::direct<0x4e0640, watcom::clib::memset>(app, cpu, eax, 0, kItemLinesBytes);
+        if (cpu.terminate)
+            return eax;
     }
-    cpu.esi = at(app, kItemText);
-    if (cpu.esi != 0)
+    const reg32 oldText = at(app, kItemText);
+    if (oldText != 0)
     {
-        cpu.eax = cpu.esi;
-        const std::optional<reg32> freed = guest::direct<0x4e1890, ea::purgeBlock>(app, cpu, cpu.eax);
+        const std::optional<reg32> freed = guest::direct<0x4e1890, ea::purgeBlock>(app, cpu, oldText);
         if (!freed)
-            return;
-        cpu.eax = *freed;
+            return eax;
+        eax = *freed;
     }
-    cpu.edx = kItemTextBytes;
-    cpu.eax = kNoTag;
-    cpu.ebx = 0;
-    const std::optional<reg32> text = guest::direct<0x4e1620, ea::reserved>(app, cpu, cpu.eax, cpu.edx, cpu.ebx);
+    const std::optional<reg32> text = guest::direct<0x4e1620, ea::reserved>(app, cpu, kNoTag, kItemTextBytes, 0);
     if (!text)
-        return;
-    cpu.eax = *text;
-    cpu.ebx = kItemTextBytes;
-    cpu.edx = 0;
-    put(app, kItemText, cpu.eax);
-    if (!direct(app, cpu, watcom::memset))
-        return;
-    cpu.edi = at(app, kInRace);
-    if (cpu.edi == 0)
-        gameSettings(app).networkLobby = cpu.edi;
-    leave(app, cpu, {&cpu.ebx, &cpu.ecx, &cpu.edx, &cpu.esi, &cpu.edi});
+        return eax;
+    eax = *text;
+    put(app, kItemText, eax);
+    eax = guest::direct<0x4e0640, watcom::clib::memset>(app, cpu, eax, 0, kItemTextBytes);
+    if (cpu.terminate)
+        return eax;
+    if (at(app, kInRace) == 0)
+        gameSettings(app).networkLobby = 0;
+    cpu.esp += 4 * 6;
+    return eax;
 }
 
-/* The adapters under the game's names, which disassemble_nfs3hp.py binds the addresses to: the
+/* The thunks under the game's names, which the addresses are bound to: the
  * arguments from the registers, the core, the ret. */
-void placePointer(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 placePointer(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    screen::placePointer(app, cpu, cpu.eax, cpu.edx);
+    args.eax = screen::placePointer(app, cpu, args.eax, args.edx);
     ret(cpu);
+    return args.eax;
 }
 
-void setPointer(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 setPointer(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    screen::setPointer(app, cpu, cpu.eax, cpu.edx);
+    args.eax = screen::setPointer(app, cpu, args.eax, args.edx);
     ret(cpu);
+    return args.eax;
 }
 
-void loadScreenArt(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 loadScreenArt(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    screen::loadScreenArt(app, cpu);
+    args.eax = screen::loadScreenArt(app, cpu);
     ret(cpu);
+    return args.eax;
 }
 
 }  // namespace frontend

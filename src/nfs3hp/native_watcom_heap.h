@@ -39,8 +39,10 @@ namespace watcomheap
 
 // _nmalloc: a block of `amount` bytes, or 0.
 bool allocate(win32::WinApplication* app, x86::CPU& cpu, const WatcomHeap& h, x86::reg32 amount, x86::reg32& result);
-// _nfree: a block given back; 0 and pointers in no miniheap are nothing.
-bool free(win32::WinApplication* app, x86::CPU& cpu, const WatcomHeap& h, x86::reg32 pointer);
+// _nfree: a block given back; 0 and pointers in no miniheap are nothing.  What its code leaves in eax
+// into `eax`, if asked: what the heap's lock's giving back leaves there, the block for none.
+bool free(win32::WinApplication* app, x86::CPU& cpu, const WatcomHeap& h, x86::reg32 pointer,
+          x86::reg32* eax = nullptr);
 // __MemAllocator: a block of `amount` from the miniheap `heap`, or 0.
 x86::reg32 allocateIn(win32::WinApplication* app, x86::reg32 heap, x86::reg32 amount);
 // __MemFree: a block given back to its miniheap.

@@ -1,5 +1,10 @@
 #include "port_dialogs.h"
+#include "port_gamecall.h"
+#include "native_frontend_menua.h"
+#include "native_frontend_screen.h"
+#include "native_frontend_dialogs.h"
 #include "native_watcom.h"
+#include "native_graphics.h"
 #include "port_draw2d.h"
 #include "port_shapes.h"
 #include "port_sound_effects.h"
@@ -28,20 +33,19 @@
  * round the buttons, put together and centred (kRect: top, left, bottom,
  * right), the buttons placed below the lines in a row or one above the other
  * (kButtonBoxes).  What is rewritten here draws it, in the x87's own
- * arithmetic (through cpu.fpu, as the code orders it): in a race's pause
+ * arithmetic (single precision, as the code orders it): in a race's pause
  * screens it rounds to a float's precision, and the dialog lands where the
  * game puts it.  There the box and the buttons are quads of the pause
  * screens' art; in the menus they are shapes of the front end's own
  * (0x445de0).
  *
- * Each function is a typed core and an adapter under the game's name.  The
+ * Each function is a typed core and a thunk under the game's name.  The
  * cores call each other as C++, each given the esp its game's code is entered
  * at; what is not rewritten here -- the layout, the text and the 2D drawing --
  * is called by address.  The game's code leaves ebx, ecx and edx otherwise
  * than it got them in some of these (the scratch of a Watcom function); the
- * adapters give them back as the caller had them, as no caller reads them
- * after (by liveness on nfs3.exe).  tools/game_checks holds each adapter
- * against the game's code for it (dialogs.inc). */
+ * thunks give them back as the caller had them, as no caller reads them
+ * after (by liveness on nfs3.exe). */
 #if defined(__clang__)
 #pragma clang fp contract(off)
 #else
@@ -51,7 +55,7 @@
 namespace nfs3hp
 {
 
-// nfs3hp_main.cpp: the box's emblem kept round on a wide screen (tools/apply_widescreen.py).
+// nfs3hp_main.cpp: the box's emblem kept round on a wide screen (the port's widescreen change).
 void dialogEmblem(bool drawing);
 
 namespace port
@@ -199,10 +203,6 @@ constexpr reg32 kSetClip = 0x4bebe0;
 constexpr reg32 kMemset = 0x4e0640;
 constexpr reg32 kSetMousePosition = 0x49bfc0;
 constexpr reg32 kCharAllowed = 0x443810;
-constexpr reg32 kPointAtButton = 0x444570;
-constexpr reg32 kLinesBox = 0x443a90;
-constexpr reg32 kButtonRowBox = 0x443c00;
-constexpr reg32 kPlaceButtons = 0x443d20;
 constexpr reg32 kTextAllowed = 0x443860;
 constexpr reg32 kStrncpy = 0x4e0e30;
 
@@ -257,20 +257,16 @@ struct Game
     reg32 eax;
     bool call(reg32 esp, reg32 target, Args a = {}, std::initializer_list<reg32> stack = {})
     {
-        return callGame(app, cpu, esp, target, a, stack, eax);
+        return gameCall(app, cpu, esp, target, a, stack, eax);
     }
     /* A typed core called as C++ where the game's code calls its address, from `esp`, the registers
      * loaded as the call by address loads them (`a`) and kept, as the callee keeps them: eax its
-     * result -- for a core that gives none back (the font's), eax as loaded, as its adapter leaves
+     * result -- for a core that gives none back (the font's), eax as loaded, as its thunk leaves
      * it; false when the game stopped in it. */
     template <reg32 Address, auto Core, typename... A>
     bool direct(reg32 esp, Args a, A... args)
     {
         cpu.esp = esp;
-        cpu.eax = a.eax;
-        cpu.edx = a.edx;
-        cpu.ebx = a.ebx;
-        cpu.ecx = a.ecx;
         if constexpr (std::is_void_v<decltype(guest::direct<Address, Core>(app, cpu, args...))>)
         {
             guest::direct<Address, Core>(app, cpu, args...);
@@ -285,7 +281,6 @@ struct Game
                 return false;
             eax = valueOf(result);
         }
-        cpu.eax = eax;
         return true;
     }
     static reg32 valueOf(reg32 value) { return value; }
@@ -325,14 +320,14 @@ bool inRace(App* app)
  * asks, a comparison as fcom leaves the status word. */
 bool above(CPU& cpu, const Float& a, const Float& b)
 {
-    cpu.fpu.compare(a, b);
-    return !cpu.fpu.status.c0 && !cpu.fpu.status.c3;
+    NFS2_USE(cpu);
+    return (fp::compare(a, b) & 0x4100) == 0;
 }
 
 bool below(CPU& cpu, const Float& a, const Float& b)
 {
-    cpu.fpu.compare(a, b);
-    return cpu.fpu.status.c0;
+    NFS2_USE(cpu);
+    return (fp::compare(a, b) & 0x100) != 0;
 }
 
 Float integer(int32_t value)
@@ -596,7 +591,7 @@ Result drawEditFieldCore(Game& g, reg32 esp, reg32 rect)
         const int32_t clip = fieldMiddle - fieldWidth / 2;
         x = fieldWidth / 2 + fieldMiddle - shownWidth - 7;
         if (!inRace(app))
-            GAME(at, kSetClip, {reg32(clip), 0, reg32(640 - clip), 480});
+            GAME_DIRECT(kSetClip, graphics::clipSet, at, {}, x86::sreg32(clip), 0, x86::sreg32(640 - clip), 480);
     }
     GAME_DIRECT(kDrawText, text::menuTextDrawn, at, {kEditText, reg32(x), reg32(y), kFont}, at - 4 - 4 * 2, kEditText,
                 x, y, kFont, int32_t(kAlignLeft), kFocusColour);
@@ -616,7 +611,7 @@ Result drawEditFieldCore(Game& g, reg32 esp, reg32 rect)
         }
     }
     if (!inRace(app))
-        GAME(at, kSetClip, {0, 0, 640, 480});
+        GAME_DIRECT(kSetClip, graphics::clipSet, at, {}, 0, 0, 640, 480);
     return int32_t(g.eax);
 }
 
@@ -660,7 +655,7 @@ Result drawListCore(Game& g, reg32 esp)
                 GAME_DIRECT(kDrawShape, shapes::drawArt, at,
                             {kUntickedShape(app), reg32(b.x), reg32(tick != 0 ? b.y + 2 : b.y), white}, entered(at),
                             int32_t(kUntickedShape(app)), int32_t(b.x), int32_t(tick != 0 ? b.y + 2 : b.y), white);
-            GAME(at, kShapeSize, {kTickedShape(app), lightWidth, lightHeight, colour});
+            GAME_DIRECT(kShapeSize, shapes::shapeSizeOf, at, {}, int32_t(kTickedShape(app)), lightWidth, lightHeight);
         }
         const int32_t nameX = int32_t(b.x + app->getMemory<int16_t>(lightWidth));
         GAME_DIRECT(kDrawText, text::menuTextDrawn, at, {name, reg32(nameX), reg32(b.y), kFont}, at - 4 - 4 * 2, name,
@@ -707,7 +702,7 @@ Result pointAtEntryCore(Game& g, reg32 esp, int32_t index)
     const Box b = box(app, kEntryBoxes, index);
     kMouseX.set(app, reg32(b.x + b.width - 2));
     kMouseY.set(app, reg32(b.y + b.height - 2));
-    GAME(esp - 12, kSetMousePosition, {kMouseX(app), kMouseY(app)});
+    GAME_DIRECT(0x49bfc0, frontend::screen::setPointer, esp - 12, {kMouseX(app), kMouseY(app)}, kMouseX(app), kMouseY(app));
     return int32_t(g.eax);
 }
 
@@ -772,7 +767,8 @@ Result drawDialogHelpCore(Game& g, reg32 esp)
                 kHelpText.set(app, word(app, help + 4 * reg32(under)));
             // The box: the text's size, wrapped, and a margin.
             const reg32 width = at, height = at + 4;  // [ebp - 8], [ebp - 4]
-            GAME(at, kTextBox, {kHelpText(app), kFont, kHelpWrap, width}, {height, 0});
+            GAME_DIRECT(kTextBox, text::boxMeasured, at, {}, at - 4 - 4 * 2, kHelpText(app), kFont, int32_t(kHelpWrap),
+                        width, height, 0);
             const int32_t w = sdword(app, width) + 7, h = sdword(app, height) + 3;
             kHelpX.set(app, kMouseX(app));
             kHelpWidth.set(app, reg32(w));
@@ -816,7 +812,8 @@ Result drawDialogHelpCore(Game& g, reg32 esp)
             GAME_DIRECT(kDrawText, text::menuTextDrawn, at, {kHelpText(app), x, y, kFont}, at - 4 - 4 * 2,
                         kHelpText(app), int32_t(x), int32_t(y), kFont, int32_t(kAlignLeft), kHelpTextColour);
         else
-            GAME(at, kDrawTextWrapped, {kHelpText(app), kFont, 8, x + 7}, {y, kHelpWrap, 0, 0, 0, 0});
+            GAME_DIRECT(kDrawTextWrapped, text::wrappedBoxDrawn, at, {}, at - 4 - 4 * 6, kHelpText(app), kFont, 8,
+                        int32_t(x + 7), int32_t(y), int32_t(kHelpWrap), 0, 0, 0, 0);
         kDrawColour.set(app, kOpaque);
     }
     kHelpAlpha.set(app, kFloatOne);
@@ -855,7 +852,7 @@ Result questionKeyCore(Game& g, reg32 esp, uint16_t key)
         return 0;
     }
     kFocus.set(app, reg32(focus));
-    GAME(at, kPointAtButton, {reg32(focus)});
+    GAME_DIRECT(0x444570, frontend::dialogs::pointAtButton, at, {}, reg32(focus));
     return 0;
 }
 
@@ -956,14 +953,14 @@ Result editKeyCore(Game& g, reg32 esp, reg32 key)
         if (focus < 0)
             focus = last;
         kFocus.set(app, reg32(focus));
-        GAME(at, kPointAtButton, {reg32(focus)});
+        GAME_DIRECT(0x444570, frontend::dialogs::pointAtButton, at, {}, reg32(focus));
         return 0;
     case kKeyRight:
         focus = int32_t(reg32(focus) + 1);
         if (last < focus)
             focus = 0;
         kFocus.set(app, reg32(focus));
-        GAME(at, kPointAtButton, {reg32(focus)});
+        GAME_DIRECT(0x444570, frontend::dialogs::pointAtButton, at, {}, reg32(focus));
         return 0;
     case kKeyDelete:
         GAME_DIRECT(kMemset, watcom::clib::memset, at, {kEditText, 0, kEditSize}, kEditText, reg32(0), reg32(kEditSize));
@@ -974,7 +971,7 @@ Result editKeyCore(Game& g, reg32 esp, reg32 key)
     }
     if (sdword(app, 0x558b54) <= sdword(app, 0x558b50) && kReplaceOnKey(app) == 0)
         return 0;
-    GAME(at, kCharAllowed, {key & 0xff, kEditMode(app)});
+    GAME_DIRECT(0x443810, frontend::menua::characterAllowed, at, {key & 0xff, kEditMode(app)}, key & 0xff, kEditMode(app));
     if ((g.eax & 0xff) == 0)
         return 0;
     if (kReplaceOnKey(app) != 0)
@@ -1077,35 +1074,34 @@ Result openListCore(Game& g, reg32 esp, reg32 lineCount, reg32 lines, int32_t en
     const reg32 listRect = at + 0x20;                     // [ebp - 0x48]
     if (column != 0)
     {
-        GAME(at, kLinesBox, {kLineCount(app), kLines(app), 0, 0}, {linesRect});
-        GAME(at, kLinesBox, {kButtonCount(app), kButtons(app), 0, 0}, {buttonsRect});
+        GAME_DIRECT(0x443a90, frontend::dialogs::linesBox, at - 4, {}, kLineCount(app), kLines(app), 0, 0, linesRect);
+        GAME_DIRECT(0x443a90, frontend::dialogs::linesBox, at - 4, {}, kButtonCount(app), kButtons(app), 0, 0, buttonsRect);
     }
     else
     {
-        GAME(at, kLinesBox, {kLineCount(app), kLines(app), 1, 0}, {linesRect});
-        GAME(at, kButtonRowBox, {kButtonCount(app), kButtons(app), buttonsRect});
+        GAME_DIRECT(0x443a90, frontend::dialogs::linesBox, at - 4, {}, kLineCount(app), kLines(app), 1, 0, linesRect);
+        GAME_DIRECT(0x443c00, frontend::dialogs::buttonRowBox, at, {}, kButtonCount(app), kButtons(app), buttonsRect);
     }
-    GAME(at, kLinesBox, {reg32(entryCount), names, 0, 0}, {listRect});
+    GAME_DIRECT(0x443a90, frontend::dialogs::linesBox, at - 4, {}, reg32(entryCount), names, 0, 0, listRect);
 
     // The three boxes put together round the lines' middle, as wide as the
     // widest; the entries 18 pixels each and a margin.
-    x86::FPU& f = cpu.fpu;
-    const Float linesWidth = f.sub(load(app, linesRect + kRight), load(app, linesRect + kLeft));
-    const Float linesHeight = f.sub(load(app, linesRect + kBottom), load(app, linesRect + kTop));
+    const Float linesWidth = fp::sub(load(app, linesRect + kRight), load(app, linesRect + kLeft));
+    const Float linesHeight = fp::sub(load(app, linesRect + kBottom), load(app, linesRect + kTop));
     const float linesWidthF = float(linesWidth);
-    const Float halfLinesWidth = f.mul(linesWidth, Float(0.5));
+    const Float halfLinesWidth = fp::mul(linesWidth, Float(0.5));
     const float linesHeightF = float(linesHeight);
-    const Float halfLinesHeight = f.mul(Float(0.5), linesHeight);
-    const float listWidthF = float(f.sub(load(app, listRect + kRight), load(app, listRect + kLeft)));
-    const float buttonsWidthF = float(f.sub(load(app, buttonsRect + kRight), load(app, buttonsRect + kLeft)));
-    const float buttonsHeightF = float(f.sub(load(app, buttonsRect + kBottom), load(app, buttonsRect + kTop)));
-    const float middleXF = float(f.add(load(app, linesRect + kLeft), halfLinesWidth));
+    const Float halfLinesHeight = fp::mul(Float(0.5), linesHeight);
+    const float listWidthF = float(fp::sub(load(app, listRect + kRight), load(app, listRect + kLeft)));
+    const float buttonsWidthF = float(fp::sub(load(app, buttonsRect + kRight), load(app, buttonsRect + kLeft)));
+    const float buttonsHeightF = float(fp::sub(load(app, buttonsRect + kBottom), load(app, buttonsRect + kTop)));
+    const float middleXF = float(fp::add(load(app, linesRect + kLeft), halfLinesWidth));
     const float listHeightF = float(integer(18 * entryCount + 20));
-    const float middleYF = float(f.add(load(app, linesRect + kTop), halfLinesHeight));
+    const float middleYF = float(fp::add(load(app, linesRect + kTop), halfLinesHeight));
     float width, height;
     if (column != 0)
     {
-        height = float(f.add(f.add(f.add(Float(linesHeightF), Float(buttonsHeightF)), Float(listHeightF)), Float(-15.0)));
+        height = float(fp::add(fp::add(fp::add(Float(linesHeightF), Float(buttonsHeightF)), Float(listHeightF)), Float(-15.0)));
         width = above(cpu, Float(buttonsWidthF), Float(linesWidthF)) ? buttonsWidthF : linesWidthF;
         if (below(cpu, Float(width), Float(listWidthF)))
             width = listWidthF;
@@ -1113,31 +1109,31 @@ Result openListCore(Game& g, reg32 esp, reg32 lineCount, reg32 lines, int32_t en
     }
     else
     {
-        const Float halfRow = f.mul(f.add(Float(buttonsWidthF), Float(-30.0)), Float(0.5));
-        kButtonsX.set(app, reg32(chop(cpu, f.sub(Float(middleXF), halfRow))));
+        const Float halfRow = fp::mul(fp::add(Float(buttonsWidthF), Float(-30.0)), Float(0.5));
+        kButtonsX.set(app, reg32(chop(cpu, fp::sub(Float(middleXF), halfRow))));
         width = above(cpu, Float(buttonsWidthF), Float(linesWidthF)) ? buttonsWidthF : linesWidthF;
         if (below(cpu, Float(width), Float(listWidthF)))
             width = listWidthF;
-        height = float(f.add(Float(linesHeightF), Float(listHeightF)));
+        height = float(fp::add(Float(linesHeightF), Float(listHeightF)));
     }
-    const Float halfListWidth = f.mul(Float(listWidthF), Float(0.5));
+    const Float halfListWidth = fp::mul(Float(listWidthF), Float(0.5));
     const Float middleX = Float(middleXF), middleY = Float(middleYF);
-    const Float halfWidth = f.mul(Float(0.5), Float(width)), halfHeight = f.mul(Float(height), Float(0.5));
-    setFloat(app, kRect + kTop, float(f.sub(middleY, halfHeight)));
-    setFloat(app, kRect + kLeft, float(f.sub(middleX, halfWidth)));
-    setFloat(app, kRect + kRight, float(f.add(halfWidth, middleX)));
-    setFloat(app, kRect + kBottom, float(f.add(halfHeight, middleY)));
+    const Float halfWidth = fp::mul(Float(0.5), Float(width)), halfHeight = fp::mul(Float(height), Float(0.5));
+    setFloat(app, kRect + kTop, float(fp::sub(middleY, halfHeight)));
+    setFloat(app, kRect + kLeft, float(fp::sub(middleX, halfWidth)));
+    setFloat(app, kRect + kRight, float(fp::add(halfWidth, middleX)));
+    setFloat(app, kRect + kBottom, float(fp::add(halfHeight, middleY)));
     // The entries: 15 pixels in from the list's own box, 35 below the lines'
     // top and 30 a line.
-    const Float listLeft = f.sub(middleX, halfListWidth);
-    kListX.set(app, reg32(chop(cpu, f.add(listLeft, Float(15.0)))));
+    const Float listLeft = fp::sub(middleX, halfListWidth);
+    kListX.set(app, reg32(chop(cpu, fp::add(listLeft, Float(15.0)))));
     const Float top = Float(floatAt(app, kRect + kTop));
-    kListY.set(app, reg32(chop(cpu, f.add(integer(30 * int32_t(kLineCount(app))), f.add(top, Float(35.0))))));
+    kListY.set(app, reg32(chop(cpu, fp::add(integer(30 * int32_t(kLineCount(app))), fp::add(top, Float(35.0))))));
 
     NEEDED(placed, placeEntriesCore(g, entered(at), int32_t(byteAt(app, 0x558c64)), kListNames(app)));
     g.eax = reg32(*placed);
-    GAME(at, kPlaceButtons, {kButtonCount(app), kButtons(app), column, kRect});
-    GAME(at, kPointAtButton, {kFocus(app)});
+    GAME_DIRECT(0x443d20, frontend::dialogs::placeButtons, at, {}, kButtonCount(app), kButtons(app), column, kRect);
+    GAME_DIRECT(0x444570, frontend::dialogs::pointAtButton, at, {}, kFocus(app));
     kCallback.set(app, callback);
     return int32_t(g.eax);
 }
@@ -1191,14 +1187,14 @@ Result listKeyCore(Game& g, reg32 esp, uint16_t key)
         if (focus < 0)
             focus = buttons - 1;
         kFocus.set(app, reg32(focus));
-        GAME(at, kPointAtButton, {reg32(focus)});
+        GAME_DIRECT(0x444570, frontend::dialogs::pointAtButton, at, {}, reg32(focus));
         return 0;
     case kKeyRight:
         focus = int32_t(reg32(focus) + 1);
         if (buttons - 1 < focus)
             focus = 0;
         kFocus.set(app, reg32(focus));
-        GAME(at, kPointAtButton, {reg32(focus)});
+        GAME_DIRECT(0x444570, frontend::dialogs::pointAtButton, at, {}, reg32(focus));
         return 0;
     default:
         return 0;
@@ -1406,6 +1402,11 @@ Result dialogPassCore(Game& g, reg32 esp)
  * made from `eax`, what the game's code has in eax at the call ---- */
 
 /* 0x4438b0's: whether a dialog is up. */
+reg32 dialogShownWith(App* app, reg32 eax)
+{
+    return (eax & ~0xffu) | dialogShownOf(app);
+}
+
 uint8_t dialogShownOf(App* app)
 {
     return kShown(app);
@@ -1455,177 +1456,177 @@ Result dialogPassOf(App* app, CPU& cpu, reg32 esp, reg32 eax)
     return dialogPassCore(g, esp);
 }
 
-/* ---- The adapters ---- */
+/* ---- The thunks ---- */
 
 /* 0x4438b0: whether a dialog is up, in al. */
-void dialogShown(App* app, CPU& cpu)
+x86::reg32 dialogShown(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, (e.eax & ~0xffu) | dialogShownOf(app));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, (e.eax & ~0xffu) | dialogShownOf(app));
 }
 
 /* 0x4438c0: the kind of dialog up, 0 for none. */
-void dialogKind(App* app, CPU& cpu)
+x86::reg32 dialogKind(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, kKind(app));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, kKind(app));
 }
 
 /* 0x4438d0: the dialog's box at eax drawn. */
-void drawBox(App* app, CPU& cpu)
+x86::reg32 drawBox(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     Game g{app, cpu, e.eax};
-    e.finish(cpu, drawBoxCore(g, e.esp, e.eax));
+    return e.finish(cpu, args, drawBoxCore(g, e.esp, e.eax));
 }
 
 /* 0x443f40: the lines at edx (eax of them) drawn in the box at ebx. */
-void drawLines(App* app, CPU& cpu)
+x86::reg32 drawLines(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     Game g{app, cpu, e.eax};
-    e.finish(cpu, drawLinesCore(g, e.esp, int32_t(e.eax), e.edx, e.ebx));
+    return e.finish(cpu, args, drawLinesCore(g, e.esp, int32_t(e.eax), e.edx, e.ebx));
 }
 
 /* 0x444000: the buttons drawn, the one edx highlighted. */
-void drawButtons(App* app, CPU& cpu)
+x86::reg32 drawButtons(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     Game g{app, cpu, e.eax};
-    e.finish(cpu, drawButtonsCore(g, e.esp, int32_t(e.edx)));
+    return e.finish(cpu, args, drawButtonsCore(g, e.esp, int32_t(e.edx)));
 }
 
 /* 0x444350: the field typed in, in the box at eax. */
-void drawEditField(App* app, CPU& cpu)
+x86::reg32 drawEditField(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     Game g{app, cpu, e.eax};
-    e.finish(cpu, drawEditFieldCore(g, e.esp, e.eax));
+    return e.finish(cpu, args, drawEditFieldCore(g, e.esp, e.eax));
 }
 
 /* 0x4445d0: the button under the pointer. */
-void buttonUnderMouse(App* app, CPU& cpu)
+x86::reg32 buttonUnderMouse(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     Game g{app, cpu, e.eax};
-    e.finish(cpu, buttonUnderMouseCore(g));
+    return e.finish(cpu, args, buttonUnderMouseCore(g));
 }
 
 /* 0x444910: the key eax for a question. */
-void questionKey(App* app, CPU& cpu)
+x86::reg32 questionKey(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     Game g{app, cpu, e.eax};
-    e.finish(cpu, questionKeyCore(g, e.esp, uint16_t(e.eax)));
+    return e.finish(cpu, args, questionKeyCore(g, e.esp, uint16_t(e.eax)));
 }
 
 /* 0x4449d0: a question's pass. */
-void questionPass(App* app, CPU& cpu)
+x86::reg32 questionPass(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     Game g{app, cpu, e.eax};
-    e.finish(cpu, questionPassCore(g, e.esp));
+    return e.finish(cpu, args, questionPassCore(g, e.esp));
 }
 
 /* 0x444a60: the message to go on the next pass. */
-void endMessage(App* app, CPU& cpu)
+x86::reg32 endMessage(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, endMessageOf(app, cpu, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, endMessageOf(app, cpu, e.eax));
 }
 
 /* 0x444b20: the key eax for a message. */
-void messageKey(App* app, CPU& cpu)
+x86::reg32 messageKey(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     Game g{app, cpu, e.eax};
-    e.finish(cpu, messageKeyCore(g, uint16_t(e.eax)));
+    return e.finish(cpu, args, messageKeyCore(g, uint16_t(e.eax)));
 }
 
 /* 0x444b60: a message's pass. */
-void messagePass(App* app, CPU& cpu)
+x86::reg32 messagePass(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     Game g{app, cpu, e.eax};
-    e.finish(cpu, messagePassCore(g, e.esp));
+    return e.finish(cpu, args, messagePassCore(g, e.esp));
 }
 
 /* 0x444f50: the key eax for a line typed in. */
-void editKey(App* app, CPU& cpu)
+x86::reg32 editKey(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     Game g{app, cpu, e.eax};
-    e.finish(cpu, editKeyCore(g, e.esp, e.eax));
+    return e.finish(cpu, args, editKeyCore(g, e.esp, e.eax));
 }
 
 /* 0x4450c0: the pass of a dialog to type in. */
-void editPass(App* app, CPU& cpu)
+x86::reg32 editPass(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     Game g{app, cpu, e.eax};
-    e.finish(cpu, editPassCore(g, e.esp));
+    return e.finish(cpu, args, editPassCore(g, e.esp));
 }
 
 /* 0x445150: the list entry highlighted. */
-void listFocus(App* app, CPU& cpu)
+x86::reg32 listFocus(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, listFocusOf(app));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, listFocusOf(app));
 }
 
 /* 0x445160: the pointer moved onto the bottom right of the entry eax's box. */
-void pointAtEntry(App* app, CPU& cpu)
+x86::reg32 pointAtEntry(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     Game g{app, cpu, e.eax};
-    e.finish(cpu, pointAtEntryCore(g, e.esp, int32_t(e.eax)));
+    return e.finish(cpu, args, pointAtEntryCore(g, e.esp, int32_t(e.eax)));
 }
 
 /* 0x4451d0: the entry under the pointer. */
-void entryUnderMouse(App* app, CPU& cpu)
+x86::reg32 entryUnderMouse(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     Game g{app, cpu, e.eax};
-    e.finish(cpu, entryUnderMouseCore(g));
+    return e.finish(cpu, args, entryUnderMouseCore(g));
 }
 
 /* 0x4452d0: eax entries' boxes laid out for the names at edx. */
-void placeEntries(App* app, CPU& cpu)
+x86::reg32 placeEntries(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     Game g{app, cpu, e.eax};
-    e.finish(cpu, placeEntriesCore(g, e.esp, int32_t(e.eax), e.edx));
+    return e.finish(cpu, args, placeEntriesCore(g, e.esp, int32_t(e.eax), e.edx));
 }
 
 /* 0x445380: the list's entries drawn. */
-void drawList(App* app, CPU& cpu)
+x86::reg32 drawList(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     Game g{app, cpu, e.eax};
-    e.finish(cpu, drawListCore(g, e.esp));
+    return e.finish(cpu, args, drawListCore(g, e.esp));
 }
 
 /* 0x445520: the key eax for a list. */
-void listKey(App* app, CPU& cpu)
+x86::reg32 listKey(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     Game g{app, cpu, e.eax};
-    e.finish(cpu, listKeyCore(g, e.esp, uint16_t(e.eax)));
+    return e.finish(cpu, args, listKeyCore(g, e.esp, uint16_t(e.eax)));
 }
 
 /* 0x445680: a list's pass. */
-void listPass(App* app, CPU& cpu)
+x86::reg32 listPass(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     Game g{app, cpu, e.eax};
-    e.finish(cpu, listPassCore(g, e.esp));
+    return e.finish(cpu, args, listPassCore(g, e.esp));
 }
 
 /* 0x445750 (stdcall 0x20): a list opened. */
-void openList(App* app, CPU& cpu)
+x86::reg32 openList(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu,
+    const Entry e(cpu, args);
+    return e.finish(cpu, args,
              openListOf(app, cpu, e.esp, e.eax, e.edx, int32_t(e.ebx), e.ecx, e.arg(app, 0), e.arg(app, 1),
                         int32_t(e.arg(app, 2)), e.arg(app, 3), e.arg(app, 4), int32_t(e.arg(app, 5)), e.arg(app, 6),
                         e.arg(app, 7)),
@@ -1633,40 +1634,40 @@ void openList(App* app, CPU& cpu)
 }
 
 /* 0x445ac0: the help box over the dialog. */
-void drawDialogHelp(App* app, CPU& cpu)
+x86::reg32 drawDialogHelp(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     Game g{app, cpu, e.eax};
-    e.finish(cpu, drawDialogHelpCore(g, e.esp));
+    return e.finish(cpu, args, drawDialogHelpCore(g, e.esp));
 }
 
 /* 0x445de0: the dialogs' shapes found. */
-void loadDialogArt(App* app, CPU& cpu)
+x86::reg32 loadDialogArt(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     Game g{app, cpu, e.eax};
-    e.finish(cpu, loadDialogArtCore(g, e.esp));
+    return e.finish(cpu, args, loadDialogArtCore(g, e.esp));
 }
 
 /* 0x445e60: the key eax for the dialog up. */
-void dialogKey(App* app, CPU& cpu)
+x86::reg32 dialogKey(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, dialogKeyOf(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, dialogKeyOf(app, cpu, e.esp, e.eax));
 }
 
 /* 0x445f10: the dialog closed. */
-void closeDialog(App* app, CPU& cpu)
+x86::reg32 closeDialog(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, closeDialogOf(app, cpu, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, closeDialogOf(app, cpu, e.eax));
 }
 
 /* 0x445f50: a pass of the dialog up. */
-void dialogPass(App* app, CPU& cpu)
+x86::reg32 dialogPass(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, dialogPassOf(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, dialogPassOf(app, cpu, e.esp, e.eax));
 }
 
 }  // namespace dialogs

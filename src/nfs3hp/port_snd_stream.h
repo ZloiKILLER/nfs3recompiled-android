@@ -14,7 +14,7 @@
  *
  * The streams' records stay where the game has them -- Pathfinder and the
  * movies' streamer read them there -- and are read and written in place.
- * Each of the game's entries is an adapter (named as the game's code knows
+ * Each of the game's entries is a thunk (named as the game's code knows
  * it) around a core with a name of its own; what one file's functions call
  * of the other's is declared here. */
 namespace nfs3hp
@@ -103,9 +103,7 @@ struct ChunkHeader
 
 #pragma pack(pop)
 
-/* The game's code the streams call by address.  The checks (tools/game_checks)
- * put the stand-in of a function in place where the generated code of one of
- * these calls it only when the file names its address, so these two, which
+/* The game's code the streams call by address: these two, which
  * port_snd.h names as well, are named here. */
 constexpr reg32 kSurface = 0x4f9070;  // whether a DirectDraw surface is locked
 constexpr reg32 kMemmove = 0x4ea4f0;  // EA's memmove: eax from, edx to, ebx bytes
@@ -119,52 +117,58 @@ constexpr reg32 kWrap = 0xffffffff, kGivenBack = 0xfffffffe, kDropped = 0xffffff
 
 inline CdStream& cdStream(App* app, reg32 at) { return record<CdStream>(app, at); }
 
-/* One of the game's critical sections, entered or left with its address in
- * eax as the code pushes it from there. */
+/* One of the game's critical sections, entered or left (its address pushed),
+ * from `esp` where the game's code has it at the call.  The code pushes it
+ * from eax: what eax holds after it (callWindowsEax). */
 inline Result enterSection(App* app, CPU& cpu, reg32 esp, reg32 section)
 {
-    reg32 eax;
-    if (!callWindows<kEnterCriticalSection, &host::enterLock>(app, cpu, esp, {section}, eax,
-                                                                                     section))
+    reg32 eax = section;
+    if (!callWindowsEax<kEnterCriticalSection, &host::enterLock>(app, cpu, esp, eax, section))
         return {};
     return int32_t(eax);
 }
 
 inline Result leaveSection(App* app, CPU& cpu, reg32 esp, reg32 section)
 {
-    reg32 eax;
-    if (!callWindows<kLeaveCriticalSection, &host::leaveLock>(app, cpu, esp, {section}, eax,
-                                                                                     section))
+    reg32 eax = section;
+    if (!callWindowsEax<kLeaveCriticalSection, &host::leaveLock>(app, cpu, esp, eax, section))
         return {};
     return int32_t(eax);
 }
 
-/* The registers as they were on entry, put back on the way out of a core that
- * the rewrites call as C++: the game's code keeps every register but eax for
- * its caller (and a rewrite sets some for the game's code it calls). */
-struct Preserve
+/* A typed core of another file's (or of these) called as C++ in place of the
+ * game's call of `Address` (guest::direct): esp first set where the game's
+ * code has it at the call, so the callee's frames lie where the game's do. */
+template <reg32 Address, auto Core, typename... A>
+inline auto directFrom(App* app, CPU& cpu, reg32 esp, A... a)
 {
-    CPU& cpu;
-    reg32 ebx, ecx, edx, esi, edi, ebp;
-    explicit Preserve(CPU& c) : cpu(c), ebx(c.ebx), ecx(c.ecx), edx(c.edx), esi(c.esi), edi(c.edi), ebp(c.ebp) {}
-    ~Preserve()
-    {
-        cpu.ebx = ebx;
-        cpu.ecx = ecx;
-        cpu.edx = edx;
-        cpu.esi = esi;
-        cpu.edi = edi;
-        cpu.ebp = ebp;
-    }
-    Preserve(const Preserve&) = delete;
-    Preserve& operator=(const Preserve&) = delete;
-};
+    cpu.esp = esp;
+    return guest::direct<Address, Core>(app, cpu, a...);
+}
 
-/* The registers as the code before left them, for a call that is handed only
- * some. */
-inline Args residue(const CPU& c) { return {c.eax, c.edx, c.ebx, c.ecx}; }
+/* A typed core's result as the game's code has it in eax after the call:
+ * false when the game stopped in it. */
+template <class T>
+inline bool took(const std::optional<T>& result, reg32& eax)
+{
+    if (!result)
+        return false;
+    eax = reg32(*result);
+    return true;
+}
+inline bool took(const CPU& cpu, reg32 result, reg32& eax)
+{
+    eax = result;
+    return !cpu.terminate;
+}
 
-/* A loop's safepoint, as the generated code has one at each loop's head: the
+/* The game's 0x4dfb20 (native_ea_threads.cpp's eventPosted): event `event`
+ * set, `posted` what the game's code has in eax with it -- which the code
+ * does not read.  What the
+ * setting gives back. */
+std::optional<reg32> eventPostedWith(App* app, CPU& cpu, reg32 posted, reg32 event);
+
+/* A loop's safepoint, as the game's code has one at each loop's head: the
  * guest's context handed over when another thread waits for it; and a busy
  * wait's turn, the thread's slice given up so that the thread the wait waits
  * on runs. */
@@ -185,6 +189,15 @@ reg32 readerIsWaiting(App* app, reg32 stream);
 Result nextChunkToPlay(App* app, CPU& cpu, reg32 esp, reg32 stream);
 // Whether `count` command blocks are free (1 or 0).
 Result commandBlocksAvailable(App* app, CPU& cpu, reg32 esp, reg32 count);
+
+/* The streamer (port_snd_stream.cpp) as Pathfinder calls it. */
+
+// 0x4e7750 (SNDstreamsetup): the streamer set up on CD stream `stream`, the play's options at `options`.
+Result setUpStreamer(App* app, CPU& cpu, reg32 esp, reg32 stream, reg32 options);
+// 0x4e78a0 (SNDstreamqueue): file `name` queued to play from `offset`.
+Result queueStreamFile(App* app, CPU& cpu, reg32 esp, reg32 name, reg32 offset);
+// 0x4e7ce0 (SNDstreambuftime): the stream's buffered time in ms.
+Result bufferedTime(App* app, CPU& cpu, reg32 esp);
 
 // The reader's commands by their names.
 enum class Command : reg32
@@ -210,6 +223,11 @@ Result purgeArgument(App* app, CPU& cpu, reg32 esp, reg32 stream, reg32 argument
 
 }  // namespace stream
 }  // namespace port
+
+namespace guest
+{
+
+}  // namespace guest
 }  // namespace nfs3hp
 
 #endif

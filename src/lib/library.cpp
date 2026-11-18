@@ -31,7 +31,9 @@ void Library::registerSymbols(WinApplication *app)
          it != m_methods.end();
          ++it)
     {
-        app->registerMethod(it->second.first, {it->first, it->second.second});
+        Method method = it->second.second;
+        method.name = it->first;
+        app->registerMethod(it->second.first, method);
     }
 }
 

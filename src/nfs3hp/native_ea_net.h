@@ -6,7 +6,7 @@
 #include <type_traits>
 
 /* native_ea_net.cpp's typed functions that other files call as C++ (guest::direct), and how the
- * game's code calls each by address (ByAddress, for the check's stand-ins).  Each may call the
+ * game's code calls each by address.  Each may call the
  * game's other functions by address on `cpu`, and is false or nullopt when the game stopped in one. */
 namespace nfs3hp
 {
@@ -14,7 +14,7 @@ namespace ea
 {
 
 /* What a call leaves in eax, edx, ebx and ecx -- or what the code hands it
- * in them, arguments or not: a stand-in, a Windows function may leave a
+ * in them, arguments or not: a Windows function may leave a
  * register as it was handed. */
 struct Regs
 {
@@ -70,115 +70,30 @@ x86::reg32 queueUnlinked(win32::WinApplication* app, x86::reg32 queue, x86::reg3
 std::optional<x86::reg32> queueLockFreed(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 queue);
 // The game's 0x50e1d0: how many elements the queue `queue` holds.
 std::optional<x86::reg32> queueLengthOf(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 queue);
+// The game's 0x49eed0: the network game ended, `handed` the eax the code hands it: eax as the code
+// leaves it.
+std::optional<x86::reg32> networkGameEnded(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 handed);
+// The game's 0x4f4f50, NET_shutgame: the NET object `net`'s game shut, `how` handed to its function.
+std::optional<x86::reg32> netGameShut(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 net, x86::reg32 how);
+// The game's 0x4f4f90, NET_endgame: the NET object `net`'s game ended.
+std::optional<x86::reg32> netGameEnded(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 net);
+// The game's 0x4f5040: the NET object `net`'s check asked with its game, `player` and `third` (edx and
+// ebx, which the check's function reads).
+std::optional<x86::reg32> netPlayerChecked(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 net,
+                                           x86::reg32 player, x86::reg32 third);
+// The game's 0x50e150, qremove: the element taken out of the queue; 1 if it was there, `forNone`
+// (the caller's edi) asked for none.
+std::optional<x86::reg32> queueRemoved(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 queue,
+                                       x86::reg32 element, x86::reg32 forNone);
+// The game's 0x50e220, qposition: the element's index in the queue, or -1.
+std::optional<x86::reg32> queuePositionOf(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 queue,
+                                          x86::reg32 element);
+// The game's 0x50e470, qfindindex: the queue's element `index`, or 0.
+std::optional<x86::reg32> queueElementAt(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 queue,
+                                         x86::reg32 index);
 
 }  // namespace ea
 
-namespace guest
-{
-
-// The connection in eax, the packet in edx, its length in ebx; eax, edx and ebx back.
-template <>
-struct ByAddress<ea::packetSent>
-{
-    template <x86::reg32 Address>
-    static std::optional<ea::Regs> call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 connection,
-                                        x86::reg32 packet, x86::reg32 length)
-    {
-        const KeptRegisters kept(cpu);
-        cpu.eax = connection;
-        cpu.edx = packet;
-        cpu.ebx = length;
-        if (!guest::call(app, cpu, Address))
-            return std::nullopt;
-        return ea::Regs{cpu.eax, cpu.edx, cpu.ebx, 0};
-    }
-};
-
-// The connection in eax; the machine back in eax.
-template <>
-struct ByAddress<ea::machineOf>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 connection)
-    {
-        return watcomEax(app, cpu, Address, {connection}).value_or(0);
-    }
-};
-
-// The source in eax, where to in edx; the length back in eax.
-template <>
-struct ByAddress<ea::unpackRuns>
-{
-    template <x86::reg32 Address>
-    static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 source, x86::reg32 to)
-    {
-        return watcomEax(app, cpu, Address, {source, to});
-    }
-};
-
-// The source in eax, where to in edx, blocksToo in ebx; eax, edx and ebx back (ecx 0, as the core
-// gives it).
-template <>
-struct ByAddress<ea::unpackDxt>
-{
-    template <x86::reg32 Address>
-    static ea::Regs call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 source, x86::reg32 to,
-                         x86::reg32 blocksToo)
-    {
-        const KeptRegisters kept(cpu);
-        cpu.eax = source;
-        cpu.edx = to;
-        cpu.ebx = blocksToo;
-        guest::call(app, cpu, Address);
-        return ea::Regs{cpu.eax, cpu.edx, cpu.ebx, 0};
-    }
-};
-
-// The source in eax, where to in edx; eax and edx back (ebx and ecx 0, as the core gives them).
-template <>
-struct ByAddress<ea::unpackPairs>
-{
-    template <x86::reg32 Address>
-    static ea::Regs call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 source, x86::reg32 to)
-    {
-        const KeptRegisters kept(cpu);
-        cpu.eax = source;
-        cpu.edx = to;
-        guest::call(app, cpu, Address);
-        return ea::Regs{cpu.eax, cpu.edx, 0, 0};
-    }
-};
-
-
-/* Those above by address: their words in eax and edx, every other register kept (none of them
- * changes one but eax); eax back. */
-template <typename Result, typename... Words>
-struct EaNetByAddress
-{
-    template <x86::reg32 Address>
-    static Result call(win32::WinApplication* app, x86::CPU& cpu, Words... words)
-    {
-        const std::optional<x86::reg32> eax = watcomEax(app, cpu, Address, {x86::reg32(words)...});
-        if constexpr (std::is_same_v<Result, x86::reg32>)
-            return eax.value_or(0);
-        else
-            return eax;
-    }
-};
-
-template <> struct ByAddress<ea::sessionIndexOf> : EaNetByAddress<x86::reg32, x86::reg32> {};
-template <> struct ByAddress<ea::connectionDropped> : EaNetByAddress<std::optional<x86::reg32>, x86::reg32> {};
-template <> struct ByAddress<ea::machineLeftAnnounced> : EaNetByAddress<std::optional<x86::reg32>, x86::reg32> {};
-template <> struct ByAddress<ea::networkReset> : EaNetByAddress<std::optional<x86::reg32>, x86::reg32> {};
-template <> struct ByAddress<ea::networkClosed> : EaNetByAddress<std::optional<x86::reg32>> {};
-template <> struct ByAddress<ea::machineOfPlayerNumber> : EaNetByAddress<x86::reg32, x86::reg32> {};
-template <> struct ByAddress<ea::netCallTraced> : EaNetByAddress<std::optional<x86::reg32>, x86::reg32> {};
-template <> struct ByAddress<ea::connectionsRestored> : EaNetByAddress<std::optional<x86::reg32>, x86::reg32> {};
-template <> struct ByAddress<ea::queueUnlinked> : EaNetByAddress<x86::reg32, x86::reg32, x86::reg32> {};
-template <> struct ByAddress<ea::queueLockFreed> : EaNetByAddress<std::optional<x86::reg32>, x86::reg32> {};
-template <> struct ByAddress<ea::queueLengthOf> : EaNetByAddress<std::optional<x86::reg32>, x86::reg32> {};
-
-}  // namespace guest
 }  // namespace nfs3hp
 
 #endif

@@ -1,6 +1,9 @@
 #include "native_controls_host.h"
 #include "native_controls_input.h"
+#include "native_frontend_screen.h"
 #include "native_frontend_wina.h"
+#include "native_game.h"
+#include "native_watcom.h"
 #include "native_guest.h"
 #include "native_windows.h"
 #include "host_threads.h"
@@ -15,10 +18,9 @@
 
 /* The game's side of DirectInput: the devices found and opened, the mouse, the
  * keyboard and the joysticks read, their force-feedback effects.
- * disassemble_nfs3hp.py binds each address to the function of that name here
- * (CONTROLS_INPUT_NATIVES), and the generated code calls it by name.
+ * The game's code calls each by the name it has here.
  *
- * Each is a typed function under a name of its own, with an adapter under the
+ * Each is a typed function under a name of its own, with a thunk under the
  * game's name for the callers still on registers and the dispatch: it leaves
  * the registers as the game's code does -- where a callee the code calls may
  * keep a register, the core sets it as the code has it at the call.  A frame
@@ -32,7 +34,7 @@
  * native_controls_host.h), with the arguments the game's code pushes: there
  * is no DirectInput behind it, only the port's pads, mouse and keyboard.
  * Win32 is called through the imports' slots, the window's message
- * handlers' table and the pointer's placing by address.  tools/game_checks holds each against its generated code.
+ * handlers' table and the pointer's placing by address.
  *
  * The devices: 0 to 15 the joysticks, 0x10 all of them, 0x11 the mouse, 0x12
  * the keyboard, 0x13 every one.  A joystick's record, 0x88 bytes from
@@ -45,14 +47,6 @@
  * at 0x80, its type at 0x84. */
 namespace nfs3hp
 {
-void fillZero(win32::WinApplication* app, x86::CPU& cpu);
-void AcquireWindow(win32::WinApplication* app, x86::CPU& cpu);
-
-namespace watcom
-{
-void strncpy(win32::WinApplication* app, x86::CPU& cpu);
-}
-
 namespace controls
 {
 
@@ -130,25 +124,9 @@ void push(win32::WinApplication* app, x86::CPU& cpu, reg32 value)
     put(app, cpu.esp, value);
 }
 
-/* A call as the code makes it: the return address's slot, and esp as the
- * callee leaves it.  False when the game stopped in it. */
-bool direct(win32::WinApplication* app, x86::CPU& cpu, void (*function)(win32::WinApplication*, x86::CPU&))
-{
-    cpu.esp -= 4;
-    function(app, cpu);
-    return !cpu.terminate;
-}
-
-using controls::directInput;
+using controls::directInputResult;
 using controls::kCreate;
 using controls::Object;
-
-bool byAddress(win32::WinApplication* app, x86::CPU& cpu, reg32 target)
-{
-    cpu.esp -= 4;
-    app->dynamic_call(target, cpu);
-    return !cpu.terminate;
-}
 
 using App = win32::WinApplication;
 using CPU = x86::CPU;
@@ -185,9 +163,6 @@ private:
 struct Kept
 {
     reg32 ebx, ecx, edx, esi, edi, ebp;
-    explicit Kept(const CPU& cpu) : ebx(cpu.ebx), ecx(cpu.ecx), edx(cpu.edx), esi(cpu.esi), edi(cpu.edi), ebp(cpu.ebp)
-    {
-    }
 };
 
 bool isJoystick(reg32 device)
@@ -211,10 +186,38 @@ reg32 effectObject(App* app, reg32 effect)
     return at(app, kEffects + effect * 4);
 }
 
-/* An effect's number as the code reads it: ax, as a signed word. */
-reg32 effectIn(const CPU& cpu)
+/* The registers as axisProperty's code leaves them, `percent` its stack's
+ * word: where it asked nothing, edx the word; where it did, ebx the device
+ * when setting, and ecx 100 and edx the remainder where DirectInput
+ * answered -- else as the call left them (nothing). */
+struct ZoneLeft
 {
-    return reg32(sreg32(i16(cpu.ax)));
+    reg32 eax;
+    std::optional<reg32> ebx, ecx, edx;
+};
+
+ZoneLeft zoneRegisters(App* app, reg32 joystick, reg32 axis, bool read, reg32 percent, const Zone& zone)
+{
+    ZoneLeft left{zone.percent, {}, {}, {}};
+    if (!isJoystick(joystick) || sreg32(axis) > 8 || joystickDevice(app, joystick) == 0)
+    {
+        left.edx = percent;
+        return left;
+    }
+    if (!read)
+        left.ebx = joystickDevice(app, joystick);
+    if (zone.remainder)
+    {
+        left.ecx = 100;
+        left.edx = *zone.remainder;
+    }
+    return left;
+}
+
+/* An effect's number as the code reads it: ax, as a signed word. */
+reg32 effectIn(reg32 eax)
+{
+    return reg32(sreg32(i16(eax)));
 }
 
 /* Method `method` of DirectInput's object `object` (stdcall: the object, then
@@ -226,15 +229,11 @@ std::optional<reg32> callMethod(App* app, CPU& cpu, Object kind, reg32 object, r
     for (auto w = std::rbegin(words); w != std::rend(words); ++w)
         push(app, cpu, *w);
     push(app, cpu, object);
-    cpu.edx = at(app, object);
-    if (!directInput(app, cpu, kind, method))
-        return std::nullopt;
-    return cpu.eax;
+    return directInputResult(app, cpu, kind, method);
 }
 
 /* A function of Windows' (`Function`), handed `words`: the port's own, called
- * as C++ (native_windows.h); in the check through its import's slot `Slot`
- * (stdcall).  Its result; nothing when the game stopped. */
+ * as C++ (native_windows.h) (stdcall).  Its result; nothing when the game stopped. */
 template <reg32 Slot, auto Function, typename... Words>
 std::optional<reg32> callWindows(App* app, CPU& cpu, Words... words)
 {
@@ -256,33 +255,31 @@ std::optional<reg32> readZone(App* app, CPU& cpu, reg32 joystick, reg32 axis, re
 std::optional<reg32> openTheMouse(App* app, CPU& cpu);
 std::optional<reg32> cooperate(App* app, CPU& cpu, reg32 device, reg32 flags);
 std::optional<Zone> axisZone(App* app, CPU& cpu, reg32 joystick, reg32 axis, bool read, reg32 which, reg32 percent);
-void zoneRegisters(App* app, CPU& cpu, reg32 joystick, reg32 axis, bool read, reg32 percent, const Zone& zone);
 
 /* The game's fill with zeros (nfs3hp::fillZero): `bytes` from `address`.
  * False when the game stopped. */
 bool zero(App* app, CPU& cpu, reg32 address, reg32 bytes)
 {
-    cpu.eax = address;
-    cpu.edx = bytes;
-    return direct(app, cpu, fillZero);
+    guest::direct<0x4e070c, ea::clearBytes>(app, cpu, address, bytes);
+    return !cpu.terminate;
 }
 }  // namespace
 
 
-void openMouse(win32::WinApplication* app, x86::CPU& cpu);
-void setPointerBounds(win32::WinApplication* app, x86::CPU& cpu);
-void describeJoystick(win32::WinApplication* app, x86::CPU& cpu);
-void readAxisZone(win32::WinApplication* app, x86::CPU& cpu);
-void resetForceFeedback(win32::WinApplication* app, x86::CPU& cpu);
-void stopEffects(win32::WinApplication* app, x86::CPU& cpu);
-void startEffect(win32::WinApplication* app, x86::CPU& cpu);
-void downloadEffect(win32::WinApplication* app, x86::CPU& cpu);
-void unloadEffect(win32::WinApplication* app, x86::CPU& cpu);
-void setCooperativeLevel(win32::WinApplication* app, x86::CPU& cpu);
-void acquireDevice(win32::WinApplication* app, x86::CPU& cpu);
-void acquireResult(win32::WinApplication* app, x86::CPU& cpu);
-void effectPlaying(win32::WinApplication* app, x86::CPU& cpu);
-void axisProperty(win32::WinApplication* app, x86::CPU& cpu);
+x86::reg32 openMouse(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 setPointerBounds(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 describeJoystick(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 readAxisZone(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 resetForceFeedback(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 stopEffects(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 startEffect(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 downloadEffect(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 unloadEffect(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 setCooperativeLevel(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 acquireDevice(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 acquireResult(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 effectPlaying(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 axisProperty(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
 
 namespace
 {
@@ -290,14 +287,15 @@ namespace
 /* 0x434f20: DirectInput started, where it is not: the joysticks' records
  * cleared, their devices and the effects' none, DirectInputCreateA asked for
  * version 5, and the mouse opened (openMouse).  Nothing kept if it fails.
- * False when the game stopped. */
-bool startInput(App* app, CPU& cpu)
+ * The eax the code leaves (`eaxBefore` where nothing is done, the HRESULT where DirectInput fails, else
+ * the mouse's); nothing when the game stopped. */
+std::optional<reg32> startedInput(App* app, CPU& cpu, reg32 eaxBefore)
 {
     if (at(app, kDirectInput) != 0)
-        return true;
+        return eaxBefore;
     const GuestFrame frame(cpu, 0x18, 0);  // ebx, ecx, edx, esi, edi, ebp pushed
     if (!zero(app, cpu, kJoystickRecords, kAllJoystickBytes))
-        return false;
+        return std::nullopt;
     for (reg32 joystick = 0; joystick < 0x10; ++joystick)
     {
         put(app, kJoysticks + joystick * 4, 0);
@@ -306,41 +304,56 @@ bool startInput(App* app, CPU& cpu)
     for (reg32 effect = 0; effect < kEffectsMade; ++effect)
         put(app, kEffects + effect * 4, 0);
     put(app, kJoystickCount, 0);
-    cpu.eax = kEffectsMade;  // as the effects' count leaves it: GetModuleHandle may hand it back
     const std::optional<reg32> instance =
         callWindows<kGetModuleHandle, &host::moduleHandle>(app, cpu, 0);
     if (!instance)
-        return false;
+        return std::nullopt;
     // DirectInputCreateA(the instance, version 5, &DirectInput, no outer)
     push(app, cpu, 0);
     push(app, cpu, kDirectInput);
     push(app, cpu, 0x500);
     push(app, cpu, *instance);
-    if (!directInput(app, cpu, Object::DirectInput, kCreate))
-        return false;
-    if (cpu.eax != 0)
+    const std::optional<reg32> created = directInputResult(app, cpu, Object::DirectInput, kCreate);
+    if (!created)
+        return std::nullopt;
+    if (*created != 0)
     {
         put(app, kDirectInput, 0);
-        return true;
+        return *created;
     }
-    return direct(app, cpu, openMouse);
+    return guest::direct<0x4350a0, controls::openMouseCore>(app, cpu);
+}
+
+/* startedInput for a caller that wants no eax. */
+bool startInput(App* app, CPU& cpu)
+{
+    return startedInput(app, cpu, 0).has_value();
 }
 
 }  // namespace
 
-/* 0x434f20: startInput. */
-void startDirectInput(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x434f20, called as C++ (guest::direct). */
+bool startInputCore(App* app, CPU& cpu)
 {
-    const Kept kept(cpu);
-    if (!startInput(app, cpu))
-        return;
-    cpu.ebx = kept.ebx;
-    cpu.ecx = kept.ecx;
-    cpu.edx = kept.edx;
-    cpu.esi = kept.esi;
-    cpu.edi = kept.edi;
-    cpu.ebp = kept.ebp;
+    return startInput(app, cpu);
+}
+
+/* 0x434f20: startedInput. */
+x86::reg32 startDirectInput(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+{
+    const Kept kept{args.ebx, args.ecx, args.edx, args.esi, args.edi, args.ebp};
+    const std::optional<reg32> started = startedInput(app, cpu, args.eax);
+    if (!started)
+        return args.eax;
+    args.eax = *started;
+    args.ebx = kept.ebx;
+    args.ecx = kept.ecx;
+    args.edx = kept.edx;
+    args.esi = kept.esi;
+    args.edi = kept.edi;
+    args.ebp = kept.ebp;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x434fd0: DirectInput stopped: the mouse let go and released (its event's
@@ -390,21 +403,22 @@ bool stopInput(App* app, CPU& cpu)
 
 /* 0x434fd0: stopInput; eax 0 where DirectInput was started, as the code
  * leaves it. */
-void stopDirectInput(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 stopDirectInput(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
+    const Kept kept{args.ebx, args.ecx, args.edx, args.esi, args.edi, args.ebp};
     const bool started = at(app, kDirectInput) != 0;
     if (!stopInput(app, cpu))
-        return;
+        return args.eax;
     if (started)
-        cpu.eax = 0;
-    cpu.ebx = kept.ebx;
-    cpu.ecx = kept.ecx;
-    cpu.edx = kept.edx;
-    cpu.esi = kept.esi;
-    cpu.edi = kept.edi;
-    cpu.ebp = kept.ebp;
+        args.eax = 0;
+    args.ebx = kept.ebx;
+    args.ecx = kept.ecx;
+    args.edx = kept.edx;
+    args.esi = kept.esi;
+    args.edi = kept.edi;
+    args.ebp = kept.ebp;
     cpu.esp += 4;
+    return args.eax;
 }
 
 namespace
@@ -412,50 +426,28 @@ namespace
 
 
 /* A native_frontend_* file's typed core called as C++ (guest::direct): nothing (false) when the
- * game stopped in it (its calls into the game throw fe::Terminated).  tools/game_checks does not
- * build those files: there it goes by address, through its ByAddress, as the game's code calls it,
- * every register but eax kept.  A reg32 result is the eax the function leaves: eax set to it (in the
- * game too); after any other, eax spoilt there, so that code still reading what the callee left in
- * eax differs there. */
+ * game stopped in it (its calls into the game throw fe::Terminated). */
 template <reg32 Address, auto Core, typename... Args>
 auto feCore(App* app, CPU& cpu, Args... args)
 {
-    const auto run = [&] {
-#ifdef NFS_GAME_CHECKS
-        const guest::KeptRegisters kept(cpu);
-        return guest::ByAddress<Core>::template call<Address>(app, cpu, args...);
-#else
-        return guest::direct<Address, Core>(app, cpu, args...);
-#endif
-    };
-    using Result = decltype(run());
-    const auto spoil = [&] {
-#ifdef NFS_GAME_CHECKS
-        cpu.eax = 0x5b0115edu;
-#endif
-    };
+    using Result = decltype(guest::direct<Address, Core>(app, cpu, args...));
     if constexpr (std::is_void_v<Result>)
     {
         try
         {
-            run();
+            guest::direct<Address, Core>(app, cpu, args...);
         }
         catch (const fe::Terminated&)
         {
             return false;
         }
-        spoil();
         return !cpu.terminate;
     }
     else
     {
         try
         {
-            const Result result = run();
-            if constexpr (std::is_same_v<Result, x86::reg32>)
-                cpu.eax = result;  // a menu core's result: the eax it leaves, as the call by address does
-            else
-                spoil();
+            const Result result = guest::direct<Address, Core>(app, cpu, args...);
             return cpu.terminate ? std::optional<Result>() : std::optional<Result>(result);
         }
         catch (const fe::Terminated&)
@@ -567,20 +559,27 @@ std::optional<reg32> openTheMouse(App* app, CPU& cpu)
 
 }  // namespace
 
-/* 0x4350a0: openTheMouse. */
-void openMouse(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x4350a0: openTheMouse, called as C++ (guest::direct). */
+std::optional<reg32> openMouseCore(App* app, CPU& cpu)
 {
-    const Kept kept(cpu);
+    return openTheMouse(app, cpu);
+}
+
+/* 0x4350a0: openTheMouse. */
+x86::reg32 openMouse(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+{
+    const Kept kept{args.ebx, args.ecx, args.edx, args.esi, args.edi, args.ebp};
     const std::optional<reg32> opened = openTheMouse(app, cpu);
     if (!opened)
-        return;
-    cpu.eax = *opened;
-    cpu.ebx = kept.ebx;
-    cpu.ecx = kept.ecx;
-    cpu.edx = kept.edx;
-    cpu.esi = kept.esi;
-    cpu.ebp = kept.ebp;
+        return args.eax;
+    args.eax = *opened;
+    args.ebx = kept.ebx;
+    args.ecx = kept.ecx;
+    args.edx = kept.edx;
+    args.esi = kept.esi;
+    args.ebp = kept.ebp;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4352d0: the pointer's bounds, and the pointer put back inside them, where
@@ -597,22 +596,19 @@ bool boundPointer(App* app, CPU& cpu, reg32 left, reg32 top, reg32 right, reg32 
     const reg32 y = at(app, kPointerY), x = at(app, kPointerX);
     put(app, kPointerBottom, bottom);
     const GuestFrame frame(cpu, 4, 0);  // ebp pushed
-    cpu.eax = x;
-    cpu.edx = y;
-    cpu.ebx = right;
-    cpu.ecx = bottom;
-    return byAddress(app, cpu, kPlacePointer);
+    return feCore<0x435230, frontend::screen::placePointer>(app, cpu, x, y).has_value();
 }
 
 /* 0x4352d0: boundPointer, eax left, edx top, ebx right, ecx bottom; the
  * registers as placePointer leaves them. */
-void setPointerBounds(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 setPointerBounds(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const reg32 ebp = cpu.ebp;
-    if (!boundPointer(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx))
-        return;
-    cpu.ebp = ebp;
+    const reg32 ebp = args.ebp;
+    if (!boundPointer(app, cpu, args.eax, args.edx, args.ebx, args.ecx))
+        return args.eax;
+    args.ebp = ebp;
     cpu.esp += 4;
+    return args.eax;
 }
 
 namespace
@@ -631,10 +627,9 @@ constexpr reg32 kLetGo = 0xf00;          // kButtons' word: those let go, its se
  * nothing when the game stopped. */
 std::optional<reg32> buttonsLetGo(App* app, CPU& cpu, reg32 handler, reg32 letGo)
 {
-    cpu.eax = letGo;
-    if (!byAddress(app, cpu, handler))
-        return std::nullopt;
-    return cpu.eax;
+    x86::Args registers;
+    registers.eax = letGo;
+    return guest::pointerCall(app, cpu, handler, registers);
 }
 
 /* The pointer's x or y at `place` moved by `by`, put back within [low] and
@@ -694,9 +689,7 @@ std::optional<reg32> mouseRead(App* app, CPU& cpu, reg32 buttonsAt, reg32 xAt, r
     const reg32 events = frame - 0x208, count = frame - 8;
     put(app, count, kMostEvents);
     put(app, kWheel, 0);
-    // GetDeviceData(the mouse, an event's bytes, the events, &how many, 0), the mouse left in eax
-    // as the code has it: a method that keeps eax answers it.
-    cpu.eax = mouse;
+    // GetDeviceData(the mouse, an event's bytes, the events, &how many, 0)
     const std::optional<reg32> result =
         callMethod(app, cpu, Object::Device, mouse, kGetDeviceData, {kEventBytes, events, count, 0});
     if (!result)
@@ -755,17 +748,18 @@ std::optional<reg32> mouseRead(App* app, CPU& cpu, reg32 buttonsAt, reg32 xAt, r
 
 /* 0x435310: mouseRead into [eax] the buttons, [edx] x, [ebx] y, [ecx] the
  * wheel; eax as the code leaves it. */
-void readMouse(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 readMouse(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    const std::optional<reg32> left = mouseRead(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx);
+    const Kept kept{args.ebx, args.ecx, args.edx, args.esi, args.edi, args.ebp};
+    const std::optional<reg32> left = mouseRead(app, cpu, args.eax, args.edx, args.ebx, args.ecx);
     if (!left)
-        return;
-    cpu.eax = *left;
-    cpu.esi = kept.esi;
-    cpu.edi = kept.edi;
-    cpu.ebp = kept.ebp;
+        return args.eax;
+    args.eax = *left;
+    args.esi = kept.esi;
+    args.edi = kept.edi;
+    args.ebp = kept.ebp;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x435600: the joysticks, looked for once -- EnumDevices for the attached
@@ -813,20 +807,21 @@ std::optional<reg32> lookForJoysticks(App* app, CPU& cpu)
 }
 
 /* 0x435600: lookForJoysticks. */
-void findJoysticks(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 findJoysticks(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
+    const Kept kept{args.ebx, args.ecx, args.edx, args.esi, args.edi, args.ebp};
     const std::optional<reg32> count = lookForJoysticks(app, cpu);
     if (!count)
-        return;
-    cpu.eax = *count;
-    cpu.ebx = kept.ebx;
-    cpu.ecx = kept.ecx;
-    cpu.edx = kept.edx;
-    cpu.esi = kept.esi;
-    cpu.edi = kept.edi;
-    cpu.ebp = kept.ebp;
+        return args.eax;
+    args.eax = *count;
+    args.ebx = kept.ebx;
+    args.ecx = kept.ecx;
+    args.edx = kept.edx;
+    args.esi = kept.esi;
+    args.edi = kept.edi;
+    args.ebp = kept.ebp;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x435690: joystick `joystick` described, where it is not yet -- acquired;
@@ -931,38 +926,25 @@ std::optional<reg32> describe(App* app, CPU& cpu, reg32 joystick)
 }
 
 /* 0x435690: describe joystick eax. */
-void describeJoystick(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 describeJoystick(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    const std::optional<reg32> record = describe(app, cpu, cpu.eax);
+    const Kept kept{args.ebx, args.ecx, args.edx, args.esi, args.edi, args.ebp};
+    const std::optional<reg32> record = describe(app, cpu, args.eax);
     if (!record)
-        return;
-    cpu.eax = *record;
-    cpu.ebx = kept.ebx;
-    cpu.ecx = kept.ecx;
-    cpu.edx = kept.edx;
-    cpu.esi = kept.esi;
-    cpu.edi = kept.edi;
-    cpu.ebp = kept.ebp;
+        return args.eax;
+    args.eax = *record;
+    args.ebx = kept.ebx;
+    args.ecx = kept.ecx;
+    args.edx = kept.edx;
+    args.esi = kept.esi;
+    args.edi = kept.edi;
+    args.ebp = kept.ebp;
     cpu.esp += 4;
+    return args.eax;
 }
 
 namespace
 {
-
-/* acquire, as acquireDevice leaves the registers: all but eax kept.  False
- * when the game stopped. */
-bool acquireKeeping(App* app, CPU& cpu, reg32 device)
-{
-    const reg32 ecx = cpu.ecx, edx = cpu.edx;
-    const std::optional<reg32> acquired = acquire(app, cpu, device);
-    if (!acquired)
-        return false;
-    cpu.eax = *acquired;
-    cpu.ecx = ecx;
-    cpu.edx = edx;
-    return true;
-}
 
 }  // namespace
 
@@ -981,7 +963,7 @@ std::optional<reg32> readState(App* app, CPU& cpu, reg32 joystick, reg32 state)
         return std::nullopt;
     if (*result != 0)
     {
-        if ((*result == kInputLost || *result == kNotAcquired) && !acquireKeeping(app, cpu, joystick))
+        if ((*result == kInputLost || *result == kNotAcquired) && !acquire(app, cpu, joystick))
             return std::nullopt;
         return 0;
     }
@@ -990,7 +972,7 @@ std::optional<reg32> readState(App* app, CPU& cpu, reg32 joystick, reg32 state)
         return std::nullopt;
     if (*result != 0)
     {
-        if (*result == kInputLost && !acquireKeeping(app, cpu, joystick))
+        if (*result == kInputLost && !acquire(app, cpu, joystick))
             return std::nullopt;
         return 0;
     }
@@ -1026,27 +1008,28 @@ std::optional<reg32> readState(App* app, CPU& cpu, reg32 joystick, reg32 state)
 /* 0x4358f0: readState for joystick eax into edx; edx as the code leaves it:
  * the joystick's device where it or the state is none, 4 where read, else as
  * the call left it (the number given back where it is no joystick). */
-void readJoystick(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 readJoystick(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    const reg32 joystick = cpu.eax, state = cpu.edx;
+    const Kept kept{args.ebx, args.ecx, args.edx, args.esi, args.edi, args.ebp};
+    const reg32 joystick = args.eax, state = args.edx;
     const std::optional<reg32> read = readState(app, cpu, joystick, state);
     if (!read)
-        return;
+        return args.eax;
     if (isJoystick(joystick))
     {
         if (joystickDevice(app, joystick) == 0 || state == 0)
-            cpu.edx = joystickDevice(app, joystick);
+            args.edx = joystickDevice(app, joystick);
         else if (*read != 0)
-            cpu.edx = 4;
+            args.edx = 4;
     }
-    cpu.eax = *read;
-    cpu.ebx = kept.ebx;
-    cpu.ecx = kept.ecx;
-    cpu.esi = kept.esi;
-    cpu.edi = kept.edi;
-    cpu.ebp = kept.ebp;
+    args.eax = *read;
+    args.ebx = kept.ebx;
+    args.ecx = kept.ecx;
+    args.esi = kept.esi;
+    args.edi = kept.edi;
+    args.ebp = kept.ebp;
     cpu.esp += 4;
+    return args.eax;
 }
 
 namespace
@@ -1088,40 +1071,49 @@ std::optional<Zone> setZone(App* app, CPU& cpu, reg32 joystick, reg32 axis, reg3
 
 /* 0x435ae0: readZone for joystick eax, axis edx, which ebx; eax and edx what
  * was kept, ebx what was asked, as the code leaves them. */
-void readAxisZone(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 readAxisZone(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    const reg32 which = cpu.ebx;
-    const std::optional<reg32> percent = readZone(app, cpu, cpu.eax, cpu.edx, which);
+    const Kept kept{args.ebx, args.ecx, args.edx, args.esi, args.edi, args.ebp};
+    const reg32 which = args.ebx;
+    const std::optional<reg32> percent = readZone(app, cpu, args.eax, args.edx, which);
     if (!percent)
-        return;
-    cpu.ebx = *percent;
-    cpu.edx = which == 0 ? *percent : 100 - *percent;
-    cpu.eax = cpu.edx;
-    cpu.ecx = kept.ecx;
-    cpu.esi = kept.esi;
-    cpu.edi = kept.edi;
-    cpu.ebp = kept.ebp;
+        return args.eax;
+    args.ebx = *percent;
+    args.edx = which == 0 ? *percent : 100 - *percent;
+    args.eax = args.edx;
+    args.ecx = kept.ecx;
+    args.esi = kept.esi;
+    args.edi = kept.edi;
+    args.ebp = kept.ebp;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x435b40: setZone for joystick eax, axis edx, which ebx, percent ecx; the
  * registers as axisProperty leaves them. */
-void setAxisZone(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 setAxisZone(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    const reg32 joystick = cpu.eax, axis = cpu.edx, which = cpu.ebx;
-    const reg32 asked = cpu.ecx, percent = which == 1 ? 100 - asked : asked;
+    const Kept kept{args.ebx, args.ecx, args.edx, args.esi, args.edi, args.ebp};
+    const reg32 joystick = args.eax, axis = args.edx, which = args.ebx;
+    const reg32 asked = args.ecx, percent = which == 1 ? 100 - asked : asked;
     // As the code hands them to axisProperty.
-    cpu.ebx = 0;
-    cpu.ecx = which;
+    args.ebx = 0;
+    args.ecx = which;
     const std::optional<Zone> zone = setZone(app, cpu, joystick, axis, which, asked);
     if (!zone)
-        return;
-    zoneRegisters(app, cpu, joystick, axis, false, percent, *zone);
-    cpu.esi = kept.esi;
-    cpu.ebp = kept.ebp;
+        return args.eax;
+    const ZoneLeft left = zoneRegisters(app, joystick, axis, false, percent, *zone);
+    args.eax = left.eax;
+    if (left.ebx)
+        args.ebx = *left.ebx;
+    if (left.ecx)
+        args.ecx = *left.ecx;
+    if (left.edx)
+        args.edx = *left.edx;
+    args.esi = kept.esi;
+    args.ebp = kept.ebp;
     cpu.esp += 4;
+    return args.eax;
 }
 
 namespace
@@ -1158,9 +1150,9 @@ bool resetJoysticks(App* app, CPU& cpu)
 
 /* 0x435b60: resetJoysticks; eax as the code leaves it: the last joystick
  * there's record's number times 17, or its reset's HRESULT. */
-void resetForceFeedback(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 resetForceFeedback(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
+    const Kept kept{args.ebx, args.ecx, args.edx, args.esi, args.edi, args.ebp};
     {
         const GuestFrame frame(cpu, 0x14, 0);  // ebx, ecx, edx, esi, ebp pushed
         if (at(app, kJoystickCount) == 0)
@@ -1168,11 +1160,11 @@ void resetForceFeedback(win32::WinApplication* app, x86::CPU& cpu)
             const GuestFrame slot(cpu, 0, 4);
             const std::optional<reg32> count = lookForJoysticks(app, cpu);
             if (!count)
-                return;
-            cpu.eax = *count;
+                return args.eax;
+            args.eax = *count;
         }
         if (!resetEach(app, cpu))
-            return;
+            return args.eax;
     }
     for (reg32 joystick = at(app, kJoystickCount); sreg32(joystick) > 0;)
     {
@@ -1180,15 +1172,16 @@ void resetForceFeedback(win32::WinApplication* app, x86::CPU& cpu)
         if (joystickDevice(app, joystick) == 0)
             continue;
         if (!forceFeedback(app, joystick))
-            cpu.eax = joystick * 17;
+            args.eax = joystick * 17;
         break;
     }
-    cpu.ebx = kept.ebx;
-    cpu.ecx = kept.ecx;
-    cpu.edx = kept.edx;
-    cpu.esi = kept.esi;
-    cpu.ebp = kept.ebp;
+    args.ebx = kept.ebx;
+    args.ecx = kept.ecx;
+    args.edx = kept.edx;
+    args.esi = kept.esi;
+    args.ebp = kept.ebp;
     cpu.esp += 4;
+    return args.eax;
 }
 
 namespace
@@ -1203,11 +1196,7 @@ std::optional<reg32> setDeviceProperty(App* app, CPU& cpu, reg32 device, reg32 p
     push(app, cpu, record);
     push(app, cpu, property);
     push(app, cpu, device);
-    cpu.ecx = at(app, device);
-    cpu.edx = record;
-    if (!directInput(app, cpu, Object::Device, kSetProperty))
-        return std::nullopt;
-    return cpu.eax;
+    return directInputResult(app, cpu, Object::Device, kSetProperty);
 }
 
 /* A DIPROPDWORD for the whole device (DIPH_DEVICE): {0x14, 0x10, 0, 0, `value`}. */
@@ -1243,42 +1232,47 @@ bool autocenter(App* app, CPU& cpu, reg32 joystick, reg32 on)
     return setDeviceProperty(app, cpu, joystickDevice(app, joystick), 9, record).has_value();
 }
 
-/* eax and edx as setAutocenter's and setGain's code leaves them for
+/* What setAutocenter's and setGain's code leaves in eax and edx for
  * `joystick` (the last joystick's for all of them), `asked` the word asked
- * for (edx): where the property was set, as the call left them; else the
- * joystick's number, times 17 where it is there, and `asked`. */
-void propertyLeft(App* app, CPU& cpu, reg32 joystick, reg32 asked, bool seventeenInEdx)
+ * for (edx): where the property was set, nothing (as the call left them);
+ * else the joystick's number, times 17 where it is there, and `asked`. */
+struct PropertyLeft
+{
+    std::optional<reg32> eax, edx;
+};
+
+PropertyLeft propertyLeft(App* app, reg32 joystick, reg32 asked, bool seventeenInEdx)
 {
     if (joystick == kAllJoysticks || joystick == kEveryDevice)
         joystick = 0xf;
     if (!isJoystick(joystick) || joystickDevice(app, joystick) == 0)
-    {
-        cpu.eax = joystick;
-        cpu.edx = asked;
-    }
-    else if (!forceFeedback(app, joystick))
-    {
-        cpu.eax = seventeenInEdx ? joystick : joystick * 17;
-        cpu.edx = seventeenInEdx ? joystick * 17 : asked;
-    }
+        return {joystick, asked};
+    if (!forceFeedback(app, joystick))
+        return {seventeenInEdx ? joystick : joystick * 17, seventeenInEdx ? joystick * 17 : asked};
+    return {};
 }
 
 }  // namespace
 
 /* 0x435bc0: autocenter joystick eax, on edx. */
-void setAutocenter(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 setAutocenter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    const reg32 joystick = cpu.eax;
+    const Kept kept{args.ebx, args.ecx, args.edx, args.esi, args.edi, args.ebp};
+    const reg32 joystick = args.eax;
     if (!autocenter(app, cpu, joystick, kept.edx))
-        return;
-    propertyLeft(app, cpu, joystick, kept.edx, true);
-    cpu.ebx = kept.ebx;
-    cpu.ecx = kept.ecx;
-    cpu.esi = kept.esi;
-    cpu.edi = kept.edi;
-    cpu.ebp = kept.ebp;
+        return args.eax;
+    const PropertyLeft left = propertyLeft(app, joystick, kept.edx, true);
+    if (left.eax)
+        args.eax = *left.eax;
+    if (left.edx)
+        args.edx = *left.edx;
+    args.ebx = kept.ebx;
+    args.ecx = kept.ecx;
+    args.esi = kept.esi;
+    args.edi = kept.edi;
+    args.ebp = kept.ebp;
     cpu.esp += 4;
+    return args.eax;
 }
 
 namespace
@@ -1318,20 +1312,6 @@ reg32 commandLeft(App* app, reg32 joystick, reg32 sent, bool seventeen)
     return sent;
 }
 
-/* An adapter for commandJoystick, for joystick eax. */
-void commandAdapter(App* app, CPU& cpu, reg32 command)
-{
-    const Kept kept(cpu);
-    const reg32 joystick = cpu.eax;
-    if (!commandJoystick(app, cpu, joystick, command))
-        return;
-    cpu.eax = commandLeft(app, joystick, cpu.eax, true);
-    cpu.ecx = kept.ecx;
-    cpu.edx = kept.edx;
-    cpu.ebp = kept.ebp;
-    cpu.esp += 4;
-}
-
 }  // namespace
 
 /* 0x435d20: joystick `joystick`'s effects stopped (stopAllEffects) and its
@@ -1357,29 +1337,48 @@ bool actuatorsOnFor(App* app, CPU& cpu, reg32 joystick)
 }
 
 /* 0x435c60: joystick eax's effects paused (DISFFC_PAUSE). */
-void pauseEffects(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 pauseEffects(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    commandAdapter(app, cpu, kPause);
+    const Kept kept{args.ebx, args.ecx, args.edx, args.esi, args.edi, args.ebp};
+    const reg32 joystick = args.eax;
+    if (!commandJoystick(app, cpu, joystick, kPause))
+        return args.eax;
+    args.eax = commandLeft(app, joystick, args.eax, true);
+    args.ecx = kept.ecx;
+    args.edx = kept.edx;
+    args.ebp = kept.ebp;
+    cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x435cc0: joystick eax's effects going on (DISFFC_CONTINUE). */
-void continueEffects(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 continueEffects(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    commandAdapter(app, cpu, kContinue);
+    const Kept kept{args.ebx, args.ecx, args.edx, args.esi, args.edi, args.ebp};
+    const reg32 joystick = args.eax;
+    if (!commandJoystick(app, cpu, joystick, kContinue))
+        return args.eax;
+    args.eax = commandLeft(app, joystick, args.eax, true);
+    args.ecx = kept.ecx;
+    args.edx = kept.edx;
+    args.ebp = kept.ebp;
+    cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x435d20: actuatorsOnFor joystick eax. */
-void actuatorsOn(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 actuatorsOn(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    const reg32 joystick = cpu.eax;
+    const Kept kept{args.ebx, args.ecx, args.edx, args.esi, args.edi, args.ebp};
+    const reg32 joystick = args.eax;
     if (!actuatorsOnFor(app, cpu, joystick))
-        return;
-    cpu.eax = commandLeft(app, joystick, cpu.eax, false);
-    cpu.ecx = kept.ecx;
-    cpu.edx = kept.edx;
-    cpu.ebp = kept.ebp;
+        return args.eax;
+    args.eax = commandLeft(app, joystick, args.eax, false);
+    args.ecx = kept.ecx;
+    args.edx = kept.edx;
+    args.ebp = kept.ebp;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x435d90's core: joystick `joystick`'s actuators off (commandJoystick of
@@ -1390,31 +1389,29 @@ bool actuatorsOffFor(App* app, CPU& cpu, reg32 joystick)
 }
 
 /* 0x435d90: joystick eax's actuators off (DISFFC_SETACTUATORSOFF). */
-void actuatorsOff(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 actuatorsOff(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    commandAdapter(app, cpu, kActuatorsOff);
+    const Kept kept{args.ebx, args.ecx, args.edx, args.esi, args.edi, args.ebp};
+    const reg32 joystick = args.eax;
+    if (!commandJoystick(app, cpu, joystick, kActuatorsOff))
+        return args.eax;
+    args.eax = commandLeft(app, joystick, args.eax, true);
+    args.ecx = kept.ecx;
+    args.edx = kept.edx;
+    args.ebp = kept.ebp;
+    cpu.esp += 4;
+    return args.eax;
 }
 
 namespace
 {
 
-/* effectMethod for an effect's number as a signed word (none below 0), ecx
- * and edx kept, as downloadEffect and unloadEffect leave them.  False when
- * the game stopped. */
+/* effectMethod for an effect's number as a signed word (none below 0).
+ * False when the game stopped. */
 bool effectKeeping(App* app, CPU& cpu, reg32 effect, reg32 method)
 {
-    const reg32 ecx = cpu.ecx, edx = cpu.edx;
     const reg32 number = reg32(sreg32(i16(effect)));
-    if (sreg32(number) >= 0)
-    {
-        const std::optional<reg32> result = effectMethod(app, cpu, number, method);
-        if (!result)
-            return false;
-        cpu.eax = *result;
-    }
-    cpu.ecx = ecx;
-    cpu.edx = edx;
-    return true;
+    return sreg32(number) < 0 || effectMethod(app, cpu, number, method).has_value();
 }
 
 }  // namespace
@@ -1457,19 +1454,24 @@ bool gain(App* app, CPU& cpu, reg32 joystick, reg32 percent)
 }
 
 /* 0x435df0: gain for joystick eax, percent edx. */
-void setGain(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 setGain(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    const reg32 joystick = cpu.eax;
+    const Kept kept{args.ebx, args.ecx, args.edx, args.esi, args.edi, args.ebp};
+    const reg32 joystick = args.eax;
     if (!gain(app, cpu, joystick, kept.edx))
-        return;
-    propertyLeft(app, cpu, joystick, kept.edx, false);
-    cpu.ebx = kept.ebx;
-    cpu.ecx = kept.ecx;
-    cpu.esi = kept.esi;
-    cpu.edi = kept.edi;
-    cpu.ebp = kept.ebp;
+        return args.eax;
+    const PropertyLeft left = propertyLeft(app, joystick, kept.edx, false);
+    if (left.eax)
+        args.eax = *left.eax;
+    if (left.edx)
+        args.edx = *left.edx;
+    args.ebx = kept.ebx;
+    args.ecx = kept.ecx;
+    args.esi = kept.esi;
+    args.edi = kept.edi;
+    args.ebp = kept.ebp;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x435f10: an effect made on joystick `joystick` from the description at
@@ -1563,10 +1565,10 @@ std::optional<reg32> makeEffect(App* app, CPU& cpu, reg32 joystick, reg32 descri
     push(app, cpu, effect);
     push(app, cpu, at(app, kEffectGuids + type * 4));
     push(app, cpu, device);
-    cpu.edx = description;
-    if (!directInput(app, cpu, Object::Device, kCreateEffect))
+    const std::optional<reg32> created = directInputResult(app, cpu, Object::Device, kCreateEffect);
+    if (!created)
         return std::nullopt;
-    if (cpu.eax != 0)
+    if (*created != 0)
         return kNone;
     if (!effectKeeping(app, cpu, number, kUnload))
         return std::nullopt;
@@ -1576,44 +1578,51 @@ std::optional<reg32> makeEffect(App* app, CPU& cpu, reg32 joystick, reg32 descri
 
 /* 0x435f10: makeEffect on joystick eax from the description at edx; edx the
  * effects' count after it where it was made, as the code leaves it. */
-void createEffect(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 createEffect(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    const std::optional<reg32> made = makeEffect(app, cpu, cpu.eax, cpu.edx);
+    const Kept kept{args.ebx, args.ecx, args.edx, args.esi, args.edi, args.ebp};
+    const std::optional<reg32> made = makeEffect(app, cpu, args.eax, args.edx);
     if (!made)
-        return;
-    cpu.eax = *made;
+        return args.eax;
+    args.eax = *made;
     if (*made != 0xffffffff)
-        cpu.edx = *made + 1;
-    cpu.ebx = kept.ebx;
-    cpu.ecx = kept.ecx;
-    cpu.esi = kept.esi;
-    cpu.edi = kept.edi;
-    cpu.ebp = kept.ebp;
+        args.edx = *made + 1;
+    args.ebx = kept.ebx;
+    args.ecx = kept.ecx;
+    args.esi = kept.esi;
+    args.edi = kept.edi;
+    args.ebp = kept.ebp;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4361e0: effect `effect` (0 or more) started, once (Start(1, 0)): it
  * plays where DirectInput says so.  Whether it does; nothing when the game
  * stopped. */
-std::optional<bool> startOnce(App* app, CPU& cpu, reg32 effect)
+std::optional<reg32> startOnce(App* app, CPU& cpu, reg32 word)
 {
+    const reg32 effect = reg32(sreg32(i16(word)));
+    if (sreg32(effect) < 0)
+        return word;
     const std::optional<reg32> result =
         callMethod(app, cpu, Object::Effect, effectObject(app, effect), kStart, {1, 0});
     if (!result)
         return std::nullopt;
     put(app, kEffectPlaying + effect * kEffectBytes, *result == 0 ? 1 : 0);
-    return *result == 0;
+    return effect * kEffectBytes;
 }
 
 /* 0x436230: effect `effect` (0 or more) stopped; it plays no more.  False
  * when the game stopped. */
-bool stopOne(App* app, CPU& cpu, reg32 effect)
+std::optional<reg32> stopOne(App* app, CPU& cpu, reg32 word)
 {
+    const reg32 effect = reg32(sreg32(i16(word)));
+    if (sreg32(effect) < 0)
+        return word;
     if (!callMethod(app, cpu, Object::Effect, effectObject(app, effect), kStop, {}))
-        return false;
+        return std::nullopt;
     put(app, kEffectPlaying + effect * kEffectBytes, 0);
-    return true;
+    return effect * 17;
 }
 
 /* What startOnce leaves of effect `effect` (0 or more): whether its record
@@ -1625,40 +1634,44 @@ bool effectStarted(App* app, reg32 effect)
 
 /* 0x4361e0: startOnce for effect ax, where it is one; eax its record's offset
  * as the code leaves it. */
-void startEffect(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 startEffect(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    const reg32 effect = effectIn(cpu);
+    const Kept kept{args.ebx, args.ecx, args.edx, args.esi, args.edi, args.ebp};
+    const reg32 effect = effectIn(args.eax);
     if (sreg32(effect) >= 0)
     {
-        if (!startOnce(app, cpu, effect))
-            return;
-        cpu.eax = effect * kEffectBytes;
+        const std::optional<reg32> started = startOnce(app, cpu, effect);
+        if (!started)
+            return args.eax;
+        args.eax = *started;
     }
-    cpu.ebx = kept.ebx;
-    cpu.ecx = kept.ecx;
-    cpu.edx = kept.edx;
-    cpu.ebp = kept.ebp;
+    args.ebx = kept.ebx;
+    args.ecx = kept.ecx;
+    args.edx = kept.edx;
+    args.ebp = kept.ebp;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x436230: stopOne for effect ax, where it is one; eax its number times 17,
  * as the code leaves it. */
-void stopEffect(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 stopEffect(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    const reg32 effect = effectIn(cpu);
+    const Kept kept{args.ebx, args.ecx, args.edx, args.esi, args.edi, args.ebp};
+    const reg32 effect = effectIn(args.eax);
     if (sreg32(effect) >= 0)
     {
-        if (!stopOne(app, cpu, effect))
-            return;
-        cpu.eax = effect * 17;
+        const std::optional<reg32> stopped = stopOne(app, cpu, effect);
+        if (!stopped)
+            return args.eax;
+        args.eax = *stopped;
     }
-    cpu.ebx = kept.ebx;
-    cpu.ecx = kept.ecx;
-    cpu.edx = kept.edx;
-    cpu.ebp = kept.ebp;
+    args.ebx = kept.ebx;
+    args.ecx = kept.ecx;
+    args.edx = kept.edx;
+    args.ebp = kept.ebp;
     cpu.esp += 4;
+    return args.eax;
 }
 
 namespace
@@ -1711,59 +1724,71 @@ std::optional<reg32> effectMethod(App* app, CPU& cpu, reg32 effect, reg32 method
     return callMethod(app, cpu, Object::Effect, effectObject(app, effect), method, {});
 }
 
-/* effectMethod for effect ax, where it is one; eax its HRESULT. */
-void effectMethodAdapter(App* app, CPU& cpu, reg32 method)
-{
-    const Kept kept(cpu);
-    const reg32 effect = effectIn(cpu);
-    if (sreg32(effect) >= 0)
-    {
-        const std::optional<reg32> result = effectMethod(app, cpu, effect, method);
-        if (!result)
-            return;
-        cpu.eax = *result;
-    }
-    cpu.ecx = kept.ecx;
-    cpu.edx = kept.edx;
-    cpu.ebp = kept.ebp;
-    cpu.esp += 4;
-}
-
 }  // namespace
 
 /* 0x436270: stopAllEffects for joystick eax. */
-void stopEffects(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 stopEffects(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    const reg32 joystick = cpu.eax;
+    const Kept kept{args.ebx, args.ecx, args.edx, args.esi, args.edi, args.ebp};
+    const reg32 joystick = args.eax;
     if (!stopAllEffects(app, cpu, joystick))
-        return;
-    cpu.eax = stopEffectsLeft(app, joystick);
-    cpu.ebx = kept.ebx;
-    cpu.ecx = kept.ecx;
-    cpu.edx = kept.edx;
-    cpu.esi = kept.esi;
-    cpu.ebp = kept.ebp;
+        return args.eax;
+    args.eax = stopEffectsLeft(app, joystick);
+    args.ebx = kept.ebx;
+    args.ecx = kept.ecx;
+    args.edx = kept.edx;
+    args.esi = kept.esi;
+    args.ebp = kept.ebp;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4362f0: effect ax downloaded to its joystick. */
-void downloadEffect(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 downloadEffect(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    effectMethodAdapter(app, cpu, kDownload);
+    const Kept kept{args.ebx, args.ecx, args.edx, args.esi, args.edi, args.ebp};
+    const reg32 effect = effectIn(args.eax);
+    if (sreg32(effect) >= 0)
+    {
+        const std::optional<reg32> result = effectMethod(app, cpu, effect, kDownload);
+        if (!result)
+            return args.eax;
+        args.eax = *result;
+    }
+    args.ecx = kept.ecx;
+    args.edx = kept.edx;
+    args.ebp = kept.ebp;
+    cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x436310's core: effect `effect` (0 or more) unloaded from its joystick
  * (effectMethod of Unload): its HRESULT; nothing when the game stopped. */
-std::optional<reg32> unloadOne(App* app, CPU& cpu, reg32 effect)
+std::optional<reg32> unloadOne(App* app, CPU& cpu, reg32 word)
 {
+    const reg32 effect = reg32(sreg32(i16(word)));
+    if (sreg32(effect) < 0)
+        return word;
     return effectMethod(app, cpu, effect, kUnload);
 }
 
 /* 0x436310: effect ax unloaded from its joystick. */
-void unloadEffect(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 unloadEffect(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    effectMethodAdapter(app, cpu, kUnload);
+    const Kept kept{args.ebx, args.ecx, args.edx, args.esi, args.edi, args.ebp};
+    const reg32 effect = effectIn(args.eax);
+    if (sreg32(effect) >= 0)
+    {
+        const std::optional<reg32> result = effectMethod(app, cpu, effect, kUnload);
+        if (!result)
+            return args.eax;
+        args.eax = *result;
+    }
+    args.ecx = kept.ecx;
+    args.edx = kept.edx;
+    args.ebp = kept.ebp;
+    cpu.esp += 4;
+    return args.eax;
 }
 
 namespace
@@ -1917,25 +1942,26 @@ std::optional<bool> changeEffect(App* app, CPU& cpu, reg32 effect, reg32 how, re
 /* 0x436330 (stdcall, 4 words): changeEffect for effect ax, `how` edx,
  * directionAt ebx, durationAt ecx, the stack's words the rest; 0 for none
  * (ax below 0). */
-void updateEffect(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 updateEffect(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    const reg32 effect = effectIn(cpu);
+    const Kept kept{args.ebx, args.ecx, args.edx, args.esi, args.edi, args.ebp};
+    const reg32 effect = effectIn(args.eax);
     bool changed = false;
     if (sreg32(effect) >= 0)
     {
         const std::optional<bool> done =
-            changeEffect(app, cpu, effect, cpu.edx, cpu.ebx, cpu.ecx, at(app, cpu.esp + 4), at(app, cpu.esp + 8),
+            changeEffect(app, cpu, effect, args.edx, args.ebx, args.ecx, at(app, cpu.esp + 4), at(app, cpu.esp + 8),
                          at(app, cpu.esp + 0xc), at(app, cpu.esp + 0x10));
         if (!done)
-            return;
+            return args.eax;
         changed = *done;
     }
-    cpu.eax = changed ? 1 : 0;
-    cpu.esi = kept.esi;
-    cpu.edi = kept.edi;
-    cpu.ebp = kept.ebp;
+    args.eax = changed ? 1 : 0;
+    args.esi = kept.esi;
+    args.edi = kept.edi;
+    args.ebp = kept.ebp;
     cpu.esp += 4 + 0x10;
+    return args.eax;
 }
 
 namespace
@@ -1944,9 +1970,10 @@ namespace
 /* The game's window (AcquireWindow).  Nothing when the game stopped. */
 std::optional<reg32> gameWindow(App* app, CPU& cpu)
 {
-    if (!direct(app, cpu, AcquireWindow))
+    const reg32 window = guest::direct<0x4eba70, ea::acquireWindow>(app, cpu);
+    if (cpu.terminate)
         return std::nullopt;
-    return cpu.eax;
+    return window;
 }
 
 /* 0x436610: device `device`'s cooperative level `flags` with the game's
@@ -1957,30 +1984,28 @@ std::optional<reg32> gameWindow(App* app, CPU& cpu)
  * game stopped. */
 std::optional<reg32> cooperate(App* app, CPU& cpu, reg32 device, reg32 flags)
 {
-    cpu.edx = flags;  // where the callers hand it, as the code leaves it where it asks nothing
     const std::optional<reg32> window = gameWindow(app, cpu);
     if (!window)
         return std::nullopt;
     if (*window == 0)
         return 0;
-    auto level = [&](reg32 slot, reg32 leftInEdx) -> std::optional<reg32> {
+    auto level = [&](reg32 slot) -> std::optional<reg32> {
         const std::optional<reg32> again = gameWindow(app, cpu);
         if (!again)
             return std::nullopt;
         push(app, cpu, flags);
         push(app, cpu, *again);
         push(app, cpu, at(app, slot));
-        cpu.edx = leftInEdx;
-        if (!directInput(app, cpu, Object::Device, kSetCooperativeLevel))
+        const std::optional<reg32> set = directInputResult(app, cpu, Object::Device, kSetCooperativeLevel);
+        if (!set)
             return std::nullopt;
-        return cpu.eax != 0 ? 0 : 1;
+        return *set != 0 ? 0 : 1;
     };
     if (sreg32(device) < 0x10)
     {
         const reg32 slot = kJoysticks + device * 4;
         if (at(app, slot) != 0)
-            return level(slot, at(app, slot));
-        cpu.edx = 0;
+            return level(slot);
     }
     else if (device == kAllJoysticks)
     {
@@ -1989,28 +2014,29 @@ std::optional<reg32> cooperate(App* app, CPU& cpu, reg32 device, reg32 flags)
                 return std::nullopt;
     }
     else if (device == kTheMouse)
-        return level(kMouse, flags);
+        return level(kMouse);
     else if (device == kTheKeyboard)
-        return level(kKeyboard, flags);
+        return level(kKeyboard);
     return 1;
 }
 
 }  // namespace
 
 /* 0x436610: cooperate device eax, flags edx; edx as the code leaves it. */
-void setCooperativeLevel(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 setCooperativeLevel(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    const std::optional<reg32> done = cooperate(app, cpu, cpu.eax, cpu.edx);
+    const Kept kept{args.ebx, args.ecx, args.edx, args.esi, args.edi, args.ebp};
+    const std::optional<reg32> done = cooperate(app, cpu, args.eax, args.edx);
     if (!done)
-        return;
-    cpu.eax = *done;
-    cpu.ebx = kept.ebx;
-    cpu.ecx = kept.ecx;
-    cpu.esi = kept.esi;
-    cpu.edi = kept.edi;
-    cpu.ebp = kept.ebp;
+        return args.eax;
+    args.eax = *done;
+    args.ebx = kept.ebx;
+    args.ecx = kept.ecx;
+    args.esi = kept.esi;
+    args.edi = kept.edi;
+    args.ebp = kept.ebp;
     cpu.esp += 4;
+    return args.eax;
 }
 
 namespace
@@ -2107,48 +2133,51 @@ bool letGo(App* app, CPU& cpu, reg32 device)
 }  // namespace
 
 /* 0x4366e0: acquire device eax. */
-void acquireDevice(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 acquireDevice(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    const std::optional<reg32> acquired = acquire(app, cpu, cpu.eax);
+    const Kept kept{args.ebx, args.ecx, args.edx, args.esi, args.edi, args.ebp};
+    const std::optional<reg32> acquired = acquire(app, cpu, args.eax);
     if (!acquired)
-        return;
-    cpu.eax = *acquired;
-    cpu.ebx = kept.ebx;
-    cpu.ecx = kept.ecx;
-    cpu.edx = kept.edx;
-    cpu.esi = kept.esi;
-    cpu.edi = kept.edi;
-    cpu.ebp = kept.ebp;
+        return args.eax;
+    args.eax = *acquired;
+    args.ebx = kept.ebx;
+    args.ecx = kept.ecx;
+    args.edx = kept.edx;
+    args.esi = kept.esi;
+    args.edi = kept.edi;
+    args.ebp = kept.ebp;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x436800: letGo device eax; eax as the code leaves it: the HRESULT where
  * the last device was let go, as the call left it; the last joystick's
  * number times 4 where it has none; else the device's number. */
-void unacquireDevice(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 unacquireDevice(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    const reg32 device = cpu.eax;
+    const Kept kept{args.ebx, args.ecx, args.edx, args.esi, args.edi, args.ebp};
+    const reg32 device = args.eax;
     if (!letGo(app, cpu, device))
-        return;
+        return args.eax;
     const reg32 last = device == kEveryDevice || device == kAllJoysticks ? 0xf : device;
     if (isJoystick(last) && joystickDevice(app, last) == 0)
-        cpu.eax = last * 4;
-    cpu.ebx = kept.ebx;
-    cpu.ecx = kept.ecx;
-    cpu.edx = kept.edx;
-    cpu.esi = kept.esi;
-    cpu.ebp = kept.ebp;
+        args.eax = last * 4;
+    args.ebx = kept.ebx;
+    args.ecx = kept.ecx;
+    args.edx = kept.edx;
+    args.esi = kept.esi;
+    args.ebp = kept.ebp;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4368c0: acquiredBy HRESULT eax, 1 or 0. */
-void acquireResult(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 acquireResult(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     (void)app;
-    cpu.eax = acquiredBy(cpu.eax) ? 1 : 0;
+    args.eax = acquiredBy(args.eax) ? 1 : 0;
     cpu.esp += 4;
+    return args.eax;
 }
 
 namespace
@@ -2172,11 +2201,11 @@ bool noCursor(App* app, CPU& cpu, const reg32 (&words)[6])
 {
     if (at(app, kOldSetCursor) != 0)
     {
-        for (int i = 5; i >= 0; --i)
-            push(app, cpu, words[i]);
-        cpu.ecx = words[5];
-        cpu.edx = words[0];
-        if (!byAddress(app, cpu, at(app, kOldSetCursor)))
+        x86::Args registers;
+        registers.ecx = words[5];
+        registers.edx = words[0];
+        if (!guest::pointerCall(app, cpu, at(app, kOldSetCursor), registers,
+                                {words[0], words[1], words[2], words[3], words[4], words[5]}))
             return false;
     }
     return callWindows<kSetCursor, &host::setCursor>(app, cpu, 0)
@@ -2186,41 +2215,33 @@ bool noCursor(App* app, CPU& cpu, const reg32 (&words)[6])
 }  // namespace
 
 /* 0x4368f0: effectPlays for effect ax. */
-void effectPlaying(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 effectPlaying(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    cpu.eax = effectPlays(app, effectIn(cpu));
+    args.eax = effectPlays(app, effectIn(args.eax));
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x436930: noCursor (stdcall, its six words); 1. */
-void hideCursor(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 hideCursor(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
+    const Kept kept{args.ebx, args.ecx, args.edx, args.esi, args.edi, args.ebp};
     reg32 words[6];
     for (reg32 i = 0; i < 6; ++i)
         words[i] = at(app, cpu.esp + 4 + 4 * i);
     if (!noCursor(app, cpu, words))
-        return;
-    cpu.eax = 1;
-    cpu.ebx = kept.ebx;
-    cpu.esi = kept.esi;
-    cpu.edi = kept.edi;
-    cpu.ebp = kept.ebp;
+        return args.eax;
+    args.eax = 1;
+    args.ebx = kept.ebx;
+    args.esi = kept.esi;
+    args.edi = kept.edi;
+    args.ebp = kept.ebp;
     cpu.esp += 4 + 0x18;
+    return args.eax;
 }
 
 namespace
 {
-
-/* cooperate, as setCooperativeLevel leaves the registers: ecx kept. */
-std::optional<reg32> cooperateKeeping(App* app, CPU& cpu, reg32 device, reg32 flags)
-{
-    const reg32 ecx = cpu.ecx;
-    const std::optional<reg32> done = cooperate(app, cpu, device, flags);
-    if (done)
-        cpu.ecx = ecx;
-    return done;
-}
 
 /* 0x436980: EnumDevices' callback for each joystick attached, `instance` its
  * DIDEVICEINSTANCE, `input` the DirectInput it was handed: the next record
@@ -2237,17 +2258,14 @@ std::optional<reg32> joystickAttached(App* app, CPU& cpu, reg32 instance, reg32 
     const reg32 made = frame - 4;
     const reg32 count = at(app, kJoystickCount), record = count * kJoystickBytes;
     putByte(app, kJoystickName + record, 0);
-    cpu.eax = kJoystickName + record;
-    cpu.ecx = instance + 0x12c;  // tszProductName
-    cpu.edx = instance + 0x12c;
-    cpu.ebx = 0x32;
-    if (!direct(app, cpu, watcom::strncpy))
+    // tszProductName
+    guest::direct<0x4e0e30, watcom::clib::strncpy>(app, cpu, kJoystickName + record, instance + 0x12c, 0x32);
+    if (cpu.terminate)
         return std::nullopt;
     putByte(app, kJoystickNameEnd + record, 0);
     const reg8 subtype = byte(app, instance + 0x25);  // dwDevType's
     put(app, kJoystickRecords + record, subtype == 4 ? 4 : subtype == 6 ? 2 : 1);  // a gamepad, a wheel, a stick
-    // CreateDevice(DirectInput, its guidInstance, &the device, none), the instance left in ecx.
-    cpu.ecx = instance;
+    // CreateDevice(DirectInput, its guidInstance, &the device, none)
     std::optional<reg32> result =
         callMethod(app, cpu, Object::DirectInput, input, kCreateDevice, {instance + 4, made, 0});
     if (!result)
@@ -2256,17 +2274,16 @@ std::optional<reg32> joystickAttached(App* app, CPU& cpu, reg32 instance, reg32 
         return 1;
     auto release = [&] {
         push(app, cpu, at(app, made));
-        return directInput(app, cpu, Object::Device, kRelease);
+        return directInputResult(app, cpu, Object::Device, kRelease).has_value();
     };
     // SetDataFormat(the device, a joystick's), the device left in edx.
     push(app, cpu, kJoystickFormat);
     push(app, cpu, at(app, made));
-    cpu.edx = at(app, made);
-    if (!directInput(app, cpu, Object::Device, kSetDataFormat))
+    const std::optional<reg32> formatted = directInputResult(app, cpu, Object::Device, kSetDataFormat);
+    if (!formatted)
         return std::nullopt;
-    if (cpu.eax != 0)
+    if (*formatted != 0)
     {
-        cpu.ecx = at(app, made);  // as the code leaves it
         if (!release())
             return std::nullopt;
         return 1;
@@ -2282,7 +2299,7 @@ std::optional<reg32> joystickAttached(App* app, CPU& cpu, reg32 instance, reg32 
             return std::nullopt;
         return 1;
     }
-    result = cooperateKeeping(app, cpu, count, 9);  // DISCL_EXCLUSIVE | DISCL_BACKGROUND
+    result = cooperate(app, cpu, count, 9);  // DISCL_EXCLUSIVE | DISCL_BACKGROUND
     if (!result)
         return std::nullopt;
     if (*result == 0)
@@ -2297,18 +2314,19 @@ std::optional<reg32> joystickAttached(App* app, CPU& cpu, reg32 instance, reg32 
 
 /* 0x436980: joystickAttached (stdcall: the DIDEVICEINSTANCE, DirectInput);
  * ecx and edx as the code leaves them. */
-void joystickFound(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 joystickFound(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
+    const Kept kept{args.ebx, args.ecx, args.edx, args.esi, args.edi, args.ebp};
     const std::optional<reg32> more = joystickAttached(app, cpu, at(app, cpu.esp + 4), at(app, cpu.esp + 8));
     if (!more)
-        return;
-    cpu.eax = *more;
-    cpu.ebx = kept.ebx;
-    cpu.esi = kept.esi;
-    cpu.edi = kept.edi;
-    cpu.ebp = kept.ebp;
+        return args.eax;
+    args.eax = *more;
+    args.ebx = kept.ebx;
+    args.esi = kept.esi;
+    args.edi = kept.edi;
+    args.ebp = kept.ebp;
     cpu.esp += 4 + 8;
+    return args.eax;
 }
 
 namespace
@@ -2346,14 +2364,12 @@ std::optional<Zone> axisZone(App* app, CPU& cpu, reg32 joystick, reg32 axis, boo
     std::optional<reg32> result;
     if (read)
     {
-        cpu.ecx = device;
         result = callMethod(app, cpu, Object::Device, device, kGetProperty, {property, record});
     }
     else
     {
         const sreg32 clamped = sreg32(percent) < 0 ? 0 : sreg32(percent) > 100 ? 100 : sreg32(percent);
         put(app, record + 0x10, reg32(clamped) * 100);
-        cpu.ecx = which;
         result = callMethod(app, cpu, Object::Device, device, kSetProperty, {property, record});
     }
     if (!result)
@@ -2364,44 +2380,31 @@ std::optional<Zone> axisZone(App* app, CPU& cpu, reg32 joystick, reg32 axis, boo
     return Zone{reg32(hundredths / 100), reg32(hundredths % 100)};
 }
 
-/* The registers but eax as axisProperty's code leaves them, `percent` its
- * stack's word: where it asked nothing, edx the word; where it did, ebx the
- * device when setting, and ecx 100 and edx the remainder where DirectInput
- * answered -- else as the call left them. */
-void zoneRegisters(App* app, CPU& cpu, reg32 joystick, reg32 axis, bool read, reg32 percent, const Zone& zone)
-{
-    cpu.eax = zone.percent;
-    if (!isJoystick(joystick) || sreg32(axis) > 8 || joystickDevice(app, joystick) == 0)
-    {
-        cpu.edx = percent;
-        return;
-    }
-    if (!read)
-        cpu.ebx = joystickDevice(app, joystick);
-    if (zone.remainder)
-    {
-        cpu.ecx = 100;
-        cpu.edx = *zone.remainder;
-    }
-}
-
 }  // namespace
 
 /* 0x436b10: axisZone for joystick eax, axis edx, asked for where ebx is not
  * 0, which ecx, the stack's percent (stdcall, 1 word). */
-void axisProperty(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 axisProperty(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    const reg32 joystick = cpu.eax, axis = cpu.edx, which = cpu.ecx, percent = at(app, cpu.esp + 4);
-    const bool read = cpu.ebx != 0;
+    const Kept kept{args.ebx, args.ecx, args.edx, args.esi, args.edi, args.ebp};
+    const reg32 joystick = args.eax, axis = args.edx, which = args.ecx, percent = at(app, cpu.esp + 4);
+    const bool read = args.ebx != 0;
     const std::optional<Zone> zone = axisZone(app, cpu, joystick, axis, read, which, percent);
     if (!zone)
-        return;
-    zoneRegisters(app, cpu, joystick, axis, read, percent, *zone);
-    cpu.esi = kept.esi;
-    cpu.edi = kept.edi;
-    cpu.ebp = kept.ebp;
+        return args.eax;
+    const ZoneLeft left = zoneRegisters(app, joystick, axis, read, percent, *zone);
+    args.eax = left.eax;
+    if (left.ebx)
+        args.ebx = *left.ebx;
+    if (left.ecx)
+        args.ecx = *left.ecx;
+    if (left.edx)
+        args.edx = *left.edx;
+    args.esi = kept.esi;
+    args.edi = kept.edi;
+    args.ebp = kept.ebp;
     cpu.esp += 4 + 4;
+    return args.eax;
 }
 
 }  // namespace controls

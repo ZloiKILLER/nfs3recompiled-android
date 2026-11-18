@@ -1,4 +1,10 @@
 #include "port_snd_stream.h"
+#include "native_ea_files.h"
+#include "native_ea_memory.h"
+#include "native_ea_support.h"
+#include "native_ea_threads.h"
+#include "native_game.h"
+#include "native_watcom.h"
 
 #include <cstdint>
 
@@ -57,7 +63,8 @@ Result unlockStream(App* app, CPU& cpu, reg32 esp, reg32 stream)
 Result wakeReader(App* app, CPU& cpu, reg32 esp, reg32 stream)
 {
     reg32 eax;
-    if (!callGame(app, cpu, esp, kSetEvent, {stream + 0x8c, cdStream(app, stream).streamEvent}, {}, eax))
+    if (!took(directFrom<kSetEvent, eventPostedWith>(app, cpu, esp, stream + 0x8c, cdStream(app, stream).streamEvent),
+              eax))
         return {};
     return int32_t(eax);
 }
@@ -158,7 +165,6 @@ Result ringRoomAtStart(App* app, CPU& cpu, reg32 esp, reg32 stream)
  * the reader is stopped, -1 for a chunk it dropped. */
 Result nextChunkToPlay(App* app, CPU& cpu, reg32 esp, reg32 stream)
 {
-    const Preserve keep(cpu);
     const reg32 frame = esp - 5 * 4;
     if (stream == 0)
     {
@@ -207,7 +213,6 @@ Result nextChunkToPlay(App* app, CPU& cpu, reg32 esp, reg32 stream)
                 else
                     record<ChunkHeader>(app, p).id = kGivenBack;
                 result = 0xffffffff;
-                cpu.esi = result;
                 if (!wakeReader(app, cpu, frame, kStreams(app)))
                     return {};
             }
@@ -331,7 +336,8 @@ Result queueCommand(App* app, CPU& cpu, reg32 esp, reg32 stream, reg32 name, reg
             return {};
         return 0;
     }
-    if (!callGame(app, cpu, frame, kStrncpy, {b, name, 0x8f}))
+    directFrom<kStrncpy, watcom::clib::strncpy>(app, cpu, frame, b, name, 0x8fu);
+    if (cpu.terminate)
         return {};
     block(app, b).name[0x8e] = 0;
     block(app, b).argument = argument;
@@ -382,7 +388,8 @@ Result replaceCommands(App* app, CPU& cpu, reg32 esp, reg32 stream, reg32 name, 
     if (!got)
         return {};
     const reg32 b = reg32(*got);
-    if (!callGame(app, cpu, frame, kStrncpy, {b, name, 0x8f}))
+    directFrom<kStrncpy, watcom::clib::strncpy>(app, cpu, frame, b, name, 0x8fu);
+    if (cpu.terminate)
         return {};
     block(app, b).name[0x8e] = 0;
     block(app, b).command = command;
@@ -394,7 +401,7 @@ Result replaceCommands(App* app, CPU& cpu, reg32 esp, reg32 stream, reg32 name, 
     if (!unlockStream(app, cpu, frame, stream) || !wakeReader(app, cpu, frame, stream))
         return {};
     if ((command == 0xb || command == 0xd || command == 0x14)
-        && !callGame(app, cpu, frame, kWaitEvent, {s.readerEvent}))
+        && !directFrom<kWaitEvent, ea::eventWaited>(app, cpu, frame, s.readerEvent))
         return {};
     return 1;
 }
@@ -475,14 +482,14 @@ Result setUpStream(App* app, CPU& cpu, reg32 esp, reg32 stream, reg32 blockSize,
     s.bytesPlayed = 0;
     s.bytesRead = s.bytesPlayed;
     s.other30[0] = 0;
-    // (These two take no registers: eax is as the call before left it.)
-    if (!callGame(app, cpu, frame, kCreateEvent, residue(cpu), {}, eax))
+    // (These two take no registers.)
+    if (!took(directFrom<kCreateEvent, ea::newAutoEvent>(app, cpu, frame), eax))
         return {};
     s.readerEvent = eax;
-    if (!callGame(app, cpu, frame, kNewLock, residue(cpu), {}, eax))
+    if (!took(directFrom<kNewLock, ea::newLock>(app, cpu, frame), eax))
         return {};
     s.lock = eax;
-    if (!callGame(app, cpu, frame, kCreateThread, {kReader, 0, 1, 0xffffffff}, {stream + 0x8c}, eax))
+    if (!took(directFrom<kCreateThread, ea::threadStarted>(app, cpu, frame - 4, kReader, 0u, 1u, stream + 0x8c), eax))
         return {};
     if (eax == 0)
     {
@@ -490,7 +497,7 @@ Result setUpStream(App* app, CPU& cpu, reg32 esp, reg32 stream, reg32 blockSize,
         if (!r)
             return {};
     }
-    if (!callGame(app, cpu, frame, kWaitEvent, {s.readerEvent}))
+    if (!directFrom<kWaitEvent, ea::eventWaited>(app, cpu, frame, s.readerEvent))
         return {};
     return int32_t(stream);
 }
@@ -509,7 +516,7 @@ Result makeStream(App* app, CPU& cpu, reg32 esp, reg32 size, reg32 blockSize, re
     kWhere.set(app, 1, 0x54a4ec);
     kWhere.set(app, 2, 0x188);
     reg32 ring;
-    if (!callGame(app, cpu, frame, kAllocate, {0x54a4f8, size, pool, size}, {}, ring))
+    if (!took(directFrom<kAllocate, ea::reserved>(app, cpu, frame, 0x54a4f8u, size, pool), ring))
         return {};
     if (ring == 0 && first != 0 && !fail(app, cpu, frame, Where{kCdFile, 0x54a4ec}, 0x18a, {0x54a504}, ring))
         return {};
@@ -518,14 +525,15 @@ Result makeStream(App* app, CPU& cpu, reg32 esp, reg32 size, reg32 blockSize, re
     kWhere.set(app, 2, 0x18e);
     const reg32 structSize = ((kBlockCount(app) * 0x9c + 0xf) & 0xfff0) + 0xc0;
     reg32 s;
-    if (!callGame(app, cpu, frame, kAllocate, {0x54a520, structSize, pool, size}, {}, s))
+    if (!took(directFrom<kAllocate, ea::reserved>(app, cpu, frame, 0x54a520u, structSize, pool), s))
         return {};
-    if (!callGame(app, cpu, frame, kFillZero, {s, structSize, pool, size}))
+    directFrom<kFillZero, ea::clearBytes>(app, cpu, frame, s, structSize);
+    if (cpu.terminate)
         return {};
     cdStream(app, s).ring = ring;
     cdStream(app, s).ringBytes = size;
-    if (!callGame(app, cpu, frame, kTouch, {ring, size, 0x1000, size})
-        || !callGame(app, cpu, frame, kTouch, {s, structSize, 0x1000, size}))
+    if (!directFrom<kTouch, ea::memoryTouched>(app, cpu, frame, ring, size)
+        || !directFrom<kTouch, ea::memoryTouched>(app, cpu, frame, s, structSize))
         return {};
     return setUpStream(app, cpu, frame - 4, s, load<reg32>(app, frame), first);
 }
@@ -564,11 +572,13 @@ Result deleteReader(App* app, CPU& cpu, reg32 esp, reg32 stream)
     s.command = 8;
     if (!wakeReader(app, cpu, frame, kStreams(app)))
         return {};
-    if (!callGame(app, cpu, frame, kWaitEvent, {s.readerEvent}) || !callGame(app, cpu, frame, kCloseHandle, {s.readerEvent})
-        || !callGame(app, cpu, frame, kFreeLock, {s.lock}))
+    if (!directFrom<kWaitEvent, ea::eventWaited>(app, cpu, frame, s.readerEvent)
+        || !directFrom<kCloseHandle, ea::eventClosed>(app, cpu, frame, s.readerEvent)
+        || !directFrom<kFreeLock, ea::lockFreed>(app, cpu, frame, s.lock))
         return {};
     s.lock = 0;
-    if (!callGame(app, cpu, frame, kRemoveThread, {stream + 0x8c}, {}, eax))
+    // The thread in eax; ebx (the stale handle the main thread's case would go on with) 0.
+    if (!took(directFrom<kRemoveThread, ea::endThread>(app, cpu, frame, stream + 0x8c, 0u), eax))
         return {};
     kStreams.set(app, 0);
     return int32_t(eax);
@@ -598,8 +608,8 @@ Result removeStream(App* app, CPU& cpu, reg32 esp, reg32 stream)
         do
         {
             next = cdStream(app, next).next;
-            if (!callGame(app, cpu, frame, kFree, {cdStream(app, s).ring}, {}, eax)
-                || !callGame(app, cpu, frame, kFree, {s}, {}, eax))
+            if (!took(directFrom<kFree, ea::purgeBlock>(app, cpu, frame, cdStream(app, s).ring), eax)
+                || !took(directFrom<kFree, ea::purgeBlock>(app, cpu, frame, s), eax))
                 return {};
             s = next;
         } while (next != 0);
@@ -622,13 +632,30 @@ Result removeStream(App* app, CPU& cpu, reg32 esp, reg32 stream)
             eax = reg32(*r);
         }
         cdStream(app, c).next = cdStream(app, s).next;
-        if (!callGame(app, cpu, frame, kFree, {cdStream(app, s).ring}, {}, eax)
-            || !callGame(app, cpu, frame, kFree, {s}, {}, eax))
+        if (!took(directFrom<kFree, ea::purgeBlock>(app, cpu, frame, cdStream(app, s).ring), eax)
+            || !took(directFrom<kFree, ea::purgeBlock>(app, cpu, frame, s), eax))
             return {};
     }
     kStreams.set(app, 0);
     kStreamWalk.set(app, 0);
     return int32_t(eax);
+}
+
+/* 0x4e4790: the first stream made -- makeStream's, `first` 1 (in ecx, which
+ * the code pushes and pops around the call). */
+Result makeFirstStream(App* app, CPU& cpu, reg32 esp, reg32 size, reg32 blockSize, reg32 pool)
+{
+    return makeStream(app, cpu, esp - 1 * 4 - 4, size, blockSize, pool, 1);
+}
+
+/* 0x4e4b50 as the game's sound calls it: removeStream; edx, ebx and ecx are
+ * not used (the code pushes them first). */
+Result deleteCdStream(App* app, CPU& cpu, reg32 esp, reg32 stream, reg32 edx, reg32 ebx, reg32 ecx)
+{
+    static_cast<void>(edx);
+    static_cast<void>(ebx);
+    static_cast<void>(ecx);
+    return removeStream(app, cpu, esp, stream);
 }
 
 namespace
@@ -653,19 +680,18 @@ struct Reader
 
     bool lock() { return bool(lockStream(app, cpu, frame, first())); }
     bool unlock() { return bool(unlockStream(app, cpu, frame, first())); }
-    bool wait() { return bool(callGame(app, cpu, frame, kWaitEvent, {s().streamEvent})); }
+    bool wait() { return bool(directFrom<kWaitEvent, ea::eventWaited>(app, cpu, frame, s().streamEvent)); }
 
     bool move(reg32 from, reg32 to, reg32 bytes)
     {
-        return bool(callGame(app, cpu, frame, kMemmove, {from, to, bytes}));
+        return directFrom<kMemmove, ea::moveMemory>(app, cpu, frame, to, from, bytes);
     }
 
-    /* The room asked for: the answer is left in eax, as the code's call leaves
-     * it. */
+    /* The room asked for. */
     bool answer(const Result& r, reg32& room)
     {
         if (r)
-            cpu.eax = room = reg32(*r);
+            room = reg32(*r);
         return bool(r);
     }
 
@@ -674,13 +700,7 @@ struct Reader
     bool atStart(reg32 stream, reg32& room) { return answer(ringRoomAtStart(app, cpu, frame - 4, stream), room); }
 
     /* A command block given back to the free list. */
-    bool release(reg32 b)
-    {
-        const Result r = releaseBlock(app, cpu, frame - 4, b);
-        if (r)
-            cpu.eax = reg32(*r);
-        return bool(r);
-    }
+    bool release(reg32 b) { return bool(releaseBlock(app, cpu, frame - 4, b)); }
 
     /* Waited while `busy` says so and no command comes.  1 to go on, 2 for a
      * command, 0 the game stopped. */
@@ -746,11 +766,11 @@ struct Reader
         for (;;)
         {
             reg32 eax;
-            if (!callGame(app, cpu, frame, kReadBlock, {s().file, to, s().blocksAtOnce}, {}, eax))
+            if (!took(directFrom<kReadBlock, ea::blocksRead>(app, cpu, frame, s().file, to, s().blocksAtOnce), eax))
                 return false;
             if (eax != 0)
                 return true;
-            if (!callGame(app, cpu, frame, kSleep, {1}))
+            if (!directFrom<kSleep, ea::sleepFor>(app, cpu, frame, 1u))
                 return false;
         }
     }
@@ -759,16 +779,18 @@ struct Reader
      * not found, traced and the reader idle.  `opened` false for that. */
     bool open(bool& opened, reg32 line)
     {
-        if (s().file != 0 && !callGame(app, cpu, frame, kCloseBlock, {s().file}))
+        if (s().file != 0 && !directFrom<kCloseBlock, ea::slotClosed>(app, cpu, frame, s().file))
             return false;
         reg32 eax;
-        if (!callGame(app, cpu, frame, kOpenBlock, {s().doing, first() + 0x1c, first() + 0x50, first() + 0x58},
-                      {frame}, eax))
+        if (!took(directFrom<kOpenBlock, ea::blockOpened>(app, cpu, frame - 4, s().doing, first() + 0x1c, first() + 0x50,
+                                                          first() + 0x58, frame),
+                  eax))
             return false;
         opened = eax != 0;
         if (!opened)
         {
-            if (!callGame(app, cpu, frame, kTrace, residue(cpu), {0x54a764, s().doing}) || !release(s().doing))
+            if (!directFrom<kTrace, ea::monoPrinted>(app, cpu, frame - 2 * 4, 0u, 0x54a764u, guest::Words({ s().doing }))
+                || !release(s().doing))
                 return false;
             s().file = 0;
             s().state = 7;
@@ -781,10 +803,10 @@ struct Reader
         {
             s().blocksAtOnce = 1;
             if (int32_t(size) > int32_t(s().ringSize)
-                && !fail(app, cpu, frame, Where{kCdFile, 0x54a788}, line, {0x54a79c, size, s().ringSize}, cpu.eax))
+                && !fail(app, cpu, frame, Where{kCdFile, 0x54a788}, line, {0x54a79c, size, s().ringSize}, 0))
                 return false;
             if (int32_t(size + size) > int32_t(s().ringSize)
-                && !callGame(app, cpu, frame, kTrace, residue(cpu), {0x54a7d0}))
+                && !directFrom<kTrace, ea::monoPrinted>(app, cpu, frame - 4, 0u, 0x54a7d0u, guest::Words({})))
                 return false;
             s().block = size;
         }
@@ -810,10 +832,10 @@ Result readerThread(App* app, CPU& cpu, reg32 esp)
     const reg32 frame = esp - 6 * 4 - 4;
     Reader r{app, cpu, frame};
     reg32 eax;
-    if (!callGame(app, cpu, frame, kCreateEvent, residue(cpu), {}, eax))
+    if (!took(directFrom<kCreateEvent, ea::newAutoEvent>(app, cpu, frame), eax))
         return {};
     r.s().streamEvent = eax;
-    if (!callGame(app, cpu, frame, kSetEvent, {0, r.s().readerEvent}))
+    if (!directFrom<kSetEvent, eventPostedWith>(app, cpu, frame, 0u, r.s().readerEvent))
         return {};
     bool ending = false;  // the chunk read is the end's
     for (;;)
@@ -875,12 +897,12 @@ Result readerThread(App* app, CPU& cpu, reg32 esp)
         }
         if (state == 8)
         {
-            if (r.s().file != 0 && !callGame(app, cpu, frame, kCloseBlock, {r.s().file}))
+            if (r.s().file != 0 && !directFrom<kCloseBlock, ea::slotClosed>(app, cpu, frame, r.s().file))
                 return {};
             r.s().file = 0;
-            if (!callGame(app, cpu, frame, kCloseHandle, {r.s().streamEvent}))
+            if (!directFrom<kCloseHandle, ea::eventClosed>(app, cpu, frame, r.s().streamEvent))
                 return {};
-            if (!callGame(app, cpu, frame, kSetEvent, {0, r.s().readerEvent}, {}, eax))
+            if (!took(directFrom<kSetEvent, eventPostedWith>(app, cpu, frame, 0u, r.s().readerEvent), eax))
                 return {};
             return int32_t(eax);
         }
@@ -916,12 +938,12 @@ Result readerThread(App* app, CPU& cpu, reg32 esp)
             if (r.s().state == 0x14)
             {
                 r.s().state = 7;
-                if (!callGame(app, cpu, frame, kSetEvent, {0, r.s().readerEvent}))
+                if (!directFrom<kSetEvent, eventPostedWith>(app, cpu, frame, 0u, r.s().readerEvent))
                     return {};
                 continue;
             }
             r.s().state = 2;
-            if (!callGame(app, cpu, frame, kSetEvent, {0, r.s().readerEvent}))
+            if (!directFrom<kSetEvent, eventPostedWith>(app, cpu, frame, 0u, r.s().readerEvent))
                 return {};
             reading = true;
         }
@@ -943,7 +965,7 @@ Result readerThread(App* app, CPU& cpu, reg32 esp)
             r.s().filePlace = r.s().fileWanted;
             if (!r.unlock())
                 return {};
-            if (!callGame(app, cpu, frame, kSeekBlock, {r.s().file, r.s().filePlace}, {}, eax))
+            if (!took(directFrom<kSeekBlock, ea::blocksSought>(app, cpu, frame, r.s().file, r.s().filePlace), eax))
                 return {};
             const reg32 at0 = eax;
             if (!r.lock())
@@ -1080,7 +1102,7 @@ Result readerThread(App* app, CPU& cpu, reg32 esp)
                 continue;
             }
             if (!fail(app, cpu, frame, Where{kCdFile, 0x54a788}, 0x638,
-                      {0x54a800, r.s().chunkLength, r.w().ringSize, r.s().filePlace}, cpu.eax))
+                      {0x54a800, r.s().chunkLength, r.w().ringSize, r.s().filePlace}, 0))
                 return {};
         }
         // The chunk to its stream.
@@ -1296,99 +1318,99 @@ Result readerThread(App* app, CPU& cpu, reg32 esp)
 
 /* The game's entries. */
 
-void freeStreamChunk(App* app, CPU& cpu)
+x86::reg32 freeStreamChunk(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, stream::giveBackChunk(app, cpu, e.esp, e.eax, e.edx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, stream::giveBackChunk(app, cpu, e.esp, e.eax, e.edx));
 }
 
-void streamBytesRead(App* app, CPU& cpu)
+x86::reg32 streamBytesRead(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, stream::bytesBuffered(app, e.eax));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, stream::bytesBuffered(app, e.eax));
 }
 
-void readerIdle(App* app, CPU& cpu)
+x86::reg32 readerIdle(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, stream::readerIsIdle(app) ? 1 : 0);
+    const Entry e(cpu, args);
+    return e.back(cpu, args, stream::readerIsIdle(app) ? 1 : 0);
 }
 
-void readerWaits(App* app, CPU& cpu)
+x86::reg32 readerWaits(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, stream::readerIsWaiting(app, e.eax));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, stream::readerIsWaiting(app, e.eax));
 }
 
-void passFreedChunks(App* app, CPU& cpu)
+x86::reg32 passFreedChunks(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, stream::passFreed(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, stream::passFreed(app, cpu, e.esp, e.eax));
 }
 
-void roomAhead(App* app, CPU& cpu)
+x86::reg32 roomAhead(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, stream::ringRoomAhead(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, stream::ringRoomAhead(app, cpu, e.esp, e.eax));
 }
 
-void roomToEnd(App* app, CPU& cpu)
+x86::reg32 roomToEnd(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, stream::ringRoomToEnd(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, stream::ringRoomToEnd(app, cpu, e.esp, e.eax));
 }
 
-void roomAtStart(App* app, CPU& cpu)
+x86::reg32 roomAtStart(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, stream::ringRoomAtStart(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, stream::ringRoomAtStart(app, cpu, e.esp, e.eax));
 }
 
-void getStreamChunk(App* app, CPU& cpu)
+x86::reg32 getStreamChunk(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, stream::nextChunkToPlay(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, stream::nextChunkToPlay(app, cpu, e.esp, e.eax));
 }
 
-void chainCommandBlocks(App* app, CPU& cpu)
+x86::reg32 chainCommandBlocks(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, stream::chainBlocks(app, e.eax, e.edx));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, stream::chainBlocks(app, e.eax, e.edx));
 }
 
-void freeCommandBlock(App* app, CPU& cpu)
+x86::reg32 freeCommandBlock(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, stream::releaseBlock(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, stream::releaseBlock(app, cpu, e.esp, e.eax));
 }
 
-void commandBlocksFree(App* app, CPU& cpu)
+x86::reg32 commandBlocksFree(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, stream::commandBlocksAvailable(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, stream::commandBlocksAvailable(app, cpu, e.esp, e.eax));
 }
 
-void takeCommandBlock(App* app, CPU& cpu)
+x86::reg32 takeCommandBlock(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, stream::acquireBlock(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, stream::acquireBlock(app, cpu, e.esp, e.eax));
 }
 
 /* streamcommanda (stdcall 8): command ebx with argument ecx and file edx
  * queued to stream eax; [esp+4] says to break into what the reader does,
  * [esp+8] to mind no block being free. */
-void streamCommand(App* app, CPU& cpu)
+x86::reg32 streamCommand(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, stream::queueCommand(app, cpu, e.esp, e.eax, e.edx, e.ebx, e.ecx, e.arg(app, 0), e.arg(app, 1)), 8);
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, stream::queueCommand(app, cpu, e.esp, e.eax, e.edx, e.ebx, e.ecx, e.arg(app, 0), e.arg(app, 1)), 8);
 }
 
 /* purgestreamcommanda (stdcall 4): the same, the commands queued before
  * dropped; [esp+4] to mind no block being free. */
-void purgeStreamCommand(App* app, CPU& cpu)
+x86::reg32 purgeStreamCommand(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, stream::replaceCommands(app, cpu, e.esp, e.eax, e.edx, e.ebx, e.ecx, e.arg(app, 0)), 4);
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, stream::replaceCommands(app, cpu, e.esp, e.eax, e.edx, e.ebx, e.ecx, e.arg(app, 0)), 4);
 }
 
 namespace
@@ -1400,94 +1422,94 @@ namespace
  * -- each minding no block or not. */
 using stream::Command;
 
-void named(App* app, CPU& cpu, Command command, bool purge, bool urgent, bool mind)
+x86::reg32 named(App* app, CPU& cpu, x86::Args& args, Command command, bool purge, bool urgent, bool mind)
 {
-    const Entry e(cpu);
-    e.finish(cpu, purge ? stream::purgeNamed(app, cpu, e.esp, e.eax, e.edx, command, mind)
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, purge ? stream::purgeNamed(app, cpu, e.esp, e.eax, e.edx, command, mind)
                         : stream::queueNamed(app, cpu, e.esp, e.eax, e.edx, command, urgent, mind));
 }
 
-void numbered(App* app, CPU& cpu, Command command, bool purge, bool urgent, bool mind)
+x86::reg32 numbered(App* app, CPU& cpu, x86::Args& args, Command command, bool purge, bool urgent, bool mind)
 {
-    const Entry e(cpu);
-    e.finish(cpu, purge ? stream::purgeArgument(app, cpu, e.esp, e.eax, e.edx, command, mind)
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, purge ? stream::purgeArgument(app, cpu, e.esp, e.eax, e.edx, command, mind)
                         : stream::queueArgument(app, cpu, e.esp, e.eax, e.edx, command, urgent, mind));
 }
 
 }  // namespace
 
-void streamOpen(App* app, CPU& cpu) { named(app, cpu, Command::Open, true, false, true); }
-void streamOpenQuietly(App* app, CPU& cpu) { named(app, cpu, Command::Open, true, false, false); }
-void streamOpenNext(App* app, CPU& cpu) { named(app, cpu, Command::OpenNext, false, false, true); }
-void streamOpenNextQuietly(App* app, CPU& cpu) { named(app, cpu, Command::OpenNext, false, false, false); }
-void streamContinue(App* app, CPU& cpu) { named(app, cpu, Command::Continue, true, false, true); }
-void streamContinueQuietly(App* app, CPU& cpu) { named(app, cpu, Command::Continue, true, false, false); }
-void streamSwitch(App* app, CPU& cpu) { named(app, cpu, Command::Switch, true, false, true); }
-void streamSwitchQuietly(App* app, CPU& cpu) { named(app, cpu, Command::Switch, true, false, false); }
-void streamQueueFile(App* app, CPU& cpu) { named(app, cpu, Command::QueueFile, false, false, true); }
-void streamQueueFileQuietly(App* app, CPU& cpu) { named(app, cpu, Command::QueueFile, false, false, false); }
-void streamRestart(App* app, CPU& cpu) { named(app, cpu, Command::Restart, true, false, true); }
-void streamRestartQuietly(App* app, CPU& cpu) { named(app, cpu, Command::Restart, true, false, false); }
-void streamSeek(App* app, CPU& cpu) { numbered(app, cpu, Command::Seek, false, true, true); }
-void streamSeekQuietly(App* app, CPU& cpu) { numbered(app, cpu, Command::Seek, false, true, false); }
-void streamReadOn(App* app, CPU& cpu) { numbered(app, cpu, Command::ReadOn, false, false, true); }
-void streamReadOnQuietly(App* app, CPU& cpu) { numbered(app, cpu, Command::ReadOn, false, false, false); }
-void streamStopAt(App* app, CPU& cpu) { numbered(app, cpu, Command::StopAt, true, false, true); }
-void streamStopAtQuietly(App* app, CPU& cpu) { numbered(app, cpu, Command::StopAt, true, false, false); }
+x86::reg32 streamOpen(App* app, CPU& cpu, x86::Args& args) { return named(app, cpu, args, Command::Open, true, false, true); }
+x86::reg32 streamOpenQuietly(App* app, CPU& cpu, x86::Args& args) { return named(app, cpu, args, Command::Open, true, false, false); }
+x86::reg32 streamOpenNext(App* app, CPU& cpu, x86::Args& args) { return named(app, cpu, args, Command::OpenNext, false, false, true); }
+x86::reg32 streamOpenNextQuietly(App* app, CPU& cpu, x86::Args& args) { return named(app, cpu, args, Command::OpenNext, false, false, false); }
+x86::reg32 streamContinue(App* app, CPU& cpu, x86::Args& args) { return named(app, cpu, args, Command::Continue, true, false, true); }
+x86::reg32 streamContinueQuietly(App* app, CPU& cpu, x86::Args& args) { return named(app, cpu, args, Command::Continue, true, false, false); }
+x86::reg32 streamSwitch(App* app, CPU& cpu, x86::Args& args) { return named(app, cpu, args, Command::Switch, true, false, true); }
+x86::reg32 streamSwitchQuietly(App* app, CPU& cpu, x86::Args& args) { return named(app, cpu, args, Command::Switch, true, false, false); }
+x86::reg32 streamQueueFile(App* app, CPU& cpu, x86::Args& args) { return named(app, cpu, args, Command::QueueFile, false, false, true); }
+x86::reg32 streamQueueFileQuietly(App* app, CPU& cpu, x86::Args& args) { return named(app, cpu, args, Command::QueueFile, false, false, false); }
+x86::reg32 streamRestart(App* app, CPU& cpu, x86::Args& args) { return named(app, cpu, args, Command::Restart, true, false, true); }
+x86::reg32 streamRestartQuietly(App* app, CPU& cpu, x86::Args& args) { return named(app, cpu, args, Command::Restart, true, false, false); }
+x86::reg32 streamSeek(App* app, CPU& cpu, x86::Args& args) { return numbered(app, cpu, args, Command::Seek, false, true, true); }
+x86::reg32 streamSeekQuietly(App* app, CPU& cpu, x86::Args& args) { return numbered(app, cpu, args, Command::Seek, false, true, false); }
+x86::reg32 streamReadOn(App* app, CPU& cpu, x86::Args& args) { return numbered(app, cpu, args, Command::ReadOn, false, false, true); }
+x86::reg32 streamReadOnQuietly(App* app, CPU& cpu, x86::Args& args) { return numbered(app, cpu, args, Command::ReadOn, false, false, false); }
+x86::reg32 streamStopAt(App* app, CPU& cpu, x86::Args& args) { return numbered(app, cpu, args, Command::StopAt, true, false, true); }
+x86::reg32 streamStopAtQuietly(App* app, CPU& cpu, x86::Args& args) { return numbered(app, cpu, args, Command::StopAt, true, false, false); }
 
 /* initstreamstructa: the second stream's and the first's. */
-void initStreamStruct(App* app, CPU& cpu)
+x86::reg32 initStreamStruct(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, stream::setUpStream(app, cpu, e.esp, e.eax, e.ebx, e.ecx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, stream::setUpStream(app, cpu, e.esp, e.eax, e.ebx, e.ecx));
 }
 
-void initStreamStructSecond(App* app, CPU& cpu)
+x86::reg32 initStreamStructSecond(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, stream::setUpStream(app, cpu, e.esp - 1 * 4 - 4, e.eax, e.ebx, 0));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, stream::setUpStream(app, cpu, e.esp - 1 * 4 - 4, e.eax, e.ebx, 0));
 }
 
-void initStreamStructFirst(App* app, CPU& cpu)
+x86::reg32 initStreamStructFirst(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, stream::setUpStream(app, cpu, e.esp - 1 * 4 - 4, e.eax, e.ebx, 1));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, stream::setUpStream(app, cpu, e.esp - 1 * 4 - 4, e.eax, e.ebx, 1));
 }
 
-void initStream(App* app, CPU& cpu)
+x86::reg32 initStream(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, stream::makeStream(app, cpu, e.esp, e.eax, e.edx, e.ebx, e.ecx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, stream::makeStream(app, cpu, e.esp, e.eax, e.edx, e.ebx, e.ecx));
 }
 
-void initStreamSecond(App* app, CPU& cpu)
+x86::reg32 initStreamSecond(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, stream::makeStream(app, cpu, e.esp - 1 * 4 - 4, e.eax, e.edx, e.ebx, 0));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, stream::makeStream(app, cpu, e.esp - 1 * 4 - 4, e.eax, e.edx, e.ebx, 0));
 }
 
-void initStreamFirst(App* app, CPU& cpu)
+x86::reg32 initStreamFirst(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, stream::makeStream(app, cpu, e.esp - 1 * 4 - 4, e.eax, e.edx, e.ebx, 1));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, stream::makeFirstStream(app, cpu, e.esp, e.eax, e.edx, e.ebx));
 }
 
-void deleteStreamStruct(App* app, CPU& cpu)
+x86::reg32 deleteStreamStruct(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, stream::deleteReader(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, stream::deleteReader(app, cpu, e.esp, e.eax));
 }
 
-void deleteStream(App* app, CPU& cpu)
+x86::reg32 deleteStream(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, stream::removeStream(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, stream::deleteCdStream(app, cpu, e.esp, e.eax, e.edx, e.ebx, e.ecx));
 }
 
-void streamReaderThread(App* app, CPU& cpu)
+x86::reg32 streamReaderThread(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, stream::readerThread(app, cpu, e.esp));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, stream::readerThread(app, cpu, e.esp));
 }
 
 }  // namespace port

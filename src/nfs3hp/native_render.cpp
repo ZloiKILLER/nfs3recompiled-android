@@ -1,7 +1,12 @@
 #include <nfs3hp.h>
+#include "native_handling.h"
 #include "game_settings.h"
 #include "dynamic_fullscreen.h"
+#include "native_load_cardb.h"
+#include "native_load_carmodels.h"
+#include "native_load_track.h"
 #include "port_thrash.h"
+#include "port_sound_calls.h"
 #include "thrash_calls.h"
 #include "native_render.h"
 #include "native_windows.h"
@@ -12,13 +17,48 @@
 #include "native_frontend_simc.h"
 #include "native_frontend_simd.h"
 #include "port_text.h"
+#include "native_game.h"
+#include "port_shapes.h"
+#include "port_obj3d.h"
+#include "port_hud.h"
+#include "native_track.h"
+#include "native_graphics.h"
 #include "native_vertices.h"
 #include "native_watcom.h"
+#include "native_ai_race.h"
+#include "native_frontend_hudr.h"
+#include "native_carstate.h"
+#include "native_collide.h"
+#include "native_ea_memory.h"
+#include "native_frontend_eaa.h"
+#include "native_frontend_eab.h"
+#include "native_frontend_hudx.h"
+#include "native_frontend_hudz.h"
+#include "native_frontend_loopb.h"
+#include "native_frontend_menua.h"
+#include "native_frontend_menue.h"
+#include "native_frontend_pause.h"
+#include "native_frontend_renda.h"
+#include "native_frontend_rendb.h"
+#include "native_frontend_rendd.h"
+#include "native_frontend_rende.h"
+#include "native_frontend_sime.h"
+#include "native_frontend_wata.h"
+#include "native_frontend_watb.h"
+#include "native_frontend_wina.h"
+#include "native_graphics.h"
+#include "native_raceload.h"
+#include "native_track.h"
+#include "native_trackdata.h"
 #include "host_system.h"
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <optional>
+#include <tuple>
+#include <type_traits>
+#include <tuple>
+#include <type_traits>
 #include <utility>
 
 /* a * b + c fused into one fma rounds once where the x87 rounds twice. */
@@ -29,19 +69,16 @@
 #endif
 
 /* The rest of the drawing, native whole: the functions native_vertices.cpp
- * left generated -- the clipping of a triangle whose corners carry z, the
+ * left out -- the clipping of a triangle whose corners carry z, the
  * polygon lists, the sky, the lights, the effects' colours, the views, the HUD,
- * the textures and the 2D screens -- in nfs3hp::render, each bound to its
- * function's address by disassemble_nfs3hp.py (RENDER_NATIVES), which writes
- * no code for it: the game's callers call it by name, dynamic_call by address.
- * Since phase 2 there is no hook and no generated code behind them to fall
- * back on.  Each does the original's arithmetic in the original's order
- * through fp:: (FpuMath), so it rounds as the generated code does, at single
+ * the textures and the 2D screens -- in nfs3hp::render: the game's callers call
+ * each by name, a call through a pointer by address.  Each does the original's arithmetic in the original's order
+ * through fp:: (SingleMath), so it rounds as the game's code does, at single
  * precision, and converts to integers as fistp does.  Where the original copies with
  * movs they copy forwards: the game never leaves the direction flag set (its
  * one std, in memmove at 0x518640, is undone by the cld before it returns).
- * An integer divide by zero (lightning, sparks) gives what the generated
- * code's idiv gives on arm64: quotient 0, the dividend's low word the
+ * An integer divide by zero (lightning, sparks) gives what an idiv
+ * gives on arm64: quotient 0, the dividend's low word the
  * remainder.  The port's changes to these functions (the mirror, View
  * Distance, alpha intensity, the HUD's and the cabin's 4:3 sizes, wide-screen
  * HUD pictures, car detail, the loading screen at 4:3) are made here; the
@@ -52,13 +89,11 @@
  * reads them (entry_regs.py), esi where a callee reads a pointer there -- and
  * left at its exit as the game's callers read them: eax where a caller reads
  * it, every register but the function's own arguments as it came.  Memory
- * comes out as the generated code leaves it, but for the stack below the
+ * comes out as the game's code leaves it, but for the stack below the
  * returned esp.  THRASH's exports are called through guest::driver
  * (thrash_calls.h, plan step 4): the port's driver as C++ where the game's
  * pointer leads to it.  hud (sub_482b00) alone is still written on the
- * registers and the flags (Registers, IntegerFlags, callWithRegisters).
- * tools/game_checks/render holds each against its code made afresh (with the
- * port's changes) on the desktop, in five x87 control words. */
+ * registers and the flags (Registers, IntegerFlags, callWithRegisters). */
 namespace nfs3hp
 {
 
@@ -98,9 +133,9 @@ inline x86::reg32 asBits(float value)
     return bits;
 }
 
-/* The arithmetic as the generated code does it (fp::).  The operands go in the
- * order the generated code has them, which decides a NaN's payload. */
-struct FpuMath
+/* The arithmetic as the game's code does it (fp::).  The operands go in the
+ * order the game's code has them, which decides a NaN's payload. */
+struct SingleMath
 {
     typedef double Value;
     static Value add(Value a, Value b) { return fp::add(a, b); }
@@ -109,9 +144,9 @@ struct FpuMath
     static Value div(Value a, Value b) { return fp::div(a, b); }
     static Value sqrt(Value a) { return fp::sqrt(a); }
 };
-typedef FpuMath M;
+typedef SingleMath M;
 
-/* cdq; idiv r32 as the generated code does it: edx:eax, eax sign-extended,
+/* cdq; idiv r32 as the game's code does it: edx:eax, eax sign-extended,
  * divided in 64 bits, the quotient's low word to eax (2^31 for the lowest
  * integer over -1) and the remainder to edx.  A divisor of 0, which faults on
  * the x86, gives what that division gives on arm64, where sdiv by zero is 0
@@ -136,7 +171,7 @@ inline void setByte(x86::reg32& r, unsigned k, x86::reg32 value)
     r = (r & ~(0xffu << (8 * k))) | ((value & 0xff) << (8 * k));
 }
 
-/* The integer flags of the generated code's cmp, test, and, or, inc and dec:
+/* The integer flags of the game's code's cmp, test, and, or, inc and dec:
  * CF, ZF, SF and OF; PF and AF are only ever set by sahf.  Stored only when
  * one of them was set since the last store, so a callee's flags stand until
  * an instruction after the call sets them again. */
@@ -250,35 +285,99 @@ struct IntegerFlags
         set = true;
     }
     // The flags a callee left, for an inc or dec that keeps CF.
-    void load(const x86::CPU& cpu)
-    {
-        cf = cpu.flags.cf;
-        of = cpu.flags.of;
-        zf = cpu.flags.zf;
-        sf = cpu.flags.sf;
-        set = false;
-    }
-    void store(x86::CPU& cpu)
-    {
-        if (!set)
-            return;
-        cpu.flags.cf = cf;
-        cpu.flags.of = of;
-        cpu.flags.zf = zf;
-        cpu.flags.sf = sf;
-        set = false;
-    }
+    // A callee's flags are not handed back (a callee leaves none): the code's own stay.
+    void load(const x86::CPU&) { set = false; }
+    void store(x86::CPU&) { set = false; }
 };
 
-/* A call as the generated code makes one: a slot for the return address, then
- * the callee.  False when the game is shutting down, as the generated code
- * then returns at once. */
+/* The registers as the code has them between its calls -- what the cpu's eax, edx, ebx, ecx, esi, edi and ebp held while this
+ * file's functions ran under the game's addresses -- one set for each guest thread: a thunk takes them from its arguments
+ * (RegisterImage) and gives them back as they stand when it returns; a call of the game's code hands them on and takes
+ * back what the callee left. */
+// One image for this file and native_graphics.cpp / native_render.cpp alike: the code hands its registers between
+// the two (the pass in ebx, the record in esi) as the game's did through the machine's.
+thread_local x86::Args& g = guest::registerImage();
+
+class RegisterImage
+{
+public:
+    /* The image is the thunk's arguments while it runs.  Called with an Args of its own (from outside these files), the
+     * image a caller here was working with is kept aside and put back after, as the registers' values that caller holds;
+     * called with the image itself (this file's calls), nothing to do. */
+    explicit RegisterImage(x86::Args& args) : args(args), own(&args != &g)
+    {
+        if (own)
+        {
+            outer = g;
+            g = args;
+        }
+    }
+    ~RegisterImage()
+    {
+        if (own)
+        {
+            args = g;
+            g = outer;
+        }
+    }
+    RegisterImage(const RegisterImage&) = delete;
+    RegisterImage& operator=(const RegisterImage&) = delete;
+
+private:
+    x86::Args& args;
+    const bool own;
+    x86::Args outer;
+};
+
+/* What the registers' guard kept of them: ebx, ecx, edx, esi, edi and ebp of the image, and esp, back as they were
+ * when it goes. */
+class Kept
+{
+public:
+    explicit Kept(x86::CPU& cpu)
+        : cpu_(cpu), ebx_(g.ebx), ecx_(g.ecx), edx_(g.edx), esi_(g.esi), edi_(g.edi), ebp_(g.ebp), esp_(cpu.esp)
+    {
+    }
+    ~Kept()
+    {
+        g.ebx = ebx_;
+        g.ecx = ecx_;
+        g.edx = edx_;
+        g.esi = esi_;
+        g.edi = edi_;
+        g.ebp = ebp_;
+        cpu_.esp = esp_;
+    }
+    Kept(const Kept&) = delete;
+    Kept& operator=(const Kept&) = delete;
+
+private:
+    x86::CPU& cpu_;
+    x86::reg32 ebx_, ecx_, edx_, esi_, edi_, ebp_, esp_;
+};
+
+/* A call of the game's code as the game's code makes one: a slot for the return address, then the callee's thunk with
+ * the image's registers; its eax comes into g.eax and what it left in the others back into g, and esp is as its ret leaves
+ * it (the words the code pushed for it taken off) -- guest::pointerCall restores esp, which these callers cannot have, so
+ * only a callee that is no thunk goes through it.  False when the game is shutting down, as the game's code then
+ * returns at once. */
 bool call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 address)
 {
+    const win32::ThunkPtr thunk = app->thunkAt(address);
+    if (!thunk)
+    {
+        const std::optional<x86::reg32> eax = guest::pointerCall(app, cpu, address, g);
+        if (!eax)
+            return false;
+        g.eax = *eax;
+        return true;
+    }
     cpu.esp -= 4;
-    cpu.ip = address;
-    app->dynamic_call(address, cpu);
-    return !cpu.terminate;
+    const x86::reg32 eax = thunk(app, cpu, g);
+    if (cpu.terminate)
+        return false;
+    g.eax = eax;
+    return true;
 }
 
 /* Guest memory as the natives read and write it. */
@@ -303,7 +402,7 @@ inline double fild32(const Memory& m, x86::reg32 address)
     return double(x86::sreg32(m.word(address)));
 }
 
-/* The registers the generated code works the screen with: they come out of
+/* The registers the game's code works the screen with: they come out of
  * these helpers as its copies of them leave them. */
 struct Registers
 {
@@ -336,24 +435,24 @@ bool callWithRegisters(win32::WinApplication* app, x86::CPU& cpu, IntegerFlags& 
                        x86::reg32 esp, x86::reg32 target)
 {
     flags.store(cpu);
-    cpu.eax = r.eax;
-    cpu.ebx = r.ebx;
-    cpu.ecx = r.ecx;
-    cpu.edx = r.edx;
-    cpu.esi = r.esi;
-    cpu.edi = r.edi;
-    cpu.ebp = ebp;
+    g.eax = r.eax;
+    g.ebx = r.ebx;
+    g.ecx = r.ecx;
+    g.edx = r.edx;
+    g.esi = r.esi;
+    g.edi = r.edi;
+    g.ebp = ebp;
     cpu.esp = esp;
     if (!call(app, cpu, target))
         return false;
-    r = { cpu.eax, cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi };
+    r = { g.eax, g.ebx, g.ecx, g.edx, g.esi, g.edi };
     flags.load(cpu);
     return true;
 }
 
 /* The HUD's border width in pixels: the screen's width times [k0] and [k1]
  * (4/640), as fistp rounds it.  The width is the 4:3 one hudReferenceWidth
- * gives (a port, tools/apply_hud_scale.py, in place of [0x7cdac8]). */
+ * gives (a port, the port's HUD scale change, in place of [0x7cdac8]). */
 x86::reg32 hudBorder(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 k0, x86::reg32 k1)
 {
     const Memory m{app};
@@ -362,9 +461,8 @@ x86::reg32 hudBorder(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 k0, x
 }
 
 /* The typed natives' words (plan step 5): a core with named parameters that keeps its locals in
- * C++, and an adapter under the game's name that takes the registers and leaves them, the flags
- * and the x87 as the game's code does -- the check compares all of them, and every register at
- * every call out. */
+ * C++, and a thunk under the game's name that takes the registers and leaves them, the flags
+ * and the x87 as the game's code does. */
 using App = win32::WinApplication;
 using CPU = x86::CPU;
 using x86::reg32;
@@ -390,7 +488,7 @@ reg32 darkened(reg32 colour, reg32 scale)
     return (alphaGreen & 0xff00ff00) | ((redBlue >> 8) & 0xff00ff);
 }
 
-/* The caller's registers as an adapter found them, for those the original pushes on entry and
+/* The caller's registers as a thunk found them, for those the original pushes on entry and
  * pops before its ret: restore() gives back the ones named and returns past the return address
  * and `popped` bytes of arguments. */
 class Entry
@@ -398,12 +496,12 @@ class Entry
 public:
     enum : unsigned { kEbx = 1, kEcx = 2, kEdx = 4, kEsi = 8, kEdi = 16, kEbp = 32 };
     explicit Entry(const CPU& cpu)
-        : esp(cpu.esp), saved{cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp}
+        : esp(cpu.esp), saved{g.ebx, g.ecx, g.edx, g.esi, g.edi, g.ebp}
     {
     }
     void restore(CPU& cpu, unsigned which, reg32 popped = 0) const
     {
-        reg32* const registers[] = {&cpu.ebx, &cpu.ecx, &cpu.edx, &cpu.esi, &cpu.edi, &cpu.ebp};
+        reg32* const registers[] = {&g.ebx, &g.ecx, &g.edx, &g.esi, &g.edi, &g.ebp};
         for (unsigned k = 0; k < 6; ++k)
             if (which & (1u << k))
                 *registers[k] = saved[k];
@@ -420,58 +518,39 @@ private:
  * the caller left it.  False when the game stopped. */
 bool callIn(App* app, CPU& cpu, reg32 frame, reg32 esp, reg32 target)
 {
-    cpu.ebp = frame;
+    g.ebp = frame;
     cpu.esp = esp;
     return call(app, cpu, target);
 }
 
 /* The functions the register code below calls whose results come back on st(0), where they have a
  * typed core (plan step 1): in the game the core as C++, the registers, the flags and esp left as
- * the call by address leaves them and the result handed back; in the checks (NFS_GAME_CHECKS:
- * tools/game_checks/render builds this file alone, and its stand-ins log every call and leave a
- * made-up result on st(0)) the call by address as the code makes it, st(0) taken off.  Each takes
+ * the call by address leaves them and the result handed back.  Each takes
  * what callWithRegisters takes and moves esp on as the call does; nullopt when the game stopped. */
-#ifdef NFS_GAME_CHECKS
-std::optional<double> stackResultOf(App* app, CPU& cpu, IntegerFlags& flags, Registers& r, reg32 ebp, reg32& esp,
-                                    reg32 target)
-{
-    if (!callWithRegisters(app, cpu, flags, r, ebp, esp, target))
-        return std::nullopt;
-    esp = cpu.esp;
-    return double(cpu.fpu.take());
-}
-#else
 // What callWithRegisters hands a callee: the flags, the registers, ebp and esp.
 void handOver(CPU& cpu, IntegerFlags& flags, const Registers& r, reg32 ebp, reg32 esp)
 {
     flags.store(cpu);
-    cpu.eax = r.eax;
-    cpu.ebx = r.ebx;
-    cpu.ecx = r.ecx;
-    cpu.edx = r.edx;
-    cpu.esi = r.esi;
-    cpu.edi = r.edi;
-    cpu.ebp = ebp;
+    g.eax = r.eax;
+    g.ebx = r.ebx;
+    g.ecx = r.ecx;
+    g.edx = r.edx;
+    g.esi = r.esi;
+    g.edi = r.edi;
+    g.ebp = ebp;
     cpu.esp = esp;
 }
-#endif
 
 // __CHP (0x4dfd56) on `value`, handed it on st(0): watcom::clib::chop, which leaves all else as it was.
 std::optional<double> chopValue(App* app, CPU& cpu, IntegerFlags& flags, Registers& r, reg32 ebp, reg32& esp,
                                 double value)
 {
-#ifdef NFS_GAME_CHECKS
-    cpu.fpu.push(x86::Float(value));
-    return stackResultOf(app, cpu, flags, r, ebp, esp, 0x4dfd56);
-#else
     handOver(cpu, flags, r, ebp, esp);
     const double whole = guest::direct<0x4dfd56, watcom::clib::chop>(app, cpu, value);
     flags.load(cpu);
     return whole;
-#endif
 }
 
-#ifndef NFS_GAME_CHECKS
 /* A core of the `words` words the code pushes (stdcall) whose result the code takes off st(0), run as
  * C++ by `core` (handed the first two words): the registers (eax too), the flags and ebp as the call
  * by address leaves them, esp past the words. */
@@ -494,19 +573,14 @@ std::optional<double> pushedValueOf(App* app, CPU& cpu, IntegerFlags& flags, con
     flags.load(cpu);
     return value;
 }
-#endif
 
 // sub_4d1390, the scale pushed: port_text's textScaleSet, which leaves all else (eax too) as it was;
 // the scale before it, which the code drops (fstp st(0)).
 bool textScalePushed(App* app, CPU& cpu, IntegerFlags& flags, Registers& r, reg32 ebp, reg32& esp)
 {
-#ifdef NFS_GAME_CHECKS
-    return stackResultOf(app, cpu, flags, r, ebp, esp, 0x4d1390).has_value();
-#else
     return pushedValueOf(app, cpu, flags, r, ebp, esp, 1, [&](reg32 scale, reg32) {
         return guest::direct<0x4d1390, port::text::textScaleSet>(app, cpu, scale);
     }).has_value();
-#endif
 }
 
 }
@@ -518,17 +592,135 @@ namespace render
 namespace
 {
 
+/* ---- Calls out to a typed core (plan step 7) ----
+ * The callee's typed core through guest::direct (native_guest.h).  What the callee reads reaches it as parameters -- the register arguments and the stack
+ * words it takes (in the order its core takes them) -- so nothing is set in a register or pushed for it;
+ * only ebp and esp are put where the original has them at the call (`frame`, `esp`: esp before the words
+ * would be pushed), the other registers as the caller has them, which the callee keeps.  A word the callee
+ * takes as a float is handed as its bits.  False when the game stopped; the callee's eax, where the core
+ * returns one, is left in g.eax for the code that reads it after the call. */
+template <typename F>
+struct CoreSignature;
+template <typename R, typename... P>
+struct CoreSignature<R (*)(App*, CPU&, P...)>
+{
+    static constexpr std::size_t count = sizeof...(P);
+    template <std::size_t I>
+    using type = std::tuple_element_t<I, std::tuple<P...>>;
+};
+template <typename R, typename... P>
+struct CoreSignature<R (*)(App*, const CPU&, P...)> : CoreSignature<R (*)(App*, CPU&, P...)>
+{
+};
+// A core that takes no context (its arguments only).
+template <typename R, typename... P>
+struct CoreSignature<R (*)(App*, P...)>
+{
+    static constexpr std::size_t count = sizeof...(P);
+    template <std::size_t I>
+    using type = std::tuple_element_t<I, std::tuple<P...>>;
+};
+
+template <typename T>
+inline T coreArgument(reg32 word)
+{
+    if constexpr (std::is_same_v<T, float>)
+        return asFloat(word);
+    else
+        return static_cast<T>(word);
+}
+
+inline bool coreStored(CPU&, bool done) { return done; }
+inline bool coreStored(CPU& cpu, reg32 eax)
+{
+    g.eax = eax;
+    return true;
+}
+inline bool coreStored(CPU& cpu, std::int32_t eax) { return coreStored(cpu, reg32(eax)); }
+template <typename T>
+inline bool coreStored(CPU& cpu, const std::optional<T>& result)
+{
+    if (!result)
+        return false;
+    if constexpr (std::is_integral_v<T> && !std::is_same_v<T, bool>)
+        g.eax = reg32(*result);
+    return true;
+}
+
+template <reg32 Address, auto Core, bool StoreEax, std::size_t... I>
+bool coreCallWords(App* app, CPU& cpu, reg32 frame, reg32 esp, const reg32* words, std::index_sequence<I...>)
+{
+    using Signature = CoreSignature<std::decay_t<decltype(Core)>>;
+    const Kept kept(cpu);
+    g.ebp = frame;
+    cpu.esp = esp;
+    try
+    {
+    using Result = decltype(guest::direct<Address, Core>(app, cpu, coreArgument<typename Signature::template type<I>>(words[I])...));
+    if constexpr (std::is_void_v<Result>)
+    {
+        guest::direct<Address, Core>(app, cpu, coreArgument<typename Signature::template type<I>>(words[I])...);
+        return !cpu.terminate;
+    }
+    else
+    {
+        const Result result = guest::direct<Address, Core>(app, cpu, coreArgument<typename Signature::template type<I>>(words[I])...);
+        if (cpu.terminate)
+            return false;
+        if constexpr (StoreEax)
+            return coreStored(cpu, result);
+        else
+            return true;
+    }
+    }
+    catch (const fe::Terminated&)  // a menu core's stop, as its thunk (fe::runThunk) takes it
+    {
+        return false;
+    }
+}
+
+template <reg32 Address, auto Core, typename... V>
+bool coreAt(App* app, CPU& cpu, reg32 frame, reg32 esp, V... values)
+{
+    using Signature = CoreSignature<std::decay_t<decltype(Core)>>;
+    static_assert(sizeof...(V) == Signature::count, "the call hands the callee what its ByAddress lists");
+    const reg32 words[] = {reg32(values)..., 0};
+    return coreCallWords<Address, Core, true>(app, cpu, frame, esp, words, std::make_index_sequence<sizeof...(V)>{});
+}
+
+/* coreAt for a core whose result is not what the code reads in eax (sub_41aaf0's and sub_420230's is edx, which
+ * nothing reads after them): eax is left as it was. */
+template <reg32 Address, auto Core, typename... V>
+bool coreAtKeepingEax(App* app, CPU& cpu, reg32 frame, reg32 esp, V... values)
+{
+    using Signature = CoreSignature<std::decay_t<decltype(Core)>>;
+    static_assert(sizeof...(V) == Signature::count, "the call hands the callee what its ByAddress lists");
+    const reg32 words[] = {reg32(values)..., 0};
+    return coreCallWords<Address, Core, false>(app, cpu, frame, esp, words, std::make_index_sequence<sizeof...(V)>{});
+}
+
 /* A call by address as the original makes it: ebp at its frame, esp as deep as its is there,
  * `registers` into eax, edx, ebx and ecx in turn (the callee's register arguments); after it
  * every register but eax as it was before.  False when the game stopped. */
 bool callAt(App* app, CPU& cpu, reg32 frame, reg32 esp, reg32 target, std::initializer_list<reg32> registers = {})
 {
-    const guest::KeptRegisters kept(cpu);
-    reg32* const into[] = {&cpu.eax, &cpu.edx, &cpu.ebx, &cpu.ecx};
+    const Kept kept(cpu);
+    reg32* const into[] = {&g.eax, &g.edx, &g.ebx, &g.ecx};
     unsigned i = 0;
     for (const reg32 value : registers)
         *into[i++] = value;
     return callIn(app, cpu, frame, esp, target);
+}
+
+/* sprintf (0x4df690) at the original's depth: `buffer` and `format` and the words after them, `esp` the stack
+ * pointer before those words were pushed (they are handed on as parameters). */
+bool sprintfAt(App* app, CPU& cpu, reg32 frame, reg32 esp, reg32 buffer, reg32 format, guest::Words words)
+{
+    const Kept kept(cpu);
+    g.ebp = frame;
+    cpu.esp = esp;
+    guest::direct<0x4df690, watcom::clib::sprintf>(app, cpu, buffer, format, words);
+    return !cpu.terminate;
 }
 
 /* callAt for a callee that also takes a pointer in esi (sub_479100, sub_49c470, sub_4c7380,
@@ -536,20 +728,46 @@ bool callAt(App* app, CPU& cpu, reg32 frame, reg32 esp, reg32 target, std::initi
 bool callAtEsi(App* app, CPU& cpu, reg32 frame, reg32 esp, reg32 target, reg32 esi,
                std::initializer_list<reg32> registers = {})
 {
-    const guest::KeptRegisters kept(cpu);
-    cpu.esi = esi;
+    const Kept kept(cpu);
+    g.esi = esi;
     return callAt(app, cpu, frame, esp, target, registers);
 }
 
 /* One of THRASH's exports through the game's pointer to it (guest::driver, thrash_calls.h: the
- * port's driver as C++ where the pointer leads to it, through the pointer in the checks), its words
+ * port's driver as C++ where the pointer leads to it), its words
  * pushed from `esp` as the original pushes them: stdcall, every register but eax kept. */
 template <reg32 Slot, auto Fn, typename... W>
 std::optional<reg32> driverAt(App* app, CPU& cpu, reg32 esp, W... words)
 {
-    const guest::KeptRegisters kept(cpu);
+    const Kept kept(cpu);
     cpu.esp = esp;
-    return guest::driver<Slot, Fn>(app, cpu, words...);
+    const std::optional<reg32> result = guest::driver<Slot, Fn>(app, cpu, words...);
+    if (!result)
+        return result;
+    // The export's eax: its result; a void one's leaves eax as it was.
+    if constexpr (std::is_void_v<decltype(Fn(app, cpu, reg32(words)...))>)
+        return g.eax;
+    else
+        g.eax = *result;
+    return result;
+}
+
+/* sub_4e0090 (simd's vectorDistance) from `from` to `to` at the original's depth, as a call through its pointer
+ * (guest::pointerCall): the distance it leaves on the x87's top comes back as the float result; its eax (the difference's
+ * address) is left in g.eax, every other register and esp as they were.  nullopt when the game stopped. */
+std::optional<double> distanceAt(App* app, CPU& cpu, reg32 frame, reg32 esp, reg32 from, reg32 to)
+{
+    const Kept kept(cpu);
+    cpu.esp = esp;
+    x86::Args registers = g;
+    registers.eax = from;
+    registers.edx = to;
+    registers.ebp = frame;
+    const std::optional<reg32> eax = guest::pointerCall(app, cpu, 0x4e0090, registers);
+    if (!eax)
+        return std::nullopt;
+    g.eax = *eax;
+    return registers.floatResult;
 }
 
 /* A vertex's clip code from the bits of its 1/z, y and x, as screenCode works it out. */
@@ -572,42 +790,24 @@ reg8 clipCode(const Memory& m, reg32 v)
     return code;
 }
 
-/* __CHP (0x4dfd56) on `value` at the original's depth, every register kept: watcom::clib::chop in
- * the game; in the checks (NFS_GAME_CHECKS) the call by address, `value` pushed alone on the x87.
+/* __CHP (0x4dfd56) on `value` at the original's depth, every register kept: watcom::clib::chop.
  * nullopt when the game stopped. */
 std::optional<double> chopAt(App* app, CPU& cpu, reg32 frame, reg32 esp, double value)
 {
-#ifdef NFS_GAME_CHECKS
-    cpu.fpu.push(x86::Float(value));
-    if (!callAt(app, cpu, frame, esp, 0x4dfd56))
-        return std::nullopt;
-    return double(cpu.fpu.take());
-#else
-    const guest::KeptRegisters kept(cpu);
-    cpu.ebp = frame;
+    const Kept kept(cpu);
+    g.ebp = frame;
     cpu.esp = esp;
     return guest::direct<0x4dfd56, watcom::clib::chop>(app, cpu, value);
-#endif
 }
 
 /* The functions whose results come back on st(0), at the original's depth (`esp` past the words
- * the code pushes for them), every register kept: in the game the core as C++, in the checks
- * (NFS_GAME_CHECKS) the call by address with its register arguments, st(0) taken off.  nullopt
+ * the code pushes for them), every register kept: the core as C++.  nullopt
  * when the game stopped. */
-#ifdef NFS_GAME_CHECKS
-std::optional<double> resultAt(App* app, CPU& cpu, reg32 frame, reg32 esp, reg32 target,
-                               std::initializer_list<reg32> registers)
-{
-    if (!callAt(app, cpu, frame, esp, target, registers))
-        return std::nullopt;
-    return double(cpu.fpu.take());
-}
-#else
 template <typename Core>
 std::optional<double> resultIn(App* app, CPU& cpu, reg32 frame, reg32 esp, Core core)
 {
-    const guest::KeptRegisters kept(cpu);
-    cpu.ebp = frame;
+    const Kept kept(cpu);
+    g.ebp = frame;
     cpu.esp = esp;
     std::optional<double> value;
     try
@@ -621,7 +821,6 @@ std::optional<double> resultIn(App* app, CPU& cpu, reg32 frame, reg32 esp, Core 
         return std::nullopt;
     return value;
 }
-#endif
 
 // The pushed word `i` (0 the last pushed) of a call at `esp`.
 reg32 pushedAt(App* app, reg32 esp, reg32 i) { return at(app, esp + 4 * i); }
@@ -629,86 +828,58 @@ reg32 pushedAt(App* app, reg32 esp, reg32 i) { return at(app, esp + 4 * i); }
 // sub_4e01f0 on the vectors `a` and `b`: vertices::dotProduct.
 std::optional<double> dotAt(App* app, CPU& cpu, reg32 frame, reg32 esp, reg32 a, reg32 b)
 {
-#ifdef NFS_GAME_CHECKS
-    return resultAt(app, cpu, frame, esp, 0x4e01f0, { a, b });
-#else
     return resultIn(app, cpu, frame, esp, [&]() -> std::optional<double> {
         return guest::direct<0x4e01f0, vertices::dotProduct>(app, cpu, a, b);
     });
-#endif
 }
 
 // sub_4972f0 on the vector `v`: vertices::normaliseVector, its length.
 std::optional<double> normalisedAt(App* app, CPU& cpu, reg32 frame, reg32 esp, reg32 v)
 {
-#ifdef NFS_GAME_CHECKS
-    return resultAt(app, cpu, frame, esp, 0x4972f0, { v });
-#else
     return resultIn(app, cpu, frame, esp, [&]() -> std::optional<double> {
         return double(guest::direct<0x4972f0, vertices::normaliseVector>(app, cpu, v));
     });
-#endif
 }
 
 // sub_4968a0 on the matrix `matrix` and the six floats pushed (ret 0x18): vertices::groundHeightAt.
 std::optional<double> groundHeightAt(App* app, CPU& cpu, reg32 frame, reg32 esp, reg32 matrix)
 {
-#ifdef NFS_GAME_CHECKS
-    return resultAt(app, cpu, frame, esp, 0x4968a0, { matrix });
-#else
     return resultIn(app, cpu, frame, esp, [&]() -> std::optional<double> {
         const auto pushed = [&](reg32 i) { return asFloat(pushedAt(app, esp, i)); };
         return double(guest::direct<0x4968a0, vertices::groundHeightAt>(app, cpu, matrix, pushed(0), pushed(1),
                                                                          pushed(2), pushed(3), pushed(4), pushed(5)));
     });
-#endif
 }
 
 // sub_4ea930 and sub_4ea950 on the angle pushed: simd's sineValue and cosineValue.
 std::optional<double> sineAt(App* app, CPU& cpu, reg32 frame, reg32 esp)
 {
-#ifdef NFS_GAME_CHECKS
-    return resultAt(app, cpu, frame, esp, 0x4ea930, {});
-#else
     return resultIn(app, cpu, frame, esp, [&]() -> std::optional<double> {
         return guest::direct<0x4ea930, frontend::simd::sineValue>(app, cpu, pushedAt(app, esp, 0));
     });
-#endif
 }
 std::optional<double> cosineAt(App* app, CPU& cpu, reg32 frame, reg32 esp)
 {
-#ifdef NFS_GAME_CHECKS
-    return resultAt(app, cpu, frame, esp, 0x4ea950, {});
-#else
     return resultIn(app, cpu, frame, esp, [&]() -> std::optional<double> {
         return guest::direct<0x4ea950, frontend::simd::cosineValue>(app, cpu, pushedAt(app, esp, 0));
     });
-#endif
 }
 
 // sub_4ea920 on the float pushed: simc's squareRootOf.
 std::optional<double> squareRootAt(App* app, CPU& cpu, reg32 frame, reg32 esp)
 {
-#ifdef NFS_GAME_CHECKS
-    return resultAt(app, cpu, frame, esp, 0x4ea920, {});
-#else
     return resultIn(app, cpu, frame, esp, [&]() -> std::optional<double> {
         return guest::direct<0x4ea920, frontend::simc::squareRootOf>(app, cpu, pushedAt(app, esp, 0));
     });
-#endif
 }
 
 // sub_4ea9c0 on the two floats pushed (the first last): simd's angleOfFloatsValue.
 std::optional<double> angleAt(App* app, CPU& cpu, reg32 frame, reg32 esp)
 {
-#ifdef NFS_GAME_CHECKS
-    return resultAt(app, cpu, frame, esp, 0x4ea9c0, {});
-#else
     return resultIn(app, cpu, frame, esp, [&]() -> std::optional<double> {
         return guest::direct<0x4ea9c0, frontend::simd::angleOfFloatsValue>(app, cpu, pushedAt(app, esp, 0),
                                                                             pushedAt(app, esp, 1));
     });
-#endif
 }
 
 /* sub_49d5c0 (`all`) or sub_49de20, `registers` its arguments and its words pushed: rendc's as the
@@ -716,19 +887,18 @@ std::optional<double> angleAt(App* app, CPU& cpu, reg32 frame, reg32 esp)
 std::optional<double> modelDepthAt(App* app, CPU& cpu, reg32 frame, reg32 esp, bool all,
                                    std::initializer_list<reg32> registers)
 {
-#ifdef NFS_GAME_CHECKS
-    return resultAt(app, cpu, frame, esp, all ? 0x49d5c0 : 0x49de20, registers);
-#else
-    const guest::KeptRegisters kept(cpu);
-    reg32* const into[] = {&cpu.eax, &cpu.edx, &cpu.ebx, &cpu.ecx};
+    const Kept kept(cpu);
+    reg32* const into[] = {&g.eax, &g.edx, &g.ebx, &g.ecx};
     unsigned i = 0;
     for (const reg32 value : registers)
         *into[i++] = value;
-    cpu.ebp = frame;
+    g.ebp = frame;
     cpu.esp = esp - 4;  // the return address's slot, as call() leaves it
-    return all ? frontend::rendc::modelTransformAllCalled(app, cpu)
-               : frontend::rendc::modelTransformPartCalled(app, cpu);
-#endif
+    x86::Args handed = g;
+    const std::optional<double> depth = all ? frontend::rendc::modelTransformAllCalled(app, cpu, handed)
+                                            : frontend::rendc::modelTransformPartCalled(app, cpu, handed);
+    g.eax = handed.eax;
+    return depth;
 }
 
 /* `words` pushed under `esp`, the first pushed first: esp after them. */
@@ -1016,13 +1186,15 @@ reg32 clipByZOf(App* app, CPU& cpu, reg32 corners, reg8 clipCodes, reg32 codes)
 }
 
 // sub_4bf790 by address: the corners in eax, their codes or-ed in bl, the codes in edx.
-void clipByZ(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 clipByZ(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    const reg32 drawn = clipByZOf(app, cpu, cpu.eax, reg8(cpu.ebx), cpu.edx);
+    const RegisterImage image(args);
+    const reg32 drawn = clipByZOf(app, cpu, g.eax, reg8(g.ebx), g.edx);
     if (cpu.terminate)
-        return;
-    cpu.eax = drawn;
+        return g.eax;
+    g.eax = drawn;
     cpu.esp += 4;
+    return g.eax;
 }
 
 /* sub_4c20e0: a quad (eax, edx, ebx, ecx: a, b, c, d) whose corners carry z,
@@ -1034,13 +1206,14 @@ void clipByZ(win32::WinApplication* app, x86::CPU& cpu)
  * drawn gets its depth from 1/z (65535 for a z of 0) as sub_4c1aa0's do,
  * +0x14 cleared and 1/w held to 0..1; nothing is drawn of a quad or triangle
  * with an indefinite in a corner's x, y, depth, 1/w, s or t. */
-void quadByZ(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 quadByZ(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
+    const RegisterImage image(args);
     const Memory m{app};
     // push esi, edi, ebp; mov ebp, esp; sub esp, 0xdc; sub ebp, 0x82
     const x86::reg32 frameEbp = cpu.esp - 0x8e;
     const x86::reg32 frameEsp = cpu.esp - 0xe8;
-    const x86::reg32 a = cpu.eax, b = cpu.edx, c = cpu.ebx, d = cpu.ecx;
+    const x86::reg32 a = g.eax, b = g.edx, c = g.ebx, d = g.ecx;
 
     // A corner as THRASH takes it: its depth, +0x14 cleared, 1/w held to 0..1.
     auto corner = [&](x86::reg32 v) {
@@ -1063,7 +1236,7 @@ void quadByZ(win32::WinApplication* app, x86::CPU& cpu)
                     return true;
         return false;
     };
-    auto leave = [&]() { cpu.esp += 4; };
+    auto leave = [&]() -> x86::reg32 { cpu.esp += 4; return g.eax; };
 
     m.word(frameEbp + 0x7e, d);
     const x86::reg8 ca = m.byte(a + 0x14), cb = m.byte(b + 0x14), cc = m.byte(c + 0x14), cd = m.byte(d + 0x14);
@@ -1083,7 +1256,7 @@ void quadByZ(win32::WinApplication* app, x86::CPU& cpu)
         if (anyIndefinite({ a, b, c, d }))
             return leave();
         if (!driverAt<thrash::kThrashDrawQuad, &port::driver::drawQuad>(app, cpu, frameEsp, a, b, c, d).has_value())
-            return;
+            return g.eax;
         return leave();
     }
 
@@ -1095,8 +1268,8 @@ void quadByZ(win32::WinApplication* app, x86::CPU& cpu)
             m.word(frameEbp - 0x5a, a);
             m.word(frameEbp - 0x56, b);
             m.word(frameEbp - 0x52, c);
-            if (!callAt(app, cpu, frameEbp, frameEsp, 0x4bf790, { frameEbp - 0x5a, frameEbp - 0x46, threeAny }))
-                return;
+            if (!coreAt<0x4bf790, render::clippedByZ>(app, cpu, frameEbp, frameEsp, frameEbp - 0x5a, frameEbp - 0x46, threeAny))
+                return g.eax;
         }
         else
         {
@@ -1104,7 +1277,7 @@ void quadByZ(win32::WinApplication* app, x86::CPU& cpu)
                 corner(v);
             if (!anyIndefinite({ a, b, c })
                 && !driverAt<thrash::kThrashDrawTri, &port::driver::drawTri>(app, cpu, frameEsp, a, b, c).has_value())
-                return;
+                return g.eax;
         }
     }
 
@@ -1121,8 +1294,8 @@ void quadByZ(win32::WinApplication* app, x86::CPU& cpu)
         m.byte(frameEbp - 0x45, m.byte(frameEbp - 0x44));
         m.byte(frameEbp - 0x44, m.byte(frameEbp - 0x43));
         m.word(frameEbp - 0x56, c);
-        if (!callAt(app, cpu, frameEbp, frameEsp, 0x4bf790, { frameEbp - 0x5a, frameEbp - 0x46, any2 }))
-            return;
+        if (!coreAt<0x4bf790, render::clippedByZ>(app, cpu, frameEbp, frameEsp, frameEbp - 0x5a, frameEbp - 0x46, any2))
+            return g.eax;
         return leave();
     }
     for (const x86::reg32 v : { a, c, d })
@@ -1130,8 +1303,9 @@ void quadByZ(win32::WinApplication* app, x86::CPU& cpu)
     if (anyIndefinite({ a, c, d }))
         return leave();
     if (!driverAt<thrash::kThrashDrawTri, &port::driver::drawTri>(app, cpu, frameEsp, a, c, d).has_value())
-        return;
+        return g.eax;
     leave();
+    return g.eax;
 }
 
 /* sub_434120: the triangles of a polygon list to THRASH, from the record in
@@ -1150,15 +1324,16 @@ void quadByZ(win32::WinApplication* app, x86::CPU& cpu)
  * and ebx, the near bits in edx, and ecx as the code leaves it: the low byte
  * the first corner's near bit, the next the third corner's code, the rest
  * what the last full write of ecx left. */
-void triangleRecords(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 triangleRecords(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
+    const RegisterImage image(args);
     const Memory m{app};
     // push ebx, ecx, edx, esi, edi, ebp; mov ebp, esp; sub esp, 4
     const x86::reg32 frameEbp = cpu.esp - 24;
     const x86::reg32 frameEsp = cpu.esp - 28;
-    x86::reg32 record = cpu.eax;
+    x86::reg32 record = g.eax;
     // ecx as the code leaves it: sub_4c3ad0 is handed it.
-    x86::reg32 ecx = cpu.ecx;
+    x86::reg32 ecx = g.ecx;
 
     auto setState = [&](x86::reg32 state, x86::reg32 value) {
         return driverAt<thrash::kThrashSetState, &port::driver::setState>(app, cpu, frameEsp, state, value).has_value();
@@ -1221,8 +1396,8 @@ void triangleRecords(win32::WinApplication* app, x86::CPU& cpu)
             const x86::reg8 nearBits = (c0 | c1 | c2) & 0x10;
             if (nearBits)
             {
-                if (!callAt(app, cpu, frameEbp, frameEsp, 0x4c3ad0, { record, nearBits, record, ecx }))
-                    return;
+                if (!coreAt<0x4c3ad0, render::nearTriangleDrawn>(app, cpu, frameEbp, frameEsp, record, nearBits, record, ecx))
+                    return g.eax;
             }
             else
             {
@@ -1231,14 +1406,14 @@ void triangleRecords(win32::WinApplication* app, x86::CPU& cpu)
                     ecx = 0;
                     m.word(0x554e58, 0);
                     if (!setState(0x68, 0))
-                        return;
+                        return g.eax;
                 }
                 if (!setTexture(0x18, 0x20) || !draw())
-                    return;
+                    return g.eax;
                 if (m.byte(record + 7) & 0x40)
                 {
                     if (!setBlending(1) || !setTexture(0x50, 0x54) || !draw())
-                        return;
+                        return g.eax;
                 }
             }
         }
@@ -1247,8 +1422,9 @@ void triangleRecords(win32::WinApplication* app, x86::CPU& cpu)
         if (!record || x86::reg16(m.word(record + 4)) != 3)
             break;
     }
-    cpu.eax = record;
+    g.eax = record;
     cpu.esp += 4;
+    return g.eax;
 }
 
 /* sub_4c3ad0: a triangle of sub_434120's polygon list with a corner past the
@@ -1267,15 +1443,16 @@ void triangleRecords(win32::WinApplication* app, x86::CPU& cpu)
  * the blending on for a record drawn twice (sub_431900 setting the state),
  * else again the same.  Nothing is drawn when fewer than three corners are
  * left, or when the first corner has an indefinite x, y or 1/w. */
-void nearTriangle(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 nearTriangle(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
+    const RegisterImage image(args);
     const Memory m{app};
     // push ebx, ecx, esi, edi, ebp; mov ebp, esp; sub esp, 0x3c
     const x86::reg32 frameEbp = cpu.esp - 20;
     const x86::reg32 frameEsp = cpu.esp - 0x50;
-    const x86::reg32 record = cpu.eax;
-    const x86::reg8 nearBits = x86::reg8(cpu.edx);
-    auto leave = [&]() { cpu.esp += 4; };
+    const x86::reg32 record = g.eax;
+    const x86::reg8 nearBits = x86::reg8(g.edx);
+    auto leave = [&]() -> x86::reg32 { cpu.esp += 4; return g.eax; };
 
     const x86::reg32 twoPass = m.word(record + 0x50) && (m.byte(record + 7) & 0x40) ? 1 : 0;
     // The corners' codes on the stack, the corners to the work records.
@@ -1407,18 +1584,18 @@ void nearTriangle(win32::WinApplication* app, x86::CPU& cpu)
 
     // The state through sub_431900, then the fan to THRASH_drawtrifan.
     auto setState = [&](x86::reg32 state, x86::reg32 value) {
-        return callAt(app, cpu, frameEbp, frameEsp, 0x431900, { state, value });
+        return coreAt<0x431900, graphics::sendState>(app, cpu, frameEbp, frameEsp, state, value);
     };
     auto drawFan = [&]() {
         return driverAt<thrash::kThrashDrawTriFan, &port::driver::drawTriFan>(app, cpu,
             frameEsp, drawn - 2, 0x7cdbb0).has_value();
     };
     if (!setState(0x68, 0) || !setState(1, m.word(record + 0x18)) || !drawFan())
-        return;
+        return g.eax;
     if (twoPass)
     {
         if (!setState(0x68, 1) || !setState(1, m.word(record + 0x50)))
-            return;
+            return g.eax;
         // The second texture's s, t where THRASH reads them.
         for (x86::reg32 i = 0; x86::sreg32(i) < x86::sreg32(drawn); ++i)
         {
@@ -1429,8 +1606,9 @@ void nearTriangle(win32::WinApplication* app, x86::CPU& cpu)
         }
     }
     if (!drawFan())
-        return;
+        return g.eax;
     leave();
+    return g.eax;
 }
 
 /* sub_4332b0: the quads of a polygon list to THRASH, from the record in eax
@@ -1446,13 +1624,14 @@ void nearTriangle(win32::WinApplication* app, x86::CPU& cpu)
  * (a corner past the near plane), or to THRASH_drawquad -- state 0x2c2 on
  * around it when a corner is off the left.  Those take the corners in eax,
  * edx, ebx, ecx.  Returns the record it stopped at (0 at the end) in eax. */
-void quadRecords(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 quadRecords(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
+    const RegisterImage image(args);
     const Memory m{app};
     // push ebx, ecx, edx, esi, edi, ebp; mov ebp, esp; sub esp, 0xc
     const x86::reg32 frameEbp = cpu.esp - 24;
     const x86::reg32 frameEsp = cpu.esp - 36;
-    x86::reg32 record = cpu.eax;
+    x86::reg32 record = g.eax;
 
     auto setState = [&](x86::reg32 state, x86::reg32 value) {
         return driverAt<thrash::kThrashSetState, &port::driver::setState>(app, cpu, frameEsp, state, value).has_value();
@@ -1471,7 +1650,7 @@ void quadRecords(win32::WinApplication* app, x86::CPU& cpu)
         {
             m.word(0x554e58, blending);
             if (!setState(0x68, blending))
-                return;
+                return g.eax;
         }
 
         const x86::reg32 texture = m.word(record + 0x18);
@@ -1495,50 +1674,51 @@ void quadRecords(win32::WinApplication* app, x86::CPU& cpu)
             {
                 m.word(0x554e54, handle);
                 if (!setState(1, handle))
-                    return;
+                    return g.eax;
             }
         }
         else if (m.word(0x554e54) != 0)
         {
             m.word(0x554e54, 0);
             if (!setState(1, 0))
-                return;
+                return g.eax;
         }
 
         if (m.word(record + 0x18) && (m.byte(m.word(record + 0x18) + 0x28) & 8)
-            && !callAt(app, cpu, frameEbp, frameEsp, 0x432390, { m.word(a + 0x10) }))
-            return;
+            && !coreAt<0x432390, graphics::softwareBlendColour>(app, cpu, frameEbp, frameEsp, m.word(a + 0x10)))
+            return g.eax;
 
         if (recordFlags & 8)
         {
-            if (!callAt(app, cpu, frameEbp, frameEsp, 0x433060, { a, b, c, d }))
-                return;
+            if (!coreAt<0x433060, render::quadWholeDrawn>(app, cpu, frameEbp, frameEsp, a, b, c, d))
+                return g.eax;
         }
         else if (!m.word(record + 0x18) || !(m.byte(m.word(record + 0x18) + 0x28) & 0x10))
         {
-            if (!callAt(app, cpu, frameEbp, frameEsp, 0x4c1900, { a, b, c, d }))
-                return;
+            if (!coreAt<0x4c1900, frontend::rende::drawQuadClipped>(app, cpu, frameEbp, frameEsp, a, b, c, d))
+                return g.eax;
         }
         else if ((m.word(a + 0x14) | m.word(b + 0x14) | m.word(c + 0x14) | m.word(d + 0x14)) & 0x10)
         {
-            if (!callAt(app, cpu, frameEbp, frameEsp, 0x4c19e0, { a, b, c, d }))
-                return;
+            if (!coreAt<0x4c19e0, frontend::rende::drawQuadSplit>(app, cpu, frameEbp, frameEsp, a, b, c, d))
+                return g.eax;
         }
         else if (!((m.word(a + 0x14) | m.word(b + 0x14) | m.word(c + 0x14) | m.word(d + 0x14)) & 1))
         {
             if (!drawQuad(a, b, c, d))
-                return;
+                return g.eax;
         }
         else if (!setState(0x2c2, 1) || !drawQuad(a, b, c, d) || !setState(0x2c2, 0))
-            return;
+            return g.eax;
 
         // The next record, while it is a quad.
         record = m.word(record);
         if (!record || x86::reg16(m.word(record + 4)))
             break;
     }
-    cpu.eax = record;
+    g.eax = record;
     cpu.esp += 4;
+    return g.eax;
 }
 
 /* sub_432720: a quad subdivided until it is small enough on the screen.
@@ -1554,42 +1734,43 @@ void quadRecords(win32::WinApplication* app, x86::CPU& cpu)
  * stack with their s, t and colour the corners' averages and a clip code of
  * their own -- and the four quads around the middle go to this function
  * again, each unless its corners share a clip bit.  stdcall: ret 0x14. */
-void subdivideQuad(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 subdivideQuad(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
+    const RegisterImage image(args);
     const Memory m{app};
     const x86::reg32 entry = cpu.esp;
     // push esi, edi, ebp; mov ebp, esp; sub esp, 0x100; sub ebp, 0x6e
     const x86::reg32 ebp = entry - 0x7a;
     const x86::reg32 frameEsp = entry - 0x10c;
-    const x86::reg32 depth = cpu.eax;
-    const x86::reg32 sa = cpu.edx, sb = cpu.ebx, sc = cpu.ecx, sd = m.word(entry + 4);
+    const x86::reg32 depth = g.eax;
+    const x86::reg32 sa = g.edx, sb = g.ebx, sc = g.ecx, sd = m.word(entry + 4);
     const x86::reg32 a = m.word(entry + 8), b = m.word(entry + 0xc), c = m.word(entry + 0x10), d = m.word(entry + 0x14);
     // eax as the last call leaves it, or as given
-    auto leave = [&]() { cpu.esp += 4 + 0x14; };
+    auto leave = [&]() -> x86::reg32 { cpu.esp += 4 + 0x14; return g.eax; };
     auto setState = [&](x86::reg32 state, x86::reg32 value) {
         return driverAt<thrash::kThrashSetState, &port::driver::setState>(app, cpu, frameEsp, state, value).has_value();
     };
     auto drawQuad = [&]() { return driverAt<thrash::kThrashDrawQuad, &port::driver::drawQuad>(app, cpu,
         frameEsp, a, b, c, d).has_value(); };
 
-    if (!callAt(app, cpu, ebp, frameEsp, 0x432690, { a, b, c, d }))
-        return;
-    if (x86::sreg32(cpu.eax) <= x86::sreg32(depth))
+    if (!coreAt<0x432690, collide::subdivisions>(app, cpu, ebp, frameEsp, a, b, c, d))
+        return g.eax;
+    if (x86::sreg32(g.eax) <= x86::sreg32(depth))
     {
         // Small enough: drawn.
         const x86::reg32 codes = m.word(a + 0x14) | m.word(b + 0x14) | m.word(c + 0x14) | m.word(d + 0x14);
         if (codes & 0x10)
         {
-            if (!callAt(app, cpu, ebp, frameEsp, 0x4c19e0, { a, b, c, d }))
-                return;
+            if (!coreAt<0x4c19e0, frontend::rende::drawQuadSplit>(app, cpu, ebp, frameEsp, a, b, c, d))
+                return g.eax;
         }
         else if (!(codes & 1))
         {
             if (!drawQuad())
-                return;
+                return g.eax;
         }
         else if (!setState(0x2c2, 1) || !drawQuad() || !setState(0x2c2, 0))
-            return;
+            return g.eax;
         return leave();
     }
 
@@ -1631,20 +1812,21 @@ void subdivideQuad(win32::WinApplication* app, x86::CPU& cpu)
                     x86::reg32 w, x86::reg32 z) {
         if (code(u) & code(v) & code(w) & code(z))
             return true;
-        return callAt(app, cpu, ebp, pushWords(app, frameEsp, { z, w, v, u, t }), 0x432720, { depth + 1, p, q, r });
+        return coreAt<0x432720, render::quadPieceDrawn>(app, cpu, ebp, frameEsp, depth + 1, p, q, r, t, u, v, w, z);
     };
     if (!quad(sa, s1, s5, s2, a, v1, v5, v2) || !quad(s1, sb, s3, s5, v1, b, v3, v5)
         || !quad(s2, s5, s4, sd, v2, v5, v4, d))
-        return;
+        return g.eax;
     const x86::reg32 last = code(v4);
     if (code(v5) & code(v3) & code(c) & last)
     {
-        cpu.eax = last;
+        g.eax = last;
         return leave();
     }
-    if (!callAt(app, cpu, ebp, pushWords(app, frameEsp, { v4, c, v3, v5, s4 }), 0x432720, { depth + 1, s5, s3, sc }))
-        return;
+    if (!coreAt<0x432720, render::quadPieceDrawn>(app, cpu, ebp, frameEsp, depth + 1, s5, s3, sc, s4, v5, v3, c, v4))
+        return g.eax;
     leave();
+    return g.eax;
 }
 
 /* sub_433060: a quad (eax, edx, ebx, ecx: a, b, c, d) drawn whole or
@@ -1655,14 +1837,15 @@ void subdivideQuad(win32::WinApplication* app, x86::CPU& cpu)
  * sub_432720 at depth 0; otherwise to sub_4c19e0 when a corner is past the
  * near plane, else to THRASH_drawquad (state 0x2c2 around it when a corner
  * is off the left). */
-void quadSubdivided(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 quadSubdivided(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
+    const RegisterImage image(args);
     const Memory m{app};
     // push esi, edi, ebp; mov ebp, esp; sub esp, 0x48
     const x86::reg32 ebp = cpu.esp - 12;
     const x86::reg32 frameEsp = cpu.esp - 0x54;
-    const x86::reg32 a = cpu.eax, b = cpu.edx, c = cpu.ebx, d = cpu.ecx;
-    auto leave = [&]() { cpu.esp += 4; };
+    const x86::reg32 a = g.eax, b = g.edx, c = g.ebx, d = g.ecx;
+    auto leave = [&]() -> x86::reg32 { cpu.esp += 4; return g.eax; };
     auto setState = [&](x86::reg32 state, x86::reg32 value) {
         return driverAt<thrash::kThrashSetState, &port::driver::setState>(app, cpu, frameEsp, state, value).has_value();
     };
@@ -1671,23 +1854,23 @@ void quadSubdivided(win32::WinApplication* app, x86::CPU& cpu)
 
     if (m.byte(a + 0x14) & m.byte(b + 0x14) & m.byte(c + 0x14) & m.byte(d + 0x14))
         return leave();
-    if (!callAt(app, cpu, ebp, frameEsp, 0x432690, { a, b, c, d }))
-        return;
-    if (!cpu.eax)
+    if (!coreAt<0x432690, collide::subdivisions>(app, cpu, ebp, frameEsp, a, b, c, d))
+        return g.eax;
+    if (!g.eax)
     {
         const x86::reg32 codes = m.word(a + 0x14) | m.word(b + 0x14) | m.word(c + 0x14) | m.word(d + 0x14);
         if (codes & 0x10)
         {
-            if (!callAt(app, cpu, ebp, frameEsp, 0x4c19e0, { a, b, c, d }))
-                return;
+            if (!coreAt<0x4c19e0, frontend::rende::drawQuadSplit>(app, cpu, ebp, frameEsp, a, b, c, d))
+                return g.eax;
         }
         else if (!(codes & 1))
         {
             if (!drawQuad())
-                return;
+                return g.eax;
         }
         else if (!setState(0x2c2, 1) || !drawQuad() || !setState(0x2c2, 0))
-            return;
+            return g.eax;
         return leave();
     }
 
@@ -1706,10 +1889,10 @@ void quadSubdivided(win32::WinApplication* app, x86::CPU& cpu)
     project(b, ebp - 0x3c);
     project(c, ebp - 0x30);
     project(d, ebp - 0x24);
-    if (!callAt(app, cpu, ebp, pushWords(app, frameEsp, { d, c, b, a, ebp - 0x24 }), 0x432720,
-                { 0, ebp - 0x48, ebp - 0x3c, ebp - 0x30 }))
-        return;
+    if (!coreAt<0x432720, render::quadPieceDrawn>(app, cpu, ebp, frameEsp, 0, ebp - 0x48, ebp - 0x3c, ebp - 0x30, ebp - 0x24, a, b, c, d))
+        return g.eax;
     leave();
+    return g.eax;
 }
 
 /* sub_433e30: the triangles of a polygon list that carry colours of their
@@ -1724,13 +1907,14 @@ void quadSubdivided(win32::WinApplication* app, x86::CPU& cpu)
  * no clip code goes to THRASH_drawtri -- in the first pass with each
  * corner's depth worked out from its 1/w as sub_4c11b0 does it -- the rest
  * to sub_4c11b0.  Returns the record it stopped at (0 at the end) in eax. */
-void colouredTriangles(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 colouredTriangles(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
+    const RegisterImage image(args);
     const Memory m{app};
     // push ebx, ecx, edx, esi, edi, ebp; mov ebp, esp; sub esp, 0xc
     const x86::reg32 ebp = cpu.esp - 24;
     const x86::reg32 frameEsp = cpu.esp - 36;
-    x86::reg32 record = cpu.eax;
+    x86::reg32 record = g.eax;
 
     auto setState = [&](x86::reg32 state, x86::reg32 value) {
         return driverAt<thrash::kThrashSetState, &port::driver::setState>(app, cpu, frameEsp, state, value).has_value();
@@ -1764,7 +1948,7 @@ void colouredTriangles(win32::WinApplication* app, x86::CPU& cpu)
     auto draw = [&](bool clipped) {
         const x86::reg32 a = m.word(record + 8), b = m.word(record + 0xc), c = m.word(record + 0x10);
         if (clipped)
-            return callAt(app, cpu, ebp, frameEsp, 0x4c11b0, { a, b, c });
+            return coreAt<0x4c11b0, vertices::triangleClipped>(app, cpu, ebp, frameEsp, a, b, c);
         return driverAt<thrash::kThrashDrawTri, &port::driver::drawTri>(app, cpu, frameEsp, a, b, c).has_value();
     };
 
@@ -1773,7 +1957,7 @@ void colouredTriangles(win32::WinApplication* app, x86::CPU& cpu)
         if (m.byte(record + 7) & 0x80)
         {
             if (!setBlending(0) || !prepare(0x40, 0x18, 0x20))
-                return;
+                return g.eax;
             bool clipped = false;
             for (const x86::reg32 corner : { 8u, 0xcu, 0x10u })
                 clipped = clipped || m.word(m.word(record + corner) + 0x14) != 0;
@@ -1793,26 +1977,27 @@ void colouredTriangles(win32::WinApplication* app, x86::CPU& cpu)
                 }
             }
             if (!draw(clipped))
-                return;
+                return g.eax;
         }
 
         if (m.byte(record + 7) & 0x40)
         {
             if (!setBlending(1) || !prepare(0x74, 0x50, 0x54))
-                return;
+                return g.eax;
             bool clipped = false;
             for (const x86::reg32 corner : { 8u, 0xcu, 0x10u })
                 clipped = clipped || m.byte(m.word(record + corner) + 0x14) != 0;
             if (!draw(clipped))
-                return;
+                return g.eax;
         }
 
         record = m.word(record);
         if (!record || x86::reg16(m.word(record + 4)) != 3)
             break;
     }
-    cpu.eax = record;
+    g.eax = record;
     cpu.esp += 4;
+    return g.eax;
 }
 
 /* sub_47a190: the sky of a view (eax).  Unless [0x55d2a4], sub_479ed0 first;
@@ -1820,24 +2005,26 @@ void colouredTriangles(win32::WinApplication* app, x86::CPU& cpu)
  * mirror's as the main view's where the port draws it in full) is 1 -- when
  * [0x55d154] gets [0x7d3684] -- the sky by sub_47b850 and, with [0x55d260],
  * sub_4946e0; with [0x55d2a4], sub_479ed0 after, each handed the view. */
-void sky(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 sky(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
+    const RegisterImage image(args);
     const Memory m{app};
     // push edx, ebp; mov ebp, esp
     const x86::reg32 ebp = cpu.esp - 8;
-    const x86::reg32 view = cpu.eax;
-    auto callTo = [&](x86::reg32 target) { return callAt(app, cpu, ebp, ebp, target, { view }); };
+    const x86::reg32 view = g.eax;
 
-    if (m.word(0x55d2a4) == 0 && !callTo(0x479ed0))
-        return;
+    if (m.word(0x55d2a4) == 0 && !coreAt<0x479ed0, frontend::renda::sun>(app, cpu, ebp, ebp, view))
+        return g.eax;
     // port (apply_mirror_detail): clouds and lightning in the mirror too
     if (gameSettings(app).skyDetail == 1 || mirrorAsMain(m.word(view)) == 1)
         m.word(0x55d154, m.word(0x7d3684));
-    else if (!callTo(0x47b850) || (m.word(0x55d260) != 0 && !callTo(0x4946e0)))
-        return;
-    if (m.word(0x55d2a4) != 0 && !callTo(0x479ed0))
-        return;
+    else if (!coreAt<0x47b850, render::skyDomeDrawn>(app, cpu, ebp, ebp, view)
+             || (m.word(0x55d260) != 0 && !coreAt<0x4946e0, render::lightningDrawn>(app, cpu, ebp, ebp, view)))
+        return g.eax;
+    if (m.word(0x55d2a4) != 0 && !coreAt<0x479ed0, frontend::renda::sun>(app, cpu, ebp, ebp, view))
+        return g.eax;
     cpu.esp += 4;
+    return g.eax;
 }
 
 /* sub_47a880: a view's sky, from the pass in eax; the 8 bytes sub_479100
@@ -1851,53 +2038,51 @@ void sky(win32::WinApplication* app, x86::CPU& cpu)
  * (sub_47a190), sub_4799d0, sub_479b90 with [0x55d160], sub_4790d0,
  * sub_470ad0.  Everything goes through those calls; esi is left past the 8
  * bytes it copies. */
-void viewSky(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 viewSky(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
+    const RegisterImage image(args);
     const Memory m{app};
     // push ebx, ecx, edx, edi, ebp; mov ebp, esp; sub esp, 0x10
     const x86::reg32 ebp = cpu.esp - 20;
     const x86::reg32 frameEsp = cpu.esp - 36;
-    const x86::reg32 to = cpu.esi;
-    const x86::reg32 view = cpu.eax;
-    auto callTo = [&](x86::reg32 target, std::initializer_list<x86::reg32> registers) {
-        return callAt(app, cpu, ebp, frameEsp, target, registers);
-    };
-    auto viewCall = [&](x86::reg32 target) { return callTo(target, { view }); };
+    const x86::reg32 to = g.esi;
+    const x86::reg32 view = g.eax;
 
     const double detail = M::mul(M::mul(M::sub(1.0, m.load(0x55d268)), m.load(0x55d1c8)), m.loadDouble(0x53b2f8));
     const x86::reg32 level = x86::reg32(fp::toInteger<x86::sreg32>(x86::Float(detail)));
     m.word(frameEsp - 4, level);
-    if (!callTo(0x478dc0, {}) || !callTo(0x479080, {}) || !callTo(0x478e10, { view, ebp - 8, ebp - 4 })
-        || !callTo(0x470b70, { m.word(ebp - 8), m.word(ebp - 4) }) || !viewCall(0x47a4c0))
-        return;
-    bool done = cpu.eax != 0;
+    if (!coreAt<0x478dc0, frontend::renda::viewRectangle>(app, cpu, ebp, frameEsp) || !coreAt<0x479080, frontend::renda::skyListStart>(app, cpu, ebp, frameEsp) || !coreAt<0x478e10, frontend::sime::fogAtCamera>(app, cpu, ebp, frameEsp, view, ebp - 8, ebp - 4)
+        || !coreAt<0x470b70, frontend::renda::fogBoth>(app, cpu, ebp, frameEsp, m.word(ebp - 8), m.word(ebp - 4)) || !coreAt<0x47a4c0, frontend::renda::skyFlat>(app, cpu, ebp, frameEsp, view))
+        return g.eax;
+    bool done = g.eax != 0;
     // port (apply_mirror_detail): the sky's dome rather than a flat sky in the mirror too
     if (!done && mirrorAsMain(m.word(view)) == 1)
     {
-        if (!callTo(0x47a1f0, {}))
-            return;
-        done = cpu.eax != 0;
-        if (!done && !viewCall(0x4790d0))
-            return;
+        if (!coreAt<0x47a1f0, render::flatSkyDrawn>(app, cpu, ebp, frameEsp))
+            return g.eax;
+        done = g.eax != 0;
+        if (!done && !coreAt<0x4790d0, frontend::renda::skyListKeep>(app, cpu, ebp, frameEsp, view))
+            return g.eax;
     }
     done = done || gameSettings(app).skyDetail == 2;
     if (!done)
     {
-        if (!viewCall(0x479680) || !callTo(0x4790d0, { view, level })
-            || !callTo(0x470b20, { m.word(ebp - 4), level }) || !viewCall(0x47a190) || !viewCall(0x4799d0)
-            || (m.word(0x55d160) != 0 && !viewCall(0x479b90)) || !viewCall(0x4790d0)
-            || !callTo(0x470ad0, { m.word(ebp - 4) }))
-            return;
+        if (!coreAt<0x479680, frontend::renda::skyGradientRing>(app, cpu, ebp, frameEsp, view) || !coreAt<0x4790d0, frontend::renda::skyListKeep>(app, cpu, ebp, frameEsp, view)
+            || !coreAt<0x470b20, frontend::renda::fogDensityTimes>(app, cpu, ebp, frameEsp, m.word(ebp - 4), level) || !coreAt<0x47a190, render::skyDrawn>(app, cpu, ebp, frameEsp, view) || !coreAt<0x4799d0, frontend::renda::skyHazeRing>(app, cpu, ebp, frameEsp, view)
+            || (m.word(0x55d160) != 0 && !coreAt<0x479b90, frontend::renda::skyCloudRing>(app, cpu, ebp, frameEsp, view)) || !coreAt<0x4790d0, frontend::renda::skyListKeep>(app, cpu, ebp, frameEsp, view)
+            || !coreAt<0x470ad0, frontend::renda::fogDensity>(app, cpu, ebp, frameEsp, m.word(ebp - 4)))
+            return g.eax;
     }
     // sub_479100 leaves its 8 bytes at esi
-    if (!callAtEsi(app, cpu, ebp, frameEsp, 0x479100, ebp - 0x10))
-        return;
+    if (!coreAt<0x479100, frontend::renda::skyListEnd>(app, cpu, ebp, frameEsp, ebp - 0x10))
+        return g.eax;
     // movsd twice: the result to [esi], esi past what it copied
     m.word(to, m.word(ebp - 0x10));
     m.word(to + 4, m.word(ebp - 0xc));
-    cpu.eax = to;
-    cpu.esi = ebp - 8;
+    g.eax = to;
+    g.esi = ebp - 8;
     cpu.esp += 4;
+    return g.eax;
 }
 
 /* sub_47a1f0: the sky as one quad over the whole screen, for a flat sky.  A
@@ -1907,22 +2092,23 @@ void viewSky(win32::WinApplication* app, x86::CPU& cpu)
  * codes, and go to sub_478cb0 by value with the texture four times.
  * Returns the record allocation's second word ([ebp+0x7a]: 0 unless the
  * allocator wrote it). */
-void flatSky(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 flatSky(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
+    const RegisterImage image(args);
     const Memory m{app};
     // push ebx, ecx, edx, esi, edi, ebp; mov ebp, esp; sub esp, 0x8c; sub ebp, 0x82
     const x86::reg32 ebp = cpu.esp - 0x9a;
     const x86::reg32 frameEsp = cpu.esp - 0xa4;
-    auto leave = [&]() {
-        cpu.eax = m.word(ebp + 0x7a);
+    auto leave = [&]() -> x86::reg32 {
+        g.eax = m.word(ebp + 0x7a);
         cpu.esp += 4;
-    };
+        return g.eax; };
 
     const x86::reg32 texture = m.word(0x6ff9f8);
     m.word(ebp + 0x7a, 0);
-    if (!callAt(app, cpu, ebp, frameEsp, 0x4bbf80, { ebp + 0x76, 0xa0 }))
-        return;
-    if (!cpu.eax)
+    if (!coreAt<0x4bbf80, frontend::rendd::openListTake>(app, cpu, ebp, frameEsp, ebp + 0x76, 0xa0))
+        return g.eax;
+    if (!g.eax)
         return leave();
     // The four corners: (B, C), (A, C), (A, D), (B, D) of the rect A, B, C, D.
     const float a = float(x86::sreg32(m.word(0x6fdc40))), b = float(x86::sreg32(m.word(0x6fdc44)));
@@ -1946,9 +2132,10 @@ void flatSky(win32::WinApplication* app, x86::CPU& cpu)
         for (x86::reg32 k = 0; k < 0x20; k += 4)
             m.word(esp + k, m.word(v[i] + k));
     }
-    if (!callAt(app, cpu, ebp, esp, 0x478cb0, { m.word(ebp + 0x76) }))
-        return;
+    if (!coreAt<0x478cb0, frontend::renda::quadRecord>(app, cpu, ebp, esp, m.word(ebp + 0x76)))
+        return g.eax;
     leave();
+    return g.eax;
 }
 
 /* sub_47b850: the sky's dome, from the view in eax, when [0x55d1f4] asks for
@@ -1960,44 +2147,42 @@ void flatSky(win32::WinApplication* app, x86::CPU& cpu)
  * quad records (allocated by sub_4bbe40, 0x20 each) for the cells whose four
  * corners share no clip bit, flags 2 or 3 (4 more without [0x55d204]), the
  * texture record 0x55d21c, closed by sub_4bbde0 and drawn by sub_4bbf40. */
-void skyDome(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 skyDome(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
+    const RegisterImage image(args);
     const Memory m{app};
     // push ebx, ecx, edx, esi, edi, ebp; mov ebp, esp; sub esp, 0x30
     const x86::reg32 ebp = cpu.esp - 24;
     const x86::reg32 frameEsp = cpu.esp - 0x48;
-    const x86::reg32 view = cpu.eax;
-    auto callTo = [&](x86::reg32 target, std::initializer_list<x86::reg32> registers, x86::reg32 esp) {
-        return callAt(app, cpu, ebp, esp, target, registers);
-    };
+    const x86::reg32 view = g.eax;
     // eax is left as the last call leaves it, or as below
-    auto leave = [&](x86::reg32 eax) {
-        cpu.eax = eax;
+    auto leave = [&](x86::reg32 eax) -> x86::reg32 {
+        g.eax = eax;
         cpu.esp += 4;
+        return g.eax;
     };
 
     const x86::reg32 dome = m.word(0x55d1f4);
     if (!dome)
         return leave(view);
     const x86::reg32 recordFlags = (dome == 1 ? 3 : 2) | (m.word(0x55d204) ? 0 : 4);
-    if (!callTo(0x47b5c0, {}, frameEsp))
-        return;
+    if (!coreAt<0x47b5c0, frontend::renda::skyWeather>(app, cpu, ebp, frameEsp))
+        return g.eax;
     const double scale = m.load(0x55d208);
     const double across = M::add(M::mul(m.load(view + 8), scale), m.load(0x55d214));
     const double up = M::add(M::mul(m.load(view + 0x10), scale), m.load(0x55d218));
-    if (!callTo(0x47b4f0, { view, 0xa9, 0x6ff9fc, 0x6ff170 },
-                pushWords(app, frameEsp, { asBits(float(up)), asBits(float(across)), 0x6fdc50 })))
-        return;
-    if (m.word(0x55d250) != 0 && !callTo(0x47b3a0, {}, frameEsp))
-        return;
+    if (!coreAt<0x47b4f0, frontend::renda::domeVertices>(app, cpu, ebp, frameEsp, view, 0xa9, 0x6ff9fc, 0x6ff170, 0x6fdc50, asBits(float(across)), asBits(float(up))))
+        return g.eax;
+    if (m.word(0x55d250) != 0 && !coreAt<0x47b3a0, frontend::renda::flashOnGrid>(app, cpu, ebp, frameEsp))
+        return g.eax;
     // port (apply_alpha_intensity): the glare on every driver
     if (m.word(0x55d1f4) == 1 && 1.0 > double(gameSettings(app).alphaIntensity)
-        && !callTo(0x47b7d0, { 0xa9, 0x6fdc50 }, frameEsp))
-        return;
+        && !coreAt<0x47b7d0, render::glareVerticesSet>(app, cpu, ebp, frameEsp, 0xa9, 0x6fdc50))
+        return g.eax;
     const x86::reg32 first = ebp - 0x28;  // the records' block, as sub_4bbe40 writes it
-    if (!callTo(0x4bbe40, { first }, frameEsp))
-        return;
-    if (!cpu.eax)
+    if (!coreAt<0x4bbe40, frontend::rendd::arenaHere>(app, cpu, ebp, frameEsp, first))
+        return g.eax;
+    if (!g.eax)
         return leave(0);
     x86::reg32 record = m.word(first);
     x86::reg32 cells = 0;
@@ -2025,13 +2210,14 @@ void skyDome(win32::WinApplication* app, x86::CPU& cpu)
     if (!cells)
         return leave(shared);
     const x86::reg32 last = record - 0x20;
-    if (!callTo(0x4bbde0, { first, cells << 5 }, frameEsp))
-        return;
+    if (!coreAt<0x4bbde0, frontend::rendd::arenaTake>(app, cpu, ebp, frameEsp, first, cells << 5))
+        return g.eax;
     const x86::reg32 list = m.word(first);
     m.word(last, 0);
-    if (!callTo(0x4bbf40, {}, pushWords(app, frameEsp, { last, list })))
-        return;
+    if (!coreAt<0x4bbf40, frontend::rendd::openListAppend>(app, cpu, ebp, frameEsp, list, last))
+        return g.eax;
     cpu.esp += 4;
+    return g.eax;
 }
 
 /* sub_4946e0: the lightning, from the view in eax.  Of the 240 bolts at
@@ -2043,13 +2229,14 @@ void skyDome(win32::WinApplication* app, x86::CPU& cpu)
  * ends share no clip bit becomes a quad record (sub_4bbf80, 0xa0 bytes,
  * flags 5) of the start twice and the point twice, the second of each moved
  * a pixel right and down. */
-void lightning(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 lightning(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
+    const RegisterImage image(args);
     const Memory m{app};
     // push ebx, ecx, edx, esi, edi, ebp; mov ebp, esp; sub esp, 0x7c
     const x86::reg32 ebp = cpu.esp - 24;
     const x86::reg32 frameEsp = cpu.esp - 0x94;
-    const x86::reg32 view = cpu.eax;
+    const x86::reg32 view = g.eax;
     Registers unused{};
 
     // A point at `p` (3 floats) turned by the view's matrix into `s`.
@@ -2063,8 +2250,8 @@ void lightning(win32::WinApplication* app, x86::CPU& cpu)
         }
     };
 
-    if (!callAt(app, cpu, ebp, frameEsp, 0x494630, {}))
-        return;
+    if (!coreAt<0x494630, frontend::rendc::boltsStep>(app, cpu, ebp, frameEsp))
+        return g.eax;
     x86::reg32 eax = 0;  // as the loops leave it
     for (x86::reg32 index = 0; x86::sreg32(index) < 0xf0; ++index)
     {
@@ -2092,9 +2279,9 @@ void lightning(win32::WinApplication* app, x86::CPU& cpu)
             m.byte(ebp - 0x48, clipCode(m, ebp - 0x5c));
             if (m.byte(ebp - 0x68) & m.byte(ebp - 0x48))
                 continue;
-            if (!callAt(app, cpu, ebp, frameEsp, 0x4bbf80, { ebp - 0x1c, 0xa0 }))
-                return;
-            if (!cpu.eax)
+            if (!coreAt<0x4bbf80, frontend::rendd::openListTake>(app, cpu, ebp, frameEsp, ebp - 0x1c, 0xa0))
+                return g.eax;
+            if (!g.eax)
                 continue;
             const x86::reg32 record = m.word(ebp - 0x1c);
             app->getMemory<x86::reg16>(record + 4) = 0;
@@ -2125,8 +2312,9 @@ void lightning(win32::WinApplication* app, x86::CPU& cpu)
             m.byte(record + 0x74, clipCode(m, record + 0x60));
         }
     }
-    cpu.eax = eax;
+    g.eax = eax;
     cpu.esp += 4;
+    return g.eax;
 }
 
 
@@ -2138,13 +2326,14 @@ void lightning(win32::WinApplication* app, x86::CPU& cpu)
  * quarter of a turn per 64 ticks, or 0.05) and sized by the ticks
  * ([0x53b5dc], [0x53b5e0] once more on [0x6fd3b0] 1, [0x53b5e4] for the
  * word), its height from the screen's height ([0x53b5d8], 40 or 80). */
-void countdown(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 countdown(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
+    const RegisterImage image(args);
     const Memory m{app};
     // push ebx, ecx, edx, esi, edi, ebp; mov ebp, esp; sub esp, 0x6c
     const x86::reg32 ebp = cpu.esp - 24;
     const x86::reg32 frameEsp = cpu.esp - 24 - 0x6c;
-    auto leave = [&]() { cpu.esp += 4; };
+    auto leave = [&]() -> x86::reg32 { cpu.esp += 4; return g.eax; };
     auto callTo = [&](x86::reg32 target, std::initializer_list<x86::reg32> registers, x86::reg32 esp) {
         return callAt(app, cpu, ebp, esp, target, registers);
     };
@@ -2156,8 +2345,8 @@ void countdown(win32::WinApplication* app, x86::CPU& cpu)
     if (x86::sreg32(ticks) >= 0x220 || x86::sreg32(ticks) <= 0x120 || m.byte(0x552858) > 3)
         return leave();
     m.word(0x55b088, 3);
-    if (!callTo(0x4beb80, { ebp - 0x18, ebp - 0x24, ebp - 0x20, ebp - 0x1c }, frameEsp))
-        return;
+    if (!coreAt<0x4beb80, port::text::viewportOf>(app, cpu, ebp, frameEsp, ebp - 0x18, ebp - 0x24, ebp - 0x20, ebp - 0x1c))
+        return g.eax;
     // Half a width and a height, rounded toward zero (sar edx, 31; sub; sar 1).
     auto half = [](x86::reg32 value) { return x86::reg32(x86::sreg32(value - x86::reg32(x86::sreg32(value) >> 31)) >> 1); };
     const x86::reg32 width = m.word(ebp - 0x20);
@@ -2170,20 +2359,20 @@ void countdown(win32::WinApplication* app, x86::CPU& cpu)
     const x86::reg8 number = m.byte(0x552858);
     const std::optional<double> topWhole = chopAt(app, cpu, ebp, frameEsp, top);
     if (!topWhole)
-        return;
+        return g.eax;
     // the top's low half, as sar of the word under it by 16 reads it
     const x86::reg32 y = x86::reg32(x86::sreg32(x86::sreg16(fp::toInteger<x86::sreg32>(*topWhole))));
     // The lettering: its matrix by sub_4ea9e0, then sub_475b50 at the centre less half `text`'s width.
     auto print = [&](x86::reg32 angle, x86::reg32 textWidth, auto&& makeText) {
         const x86::reg16 left = x86::reg16(centre - x86::reg32(x86::sreg32(textWidth) >> 1));
         const x86::reg32 x = x86::reg32(x86::sreg32(x86::sreg16(left)));
-        if (!callTo(0x4ea9e0, { ebp - 0x6c }, pushWords(app, frameEsp, { ebp - 0x48, angle })))
+        if (!coreAt<0x4ea9e0, frontend::simd::rotateX>(app, cpu, ebp, frameEsp, ebp - 0x6c, angle, ebp - 0x48))
             return false;
-        const x86::reg32 esp = pushWords(app, frameEsp, { ebp - 0x48, 0, m.word(0x679014), 0x41f00000 });
-        const std::optional<x86::reg32> made = makeText(esp);
+        const x86::reg32 size = m.word(0x679014);
+        const std::optional<x86::reg32> made = makeText();
         if (!made)
             return false;
-        return callTo(0x475b50, { *made, x, y }, esp);
+        return coreAt<0x475b50, render::solidTextDrawn>(app, cpu, ebp, frameEsp, *made, x, y, 0x41f00000, size, 0, ebp - 0x48);
     };
     if (number)
     {
@@ -2195,12 +2384,12 @@ void countdown(win32::WinApplication* app, x86::CPU& cpu)
         m.store(0x679014, size);
         if (gameSettings(app).playMode == 1)
             m.store(0x679014, M::mul(m.load(0x679014), m.load(0x53b5e0)));
-        if (!callTo(0x4df690, {}, pushWords(app, frameEsp, { number, 0x53b5d4, ebp - 0x14 }))
-            || !callTo(0x476fb0, { ebp - 0x14 }, frameEsp))
-            return;
-        auto number = [&](x86::reg32) { return std::optional<x86::reg32>(ebp - 0x14); };
-        if (!print(asBits(float(angle)), cpu.eax, number))
-            return;
+        if (!sprintfAt(app, cpu, ebp, frameEsp - 12, ebp - 0x14, 0x53b5d4, guest::Words({ number }))
+            || !coreAt<0x476fb0, frontend::renda::stringWidth>(app, cpu, ebp, frameEsp, ebp - 0x14))
+            return g.eax;
+        auto number = [&]() { return std::optional<x86::reg32>(ebp - 0x14); };
+        if (!print(asBits(float(angle)), g.eax, number))
+            return g.eax;
         return leave();
     }
     const x86::reg32 t = (m.word(0x7d3684) - 0x200) & 7;
@@ -2208,16 +2397,17 @@ void countdown(win32::WinApplication* app, x86::CPU& cpu)
     m.store(0x679014, M::mul(grown, heightScale));
     if (gameSettings(app).playMode == 1)
         m.store(0x679014, M::mul(m.load(0x679014), m.load(0x53b5e0)));
-    if (!callTo(0x4d1850, { 0x150 }, frameEsp) || !callTo(0x476fb0, { cpu.eax }, frameEsp))
-        return;
+    if (!coreAt<0x4d1850, port::text::lineText>(app, cpu, ebp, frameEsp, frameEsp - 4, 0x150, 0) || !coreAt<0x476fb0, frontend::renda::stringWidth>(app, cpu, ebp, frameEsp, g.eax))
+        return g.eax;
     // the word asked for again, under the lettering's words
-    if (!print(0x3d4ccccd, cpu.eax, [&](x86::reg32 esp) -> std::optional<x86::reg32> {
-            if (!callTo(0x4d1850, { 0x150 }, esp))
+    if (!print(0x3d4ccccd, g.eax, [&]() -> std::optional<x86::reg32> {
+            if (!coreAt<0x4d1850, port::text::lineText>(app, cpu, ebp, frameEsp, frameEsp - 4, 0x150, 0))
                 return std::nullopt;
-            return cpu.eax;
+            return g.eax;
         }))
-        return;
+        return g.eax;
     leave();
+    return g.eax;
 }
 
 /* sub_4b9bc0: a car's lights (car in eax, view in edx; the mirror counts as
@@ -2231,75 +2421,76 @@ void countdown(win32::WinApplication* app, x86::CPU& cpu)
  * [view+0x34] the headlights' beam on the road (sub_492370) when the car
  * faces the camera (sub_4e01f0 below 0), its strength the dot times
  * [0x5400f8]. */
-void carLights(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 carLights(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
+    const RegisterImage image(args);
     const Memory m{app};
     // push ebx, ecx, esi, edi, ebp; mov ebp, esp; sub esp, 0x4c
     const x86::reg32 ebp = cpu.esp - 20;
     const x86::reg32 frameEsp = cpu.esp - 20 - 0x4c;
-    const x86::reg32 car = cpu.eax, view = cpu.edx;
-    auto leave = [&]() { cpu.esp += 4; };
+    const x86::reg32 car = g.eax, view = g.edx;
+    auto leave = [&]() -> x86::reg32 { cpu.esp += 4; return g.eax; };
     auto callTo = [&](x86::reg32 target, std::initializer_list<x86::reg32> registers,
                       x86::reg32 esp = 0) { return callAt(app, cpu, ebp, esp ? esp : frameEsp, target, registers); };
 
     for (x86::reg32 k = 0; k < 0xc; k += 4)
         m.word(ebp - 0x40 + k, m.word(car + 0x910 + k));
     if (!callTo(0x4206f0, { car + 0xc, 1 }))
-        return;
-    const x86::reg32 matrix = cpu.eax;
+        return g.eax;
+    const x86::reg32 matrix = g.eax;
     x86::reg32 lightMatrix = matrix;
     // port (apply_mirror_detail): the mirror as the main view
     if (mirrorAsMain(m.word(view)) == 1)
         return leave();
     if (!callTo(0x4e0430, { 1, ebp - 0x40, view + 0x44, view + 0x38 }, pushWords(app, frameEsp, { ebp - 0x28 })))
-        return;
+        return g.eax;
     if (x86::sreg32(m.word(ebp - 0x20)) > 0x42c80000)
         return leave();
     if (-m.load(m.word(0x55fe2c) + 0x30) > m.load(ebp - 0x20))
         return leave();
     if (!callTo(0x49c410, {}) || !callTo(0x49d640, {}))
-        return;
+        return g.eax;
     // port (apply_mirror_detail): the mirror as the main view
     if (gameSettings(app).night != 0 && mirrorAsMain(m.word(view)) != 1)
     {
-        if (!callTo(0x4b97b0, { car, matrix }) || !callTo(0x4b9550, { car, cpu.eax }))
-            return;
-        lightMatrix = cpu.eax;
+        if (!callTo(0x4b97b0, { car, matrix }) || !callTo(0x4b9550, { car, g.eax }))
+            return g.eax;
+        lightMatrix = g.eax;
     }
     if (!callTo(0x49d750, { gameSettings(app).useSpecular != 0 ? 1u : 0u }) || !callTo(0x49d760, { 0x55d2a8 })
         || !callTo(0x49d8f0, { lightMatrix }) || !callTo(0x49d800, { 0x4f4f4f4f, 0x7f7f7f7f })
         || !callTo(0x4e0000, { 1, view + 8, ebp - 0x40, ebp - 0x4c }) || !callTo(0x49d780, { ebp - 0x4c }))
-        return;
+        return g.eax;
     if ((m.byte(0x7a3a58) & 2) && (!callTo(0x49d750, { 0 }) || !callTo(0x49d8f0, { 0xffffffff })))
-        return;
+        return g.eax;
     const x86::reg32 camera = m.word(0x55fe2c);
     m.store(ebp - 0x3c, M::add(m.load(ebp - 0x3c), m.load(camera + 0x2c)));
     const std::optional<double> nearest =
         modelDepthAt(app, cpu, ebp, pushWords(app, frameEsp, { m.word(m.word(0x563a90) + 4), view + 0x38 }), true,
                      { camera, car + 0x8ec, ebp - 0x40, view + 0x44 });
     if (!nearest)
-        return;
+        return g.eax;
     app->getMemory<float>(ebp - 0x10) = float(*nearest);
     // the objects' two ends to esi's ebp - 0x1c
     if (!callAtEsi(app, cpu, ebp, frameEsp, 0x49c470, ebp - 0x1c))
-        return;
+        return g.eax;
     if (m.word(0x7a3a60) == 0
         && !callAtEsi(app, cpu, ebp, pushWords(app, frameEsp, { m.word(ebp - 0x18), m.word(ebp - 0x1c) }), 0x4c7380,
                       ebp - 0x1c))
-        return;
+        return g.eax;
     const double nearer = M::sub(m.load(ebp - 0x20), m.load(0x7dcfe0));
     if (!callTo(0x49c420, { view, ebp - 0x1c }, pushWords(app, frameEsp, { asBits(float(nearer)) })))
-        return;
+        return g.eax;
     if (gameSettings(app).track != 8)
         return leave();
     const x86::reg32 camera2 = m.word(0x55fe2c);
     if (m.word(camera2 + 0x34) == 0)
         return leave();
     if (!callTo(0x4e0430, { 1, camera2 + 0x38, car + 0x8ec, ebp - 0x40 }, pushWords(app, frameEsp, { ebp - 0x34 })))
-        return;
+        return g.eax;
     const std::optional<double> facing = dotAt(app, cpu, ebp, frameEsp, car + 0x904, view + 0x2c);
     if (!facing)
-        return;
+        return g.eax;
     const double dot = double(float(*facing));
     if (!(0.0 > dot))
         return leave();
@@ -2307,8 +2498,9 @@ void carLights(win32::WinApplication* app, x86::CPU& cpu)
     if (!callTo(0x492370, { view },
                 pushWords(app, frameEsp, { 0, m.word(ebp - 0x10), asBits(float(strength)), 0xffff0000,
                                            m.word(ebp - 0x2c), m.word(ebp - 0x30), m.word(ebp - 0x34) })))
-        return;
+        return g.eax;
     leave();
+    return g.eax;
 }
 
 /* sub_4bae00: a detailed car's lights (car in eax, view in edx; the mirror
@@ -2321,15 +2513,16 @@ void carLights(win32::WinApplication* app, x86::CPU& cpu)
  * sub_4b9140, sub_4b90e0, sub_4b9280 -- the four brake and indicator lights
  * (+0x108, +0x114, +0x120, +0x12c, raised by [car+0x93c] or [car+0x940])
  * not masked in [car+0x99c]; sub_4e0280, sub_4b8740 and sub_4b81a0 last. */
-void detailedCarLights(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 detailedCarLights(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
+    const RegisterImage image(args);
     const Memory m{app};
     // push ebx, ecx, esi, edi, ebp; mov ebp, esp; sub esp, 0xc0; sub ebp, 0x82
     const x86::reg32 ebp = cpu.esp - 20 - 0x82;
     const x86::reg32 frameEsp = cpu.esp - 20 - 0xc0;
-    const x86::reg32 car = cpu.eax, view = cpu.edx;
+    const x86::reg32 car = g.eax, view = g.edx;
     const x86::reg32 model = m.word(car + 0x8a4);
-    auto leave = [&]() { cpu.esp += 4; };
+    auto leave = [&]() -> x86::reg32 { cpu.esp += 4; return g.eax; };
     auto callTo = [&](x86::reg32 target, std::initializer_list<x86::reg32> registers,
                       x86::reg32 esp = 0) { return callAt(app, cpu, ebp, esp ? esp : frameEsp, target, registers); };
     // sub_49de20 for light `which` at `at` of the model, raised by the car's `raise`, its depth not wanted
@@ -2342,21 +2535,21 @@ void detailedCarLights(win32::WinApplication* app, x86::CPU& cpu)
         return modelDepthAt(app, cpu, ebp, esp, false, { model, which, ebp + 0xa, ebp + 0x52 }).has_value();
     };
 
-    if (!callTo(0x4ba810, { car, model }))
-        return;
-    x86::reg32 matrix = cpu.eax;
+    if (!coreAt<0x4ba810, frontend::rendd::carAverageColour>(app, cpu, ebp, frameEsp, car))
+        return g.eax;
+    x86::reg32 matrix = g.eax;
     if (!model || x86::sreg32(m.word(model + 0xf8)) <= 0)
         return leave();
     // port (apply_mirror_detail): the mirror as the main view
     if (gameSettings(app).night != 0 && mirrorAsMain(m.word(view)) != 1)
     {
-        if (!callTo(0x4b97b0, { car, matrix }) || !callTo(0x4b9550, { car, cpu.eax }))
-            return;
-        matrix = cpu.eax;
+        if (!coreAt<0x4b97b0, render::nightColourOf>(app, cpu, ebp, frameEsp, car, matrix) || !coreAt<0x4b9550, frontend::rendd::trackLitColour>(app, cpu, ebp, frameEsp, car, g.eax))
+            return g.eax;
+        matrix = g.eax;
     }
-    if (!callTo(0x4ba320, { view, car, matrix }) || !callTo(0x4ba350, { view, car, matrix }))
-        return;
-    const x86::reg32 lights = cpu.eax;
+    if (!coreAt<0x4ba320, frontend::rendd::carStates>(app, cpu, ebp, frameEsp, view, car, matrix) || !coreAt<0x4ba350, frontend::rendd::carShade>(app, cpu, ebp, frameEsp, view, car, matrix))
+        return g.eax;
+    const x86::reg32 lights = g.eax;
     for (x86::reg32 k = 0; k < 0x24; k += 4)
         m.word(ebp - 0x3e + k, m.word(car + 0xc0 + k));
     m.word(ebp + 0x5e, m.word(car + 0x98));
@@ -2364,39 +2557,39 @@ void detailedCarLights(win32::WinApplication* app, x86::CPU& cpu)
     const double up = M::add(m.load(ebp + 0x62), m.load(0x540124));
     m.word(ebp + 0x66, m.word(car + 0xa0));
     m.store(ebp + 0x62, up);
-    if (!callTo(0x4b93c0, { car, ebp - 0x1a, ebp - 0x3e }))
-        return;
+    if (!coreAt<0x4b93c0, frontend::rendd::bodyLean>(app, cpu, ebp, frameEsp, car, ebp - 0x1a, ebp - 0x3e))
+        return g.eax;
     const x86::reg32 bodyWords = pushWords(app, frameEsp, { lights, view + 0x38, view + 0x44, ebp + 0x5e, ebp - 0x3e });
     const std::optional<double> bodyDepth =
         modelDepthAt(app, cpu, ebp, bodyWords, false, { model, 0, ebp - 0x1a, model + 0xfc });
     if (!bodyDepth)
-        return;
+        return g.eax;
     // kept where the code keeps it, next to the position the callees are handed
     app->getMemory<float>(ebp + 0x6a) = float(*bodyDepth);
     if (m.word(car + 0x660))
     {
         const x86::reg32 esp = pushWords(app, frameEsp, { lights, view + 0x38, view + 0x44, ebp + 0x5e, ebp - 0x3e });
         if (!modelDepthAt(app, cpu, ebp, esp, false, { model, 0xc, ebp - 0x1a, model + 0x18c }))
-            return;
+            return g.eax;
     }
-    if (!callTo(0x4b9140, { car, ebp + 0xa, 1 }) || !callTo(0x4b90e0, { car, 0 }))
-        return;
+    if (!coreAt<0x4b9140, frontend::rendd::frontWheelTurn>(app, cpu, ebp, frameEsp, car, ebp + 0xa, 1) || !coreAt<0x4b90e0, frontend::rendd::bodyShake>(app, cpu, ebp, frameEsp, car, 0))
+        return g.eax;
     if (!(m.byte(car + 0x99c) & 1) && !light(1, 0x108, 0x93c))
-        return;
+        return g.eax;
     if (!(m.byte(car + 0x99c) & 2) && !light(2, 0x114, 0x93c))
-        return;
-    if (!callTo(0x4b9280, { car, ebp + 0xa }) || !callTo(0x4b90e0, { car, 1 }))
-        return;
+        return g.eax;
+    if (!coreAt<0x4b9280, frontend::rendd::rearWheelTurn>(app, cpu, ebp, frameEsp, car, ebp + 0xa) || !coreAt<0x4b90e0, frontend::rendd::bodyShake>(app, cpu, ebp, frameEsp, car, 1))
+        return g.eax;
     if (!(m.byte(car + 0x99c) & 8) && !light(3, 0x120, 0x940))
-        return;
+        return g.eax;
     if (!(m.byte(car + 0x99c) & 4) && !light(4, 0x12c, 0x940))
-        return;
-    if (!callTo(0x4e0280, { ebp - 0x1a, ebp - 0x3e, ebp + 0x2e })
-        || !callTo(0x4b8740, { view, car, ebp + 0x2e, ebp + 0x5e },
-                   pushWords(app, frameEsp, { matrix, m.word(ebp + 0x6a) }))
-        || !callTo(0x4b81a0, { car, view }))
-        return;
+        return g.eax;
+    if (!coreAt<0x4e0280, vertices::multiplyMatrix>(app, cpu, ebp, frameEsp, ebp - 0x1a, ebp - 0x3e, ebp + 0x2e)
+        || !coreAt<0x4b8740, frontend::rendd::carLights>(app, cpu, ebp, frameEsp, view, car, ebp + 0x2e, ebp + 0x5e, m.word(ebp + 0x6a), matrix)
+        || !coreAt<0x4b81a0, frontend::rendd::carShadow>(app, cpu, ebp, frameEsp, car, view))
+        return g.eax;
     leave();
+    return g.eax;
 }
 
 
@@ -2512,10 +2705,10 @@ bool eightLights(App* app, CPU& cpu, reg32 ebp, reg32 esp, reg32 look, reg8 face
      * `inverse`, the direction made a unit by sub_4ea920's square root.  False when the game
      * stopped. */
     auto direction = [&](reg32 spot, reg32 inverse) -> bool {
-        if (!callAt(app, cpu, ebp, esp, 0x4e0090, { spot + 0x58, ebp - 0x66 }))
+        const std::optional<double> measured = distanceAt(app, cpu, ebp, esp, spot + 0x58, ebp - 0x66);
+        if (!measured)
             return false;
-        const double distance = double(cpu.fpu.st(0));
-        cpu.fpu.count -= 1;
+        const double distance = *measured;
         const double over = M::div(1.0, distance);
         m.store(ebp - 0x66, M::sub(m.load(spot + 0x58), m.load(ebp - 0x66)));
         const double dy = M::sub(m.load(ebp - 0x62), m.load(spot + 0x5c));
@@ -2665,8 +2858,9 @@ bool eightLights(App* app, CPU& cpu, reg32 ebp, reg32 esp, reg32 look, reg8 face
  * [0x7d3684] has passed is dropped).  The pen moves on by the letter's
  * advance (20 for a byte no letter has) times the size.  Without a scale the
  * letters are drawn flat, depth 1. */
-void solidText(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 solidText(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
+    const RegisterImage image(args);
     const Memory m{app};
     // push ecx, esi, edi, ebp; mov ebp, esp; sub esp, 0x58e4; sub ebp, 0x72
     const x86::reg32 entry = cpu.esp;
@@ -2678,11 +2872,12 @@ void solidText(win32::WinApplication* app, x86::CPU& cpu)
     const x86::reg32 screen = ebp - 0x2872;
     const x86::reg32 scale = entry + 4, size = entry + 8, texture = entry + 0xc, matrix = entry + 0x10;
     const x86::reg32 corners = 0x55cf9c;  // THRASH's three, 0x20 bytes each: x, y, 1/w, depth, colour, s, t
-    x86::reg32 text = cpu.eax;
-    x86::reg16 penX = x86::reg16(cpu.edx), penY = x86::reg16(cpu.ebx);
-    auto leave = [&](x86::reg32 eax) {
-        cpu.eax = eax;
+    x86::reg32 text = g.eax;
+    x86::reg16 penX = x86::reg16(g.edx), penY = x86::reg16(g.ebx);
+    auto leave = [&](x86::reg32 eax) -> x86::reg32 {
+        g.eax = eax;
         cpu.esp += 4 + 0x10;
+        return g.eax;
     };
     auto callTo = [&](x86::reg32 target, std::initializer_list<x86::reg32> registers, x86::reg32 esp = 0) {
         return callAt(app, cpu, ebp, esp ? esp : frameEsp, target, registers);
@@ -2708,11 +2903,7 @@ void solidText(win32::WinApplication* app, x86::CPU& cpu)
     };
     // A float sub_4e0090 leaves on the FPU (simd's vectorDistance, which has no core giving it back).
     auto distanceTo = [&](x86::reg32 position, x86::reg32 point) -> std::optional<double> {
-        if (!callTo(0x4e0090, { position, point }))
-            return std::nullopt;
-        const double value = double(cpu.fpu.st(0));
-        cpu.fpu.count -= 1;
-        return value;
+        return distanceAt(app, cpu, ebp, frameEsp, position, point);
     };
     // The colour of the channels `red`, `green` and `blue` (0..255) times `light`, chopped, under `top`.
     auto lit = [&](x86::reg32 top, x86::reg32 red, x86::reg32 green, x86::reg32 blue,
@@ -2737,8 +2928,8 @@ void solidText(win32::WinApplication* app, x86::CPU& cpu)
     const x86::reg32 lookTexture = m.word(look + 0x2c);
     if (lookTexture)
     {
-        if (!callTo(0x431900, { 1, m.word(lookTexture + 4) }) || !callTo(0x431900, { 0xd, 1 }))
-            return;
+        if (!coreAt<0x431900, graphics::sendState>(app, cpu, ebp, frameEsp, 1, m.word(lookTexture + 4)) || !coreAt<0x431900, graphics::sendState>(app, cpu, ebp, frameEsp, 0xd, 1))
+            return g.eax;
     }
     else
     {
@@ -2749,11 +2940,11 @@ void solidText(win32::WinApplication* app, x86::CPU& cpu)
         m.word(0x55cff4, 0x3f800000);
         m.word(0x55cff8, 0x3f800000);
         const x86::reg32 handle = m.word(texture);
-        if (!callTo(0x431900, { 1, handle ? m.word(handle + 4) : 0 }))
-            return;
+        if (!coreAt<0x431900, graphics::sendState>(app, cpu, ebp, frameEsp, 1, handle ? m.word(handle + 4) : 0))
+            return g.eax;
     }
     if (!truncate(M::add(M::mul(m.load(size), m.load(m.word(0x679010) + 8)), fild16(penY))))
-        return;
+        return g.eax;
     penY = x86::reg16(*truncated);
 
     if (!(m.word(scale) & 0x7fffffff))
@@ -2803,14 +2994,14 @@ void solidText(win32::WinApplication* app, x86::CPU& cpu)
                     m.store(0x55cfe0, M::sub(y, y2));
                     if (!driverAt<thrash::kThrashDrawTri, &port::driver::drawTri>(app, cpu,
                         frameEsp, 0x55cf9c, 0x55cfbc, 0x55cfdc).has_value())
-                        return;
+                        return g.eax;
                 }
                 width = M::mul(m.load(size), m.load(part + 4));
             }
             else
                 width = M::mul(m.load(size), m.load(0x53b098));
             if (!advancePen(width))
-                return;
+                return g.eax;
         }
     }
 
@@ -2848,7 +3039,7 @@ void solidText(win32::WinApplication* app, x86::CPU& cpu)
         if (c < byteAt(font) || x86::sreg32(c) >= x86::sreg32(byteAt(font) + byteAt(font + 1)))
         {
             if (!advancePen(M::mul(m.load(size), m.load(0x53b098))))
-                return;
+                return g.eax;
             continue;
         }
         const x86::reg32 part = font + 0x10 + (c << 5);
@@ -2856,33 +3047,32 @@ void solidText(win32::WinApplication* app, x86::CPU& cpu)
         if (!turning)
         {
             // No matrix: the rest drawn flat by a call of its own, this letter first.
-            const x86::reg32 esp = pushWords(app, frameEsp, { 0, m.word(texture), m.word(size), 0 });
-            if (!callTo(0x475b50, { text, x86::reg32(x86::sreg32(x86::sreg16(penX))),
-                                    x86::reg32(x86::sreg32(x86::sreg16(penY))) }, esp))
-                return;
+            if (!coreAt<0x475b50, render::solidTextDrawn>(app, cpu, ebp, frameEsp, text, x86::reg32(x86::sreg32(x86::sreg16(penX))),
+                                                          x86::reg32(x86::sreg32(x86::sreg16(penY))), 0, m.word(size), m.word(texture), 0))
+                return g.eax;
             continue;
         }
 
         // The letter's vertices turned (sub_4e03b0) into the frame's buffer, its normals after them,
         // its faces' normals after those.
         auto turn = [&](x86::reg32 count, x86::reg32 from, x86::reg32 to) {
-            return callTo(0x4e03b0, { count, from, turning, to });
+            return coreAt<0x4e03b0, vertices::turnVectors>(app, cpu, ebp, frameEsp, count, from, turning, to);
         };
         auto turnFaces = [&]() { return turn(byteAt(part + 1), m.word(part + 0x14), faceNormals); };
         const x86::reg32 kind = m.word(look);
         if (kind == 2)
         {
             if (!turn(byteAt(part + 3) * 2, m.word(part + 0x10), rotated))
-                return;
+                return g.eax;
             normals = rotated + byteAt(part + 3) * 12;
         }
         else if (kind == 3 && m.word(look + 0x2c) == 0)
         {
             if (!turn(byteAt(part + 3), m.word(part + 0x10), rotated))
-                return;
+                return g.eax;
             faceNormals = rotated + byteAt(part + 3) * 12;
             if (!turnFaces())
-                return;
+                return g.eax;
         }
         else
         {
@@ -2891,17 +3081,17 @@ void solidText(win32::WinApplication* app, x86::CPU& cpu)
             if (!both)
             {
                 if (!turn(byteAt(part + 3), m.word(part + 0x10), rotated))
-                    return;
+                    return g.eax;
             }
             else
             {
                 if (!turn(byteAt(part + 3) * 2, m.word(part + 0x10), rotated))
-                    return;
+                    return g.eax;
                 const x86::reg32 n = byteAt(part + 3);
                 normals = rotated + n * 12;
                 faceNormals = rotated + n * 24;
                 if (!turnFaces())
-                    return;
+                    return g.eax;
             }
         }
 
@@ -2929,7 +3119,7 @@ void solidText(win32::WinApplication* app, x86::CPU& cpu)
                 const std::optional<double> angle =
                     angleAt(app, cpu, ebp, pushWords(app, frameEsp, { m.word(normal + 4), m.word(normal + 8) }));
                 if (!angle)
-                    return;
+                    return g.eax;
                 m.store(to + 0xc, M::add(*angle, m.load(0x53b080)));
                 m.store(to + 0x10, M::mul(m.load(0x53b080), M::add(1.0, m.load(normal))));
             }
@@ -3003,16 +3193,16 @@ void solidText(win32::WinApplication* app, x86::CPU& cpu)
                         const double u = M::sub(1.0, t);
                         const double fogRed = M::mul(fild32((colours >> 16) & 0xff), u);
                         if (!truncate(M::add(fogRed, M::mul(fild32((blend >> 16) & 0xff), t))))
-                            return;
+                            return g.eax;
                         const x86::reg32 top = (m.word(look + 0x14) & 0xff000000) | ((*truncated << 16) & 0xff0000);
                         const double fogGreen = M::mul(fild32((colours >> 8) & 0xff), u);
                         const double green = M::add(fogGreen, M::mul(fild32((blend >> 8) & 0xff), t));
                         const double fogBlue = M::mul(u, fild32(colours & 0xff));
                         if (!truncate(green))
-                            return;
+                            return g.eax;
                         const x86::reg32 greenBits = (*truncated << 8) & 0xff00;
                         if (!truncate(M::add(M::mul(t, fild32(blend & 0xff)), fogBlue)))
-                            return;
+                            return g.eax;
                         colour = top | greenBits | (*truncated & 0xff);
                     }
                     m.word(0x55cfac + (k << 5), colour);
@@ -3025,12 +3215,12 @@ void solidText(win32::WinApplication* app, x86::CPU& cpu)
                 {
                     const std::optional<double> dot = dotAt(app, cpu, ebp, frameEsp, cornerNormal(k), look + 0x20);
                     if (!dot)
-                        return;
+                        return g.eax;
                     const double light = 0.0 > double(float(*dot)) ? 0.0 : double(float(*dot));
                     const std::optional<x86::reg32> colour =
                         lit(m.word(look + 0x14), (colours >> 16) & 0xff, (colours >> 8) & 0xff, colours & 0xff, light);
                     if (!colour)
-                        return;
+                        return g.eax;
                     m.word(0x55cfac + (k << 5), *colour);
                 }
                 break;
@@ -3039,12 +3229,12 @@ void solidText(win32::WinApplication* app, x86::CPU& cpu)
                 // The face lit by its normal against the light at +0x20.
                 const std::optional<double> dot = dotAt(app, cpu, ebp, frameEsp, faceNormal(), look + 0x20);
                 if (!dot)
-                    return;
+                    return g.eax;
                 const double light = 0.0 > double(float(*dot)) ? 0.0 : double(float(*dot));
                 const std::optional<x86::reg32> colour =
                     lit(m.word(look + 0x14), (colours >> 16) & 0xff, (colours >> 8) & 0xff, colours & 0xff, light);
                 if (!colour)
-                    return;
+                    return g.eax;
                 m.word(0x55cfac, *colour);
                 m.word(0x55cfcc, *colour);
                 m.word(0x55cfec, *colour);
@@ -3052,7 +3242,7 @@ void solidText(win32::WinApplication* app, x86::CPU& cpu)
             }
             case 4:
                 if (!eightLights(app, cpu, ebp, frameEsp, look, faceIndex, face, normals, faceNormals))
-                    return;
+                    return g.eax;
                 break;
             default:
                 break;
@@ -3067,19 +3257,20 @@ void solidText(win32::WinApplication* app, x86::CPU& cpu)
             m.store(0x55cfe4, w2);
             if (!driverAt<thrash::kThrashDrawTri, &port::driver::drawTri>(app, cpu,
                 frameEsp, 0x55cf9c, 0x55cfbc, 0x55cfdc).has_value())
-                return;
+                return g.eax;
         }
         if (!advancePen(M::mul(m.load(size), m.load(part + 4))))
-            return;
+            return g.eax;
     }
 
     if (m.word(look + 0x2c) != 0)
     {
-        if (!callTo(0x431900, { 0xd, 0 }))
-            return;
-        return leave(cpu.eax);
+        if (!coreAt<0x431900, graphics::sendState>(app, cpu, ebp, frameEsp, 0xd, 0))
+            return g.eax;
+        return leave(g.eax);
     }
     leave(look);
+    return g.eax;
 }
 
 
@@ -3092,15 +3283,16 @@ void solidText(win32::WinApplication* app, x86::CPU& cpu)
  * sub_4b9140, sub_4b90e0, sub_4b9280 the four lights at +0x108, +0x114,
  * +0x120, +0x12c raised by [car+0x93c] or [car+0x940]; sub_4e0280,
  * sub_4b8740 and sub_4b81a0 last. */
-void mediumCarLights(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 mediumCarLights(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
+    const RegisterImage image(args);
     const Memory m{app};
     // push ebx, ecx, esi, edi, ebp; mov ebp, esp; sub esp, 0xc8; sub ebp, 0x82
     const x86::reg32 ebp = cpu.esp - 20 - 0x82;
     const x86::reg32 frameEsp = cpu.esp - 20 - 0xc8;
-    const x86::reg32 car = cpu.eax, view = cpu.edx;
+    const x86::reg32 car = g.eax, view = g.edx;
     const x86::reg32 model = m.word(car + 0x8a4);
-    auto leave = [&]() { cpu.esp += 4; };
+    auto leave = [&]() -> x86::reg32 { cpu.esp += 4; return g.eax; };
     auto callTo = [&](x86::reg32 target, std::initializer_list<x86::reg32> registers,
                       x86::reg32 esp = 0) { return callAt(app, cpu, ebp, esp ? esp : frameEsp, target, registers); };
     // sub_49de20 for light `which` at `at` of the model, raised by the car's `raise`, its depth not wanted
@@ -3113,22 +3305,22 @@ void mediumCarLights(win32::WinApplication* app, x86::CPU& cpu)
         return modelDepthAt(app, cpu, ebp, esp, false, { model, which, ebp + 2, ebp + 0x4a }).has_value();
     };
 
-    if (!callTo(0x4206f0, { car + 0xc, 1 }))
-        return;
-    x86::reg32 matrix = cpu.eax;
+    if (!coreAt<0x4206f0, trackdata::placeColour>(app, cpu, ebp, frameEsp, car + 0xc, 1))
+        return g.eax;
+    x86::reg32 matrix = g.eax;
     if (!model || x86::sreg32(m.word(model + 0xf8)) <= 0)
         return leave();
     // port (apply_mirror_detail): the mirror as the main view
     if (gameSettings(app).night != 0 && mirrorAsMain(m.word(view)) != 1)
     {
-        if (!callTo(0x4b97b0, { car, matrix }))
-            return;
-        matrix = cpu.eax;
+        if (!coreAt<0x4b97b0, render::nightColourOf>(app, cpu, ebp, frameEsp, car, matrix))
+            return g.eax;
+        matrix = g.eax;
     }
-    if (!callTo(0x4ba320, { view, car, matrix }) || !callTo(0x4ba350, { view, car, matrix }))
-        return;
+    if (!coreAt<0x4ba320, frontend::rendd::carStates>(app, cpu, ebp, frameEsp, view, car, matrix) || !coreAt<0x4ba350, frontend::rendd::carShade>(app, cpu, ebp, frameEsp, view, car, matrix))
+        return g.eax;
     // the words after the position are kept where the code keeps them
-    m.word(ebp + 0x62, cpu.eax);
+    m.word(ebp + 0x62, g.eax);
     for (x86::reg32 k = 0; k < 0x24; k += 4)
         m.word(ebp - 0x46 + k, m.word(car + 0xc0 + k));
     m.word(ebp + 0x56, m.word(car + 0x98));
@@ -3136,25 +3328,25 @@ void mediumCarLights(win32::WinApplication* app, x86::CPU& cpu)
     const double up = M::add(m.load(ebp + 0x5a), m.load(0x54012c));
     m.word(ebp + 0x5e, m.word(car + 0xa0));
     m.store(ebp + 0x5a, up);
-    if (!callTo(0x4b93c0, { car, ebp - 0x22, ebp - 0x46 }))
-        return;
+    if (!coreAt<0x4b93c0, frontend::rendd::bodyLean>(app, cpu, ebp, frameEsp, car, ebp - 0x22, ebp - 0x46))
+        return g.eax;
     const x86::reg32 bodyWords =
         pushWords(app, frameEsp, { m.word(ebp + 0x62), view + 0x38, view + 0x44, ebp + 0x56, ebp - 0x46 });
     const std::optional<double> bodyDepth =
         modelDepthAt(app, cpu, ebp, bodyWords, false, { model, 0, ebp - 0x22, model + 0xfc });
     if (!bodyDepth)
-        return;
+        return g.eax;
     app->getMemory<float>(ebp + 0x66) = float(*bodyDepth);
-    if (!callTo(0x4b9140, { car, ebp + 2, 1 }) || !callTo(0x4b90e0, { car, 0 }) || !light(1, 0x108, 0x93c)
-        || !light(2, 0x114, 0x93c) || !callTo(0x4b9280, { car, ebp + 2 }) || !callTo(0x4b90e0, { car, 1 })
+    if (!coreAt<0x4b9140, frontend::rendd::frontWheelTurn>(app, cpu, ebp, frameEsp, car, ebp + 2, 1) || !coreAt<0x4b90e0, frontend::rendd::bodyShake>(app, cpu, ebp, frameEsp, car, 0) || !light(1, 0x108, 0x93c)
+        || !light(2, 0x114, 0x93c) || !coreAt<0x4b9280, frontend::rendd::rearWheelTurn>(app, cpu, ebp, frameEsp, car, ebp + 2) || !coreAt<0x4b90e0, frontend::rendd::bodyShake>(app, cpu, ebp, frameEsp, car, 1)
         || !light(3, 0x120, 0x940) || !light(4, 0x12c, 0x940))
-        return;
-    if (!callTo(0x4e0280, { ebp - 0x22, ebp - 0x46, ebp + 0x26 })
-        || !callTo(0x4b8740, { view, car, ebp + 0x26, ebp + 0x56 },
-                   pushWords(app, frameEsp, { matrix, m.word(ebp + 0x66) }))
-        || !callTo(0x4b81a0, { car, view }))
-        return;
+        return g.eax;
+    if (!coreAt<0x4e0280, vertices::multiplyMatrix>(app, cpu, ebp, frameEsp, ebp - 0x22, ebp - 0x46, ebp + 0x26)
+        || !coreAt<0x4b8740, frontend::rendd::carLights>(app, cpu, ebp, frameEsp, view, car, ebp + 0x26, ebp + 0x56, m.word(ebp + 0x66), matrix)
+        || !coreAt<0x4b81a0, frontend::rendd::carShadow>(app, cpu, ebp, frameEsp, car, view))
+        return g.eax;
     leave();
+    return g.eax;
 }
 
 /* sub_4b97b0: a car's colour at night (car in eax, its colour in edx; the
@@ -3164,13 +3356,14 @@ void mediumCarLights(win32::WinApplication* app, x86::CPU& cpu)
  * their colours (+0x70, +0x74 when behind) weighted by nearness (and by
  * nearness to the beam's axis for the lights); the average is added to the
  * colour's channels, each held to 0..255, alpha opaque. */
-void nightColour(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 nightColour(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
+    const RegisterImage image(args);
     const Memory m{app};
     // push ebx, ecx, esi, edi, ebp; mov ebp, esp; sub esp, 0x68
     const x86::reg32 ebp = cpu.esp - 20;
     const x86::reg32 frameEsp = cpu.esp - 20 - 0x68;
-    const x86::reg32 car = cpu.eax, colour = cpu.edx;
+    const x86::reg32 car = g.eax, colour = g.edx;
     // fistp
     auto integer = [](double value) { return x86::reg32(fp::toInteger<x86::sreg32>(x86::Float(value))); };
     // |[from]|: fld, fchs when below 0
@@ -3207,9 +3400,8 @@ void nightColour(win32::WinApplication* app, x86::CPU& cpu)
         {
             const x86::reg32 light = other + 0x734;
             x86::reg32 lightColour = m.word(light + 0x70);
-            if (!callAt(app, cpu, ebp, pushWords(app, frameEsp, { ebp - 0x68 }), 0x4e0430,
-                        { 1, ebp - 0x50, light + 0x28, light + 0x58 }))
-                return;
+            if (!coreAt<0x4e0430, vertices::transformPointList>(app, cpu, ebp, frameEsp, 1, ebp - 0x50, light + 0x28, light + 0x58, ebp - 0x68))
+                return g.eax;
             if (0.0 > m.load(ebp - 0x60))
             {
                 // Behind it: z the other way, the rear colour.
@@ -3224,9 +3416,8 @@ void nightColour(win32::WinApplication* app, x86::CPU& cpu)
         if (m.word(other + 0x660) == 0)
             continue;
         const x86::reg32 light = other + 0x660;
-        if (!callAt(app, cpu, ebp, pushWords(app, frameEsp, { ebp - 0x5c }), 0x4e0430,
-                    { 1, ebp - 0x50, other + 0x688, other + 0x6b8 }))
-            return;
+        if (!coreAt<0x4e0430, vertices::transformPointList>(app, cpu, ebp, frameEsp, 1, ebp - 0x50, other + 0x688, other + 0x6b8, ebp - 0x5c))
+            return g.eax;
         if (!inBeam(light, ebp - 0x5c))
             continue;
         const double ahead = double(float(M::sub(1.0, M::div(m.load(ebp - 0x54), m.load(light + 0x6c)))));
@@ -3246,8 +3437,9 @@ void nightColour(win32::WinApplication* app, x86::CPU& cpu)
         result = 0xff000000 | (channel((colour >> 16) & 0xff, red) << 16) | (channel((colour >> 8) & 0xff, green) << 8)
                  | channel(colour & 0xff, blue);
     }
-    cpu.eax = result;
+    g.eax = result;
     cpu.esp += 4;
+    return g.eax;
 }
 
 /* sub_41b9b0: a view's pass (view in eax): the glare colour at 0x552e1c --
@@ -3255,13 +3447,14 @@ void nightColour(win32::WinApplication* app, x86::CPU& cpu)
  * every driver, a port) -- then sub_41aaf0 for the view, the cars' sub_42d160
  * for the main view, sub_41cdc0 with the track's record, the four
  * sub_4c7790s, sub_41b8c0, the two sub_4c7940s, sub_4217e0 and sub_494170. */
-void viewPass(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 viewPass(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
+    const RegisterImage image(args);
     const Memory m{app};
     // push ebx, ecx, edx, esi, ebp; mov ebp, esp; sub esp, 0x38
     const x86::reg32 ebp = cpu.esp - 20;
     const x86::reg32 frameEsp = cpu.esp - 20 - 0x38;
-    const x86::reg32 view = cpu.eax;
+    const x86::reg32 view = g.eax;
     auto callTo = [&](x86::reg32 target, std::initializer_list<x86::reg32> registers, x86::reg32 esp = 0) {
         return callAt(app, cpu, ebp, esp ? esp : frameEsp, target, registers);
     };
@@ -3276,29 +3469,31 @@ void viewPass(win32::WinApplication* app, x86::CPU& cpu)
         m.word(0x552e1c, darkened(m.word(0x552e1c), scale));
     }
     const x86::reg32 kind = m.word(view);
-    if ((kind == 0 && !callTo(0x41aaf0, { view, m.word(view + 4) })) || (kind == 1 && !callTo(0x41aaf0, { view, 1 })))
-        return;
+    if ((kind == 0 && !coreAtKeepingEax<0x41aaf0, track::viewOnCameraBlock>(app, cpu, ebp, frameEsp, view, m.word(view + 4)))
+        || (kind == 1 && !coreAtKeepingEax<0x41aaf0, track::viewOnCameraBlock>(app, cpu, ebp, frameEsp, view, 1)))
+        return g.eax;
     if (m.word(view) == 0 && m.word(view + 4) == 0)
         for (x86::reg32 i = 0; x86::sreg32(i) < x86::sreg32(m.word(0x5efd9c)); ++i)
         {
             const x86::reg32 car = m.word(i * 4 + 0x5efac8);
-            if (!(m.byte(car + 0x200) & 0x40) && !m.byte(car + 0x88) && !callTo(0x42d160, { car }))
-                return;
+            if (!(m.byte(car + 0x200) & 0x40) && !m.byte(car + 0x88) && !coreAt<0x42d160, raceload::placeShadow>(app, cpu, ebp, frameEsp, car))
+                return g.eax;
         }
     const x86::reg32 track = m.word(m.word(0x5dd830) + 0x10) * 0x5c0 + 0x571370;
-    if (!callTo(0x41cdc0, { view, track + 0xb4, ebp - 0x38 }))
-        return;
+    if (!coreAt<0x41cdc0, track::drawTrackBlocks>(app, cpu, ebp, frameEsp, view, track + 0xb4, ebp - 0x38))
+        return g.eax;
     const x86::reg32 slots[] = { 0x7dcfe8, 0x7dcff4, 0x7dcff0, 0x7dcfe4 };
     const x86::reg32 values[] = { 0x38, 0x30, 0x20, 0x28 };
     for (int k = 0; k < 4; ++k)
-        if (!callTo(0x4c7790, { m.word(ebp - values[k]) }, pushWords(app, frameEsp, { m.word(slots[k]) })))
-            return;
-    if (!callTo(0x41b8c0, { ebp - 0x10 })
-        || !callTo(0x4c7940, {}, pushWords(app, frameEsp, { m.word(0x7dcff8), m.word(ebp - 0xc), m.word(ebp - 0x10) }))
-        || !callTo(0x4c7940, {}, pushWords(app, frameEsp, { m.word(0x7dcff8), m.word(ebp - 0x14), m.word(ebp - 0x18) }))
-        || !callTo(0x4217e0, { m.word(view + 4) }) || !callTo(0x494170, { view, cpu.eax }))
-        return;
+        if (!coreAt<0x4c7790, vertices::bucketsDepthedInto>(app, cpu, ebp, frameEsp, m.word(ebp - values[k]), m.word(slots[k])))
+            return g.eax;
+    if (!coreAt<0x41b8c0, track::bracketOrdered>(app, cpu, ebp, frameEsp, ebp - 0x10)
+        || !coreAt<0x4c7940, frontend::rende::drawListAdd>(app, cpu, ebp, frameEsp, m.word(ebp - 0x10), m.word(ebp - 0xc), m.word(0x7dcff8))
+        || !coreAt<0x4c7940, frontend::rende::drawListAdd>(app, cpu, ebp, frameEsp, m.word(ebp - 0x18), m.word(ebp - 0x14), m.word(0x7dcff8))
+        || !coreAt<0x4217e0, carstate::nodeOfCamera>(app, cpu, ebp, frameEsp, m.word(view + 4)) || !coreAt<0x494170, frontend::rendc::conesDraw>(app, cpu, ebp, frameEsp, view, g.eax))
+        return g.eax;
     cpu.esp += 4;
+    return g.eax;
 }
 
 /* sub_434870's core: the polygon lists' drawers for the driver's abilities
@@ -3336,17 +3531,19 @@ void choosePolygonDrawers(win32::WinApplication* app)
 
 /* sub_434870: choosePolygonDrawers; eax as the code leaves it: the abilities in its second
  * byte (mov ah), then the last pointer stored where that is a constant (0x4347b0, 0x433bb0). */
-void polygonDrawers(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 polygonDrawers(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
+    const RegisterImage image(args);
     choosePolygonDrawers(app);
     const reg8 abilities = byteAt(app, kDriverAbilities);
     if (abilities & 0x40)
-        cpu.eax = 0x4347b0;
+        g.eax = 0x4347b0;
     else if (!(abilities & 6))
-        cpu.eax = 0x433bb0;
+        g.eax = 0x433bb0;
     else
-        cpu.eax = (cpu.eax & 0xffff00ff) | (reg32(abilities) << 8);
+        g.eax = (g.eax & 0xffff00ff) | (reg32(abilities) << 8);
     cpu.esp += 4;
+    return g.eax;
 }
 
 
@@ -3378,10 +3575,12 @@ void setGlareColours(App* app, reg32 first, reg32 second)
 }
 
 /* sub_49d800: setGlareColours for eax and edx; no caller reads what it leaves in eax. */
-void glareColours(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 glareColours(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    setGlareColours(app, cpu.eax, cpu.edx);
+    const RegisterImage image(args);
+    setGlareColours(app, g.eax, g.edx);
     cpu.esp += 4;
+    return g.eax;
 }
 
 /* sub_472d10: the detail settings, the game's highest of the five it chose by
@@ -3391,8 +3590,9 @@ void glareColours(win32::WinApplication* app, x86::CPU& cpu)
  * 0x6fbc30, 0x6fbc20, 0x6fbc24, 0x6fbc3c and 0x791b28; the glare at 1 (0.5
  * when sub_4ee310 finds the driver's name at 0x53b01c), the screen width
  * for sub_4bee80, and sub_4483a0, sub_448330's choice of 0x6fbc34. */
-void detailSettings(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 detailSettings(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
+    const RegisterImage image(args);
     const Memory m{app};
     // push ebx, ecx, edx, esi, edi, ebp; mov ebp, esp; sub esp, 0x174
     const x86::reg32 ebp = cpu.esp - 24;
@@ -3430,9 +3630,9 @@ void detailSettings(win32::WinApplication* app, x86::CPU& cpu)
     settings.configVersion = abilities;
     if (abilities & 0x40)
     {
-        if (!callAt(app, cpu, ebp, frameEsp, 0x4ee310, { 0x7a3a74, 0x53b01c }))
-            return;
-        if (!cpu.eax)
+        if (!coreAt<0x4ee310, watcom::clib::strcmp>(app, cpu, ebp, frameEsp, 0x7a3a74, 0x53b01c))
+            return g.eax;
+        if (!g.eax)
             settings.alphaIntensityBits = 0x3f000000;
     }
     x86::reg32 width = 0x280;
@@ -3442,9 +3642,9 @@ void detailSettings(win32::WinApplication* app, x86::CPU& cpu)
         settings.detailFlagFc = 0;
         settings.projectedText = 0;
     }
-    if (!callAt(app, cpu, ebp, frameEsp, 0x4bee80, { width }) || !callAt(app, cpu, ebp, frameEsp, 0x4483a0, { cpu.eax })
-        || !callAtEsi(app, cpu, ebp, frameEsp, 0x448330, ebp - 0x174))
-        return;
+    if (!coreAt<0x4bee80, graphics::screenModeFor>(app, cpu, ebp, frameEsp, width) || !coreAt<0x4483a0, frontend::menua::chooseModeOfWidth>(app, cpu, ebp, frameEsp, g.eax)
+        || !coreAt<0x448330, frontend::menua::copyChosenMode>(app, cpu, ebp, frameEsp, ebp - 0x174))
+        return g.eax;
     if (m.word(ebp - 0x164))
         settings.projectedText = 1;
     else
@@ -3454,8 +3654,9 @@ void detailSettings(win32::WinApplication* app, x86::CPU& cpu)
     }
     const x86::reg32 table = entryOf(0x54);
     m.word(0x791b28, table);
-    cpu.eax = table;
+    g.eax = table;
     cpu.esp += 4;
+    return g.eax;
 }
 
 /* sub_4ddb40: the sparks of a group (eax: the group at +4) -- the
@@ -3466,13 +3667,14 @@ void detailSettings(win32::WinApplication* app, x86::CPU& cpu)
  * when [0x8ca22c] is 1, its grey [0x8ca284] * count / [0x8ca27c] darkened by
  * the sun's glare times [0x5497dc] when that is below 1 (on every driver, a
  * port), depth 0.1, 1/w 0.9, with the corners' clip codes. */
-void sparks(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 sparks(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
+    const RegisterImage image(args);
     const Memory m{app};
     // push ebx, ecx, edx, esi, edi, ebp; mov ebp, esp; sub esp, 0x5c
     const x86::reg32 ebp = cpu.esp - 24;
     const x86::reg32 frameEsp = cpu.esp - 24 - 0x5c;
-    const x86::reg32 group = m.word(cpu.eax + 4);
+    const x86::reg32 group = m.word(g.eax + 4);
     const x86::reg32 glareScale = x86::reg32(fp::toInteger<x86::sreg32>(
         x86::Float(M::mul(double(gameSettings(app).alphaIntensity), m.loadDouble(0x5497dc)))));
     auto asDouble = [](x86::reg32 bits) { return double(asFloat(bits)); };
@@ -3491,11 +3693,11 @@ void sparks(win32::WinApplication* app, x86::CPU& cpu)
             sizeBits = asBits(float(M::div(M::mul(fild32(m, spark + 8), asDouble(sizeBits)), fild32(m, 0x8ca27c))));
         const std::optional<double> cosine = cosineAt(app, cpu, ebp, pushWords(app, frameEsp, { angle }));
         if (!cosine)
-            return;
+            return g.eax;
         const double a = M::mul(*cosine, asDouble(sizeBits));
         const std::optional<double> sine = sineAt(app, cpu, ebp, pushWords(app, frameEsp, { angle }));
         if (!sine)
-            return;
+            return g.eax;
         const double b = M::mul(*sine, asDouble(sizeBits));
         // The corners on the screen, each a float.
         float xs[4], ys[4];
@@ -3520,9 +3722,9 @@ void sparks(win32::WinApplication* app, x86::CPU& cpu)
             xs[3] = float(M::add(x4, cx));
             ys[2] = float(M::add(y4, cy));
         }
-        if (!callAt(app, cpu, ebp, frameEsp, 0x4bbf80, { ebp - 0x50, 0xa0 }))
-            return;
-        if (!cpu.eax)
+        if (!coreAt<0x4bbf80, frontend::rendd::openListTake>(app, cpu, ebp, frameEsp, ebp - 0x50, 0xa0))
+            return g.eax;
+        if (!g.eax)
             break;
         const x86::reg32 record = m.word(ebp - 0x50);
         x86::reg32 colour = (grey << 8) | (grey << 16) | (grey << 24) | grey;
@@ -3549,6 +3751,7 @@ void sparks(win32::WinApplication* app, x86::CPU& cpu)
         }
     }
     cpu.esp += 4;
+    return g.eax;
 }
 
 /* sub_491190: a light's glow, stdcall (view in eax; +4, +8, +0xc the light's
@@ -3562,18 +3765,20 @@ void sparks(win32::WinApplication* app, x86::CPU& cpu)
  * one also by the depth, each a square of the kind's size turned by an angle
  * from x / z (sub_4ea930, sub_4ea950), textures 0x8b47bc and 0x8b4840; the
  * second linked to the first and handed to sub_4c7610. */
-void glow(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 glow(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
+    const RegisterImage image(args);
     const Memory m{app};
     // push ebx, ecx, edx, esi, edi, ebp; mov ebp, esp; sub esp, 0x9c; sub ebp, 0x72
     const x86::reg32 entry = cpu.esp;
     const x86::reg32 ebp = entry - 24 - 0x72;
     const x86::reg32 frameEsp = entry - 24 - 0x9c;
-    const x86::reg32 view = cpu.eax;
+    const x86::reg32 view = g.eax;
     const x86::reg32 vertex = ebp - 0x2a;  // the light on the screen: x, y, z, 1/z, colour, code
-    auto leave = [&](x86::reg32 eax) {
-        cpu.eax = eax;
+    auto leave = [&](x86::reg32 eax) -> x86::reg32 {
+        g.eax = eax;
         cpu.esp = entry + 4 + 0x10;
+        return g.eax;
     };
     // rep movsd of a 0x20-byte vertex
     auto copyVertex = [&](x86::reg32 to, x86::reg32 from) {
@@ -3720,9 +3925,9 @@ void glow(win32::WinApplication* app, x86::CPU& cpu)
         const x86::reg32 depth = x86::reg32(fp::toInteger<x86::sreg32>(x86::Float(m.load(ebp + 0xa))));
         m.word(vertex + 0x10, darkened(m.word(ebp + 0x66), (0x100 - depth) << 8));
     }
-    if (!callAt(app, cpu, ebp, frameEsp, 0x4bbde0, { ebp + 0x3a, 0xa0 }))
-        return;
-    if (!cpu.eax)
+    if (!coreAt<0x4bbde0, frontend::rendd::arenaTake>(app, cpu, ebp, frameEsp, ebp + 0x3a, 0xa0))
+        return g.eax;
+    if (!g.eax)
         return leave(0);
     {
         const x86::reg32 record = m.word(ebp + 0x3a);
@@ -3747,13 +3952,13 @@ void glow(win32::WinApplication* app, x86::CPU& cpu)
         m.word(record + 0x1c, m.word(ebp - 0x22));
         if (!quad({ ebp + 0x3a, ebp + 0x3e, ebp + 0x2a, ebp + 0x6a, ebp + 0x36, ebp + 0x22, ebp + 0x26, ebp + 0x2e },
                   record + 0x20, across, down, angle))
-            return;
+            return g.eax;
     }
     // The outer glow, linked to the inner one.
     m.word(vertex + 0x10, m.word(ebp + 0x66));
-    if (!callAt(app, cpu, ebp, frameEsp, 0x4bbde0, { ebp + 0x42, 0xa0 }))
-        return;
-    if (!cpu.eax)
+    if (!coreAt<0x4bbde0, frontend::rendd::arenaTake>(app, cpu, ebp, frameEsp, ebp + 0x42, 0xa0))
+        return g.eax;
+    if (!g.eax)
         return leave(0);
     {
         const x86::reg32 record = m.word(ebp + 0x42);
@@ -3780,11 +3985,12 @@ void glow(win32::WinApplication* app, x86::CPU& cpu)
         m.word(record + 0x1c, m.word(ebp - 0x22));
         if (!quad({ ebp + 0x42, ebp + 0x4e, ebp + 0x52, ebp + 0x6e, ebp + 0x5e, ebp + 0x46, ebp + 0x4a, ebp + 0x56 },
                   record + 0x20, across, down, angle))
-            return;
+            return g.eax;
     }
-    if (!callAt(app, cpu, ebp, pushWords(app, frameEsp, { m.word(0x7dcffc) }), 0x4c7610, { m.word(ebp + 0x42) }))
-        return;
-    leave(cpu.eax);
+    if (!coreAt<0x4c7610, vertices::bucketsSortedInto>(app, cpu, ebp, frameEsp, m.word(ebp + 0x42), m.word(0x7dcffc)))
+        return g.eax;
+    leave(g.eax);
+    return g.eax;
 }
 
 
@@ -3818,7 +4024,7 @@ constexpr reg32 kAlphaColours = 0x560f30;
  * stopped. */
 bool zeroMemory(App* app, CPU& cpu, reg32 frame, reg32 address, reg32 bytes)
 {
-    return callAt(app, cpu, frame, frame, kZeroMemory, { address, bytes });
+    return coreAt<kZeroMemory, ea::clearBytes>(app, cpu, frame, frame, address, bytes);
 }
 
 /* 0x4cb670's work, from a frame three words below the return address.  False when the game
@@ -3844,18 +4050,22 @@ bool clearDrawingBuffers(App* app, CPU& cpu)
 }
 
 /* sub_47b7d0: glareVertexColours for eax vertices from edx; no caller reads its eax. */
-void glareVertices(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 glareVertices(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    glareVertexColours(app, cpu.eax, cpu.edx);
+    const RegisterImage image(args);
+    glareVertexColours(app, g.eax, g.edx);
     cpu.esp += 4;
+    return g.eax;
 }
 
 /* sub_4cb670: clearDrawingBuffers; no caller reads its eax. */
-void clearBuffers(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 clearBuffers(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
+    const RegisterImage image(args);
     if (!clearDrawingBuffers(app, cpu))
-        return;
+        return g.eax;
     cpu.esp += 4;
+    return g.eax;
 }
 
 /* sub_4a4410: the ten bouncing pictures of a 2D screen (not on the drivers
@@ -3865,8 +4075,9 @@ void clearBuffers(win32::WinApplication* app, x86::CPU& cpu)
  * 150..640 x 0..450, drawn by sub_4d7d90 with eleven fading copies trailing
  * behind it (the last picture as a shadow, its y from 225), centred by its
  * scaled width. */
-void bouncers(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 bouncers(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
+    const RegisterImage image(args);
     const Memory m{app};
     // push ebx, ecx, edx, esi, edi, ebp; mov ebp, esp; sub esp, 0x18
     const x86::reg32 ebp = cpu.esp - 24;
@@ -3883,16 +4094,16 @@ void bouncers(win32::WinApplication* app, x86::CPU& cpu)
         truncated = x86::reg32(fp::toInteger<x86::sreg32>(x86::Float(*whole)));
         return true;
     };
-    auto leave = [&]() { cpu.esp += 4; };
+    auto leave = [&]() -> x86::reg32 { cpu.esp += 4; return g.eax; };
     auto half = [](x86::reg32 value) { return x86::reg32(x86::sreg32(value - x86::reg32(x86::sreg32(value) >> 31)) >> 1); };
     auto fild = [](x86::reg32 value) { return double(x86::sreg32(value)); };
 
     if (m.byte(0x7a3a58) & 0x40)
         for (x86::reg32 name : { 0x53cf28u, 0x53cf34u })
         {
-            if (!callTo(0x4e0820, { 0x7a3a74, name }))
-                return;
-            if (cpu.eax)
+            if (!coreAt<0x4e0820, watcom::clib::strstr>(app, cpu, ebp, frameEsp, 0x7a3a74, name))
+                return g.eax;
+            if (g.eax)
                 return leave();
         }
     if (m.byte(0x7a3a58) & 2)
@@ -3900,16 +4111,16 @@ void bouncers(win32::WinApplication* app, x86::CPU& cpu)
     if (m.word(0x55e95c) == 0xffffffff)
         for (x86::reg32 i = 0; i < 10; ++i)
         {
-            if (!callTo(0x4a40c0, { i }))
-                return;
+            if (!coreAt<0x4a40c0, frontend::rendc::skySpritePlace>(app, cpu, ebp, frameEsp, i))
+                return g.eax;
             if (i < 9)
             {
-                if (!callTo(0x4a4060, { 0x96, 0x280 }))
-                    return;
-                m.word(i * 4 + 0x55e95c, cpu.eax);
-                if (!callTo(0x4a4060, { 0, 0x1c2 }))
-                    return;
-                m.word(i * 4 + 0x7a1ac0, cpu.eax);
+                if (!coreAt<0x4a4060, frontend::rendc::skyRandomBetween>(app, cpu, ebp, frameEsp, 0x96, 0x280))
+                    return g.eax;
+                m.word(i * 4 + 0x55e95c, g.eax);
+                if (!coreAt<0x4a4060, frontend::rendc::skyRandomBetween>(app, cpu, ebp, frameEsp, 0, 0x1c2))
+                    return g.eax;
+                m.word(i * 4 + 0x7a1ac0, g.eax);
             }
         }
     for (x86::reg32 i = 0; i < 10; ++i)
@@ -3921,8 +4132,8 @@ void bouncers(win32::WinApplication* app, x86::CPU& cpu)
             m.word(at + 0x55e95c, x);
             m.word(at + 0x7a1ac0, y);
             if ((x86::sreg32(x) > 0x280 || x86::sreg32(x) < 0x96 || x86::sreg32(y) > 0x1c2 || x86::sreg32(y) < 0)
-                && !callTo(0x4a40c0, { i }))
-                return;
+                && !coreAt<0x4a40c0, frontend::rendc::skySpritePlace>(app, cpu, ebp, frameEsp, i))
+                return g.eax;
         }
         x86::reg32 x = m.word(at + 0x55e95c);
         x86::reg32 y = m.word(at + 0x7a1ac0);
@@ -3938,7 +4149,7 @@ void bouncers(win32::WinApplication* app, x86::CPU& cpu)
                 const x86::reg32 w = m.word((m.word(at + 0x7a1b38) << 4) + 0x55e8e0);
                 const double width = M::mul(fild(half(w)), m.load(at + 0x7a1b60));
                 if (!truncate(M::sub(fild(x), width)))
-                    return;
+                    return g.eax;
                 x = *truncated;
             }
             const x86::reg32 colour = (alpha << 24) + 0xffffff;
@@ -3946,11 +4157,12 @@ void bouncers(win32::WinApplication* app, x86::CPU& cpu)
             if (x86::sreg32(x) < 0x280 && x86::sreg32(x) > 0x96 && x86::sreg32(y) < 0x1c2 && x86::sreg32(y) > 0)
             {
                 const x86::reg32 kind = m.word(at + 0x7a1b38) << 4;
-                const x86::reg32 esp =
-                    pushWords(app, frameEsp, { colour, m.word(at + 0x7a1b60), m.word(kind + 0x55e8e4),
-                                               m.word(kind + 0x55e8e0), m.word(kind + 0x55e8dc) });
-                if (!callTo(0x4d7d90, { picture, x, y, 0 }, esp))
-                    return;
+                // The five stack words the code pushes (v, the width, the height, the scale's bits, the colour) are
+                // the core's arguments; esp as deep as the pushes make it.
+                if (!coreAt<0x4d7d90, frontend::menue::drawBouncer>(app, cpu, ebp, frameEsp - 5 * 4, picture, x, y, 0,
+                                                                    m.word(kind + 0x55e8dc), m.word(kind + 0x55e8e0),
+                                                                    m.word(kind + 0x55e8e4), m.word(at + 0x7a1b60), colour))
+                    return g.eax;
             }
             if (i == 9)
                 y -= half(0xe1 - m.word(at + 0x7a1ac0));
@@ -3963,16 +4175,17 @@ void bouncers(win32::WinApplication* app, x86::CPU& cpu)
                 const double nextX = M::sub(fild(x), backX);
                 const double nextY = M::sub(fild(y), backY);
                 if (!truncate(nextY))
-                    return;
+                    return g.eax;
                 const x86::reg32 newY = *truncated;
                 if (!truncate(nextX))
-                    return;
+                    return g.eax;
                 x = *truncated;
                 y = newY - lift;
             }
         }
     }
     leave();
+    return g.eax;
 }
 
 /* sub_491bc0: a headlight's patch on the road, stdcall (view in eax; +4..+0xc
@@ -3988,14 +4201,15 @@ void bouncers(win32::WinApplication* app, x86::CPU& cpu)
  * way for [0x554e4c], a quad record (sub_4bbde0, 0xa0 bytes, flags 1,
  * texture 0x8b486c) of the colour, darkened by the sun's glare (on every
  * driver, a port).  Returns the record, or 0. */
-void roadLight(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 roadLight(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
+    const RegisterImage image(args);
     const Memory m{app};
     // push ebx, ecx, edx, esi, edi, ebp; mov ebp, esp; sub esp, 0x204; sub ebp, 0x76
     const x86::reg32 entry = cpu.esp;
     const x86::reg32 ebp = entry - 24 - 0x76;
     const x86::reg32 frameEsp = entry - 24 - 0x204;
-    const x86::reg32 view = cpu.eax;
+    const x86::reg32 view = g.eax;
     // The arguments, which the code also writes: the point, the colour, the size.
     const x86::reg32 point = entry + 4, colour = entry + 0x10, size = entry + 0x18;
     const x86::reg32 refusal = m.word(entry + 0x14), car = m.word(entry + 0x1c), kept = entry + 0x20;
@@ -4004,9 +4218,10 @@ void roadLight(win32::WinApplication* app, x86::CPU& cpu)
         return callAt(app, cpu, ebp, esp ? esp : frameEsp, target, registers);
     };
     auto integer = [](double value) { return x86::reg32(fp::toInteger<x86::sreg32>(x86::Float(value))); };
-    auto leave = [&](x86::reg32 eax) {
-        cpu.eax = eax;
+    auto leave = [&](x86::reg32 eax) -> x86::reg32 {
+        g.eax = eax;
         cpu.esp = entry + 4 + 0x20;
+        return g.eax;
     };
     // movsd three times
     auto copy3 = [&](x86::reg32 to, x86::reg32 from) {
@@ -4018,10 +4233,9 @@ void roadLight(win32::WinApplication* app, x86::CPU& cpu)
     m.word(ebp + 0x66, 0);
     if (gameSettings(app).effectsLevel == 2 || gameSettings(app).weather == 0)
         return leave(0);
-    if (!callTo(0x420bf0, {},
-                pushWords(app, frameEsp, { refusal, m.word(point + 8), m.word(point + 4), m.word(point) })))
-        return;
-    if (cpu.eax || m.word(view) == 1)
+    if (!coreAt<0x420bf0, trackdata::placeInTunnel>(app, cpu, ebp, frameEsp, point, refusal))
+        return g.eax;
+    if (g.eax || m.word(view) == 1)
         return leave(0);
     {
         // To the track's fixed point and back (sub_420650).
@@ -4033,8 +4247,8 @@ void roadLight(win32::WinApplication* app, x86::CPU& cpu)
         m.word(ebp + 0x2e, integer(M::mul(m.load(point + 4), toFixed)));
         m.word(ebp + 0x32, integer(M::mul(m.load(point + 8), toFixed)));
     }
-    if (!callAtEsi(app, cpu, ebp, frameEsp, 0x420650, track, { ebp + 0x2a, 1, refusal }))
-        return;
+    if (!coreAtKeepingEax<0x420650, trackdata::placeAt>(app, cpu, ebp, frameEsp, ebp + 0x2a, 1, refusal, track))
+        return g.eax;
     {
         const double fromFixed = m.loadDouble(0x53bcd8);
         const double x = M::mul(fild32(m, ebp + 0x2a), fromFixed);
@@ -4047,12 +4261,12 @@ void roadLight(win32::WinApplication* app, x86::CPU& cpu)
         if (!found)
             return leave(0);
     }
-    if (!callTo(0x4207e0, { track, 1 }))
-        return;
-    const x86::reg32 place = cpu.eax;
-    if (!callTo(0x4dcdd0, {}))
-        return;
-    if (m.word(((cpu.eax * 9) << 6) + (place & 0x3f) * 9 * 4 + 0x55308c) != 0xa)
+    if (!coreAt<0x4207e0, trackdata::placeSurface>(app, cpu, ebp, frameEsp, track, 1))
+        return g.eax;
+    const x86::reg32 place = g.eax;
+    if (!coreAt<0x4dcdd0, frontend::simd::rainAmount>(app, cpu, ebp, frameEsp))
+        return g.eax;
+    if (m.word(((g.eax * 9) << 6) + (place & 0x3f) * 9 * 4 + 0x55308c) != 0xa)
         return leave(0);
     {
         // From the view (+8..+0x10), level.
@@ -4066,7 +4280,7 @@ void roadLight(win32::WinApplication* app, x86::CPU& cpu)
     }
     const std::optional<double> length1 = normalisedAt(app, cpu, ebp, frameEsp, ebp + 0x1e);
     if (!length1)
-        return;
+        return g.eax;
     m.store(ebp + 0x6e, *length1);
     if (!(m.word(ebp + 0x6e) & 0x7fffffff))
         return leave(0);
@@ -4079,20 +4293,19 @@ void roadLight(win32::WinApplication* app, x86::CPU& cpu)
                 m.byte(top, m.byte(top) ^ 0x80);
         const std::optional<double> dot = dotAt(app, cpu, ebp, frameEsp, ebp - 6, ebp + 0x1e);
         if (!dot)
-            return;
+            return g.eax;
         m.store(ebp + 0x6e, M::mul(-*dot, m.load(ebp + 0x6e)));
     }
-    if (!callTo(0x4e0160, { ebp + 0x1e, ebp + 6, ebp - 0x12 })
-        || !callTo(0x4e0050, { 1, ebp - 0x12 }, pushWords(app, frameEsp, { ebp - 0x12, m.word(size) })))
-        return;
+    if (!coreAt<0x4e0160, frontend::simd::cross>(app, cpu, ebp, frameEsp, ebp + 0x1e, ebp + 6, ebp - 0x12)
+        || !coreAt<0x4e0050, vertices::scaleVectorsBy>(app, cpu, ebp, frameEsp, 1, ebp - 0x12, m.word(size), ebp - 0x12))
+        return g.eax;
     {
         // The length held to [size, 30].
         const double length = M::mul(m.load(ebp + 0x6e), m.loadDouble(0x53bce0));
         const double least = m.load(size);
         const double along = !(length >= least) ? least : length > m.loadDouble(0x53bce8) ? 30.0 : length;
-        const x86::reg32 esp = pushWords(app, frameEsp, { ebp + 0x1e, asBits(float(-along)) });
-        if (!callTo(0x4e0050, { 1, ebp + 0x1e }, esp))
-            return;
+        if (!coreAt<0x4e0050, vertices::scaleVectorsBy>(app, cpu, ebp, frameEsp, 1, ebp + 0x1e, asBits(float(-along)), ebp + 0x1e))
+            return g.eax;
     }
     x86::reg32 heights;
     {
@@ -4119,8 +4332,8 @@ void roadLight(win32::WinApplication* app, x86::CPU& cpu)
     if (heights && m.word(ebp - 0xa2) == 0)
     {
         // The road's heights at the corners.
-        if (!callAtEsi(app, cpu, ebp, frameEsp, 0x420230, ebp - 0x1e, { track, ebp - 0x66 }))
-            return;
+        if (!coreAtKeepingEax<0x420230, trackdata::takeFrame>(app, cpu, ebp, frameEsp, track, ebp - 0x66, ebp - 0x1e))
+            return g.eax;
         const double fromFixed = m.loadDouble(0x53bcd8);
         const x86::reg32 sources[] = { 0x66, 0x62, 0x5e, 0x5a, 0x56, 0x52, 0x4e, 0x4a, 0x46, 0xea, 0xe6, 0xe2 };
         double v[12];
@@ -4138,12 +4351,12 @@ void roadLight(win32::WinApplication* app, x86::CPU& cpu)
                                            m.word(ebp + 0x1a), m.word(ebp + 0x16), m.word(ebp + 0x12) });
             const std::optional<double> ground = groundHeightAt(app, cpu, ebp, esp, ebp - 0x42);
             if (!ground)
-                return;
+                return g.eax;
             m.store(at + ebp - 0x92, M::add(*ground, m.load(0x53bcf0)));
         }
     }
-    if (!callTo(0x4bf4c0, { 4, ebp - 0x96, view + 0x44, view + 0x38 }, pushWords(app, frameEsp, { ebp - 0x18e })))
-        return;
+    if (!coreAt<0x4bf4c0, vertices::objectVerticesOf>(app, cpu, ebp, frameEsp, 4, ebp - 0x96, view + 0x44, view + 0x38, ebp - 0x18e))
+        return g.eax;
     {
         const x86::reg32 c0 = m.byte(ebp - 0x17a), c1 = m.byte(ebp - 0x15a), c2 = m.byte(ebp - 0x13a);
         const x86::reg32 c3 = m.byte(ebp - 0x11a);
@@ -4170,9 +4383,9 @@ void roadLight(win32::WinApplication* app, x86::CPU& cpu)
     }
     for (const x86::reg32 at : { 0x11eu, 0x13eu, 0x15eu, 0x17eu })
         m.word(ebp - at, m.word(colour));
-    if (!callTo(0x4bbde0, { ebp + 0x66, 0xa0 }))
-        return;
-    if (!cpu.eax)
+    if (!coreAt<0x4bbde0, frontend::rendd::arenaTake>(app, cpu, ebp, frameEsp, ebp + 0x66, 0xa0))
+        return g.eax;
+    if (!g.eax)
         return leave(0);
     const x86::reg32 record = m.word(ebp + 0x66);
     app->getMemory<x86::reg16>(record + 4) = 0;
@@ -4187,6 +4400,7 @@ void roadLight(win32::WinApplication* app, x86::CPU& cpu)
     for (x86::reg32 k = 0; k < 0x80; k += 4)
         m.word(record + 0x20 + k, m.word(ebp - 0x18e + k));
     leave(record);
+    return g.eax;
 }
 
 
@@ -4208,10 +4422,34 @@ public:
     {
         esp -= 4;
         put(app, esp, value);
+        if (pending < 16)
+            pushed[pending] = value;
+        ++pending;
+    }
+    /* The callee's typed core (coreAt) at `Address`: its register arguments `regs`, then the words pushed
+     * since the last call, the last pushed first -- the order its core takes them.  The words are
+     * handed on as parameters; esp is where it was before them, as the callee's ret leaves it. */
+    template <reg32 Address, auto Core, typename... V>
+    bool go(V... regs)
+    {
+        using Signature = CoreSignature<std::decay_t<decltype(Core)>>;
+        constexpr std::size_t count = Signature::count;
+        static_assert(sizeof...(V) <= count, "a call hands the callee no more than it takes");
+        // The callee's stack words are the last ones pushed, read where they lie as the callee reads them; the
+        // words pushed before them stay.
+        constexpr std::size_t stackWords = count - sizeof...(V);
+        reg32 words[count + 1] = {reg32(regs)..., 0};
+        for (std::size_t k = 0; k < stackWords; ++k)
+            words[sizeof...(V) + k] = at(app, esp + 4 * reg32(k));
+        const reg32 before = esp + 4 * reg32(stackWords);
+        pending = 0;
+        esp = before;
+        return coreCallWords<Address, Core, true>(app, cpu, g.ebp, before, words, std::make_index_sequence<count>{});
     }
     bool call(reg32 target, std::initializer_list<reg32> arguments = {})
     {
-        reg32* const registers[] = {&cpu.eax, &cpu.edx, &cpu.ebx, &cpu.ecx};
+        pending = 0;
+        reg32* const registers[] = {&g.eax, &g.edx, &g.ebx, &g.ecx};
         unsigned k = 0;
         for (const reg32 a : arguments)
             *registers[k++] = a;
@@ -4221,9 +4459,9 @@ public:
         esp = cpu.esp;
         return true;
     }
-    reg32 result() const { return cpu.eax; }
+    reg32 result() const { return g.eax; }
     /* One of THRASH's exports through the game's pointer to it (guest::driver, thrash_calls.h: the
-     * port's driver as C++ where the pointer leads to it, through the pointer in the checks), its
+     * port's driver as C++ where the pointer leads to it), its
      * words already pushed: taken off as its ret takes them. */
     template <reg32 Slot, auto Fn>
     bool driver()
@@ -4236,13 +4474,19 @@ public:
     reg32 esp;
 
 private:
+    reg32 pushed[16] = {};
+    std::size_t pending = 0;
     template <reg32 Slot, auto Fn, std::size_t... I>
     bool driverWith(std::index_sequence<I...>)
     {
+        pending = 0;
         const reg32 words[] = {at(app, esp + 4 * reg32(I))..., 0};
         cpu.esp = esp + 4 * reg32(sizeof...(I));
-        if (!guest::driver<Slot, Fn>(app, cpu, words[I]...))
+        const std::optional<reg32> result = guest::driver<Slot, Fn>(app, cpu, words[I]...);
+        if (!result)
             return false;
+        if constexpr (!std::is_void_v<decltype(Fn(app, cpu, reg32(words[I])...))>)
+            g.eax = *result;  // a void export leaves eax as it was
         esp = cpu.esp;
         return true;
     }
@@ -4281,17 +4525,11 @@ reg8 screenCodeOf(App* app, reg32 v)
 // sub_4eb230: ea::randomFractionOf, a fraction on st(0) taken off; nullopt when the game stopped.
 std::optional<double> randomFraction(Calls& out)
 {
-#ifdef NFS_GAME_CHECKS
-    if (!out.call(0x4eb230))
-        return std::nullopt;
-    return double(out.cpu.fpu.take());
-#else
     out.cpu.esp = out.esp;
     const std::optional<x86::Float> fraction = guest::direct<0x4eb230, ea::randomFractionOf>(out.app, out.cpu);
     if (!fraction || out.cpu.terminate)
         return std::nullopt;
     return double(*fraction);
-#endif
 }
 
 /* The effects' particles: their positions (12 bytes each, 9600 bytes a group), their states (+8
@@ -4320,25 +4558,13 @@ bool respawnParticle(Calls& out, reg32 view, reg32 position, reg32 scale)
 }
 
 /* A Windows function (`Function`, the port's own: native_windows.h) through its import's slot
- * `Slot`, `words` handed: as guest::windows, the words pushed in the check, where the stand-in
- * leaves them as the game's code then has them.  The check cannot tell the function its slot
- * holds, so takes all four of eax, edx, ebx, ecx at the call: there they are `held`, as the code
- * has them.  Its eax; nullopt when the game stopped. */
+ * `Slot`, `words` handed: as guest::windows.  Its eax; nullopt when the game stopped. */
 template <reg32 Slot, auto Function, typename... Words>
 std::optional<reg32> windowsCall(Calls& out, std::initializer_list<reg32> held, Words... words)
 {
-#ifdef NFS_GAME_CHECKS
-    const reg32 pushed[] = {reg32(words)..., 0};
-    for (std::size_t i = sizeof...(Words); i-- > 0;)
-        out.push(pushed[i]);
-    if (!out.call(at(out.app, Slot), held))
-        return std::nullopt;
-    return out.result();
-#else
     (void)held;
     out.cpu.esp = out.esp;
     return guest::windows<Slot, Function>(out.app, out.cpu, words...);
-#endif
 }
 
 // `count` words from `from` to `to`, forwards, as rep movsd copies them.
@@ -4350,20 +4576,11 @@ void copyWords(App* app, reg32 to, reg32 from, reg32 count)
 
 constexpr reg32 kChop = 0x4dfd56;  // __CHP: st(0) to a whole value toward 0
 
-/* kChop on `value`: watcom::clib::chop, which leaves all else as it was.  In the checks
- * (NFS_GAME_CHECKS) by address, `value` pushed alone -- the code has its other values under it on
- * the x87 stack, which __CHP leaves alone.  nullopt when the game stopped. */
+/* kChop on `value`: watcom::clib::chop, which leaves all else as it was.  nullopt when the game stopped. */
 std::optional<x86::Float> chopped(Calls& out, x86::Float value)
 {
-#ifdef NFS_GAME_CHECKS
-    out.cpu.fpu.push(value);
-    if (!out.call(kChop))
-        return std::nullopt;
-    return out.cpu.fpu.take();
-#else
     out.cpu.esp = out.esp;
     return x86::Float(guest::direct<kChop, watcom::clib::chop>(out.app, out.cpu, double(value)));
-#endif
 }
 
 /* sub_4d1390, `scale` pushed: port_text's textScaleSet, which leaves all else (eax too) as it was;
@@ -4371,12 +4588,6 @@ std::optional<x86::Float> chopped(Calls& out, x86::Float value)
 bool setTextScale(Calls& out, reg32 scale)
 {
     out.push(scale);
-#ifdef NFS_GAME_CHECKS
-    if (!out.call(0x4d1390))
-        return false;
-    out.cpu.fpu.take();
-    return true;
-#else
     out.cpu.esp = out.esp;
     try
     {
@@ -4390,7 +4601,6 @@ bool setTextScale(Calls& out, reg32 scale)
         return false;
     out.esp += 4;
     return true;
-#endif
 }
 
 // fcom a with b as je reads it after sahf: ZF, equal or unordered.
@@ -4428,10 +4638,11 @@ reg32 glareDarkened(App* app, reg32 colour, reg32 factor)
  * cull at 500 as a single view's, a port), the mirror -- each also times
  * [0x536d6c] as floats; the count moved on (the record's number, left in
  * eax, no caller reads). */
-void viewRecord(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 viewRecord(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
+    const RegisterImage image(args);
     const Memory m{app};
-    const reg32 kind = cpu.eax, screen = cpu.edx, owner = cpu.ebx;
+    const reg32 kind = g.eax, screen = g.edx, owner = g.ebx;
     const reg32 record = 0x5dd0e0 + m.word(0x5dd0dc) * 0x54;
     m.word(record + 0x14, 0xffffffff);
     m.word(record + 0x18, 0xffffffff);
@@ -4484,6 +4695,7 @@ void viewRecord(win32::WinApplication* app, x86::CPU& cpu)
     m.store(record + 0x2c, a);
     m.word(0x5dd0dc, m.word(0x5dd0dc) + 1);
     cpu.esp += 4;
+    return g.eax;
 }
 
 /* sub_41d960: the views for a race: sub_41de40, the track's setup
@@ -4491,35 +4703,37 @@ void viewRecord(win32::WinApplication* app, x86::CPU& cpu)
  * the view records (sub_41df10: the main view and the mirror, or the two
  * halves of a split screen with [0x6fd3b0] 1), then sub_41d310 ..
  * sub_41d900. */
-void raceViews(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 raceViews(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
+    const RegisterImage image(args);
     const Memory m{app};
     const Entry entry(cpu);
     // push ebx, edx, esi, ebp; mov ebp, esp
     Calls out(app, cpu, entry.esp - 16);
     m.word(0x5dd834, 0x1234);
-    if (!out.call(0x41de40))
-        return;
+    if (!out.go<0x41de40, track::stillObjects>())
+        return g.eax;
     if (m.word(0x55e88c) == 0)
     {
         // sub_41d8a0 pushes eax, the setup's name, for its sprintf
-        if (!out.call(0x41d8a0, {0x536d10}) || !out.call(0x40f280, {out.result()}))
-            return;
+        if (!out.go<0x41d8a0, load::trackFile>(0x536d10) || !out.go<0x40f280, load::loadCameras>(out.result()))
+            return g.eax;
         if (m.word(0x55e88c) == 0)
         {
-            if (!out.call(0x41dae0) || !out.call(0x41deb0))
-                return;
+            if (!out.go<0x41dae0, track::startObjectPool>() || !out.go<0x41deb0, track::startViewsOver>())
+                return g.eax;
             const bool split = gameSettings(app).playMode == 1;
-            if (!out.call(0x41df10, {split ? 1u : 0u, 0x10, 0x5dd090})
-                || !out.call(0x41df10, {split ? 2u : 3u, split ? 0x20u : 0x10u, 0x5dd0b4}))
-                return;
-            if (!out.call(0x41d310, {0}) || !out.call(0x41d620) || !out.call(0x419b60)
-                || !out.call(0x41d8a0, {0x536d14}) || !out.call(0x41dcc0, {out.result()}) || !out.call(0x41dc60)
-                || !out.call(0x41a100) || !out.call(0x470b90, {gameSettings(app).track}) || !out.call(0x41d900))
-                return;
+            if (!out.go<0x41df10, render::viewRecordMade>(split ? 1u : 0u, 0x10, 0x5dd090)
+                || !out.go<0x41df10, render::viewRecordMade>(split ? 2u : 3u, split ? 0x20u : 0x10u, 0x5dd0b4))
+                return g.eax;
+            if (!out.go<0x41d310, track::chooseView>(0) || !out.go<0x41d620, render::viewDistancesSet>() || !out.go<0x419b60, track::startArena>()
+                || !out.go<0x41d8a0, load::trackFile>(0x536d14) || !out.go<0x41dcc0, track::loadCollisionFile>(out.result()) || !out.go<0x41dc60, track::takeTrackTextures>()
+                || !out.go<0x41a100, track::loadTrackGeometry>() || !out.go<0x470b90, frontend::renda::fogReset>() || !out.go<0x41d900, track::modelsUnlimitedLeaving>(out.result()))
+                return g.eax;
         }
     }
     entry.restore(cpu, Entry::kEbx | Entry::kEdx | Entry::kEsi | Entry::kEbp);
+    return g.eax;
 }
 
 
@@ -4534,11 +4748,12 @@ void raceViews(win32::WinApplication* app, x86::CPU& cpu)
  * every driver, a port), their size [0x8ca230] less depth times [0x8ca250]
  * times [0x549804], at most 1, closed by sub_4bbde0 (or sub_4bbe70 for
  * none). */
-void smoke(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 smoke(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
+    const RegisterImage image(args);
     const Memory m{app};
     const Entry entry(cpu);
-    const reg32 result = cpu.esi, view = cpu.eax, count = cpu.edx;
+    const reg32 result = g.esi, view = g.eax, count = g.edx;
     // push ebx, ecx, edi, ebp; mov ebp, esp; sub esp, 0x5c
     const reg32 frame = entry.esp - 16;
     const reg32 records = frame - 0x3c, none = frame - 0x5c;  // handed to sub_4bbe40, sub_4bbe70
@@ -4546,15 +4761,15 @@ void smoke(win32::WinApplication* app, x86::CPU& cpu)
     const reg32 group = m.word(view + 4);
     const reg32 colour = glareDarkened(app, effectGrey(app), 0x5497e4);
     reg32 first = 0, last = 0;
-    if (!out.call(0x4bbe40, {records, count * 0xa0}))
-        return;
+    if (!out.go<0x4bbe40, frontend::rendd::arenaHere>(records))
+        return g.eax;
     reg32 quads = 0;
     if (out.result())
     {
         reg32 record = m.word(records);
         out.push(kParticlePoints);
-        if (!out.call(0x4bf4c0, {count, kParticlePositions + group * kParticleGroupBytes, view + 0x44, view + 0x38}))
-            return;
+        if (!out.go<0x4bf4c0, vertices::objectVerticesOf>(count, kParticlePositions + group * kParticleGroupBytes, view + 0x44, view + 0x38))
+            return g.eax;
         for (reg32 i = 0; i32(i) < i32(count); ++i)
         {
             const reg32 particle = group * kParticleGroupBytes + i * 12;
@@ -4565,7 +4780,7 @@ void smoke(win32::WinApplication* app, x86::CPU& cpu)
             if (fcomAbove(m.load(v + 8), m.loadDouble(0x5497ec)) && fcomAbove(0.0, m.load(v + 8)))
             {
                 if (!respawnParticle(out, view, position, 0x5497f4))
-                    return;
+                    return g.eax;
                 continue;
             }
             if (!fcomBelow(0.0, m.load(v + 8)) || fcomBelow(fild32(m, 0x8ca24c), m.load(v + 8)) || m.byte(v + 0x14))
@@ -4575,12 +4790,12 @@ void smoke(win32::WinApplication* app, x86::CPU& cpu)
                 out.push(m.word(position + 8));
                 out.push(m.word(position + 4));
                 out.push(m.word(position));
-                if (!out.call(0x4dd930, {view}))
-                    return;
+                if (!out.go<0x4dd930, frontend::rende::smokeEmit>(view))
+                    return g.eax;
                 if (out.result())
                 {
                     if (!respawnParticle(out, view, position, 0x5497f4))
-                        return;
+                        return g.eax;
                     continue;
                 }
             }
@@ -4623,24 +4838,24 @@ void smoke(win32::WinApplication* app, x86::CPU& cpu)
         if (quads)
         {
             last = record - 0xa0;
-            if (!out.call(0x4bbde0, {records, quads * 5 << 5}))
-                return;
+            if (!out.go<0x4bbde0, frontend::rendd::arenaTake>(records, quads * 5 << 5))
+                return g.eax;
             first = m.word(records);
             m.word(last, 0);
         }
     }
     if (!quads)
     {
-        cpu.esi = none;  // sub_4bbe70's argument
-        if (!out.call(0x4bbe70))
-            return;
+        if (!out.go<0x4bbe70, frontend::rendd::emptyList>(none))
+            return g.eax;
         first = m.word(none);
         last = m.word(none + 4);
     }
     m.word(result, first);
     m.word(result + 4, last);
-    cpu.esi = frame - 0x54;  // as the code's copy of the two words leaves it
+    g.esi = frame - 0x54;  // as the code's copy of the two words leaves it
     entry.restore(cpu, Entry::kEbx | Entry::kEcx | Entry::kEdi | Entry::kEbp);
+    return g.eax;
 }
 
 /* sub_4de700: a view's spray streaks (view in eax, its group at +4; edx
@@ -4651,11 +4866,12 @@ void smoke(win32::WinApplication* app, x86::CPU& cpu)
  * [0x54982c]; quads of 0x80 bytes (flags 1 at +4 and +6), a respawned
  * particle also handed to sub_414f90, [0x54981c] the scatter and the
  * streak's width. */
-void streaks(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 streaks(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
+    const RegisterImage image(args);
     const Memory m{app};
     const Entry entry(cpu);
-    const reg32 result = cpu.esi, view = cpu.eax, count = cpu.edx, liveCount = cpu.ebx;
+    const reg32 result = g.esi, view = g.eax, count = g.edx, liveCount = g.ebx;
     // push ecx, edi, ebp; mov ebp, esp; sub esp, 0x60
     const reg32 frame = entry.esp - 12;
     const reg32 records = frame - 0x38, none = frame - 0x60;  // handed to sub_4bbe40, sub_4bbe70
@@ -4664,15 +4880,15 @@ void streaks(win32::WinApplication* app, x86::CPU& cpu)
     reg32 colour = effectGrey(app);
     reg32 first = 0, last = 0, quads = 0;
     m.word(liveCount, 0);
-    if (!out.call(0x4bbe40, {records, count << 7}))
-        return;
+    if (!out.go<0x4bbe40, frontend::rendd::arenaHere>(records))
+        return g.eax;
     if (out.result())
     {
         reg32 record = m.word(records);
         colour = glareDarkened(app, colour, 0x54980c);
         out.push(kParticlePoints);
-        if (!out.call(0x4bf4c0, {count, kParticlePositions + group * kParticleGroupBytes, view + 0x44, view + 0x38}))
-            return;
+        if (!out.go<0x4bf4c0, vertices::objectVerticesOf>(count, kParticlePositions + group * kParticleGroupBytes, view + 0x44, view + 0x38))
+            return g.eax;
         reg32 live = 0;
         for (reg32 i = 0; i32(i) < i32(count); ++i)
         {
@@ -4687,7 +4903,7 @@ void streaks(win32::WinApplication* app, x86::CPU& cpu)
             if (fcomAbove(m.load(v + 8), m.loadDouble(0x549814)) && fcomAbove(0.0, m.load(v + 8)))
             {
                 if (!respawnParticle(out, view, position, 0x54981c))
-                    return;
+                    return g.eax;
                 lost();
                 continue;
             }
@@ -4701,13 +4917,13 @@ void streaks(win32::WinApplication* app, x86::CPU& cpu)
                 out.push(m.word(position + 8));
                 out.push(m.word(position + 4));
                 out.push(m.word(position));
-                if (!out.call(0x4dd930, {view}))
-                    return;
+                if (!out.go<0x4dd930, frontend::rende::smokeEmit>(view))
+                    return g.eax;
                 if (out.result())
                 {
-                    cpu.edi = m.word(position + 4);  // as the code has it: sub_414f90 reads edi
-                    if (!out.call(0x414f90, {group, 0xffffffff}) || !respawnParticle(out, view, position, 0x54981c))
-                        return;
+                    g.edi = m.word(position + 4);  // as the code has it: sub_414f90 reads edi
+                    if (!out.go<0x414f90, port::crowdEffectOf>(out.esp - 4, group, 0xffffffff) || !respawnParticle(out, view, position, 0x54981c))
+                        return g.eax;
                     lost();
                     continue;
                 }
@@ -4761,24 +4977,24 @@ void streaks(win32::WinApplication* app, x86::CPU& cpu)
         if (quads)
         {
             last = record - 0x80;
-            if (!out.call(0x4bbde0, {records, quads << 7}))
-                return;
+            if (!out.go<0x4bbde0, frontend::rendd::arenaTake>(records, quads << 7))
+                return g.eax;
             first = m.word(records);
             m.word(last, 0);
         }
     }
     if (!quads)
     {
-        cpu.esi = none;  // sub_4bbe70's argument
-        if (!out.call(0x4bbe70))
-            return;
+        if (!out.go<0x4bbe70, frontend::rendd::emptyList>(none))
+            return g.eax;
         first = m.word(none);
         last = m.word(none + 4);
     }
     m.word(result, first);
     m.word(result + 4, last);
-    cpu.esi = frame - 0x58;  // as the code's copy of the two words leaves it
+    g.esi = frame - 0x58;  // as the code's copy of the two words leaves it
     entry.restore(cpu, Entry::kEcx | Entry::kEdi | Entry::kEbp);
+    return g.eax;
 }
 
 
@@ -4789,8 +5005,9 @@ void streaks(win32::WinApplication* app, x86::CPU& cpu)
  * Ports: at Full the far distance stays whole and a split view's reaches
  * 500, and the mirror takes the main view's distances.  Then every view's
  * distances as floats times [0x536ce4]. */
-void viewDistances(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 viewDistances(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
+    const RegisterImage image(args);
     const Memory m{app};
     // push ebx, ecx, edx, esi, edi, ebp; mov ebp, esp; sub esp, 0x18
     const reg32 frame = cpu.esp - 24;
@@ -4860,8 +5077,9 @@ void viewDistances(win32::WinApplication* app, x86::CPU& cpu)
         m.store(record + 0x44, e);
         m.store(record + 0x40, f);
     }
-    cpu.eax = left;
+    g.eax = left;
     cpu.esp += 4;
+    return g.eax;
 }
 
 namespace
@@ -4879,7 +5097,7 @@ std::optional<reg32> allocateTransformBuffer(App* app, CPU& cpu, reg32 size)
 {
     Calls out(app, cpu, cpu.esp - 12);  // push ebx, edx, ebp; mov ebp, esp
     put(app, size, kTransformBufferBytes);
-    if (!out.call(kAllocate, {kTransformBuffer, kTransformBufferBytes, 0}))
+    if (!out.go<kAllocate, ea::reserved>(kTransformBuffer, kTransformBufferBytes, 0))
         return std::nullopt;
     return out.result();
 }
@@ -4887,14 +5105,16 @@ std::optional<reg32> allocateTransformBuffer(App* app, CPU& cpu, reg32 size)
 }
 
 /* sub_4b56e0: allocateTransformBuffer for eax, the allocator's eax left in eax. */
-void transformBuffer(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 transformBuffer(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
+    const RegisterImage image(args);
     const Entry entry(cpu);
-    const std::optional<reg32> allocated = allocateTransformBuffer(app, cpu, cpu.eax);
+    const std::optional<reg32> allocated = allocateTransformBuffer(app, cpu, g.eax);
     if (!allocated)
-        return;
-    cpu.eax = *allocated;
+        return g.eax;
+    g.eax = *allocated;
     entry.restore(cpu, Entry::kEbx | Entry::kEdx | Entry::kEbp);
+    return g.eax;
 }
 
 /* sub_4bef50: a screen mode (eax, at least 1) from the driver's list
@@ -4903,17 +5123,18 @@ void transformBuffer(win32::WinApplication* app, x86::CPU& cpu)
  * list is set by THRASH_setvideomode (16 bits at most, triple buffered when
  * the entry allows) between clears and flips, then the same refresh, the
  * window and [0x7a3a68] by the buffering. */
-void screenMode(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 screenMode(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
+    const RegisterImage image(args);
     const Memory m{app};
     const Entry entry(cpu);
-    const reg32 mode = cpu.eax;
+    const reg32 mode = g.eax;
     // push ebx, ecx, edx, esi, edi, ebp; mov ebp, esp; sub esp, 8
     Calls out(app, cpu, entry.esp - 24 - 8);
-    auto leave = [&]() { entry.restore(cpu, Entry::kEbx | Entry::kEcx | Entry::kEdx | Entry::kEsi | Entry::kEdi | Entry::kEbp); };
+    auto leave = [&]() -> x86::reg32 { entry.restore(cpu, Entry::kEbx | Entry::kEcx | Entry::kEdx | Entry::kEsi | Entry::kEdi | Entry::kEbp); return g.eax; };
     // sub_4bebb0 with the mode's size, its rectangle copied to 0x7cdac0
     auto refresh = [&]() {
-        if (!out.call(0x4bebb0, {0, 0, m.word(0x7cdae0), m.word(0x7cdae4)}))
+        if (!out.go<0x4bebb0, frontend::simd::setClipRect>(0, 0, m.word(0x7cdae0), m.word(0x7cdae4)))
             return false;
         copyWords(app, 0x7cdac0, 0x7cda60, 8);
         return true;
@@ -4921,7 +5142,7 @@ void screenMode(win32::WinApplication* app, x86::CPU& cpu)
     // window 2, the 2D state, clear and flip twice
     auto clearTwice = [&]() {
         out.push(2);
-        return out.driver<thrash::kThrashWindow, &port::driver::window>() && out.call(0x431900, {3, 0xff000000})
+        return out.driver<thrash::kThrashWindow, &port::driver::window>() && out.go<0x431900, graphics::sendState>(3, 0xff000000)
                && out.driver<thrash::kThrashClearWindow, &port::driver::clearWindow>()
                && out.driver<thrash::kThrashPageFlip, &port::driver::pageFlip>()
                && out.driver<thrash::kThrashClearWindow, &port::driver::clearWindow>()
@@ -4934,7 +5155,7 @@ void screenMode(win32::WinApplication* app, x86::CPU& cpu)
     if (dynamicFullscreenMode(mode) && dynamicFullscreenRefresh(app) && m.word(0x55fec0) == mode)
         m.word(0x55fec0, 0);
     if (!out.driver<thrash::kThrashAbout, &port::driver::about>())
-        return;
+        return g.eax;
     const reg32 about = out.result();
     const reg32 wanted = i32(mode) < 1 ? 1 : mode;
     if (wanted == m.word(0x55fec0))
@@ -4942,7 +5163,7 @@ void screenMode(win32::WinApplication* app, x86::CPU& cpu)
         copyWords(app, 0x7cdae0, wanted * 40 + m.word(about + 0x40), 10);
         if (refresh())
             leave();
-        return;
+        return g.eax;
     }
     if (i32(wanted) > i32(m.word(about + 0x3c)))
         return leave();
@@ -4952,23 +5173,24 @@ void screenMode(win32::WinApplication* app, x86::CPU& cpu)
     const reg32 triple = i32(depth) > i32(m.word(m.word(about + 0x40) + wanted * 40 + 0x18)) ? 0 : 1;
     if (!out.driver<thrash::kThrashFlushWindow, &port::driver::flushWindow>()
         || !out.driver<thrash::kThrashPageFlip, &port::driver::pageFlip>() || !clearTwice())
-        return;
+        return g.eax;
     out.push(triple);
     out.push(depth);
     out.push(wanted);
     if (!out.driver<thrash::kThrashSetVideoMode, &port::driver::setVideoMode>())
-        return;
+        return g.eax;
     if (out.result())
     {
         const reg32 from = m.word(about + 0x40) + wanted * 40;
         m.word(0x55fec0, wanted);
         copyWords(app, 0x7cdae0, from, 10);
         m.word(0x7a3a68, triple);
-        if (!out.call(0x431900, {4, triple}) || !refresh())
-            return;
+        if (!out.go<0x431900, graphics::sendState>(4, triple) || !refresh())
+            return g.eax;
     }
     if (clearTwice())
         leave();
+    return g.eax;
 }
 
 /* The listing memory Dynamic Fullscreen needs: 32 MB lists modes up to
@@ -4981,11 +5203,12 @@ constexpr x86::reg32 kListingMemory = 0x2000000;
  * states set as each driver wants, [0x55fed0], [0x7a3a60], [0x7a3a64],
  * [0x7a3a68], [0x7a3a6c], [0x7a3a70]; the 2D one only on a screen of 8 bits
  * or more, those not built in with a message and sub_4f2a7d. */
-void startDriver(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 startDriver(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
+    const RegisterImage image(args);
     const Memory m{app};
     const Entry entry(cpu);
-    const reg32 driver = cpu.eax, message = cpu.edx, kept = cpu.ecx;
+    const reg32 driver = g.eax, message = g.edx, kept = g.ecx;
     // push ebx, ecx, esi, edi, ebp; mov ebp, esp; sub esp, 0x1c
     const reg32 frame = entry.esp - 20;
     Calls out(app, cpu, frame - 0x1c);
@@ -4994,18 +5217,16 @@ void startDriver(win32::WinApplication* app, x86::CPU& cpu)
         out.push(a);
         return out.driver<thrash::kThrashSetState, &port::driver::setState>();
     };
-    /* sub_4f2a7d, the game's exit, reads no register, but the check takes all four from it (its
-     * code runs on into data): eax as the last callee leaves it and the others as the code has
+    /* sub_4f2a7d, the game's exit, reads no register (its
+     * code runs on into data), and is called with eax as the last callee leaves it and the others as the code has
      * them -- ebx the message (1 after sub_4f8b50), edx 0 (sub_4f8b50's), ecx as the caller's; and
      * edi, which its code would read, as the code has it. */
-    reg32 edx = 0, ebx = message, ecx = kept, edi = cpu.edi;
-    auto quit = [&]() {
-        cpu.edi = edi;
-        return out.call(0x4f2a7d, {out.result(), edx, ebx, ecx});
-    };
+    // the registers the host calls below are handed, as the code has them
+    reg32 edx = 0, ebx = message, ecx = kept;
+    auto quit = [&]() { return out.go<0x4f2a7d, frontend::eab::exitGameNow>(); };
     // The driver's library: load, link, start, and quit if that failed.
     auto load = [&](reg32 library) {
-        if (!out.call(0x4f87e0, {library}) || !out.call(0x4f8830) || !out.call(0x4f8930))
+        if (!out.go<0x4f87e0, frontend::wata::thrashOpenByName>(library) || !out.go<0x4f8830, graphics::screenFunctionsSet>() || !out.go<0x4f8930, frontend::wata::graphicsStart>())
             return false;
         return m.word(0x564364) != 0 || quit();
     };
@@ -5015,32 +5236,32 @@ void startDriver(win32::WinApplication* app, x86::CPU& cpu)
     m.word(0x7a3a70, 0);
     if (driver > 0xa)
     {
-        if (out.call(0x4b5e50, {message}) && quit())
+        if (out.go<0x4b5e50, frontend::wina::fatalMessage>(message) && quit())
             entry.restore(cpu, Entry::kEbx | Entry::kEcx | Entry::kEsi | Entry::kEdi | Entry::kEbp);
-        return;
+        return g.eax;
     }
     const reg32 library = m.word(driver * 4 + 0x55fd68);
     switch (driver)
     {
     case 0:
         if (!load(library))
-            return;
+            return g.eax;
         m.word(0x7a3a70, 1);
         break;
     case 1:
     case 2:
         if (!load(library) || !setState(0xa, 2) || !setState(3, 0)
             || !out.driver<thrash::kThrashClearWindow, &port::driver::clearWindow>() || !setState(4, 0))
-            return;
+            return g.eax;
         out.push(0);
         out.push(6);
         m.word(0x7a3a68, 0);
         m.word(0x7a3a60, 0);
         if (!out.driver<thrash::kThrashSetState, &port::driver::setState>() || !setState(2, 0))
-            return;
+            return g.eax;
         m.word(0x7a3a64, 0);
-        if (!out.call(0x431c50))
-            return;
+        if (!out.go<0x431c50, collide::fillBlendTables>())
+            return g.eax;
         m.word(0x55fed0, 0x400000);
         m.word(0x7a3a70, 0);
         break;
@@ -5049,44 +5270,43 @@ void startDriver(win32::WinApplication* app, x86::CPU& cpu)
     {
         edx = 0x53fd34;
         ebx = 1;
-        if (!out.call(0x4f8b50, {0x53fd38, edx, ebx}) || !load(m.word(driver * 4 + 0x55fd68)))
-            return;
+        if (!out.go<0x4f8b50, watcom::clib::setenv>(0x53fd38, edx, ebx) || !load(m.word(driver * 4 + 0x55fd68)))
+            return g.eax;
         for (const reg32 name : {0x53fd48u, 0x53fd54u, 0x53fd60u, 0x53fd6cu, 0x53fd78u, 0x53fd88u, 0x53fd98u, 0x53fda8u})
-            if (!out.call(0x4f8b50, {name, 0x53ec28, 1}))
-                return;
+            if (!out.go<0x4f8b50, watcom::clib::setenv>(name, 0x53ec28, 1))
+                return g.eax;
         if (!setState(0xa, 2) || !out.driver<thrash::kThrashClearWindow, &port::driver::clearWindow>())
-            return;
+            return g.eax;
         out.push(1);
         out.push(4);
         if (!out.driver<thrash::kThrashSetState, &port::driver::setState>())
-            return;
+            return g.eax;
         out.push(0);
         out.push(2);
         m.word(0x7a3a68, 1);
         m.word(0x7a3a60, 1);
         if (!out.driver<thrash::kThrashSetState, &port::driver::setState>())
-            return;
+            return g.eax;
         m.word(0x55fed0, 0x800000);
         m.word(0x7a3a70, 1);
         m.word(0x7a3a64, 4);
         break;
     }
     case 5:
-        edi = 1;
         m.word(0x7a3a6c, 1);
         if (!load(library) || !setState(0xa, 2)
             || !out.driver<thrash::kThrashClearWindow, &port::driver::clearWindow>() || !setState(4, 1))
-            return;
+            return g.eax;
         out.push(1);
         out.push(6);
         m.word(0x7a3a68, 1);
         m.word(0x7a3a60, 1);
         if (!out.driver<thrash::kThrashSetState, &port::driver::setState>())
-            return;
+            return g.eax;
         out.push(0);
         out.push(2);
         if (!out.driver<thrash::kThrashSetState, &port::driver::setState>())
-            return;
+            return g.eax;
         m.word(0x7a3a64, 0);
         m.word(0x55fed0, 0x200000);
         break;
@@ -5094,46 +5314,45 @@ void startDriver(win32::WinApplication* app, x86::CPU& cpu)
     {
         const std::optional<reg32> desktop = windowsCall<0x534740, &host::desktopWindow>(out, {driver << 2, edx, ebx, ecx});
         if (!desktop)
-            return;
+            return g.eax;
         const std::optional<reg32> dc = windowsCall<0x534754, &host::windowDC>(out, {*desktop, edx, ebx, ecx}, *desktop);
         if (!dc)
-            return;
+            return g.eax;
         const std::optional<reg32> bits = windowsCall<0x534458, &host::deviceCaps>(out, {*dc, edx, ebx, ecx}, *dc, 0xc);
         if (!bits)
-            return;
+            return g.eax;
         if (i32(*bits) < 8)
         {
             // the messages' table copied to the frame, read there by the message
             copyWords(app, frame - 0x1c, 0x4b55b0, 6);
             ecx = 0;
-            edi = m.word(frame - 0x1c + message * 4);
             if (!windowsCall<0x534764, &host::messageBox>(out, {*bits, edx, ebx, ecx}, 0,
                                                              m.word(frame - 0x1c + message * 4), 0x53ec28, 0x30)
                 || !quit())
-                return;
+                return g.eax;
         }
         if (!load(m.word(m.word(frame - 4) * 4 + 0x55fd68)))
-            return;
+            return g.eax;
         out.push(m.word(0x55fdbc));
         if (!out.driver<thrash::kThrashSelectDisplay, &port::driver::selectDisplay>())
-            return;
+            return g.eax;
         out.push(1);
         out.push(2);
         out.push(1);
-        if (!out.driver<thrash::kThrashSetVideoMode, &port::driver::setVideoMode>() || !out.call(0x4b5940)
+        if (!out.driver<thrash::kThrashSetVideoMode, &port::driver::setVideoMode>() || !out.go<0x4b5940, frontend::rendd::readDriverFeatures>(g.eax)
             || !setState(0xa, 2) || !setState(0x68, 0)
             || !out.driver<thrash::kThrashClearWindow, &port::driver::clearWindow>() || !setState(4, 1))
-            return;
+            return g.eax;
         out.push(1);
         out.push(6);
         m.word(0x7a3a68, 1);
         m.word(0x7a3a60, 1);
         if (!out.driver<thrash::kThrashSetState, &port::driver::setState>())
-            return;
+            return g.eax;
         out.push(0);
         out.push(2);
         if (!out.driver<thrash::kThrashSetState, &port::driver::setState>())
-            return;
+            return g.eax;
         m.word(0x7a3a64, 0);
         m.word(0x55fed0, 0x200000);
         break;
@@ -5142,24 +5361,24 @@ void startDriver(win32::WinApplication* app, x86::CPU& cpu)
     case 8:
         if (!load(library) || !setState(0xa, 2)
             || !out.driver<thrash::kThrashClearWindow, &port::driver::clearWindow>() || !setState(4, 2))
-            return;
+            return g.eax;
         out.push(0);
         out.push(2);
         m.word(0x7a3a68, 2);
         m.word(0x7a3a60, 2);
         if (!out.driver<thrash::kThrashSetState, &port::driver::setState>() || !setState(0xce, 1) || !setState(6, 1))
-            return;
+            return g.eax;
         out.push(2);
         out.push(0xc9);
         if (!out.driver<thrash::kThrashSetState, &port::driver::setState>())
-            return;
+            return g.eax;
         m.word(0x7a3a64, 0);
         m.word(0x55fed0, 0x200000);
         m.word(0x7a3a70, 1);
         break;
     default:
         if (!windowsCall<0x534764, &host::messageBox>(out, {driver << 2, edx, ebx, ecx}, 0, 0x53fdb4, 0x53ec28, 0x30) || !quit())
-            return;
+            return g.eax;
         m.word(0x7a3a70, 1);
         break;
     }
@@ -5169,6 +5388,7 @@ void startDriver(win32::WinApplication* app, x86::CPU& cpu)
     if (m.word(0x55fed0) < kListingMemory)
         m.word(0x55fed0, kListingMemory);
     entry.restore(cpu, Entry::kEbx | Entry::kEcx | Entry::kEsi | Entry::kEdi | Entry::kEbp);
+    return g.eax;
 }
 
 /* sub_47f650: the frame around a HUD element, eight textured quads at eax
@@ -5176,13 +5396,14 @@ void startDriver(win32::WinApplication* app, x86::CPU& cpu)
  * +0x1c) -- the corners and the edges of a 9-slice, the middle left out --
  * from the element's inside, x ebx to [esp+4], y edx to ecx, and a border
  * of hudBorder outside it.  ret 4. */
-void hudFrame(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 hudFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
+    const RegisterImage image(args);
     const Memory m{app};
     const x86::reg32 entry = cpu.esp;
-    const x86::reg32 quads = cpu.eax;
+    const x86::reg32 quads = g.eax;
     const x86::reg32 border = hudBorder(app, cpu, 0x53b4f8, 0x53b4fc);
-    const x86::reg32 left = cpu.ebx, right = m.word(entry + 4), top = cpu.edx, bottom = cpu.ecx;
+    const x86::reg32 left = g.ebx, right = m.word(entry + 4), top = g.edx, bottom = g.ecx;
     const x86::reg32 x[4] = { left - border, left, right, right + border };
     const x86::reg32 y[4] = { top - border, top, bottom, bottom + border };
     struct Quad
@@ -5216,15 +5437,16 @@ void hudFrame(win32::WinApplication* app, x86::CPU& cpu)
             m.word(corner + 0x1c, ts[c]);
         }
     }
-    cpu.eax = m.word(quads + 0x3e4);  // the last corner's y, as the code leaves it: a caller reads eax
+    g.eax = m.word(quads + 0x3e4);  // the last corner's y, as the code leaves it: a caller reads eax
     cpu.esp = entry + 8;
+    return g.eax;
 }
 
 namespace
 {
 
 constexpr reg32 kPlayerCar = 0x422bd0;  // the car of player eax's view, to eax
-constexpr reg32 kHudFrame = 0x47f650;   // hudFrame, called by address: the check stands in for it
+constexpr reg32 kHudFrame = 0x47f650;   // hudFrame, called by address
 // The HUD's rectangles in pixels: 23 of 16 bytes (left, top, right, bottom) a player.
 constexpr reg32 kHudRects = 0x749758, kHudRectsBytes = 0x170;
 // A car's flags: bit 0x20 a cop's (Hot Pursuit), whose HUD has the other layout.
@@ -5246,7 +5468,7 @@ Edges insetBy(App* app, reg32 rect, reg32 border)
 // kPlayerCar for `player`: the car, or nullopt when the game stopped.
 std::optional<reg32> playerCar(Calls& out, reg32 player)
 {
-    if (!out.call(kPlayerCar, {player}))
+    if (!out.go<kPlayerCar, carstate::targetOfCamera>(player))
         return std::nullopt;
     return out.result();
 }
@@ -5256,7 +5478,7 @@ std::optional<reg32> playerCar(Calls& out, reg32 player)
 bool drawHudFrame(Calls& out, reg32 quads, const Edges& inside)
 {
     out.push(inside.right);
-    return out.call(kHudFrame, {quads, inside.top, inside.left, inside.bottom});
+    return out.go<kHudFrame, render::hudFrameBuilt>(quads, inside.top, inside.left, inside.bottom);
 }
 
 // The HUD layout's records (gameSettings' hudAt): a row by split screen and player, two layouts.
@@ -5267,7 +5489,7 @@ constexpr reg32 kHudRowBytes = 0x348, kHudLayoutBytes = 0x1a4;
 /* 0x480910's work: HUD element `element`'s rectangle for `player` in pixels to kHudRects: its
  * layout's fractions (by split screen, the player's car's cop bit) times the width and the
  * height, each made whole toward 0 by __CHP and stored by fistp; then widescreenHudRect (a port,
- * tools/apply_widescreen.py).  False when the game stopped. */
+ * the port's widescreen change).  False when the game stopped. */
 bool placeHudRect(App* app, CPU& cpu, reg32 player, reg32 element, reg32 width, reg32 height)
 {
     Calls out(app, cpu, cpu.esp - 12 - 12);  // push esi, edi, ebp; mov ebp, esp; sub esp, 0xc
@@ -5309,11 +5531,13 @@ bool placeHudRect(App* app, CPU& cpu, reg32 player, reg32 element, reg32 width, 
 
 /* sub_480910: placeHudRect for player eax, element edx, width ebx, height ecx (no caller reads
  * what it leaves in eax). */
-void hudRect(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 hudRect(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
+    const RegisterImage image(args);
     const Entry entry(cpu);
-    if (placeHudRect(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx))
+    if (placeHudRect(app, cpu, g.eax, g.edx, g.ebx, g.ecx))
         entry.restore(cpu, Entry::kEsi | Entry::kEdi | Entry::kEbp);
+    return g.eax;
 }
 
 namespace
@@ -5474,35 +5698,41 @@ bool placeHudPanel(App* app, CPU& cpu, reg32 player)
 }
 
 /* sub_480fc0: placeHudPicture for player eax, the centre's y left in eax. */
-void hudPicture(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 hudPicture(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
+    const RegisterImage image(args);
     const Entry entry(cpu);
-    const std::optional<reg32> centreY = placeHudPicture(app, cpu, cpu.eax);
+    const std::optional<reg32> centreY = placeHudPicture(app, cpu, g.eax);
     if (!centreY)
-        return;
-    cpu.eax = *centreY;
+        return g.eax;
+    g.eax = *centreY;
     entry.restore(cpu, Entry::kEbx | Entry::kEcx | Entry::kEdx | Entry::kEsi | Entry::kEdi | Entry::kEbp);
+    return g.eax;
 }
 
 /* sub_4812e0: placeHudDial for player eax: the layout's offset left in eax. */
-void hudDial(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 hudDial(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
+    const RegisterImage image(args);
     const Entry entry(cpu);
-    const std::optional<DialLayout> dial = placeHudDial(app, cpu, cpu.eax);
+    const std::optional<DialLayout> dial = placeHudDial(app, cpu, g.eax);
     if (!dial)
-        return;
-    cpu.eax = dial->layout;
+        return g.eax;
+    g.eax = dial->layout;
     entry.restore(cpu, Entry::kEbx | Entry::kEcx | Entry::kEdx | Entry::kEsi | Entry::kEdi | Entry::kEbp);
+    return g.eax;
 }
 
 /* sub_481aa0: placeHudPanel for player eax, eax 0. */
-void hudPanel(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 hudPanel(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
+    const RegisterImage image(args);
     const Entry entry(cpu);
-    if (!placeHudPanel(app, cpu, cpu.eax))
-        return;
-    cpu.eax = 0;
+    if (!placeHudPanel(app, cpu, g.eax))
+        return g.eax;
+    g.eax = 0;
     entry.restore(cpu, Entry::kEbx | Entry::kEcx | Entry::kEdx | Entry::kEsi | Entry::kEdi | Entry::kEbp);
+    return g.eax;
 }
 
 /* sub_481c50: the table of player eax -- the racers' standings, or with bit
@@ -5515,11 +5745,12 @@ void hudPanel(win32::WinApplication* app, x86::CPU& cpu)
  * its top by bit 0x10 of the player's flags, to 0x724780 and 0x724788.  Then
  * its frame (sub_47f650 into 0x791b18) as wide as [0x7925c8] ([0x7925cc] for
  * the cop's), the quad at 0x791ad4 inside it, and hudTablePanel (a port). */
-void hudTable(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 hudTable(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
+    const RegisterImage image(args);
     const Memory m{app};
     const Entry entry(cpu);
-    const reg32 player = cpu.eax;
+    const reg32 player = g.eax;
     // push ebx, ecx, edx, esi, edi, ebp; mov ebp, esp; sub esp, 0xc
     Calls out(app, cpu, entry.esp - 24 - 12);
     auto border = [&]() { return hudBorder(app, cpu, 0x53b5a8, 0x53b5ac); };
@@ -5532,10 +5763,10 @@ void hudTable(win32::WinApplication* app, x86::CPU& cpu)
     };
     const std::optional<reg32> car = playerCar(out, player);
     if (!car)
-        return;
+        return g.eax;
     const bool cops = m.word(*car + kCarFlags) & kCarCop;
     if (!setTextScale(out, m.word(0x791b4c)))
-        return;
+        return g.eax;
     const reg32 slot = player * 0x170;
     reg32 top, bottom;
     if (cops)
@@ -5545,16 +5776,16 @@ void hudTable(win32::WinApplication* app, x86::CPU& cpu)
         for (reg32 k = 0; i32(k) < i32(m.word(0x5efda0)); ++k)
             if (m.word(k * 4 + 0x725238))
                 ++speeders;
-        if (!out.call(0x4d14f0, {0x30}))
-            return;
+        if (!out.go<0x4d14f0, frontend::hudx::characterDrop>(0x30))
+            return g.eax;
         const reg32 above = out.result();
-        if (!out.call(0x4d1540, {0x30}))
-            return;
+        if (!out.go<0x4d1540, port::text::characterHeight>(0x30))
+            return g.eax;
         // port (apply_hud_scale): the cop's rows as close as the Modern Patch has them, was [0x53b598] = 20
         const std::optional<reg32> height =
             truncate(M::mul(M::mul(double(i32(out.result() + above)), 12.414), m.loadDouble(0x53b5a0)));
         if (!height)
-            return;
+            return g.eax;
         const reg32 rows = *height * speeders;
         if (m.byte(player * 92 + 0x7256e0) & 0x10)
         {
@@ -5578,8 +5809,8 @@ void hudTable(win32::WinApplication* app, x86::CPU& cpu)
         const double size = M::mul(M::mul(double(x86::sreg32(hudReferenceHeight(app))), m.loadDouble(0x53b5b0)),
                                    m.loadDouble(0x53b5b8));
         const std::optional<reg32> rowHeight = truncate(size);
-        if (!rowHeight || !out.call(0x4d1540, {0x49}))
-            return;
+        if (!rowHeight || !out.go<0x4d1540, port::text::characterHeight>(0x49))
+            return g.eax;
         const reg32 rows = (*rowHeight + out.result()) * m.word(0x7254f8);
         if (m.byte(player * 92 + 0x7256c4) & 0x10)
         {
@@ -5604,7 +5835,7 @@ void hudTable(win32::WinApplication* app, x86::CPU& cpu)
     const Edges inside = {m.word(rect) + i, m.word(player * 4 + 0x724780) + i, m.word(width) + m.word(rect),
                           m.word(player * 4 + 0x724788)};
     if (!drawHudFrame(out, (player << 10) + m.word(0x791b18), inside))
-        return;
+        return g.eax;
     const reg32 j = border();
     const reg32 quad = m.word(0x791ad4) + (player << 7);
     auto corner = [&](reg32 value, reg32 a, reg32 b) {
@@ -5620,8 +5851,9 @@ void hudTable(win32::WinApplication* app, x86::CPU& cpu)
     m.store(quad + 0x44, bottomEdge);
     // port (apply_hud_editor): the table's rectangle is its panel
     hudTablePanel(app, player, cops);
-    cpu.eax = topEdge;  // as the code leaves it: a caller reads eax
+    g.eax = topEdge;  // as the code leaves it: a caller reads eax
     entry.restore(cpu, Entry::kEbx | Entry::kEcx | Entry::kEdx | Entry::kEsi | Entry::kEdi | Entry::kEbp);
+    return g.eax;
 }
 
 /* sub_487210: the rectangle of floats at edx (x0, y0 at +0, +4, x1, y1 at +8,
@@ -5629,17 +5861,18 @@ void hudTable(win32::WinApplication* app, x86::CPU& cpu)
  * round it, moved in by a border (4:3, a port) at each side; then a right or
  * bottom edge on the screen's last column or row ([0x7cdac8], [0x7cdacc], not
  * ported: these are the screen's) is moved in by one. */
-void hudInset(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 hudInset(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
+    const RegisterImage image(args);
     const Memory m{app};
     const Entry entry(cpu);
-    const reg32 player = cpu.eax;
+    const reg32 player = g.eax;
     const reg32 kept = player * 4 + 0x791b60;
     // push ebx, ecx, ebp; mov ebp, esp; sub esp, 4
     Calls out(app, cpu, entry.esp - 12 - 4);
-    m.word(kept, cpu.edx);
-    if (!out.call(0x481f90, {player}))
-        return;
+    m.word(kept, g.edx);
+    if (!out.go<0x481f90, frontend::hudz::mapPaneIsSmall>(player))
+        return g.eax;
     if (out.result())
     {
         const double border = double(i32(hudBorder(app, cpu, 0x53b690, 0x53b694)));
@@ -5657,6 +5890,7 @@ void hudInset(win32::WinApplication* app, x86::CPU& cpu)
     if (fcomEqual(fild32(m, 0x7cdacc), m.load(rect + 8)))
         m.store(rect + 8, double(i32(m.word(0x7cdacc) - 1)));
     entry.restore(cpu, Entry::kEbx | Entry::kEcx | Entry::kEbp);
+    return g.eax;
 }
 
 /* sub_48c7c0: the three-light start (and finish) panel: the quads at
@@ -5666,11 +5900,12 @@ void hudInset(win32::WinApplication* app, x86::CPU& cpu)
  * 0xff797c93) when [esp+4] is 0, the quads eax and edx (0x80 bytes each from
  * 0x724790) when it is 0 and 2, the lamp at 0x724c90, ebx and ecx when it is
  * 1, 1 and 3.  ret 4. */
-void startLights(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 startLights(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
+    const RegisterImage image(args);
     const Memory m{app};
     const Entry entry(cpu);
-    const reg32 lights[4] = {cpu.eax, cpu.edx, cpu.ebx, cpu.ecx};
+    const reg32 lights[4] = {g.eax, g.edx, g.ebx, g.ecx};
     const reg32 lit = m.word(entry.esp + 4);
     // push esi, edi, ebp; mov ebp, esp; sub esp, 8
     Calls out(app, cpu, entry.esp - 12 - 8);
@@ -5691,25 +5926,26 @@ void startLights(win32::WinApplication* app, x86::CPU& cpu)
         colour((index << 7) + 0x724790, choose(on));
         return quad((index << 7) + 0x724790);
     };
-    if (!out.call(0x431900, {1, m.word(0x749a38)}))
-        return;
+    if (!out.go<0x431900, graphics::sendState>(1, m.word(0x749a38)))
+        return g.eax;
     for (const reg32 corners : {0x724790u, 0x724810u, 0x724890u})
         if (!quad(corners))
-            return;
-    if ((m.byte(0x7a3a58) & 2) && !out.call(0x431900, {0x2bf, 1}))
-        return;
+            return g.eax;
+    if ((m.byte(0x7a3a58) & 2) && !out.go<0x431900, graphics::sendState>(0x2bf, 1))
+        return g.eax;
     for (const reg32 at : {0x724d40u, 0x724d60u, 0x724d80u, 0x724d20u})
         m.word(at, choose(lit == 0));
     if (!quad(0x724d10) || !light(lights[0], lit == 0) || !light(lights[1], lit == 2))
-        return;
+        return g.eax;
     for (const reg32 at : {0x724cc0u, 0x724ce0u, 0x724d00u, 0x724ca0u})
         m.word(at, choose(lit == 1));
     if (!quad(0x724c90) || !light(lights[2], lit == 1) || !light(lights[3], lit == 3))
-        return;
-    if ((m.byte(0x7a3a58) & 2) && !out.call(0x431900, {0x2bf, 0}))
-        return;
+        return g.eax;
+    if ((m.byte(0x7a3a58) & 2) && !out.go<0x431900, graphics::sendState>(0x2bf, 0))
+        return g.eax;
     // eax as the last callee leaves it: a caller reads eax
     entry.restore(cpu, Entry::kEsi | Entry::kEdi | Entry::kEbp, 4);
+    return g.eax;
 }
 
 /* sub_4880b0: the cockpit's needles for the car at eax: the speedometer's
@@ -5720,11 +5956,12 @@ void startLights(win32::WinApplication* app, x86::CPU& cpu)
  * from the dial's centre ([0x792040], [0x792044] or [0x792068], [0x79206c],
  * scaled to the cabin, a port: cabinRect) along the angle (sub_4ea970), drawn
  * by THRASH_drawquad under the texture state [0x7922e4] (sub_431900). */
-void needles(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 needles(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
+    const RegisterImage image(args);
     const Memory m{app};
     const Entry entry(cpu);
-    const reg32 car = cpu.eax;
+    const reg32 car = g.eax;
     // push ebx, ecx, edx, esi, edi, ebp; mov ebp, esp; sub esp, 0xdc; sub ebp, 0x82
     const reg32 ebp = entry.esp - 24 - 0x82;
     Calls out(app, cpu, entry.esp - 24 - 0xdc);
@@ -5734,15 +5971,15 @@ void needles(win32::WinApplication* app, x86::CPU& cpu)
     // port (apply_cabin): the cabin fitted to 4:3, was [0x7cdba0]
     const double k = single(M::mul(double(i32(cabinRect(app, 2))), m.load(0x53b69c)));
     copyWords(app, corners, 0x488030, 0x20);
-    if (!out.call(0x4206f0, {car + 0xc, 1}))
-        return;
+    if (!out.go<0x4206f0, trackdata::placeColour>(car + 0xc, 1))
+        return g.eax;
     for (const reg32 at : {0x16u, 0xfffffff6u, 0xffffffd6u, 0xffffffb6u})
         m.word(ebp + at, out.result());
     /* A needle at the angle: sub_4ea970's sine and cosine; the dial's centre and the needle's ends
      * from the ints at `dial` (+0, +4 the centre, +8 its length) and 0x792038 (its width), [tail]
      * the tail's length; its sides half as wide at the tail. */
     auto needle = [&](reg32 dial, reg32 tail) {
-        if (!out.call(0x4ea970, {angle, sine, cosine}))
+        if (!out.go<0x4ea970, frontend::simd::sineCosine>(angle, sine, cosine))
             return false;
         const double D = m.loadDouble(0x53b6a4);
         const double x = M::mul(fild32(m, dial), k);
@@ -5774,7 +6011,7 @@ void needles(win32::WinApplication* app, x86::CPU& cpu)
         m.store(corners + 0x44, M::sub(tailEndY, halfY));
         m.store(corners + 0x60, M::add(tailEndX, halfX));
         m.store(corners + 0x64, M::add(tailEndY, halfY));
-        if (!out.call(0x431900, {1, m.word(0x7922e4)}))
+        if (!out.go<0x431900, graphics::sendState>(1, m.word(0x7922e4)))
             return false;
         for (const reg32 at : {0x60u, 0x40u, 0x20u, 0u})
             out.push(corners + at);
@@ -5786,16 +6023,17 @@ void needles(win32::WinApplication* app, x86::CPU& cpu)
         const double speed = fcomBelow(0.0, m.load(car + 0x4f4)) ? m.load(car + 0x4f4) : single(-m.load(car + 0x4f4));
         m.store(angle, M::add(M::mul(m.load(0x7922e0), speed), m.load(0x7922f4)));
         if (!needle(0x792040, 0x7922dc))
-            return;
+            return g.eax;
     }
     if (m.word(0x7922e8))
     {
         m.store(angle, M::add(M::mul(M::mul(fild32(m, car + 0x590), m.load(0x7922ec)), m.load(0x53b6ac)),
                               m.load(0x7922f0)));
         if (!needle(0x792068, 0x7922f8))
-            return;
+            return g.eax;
     }
     entry.restore(cpu, Entry::kEbx | Entry::kEcx | Entry::kEdx | Entry::kEsi | Entry::kEdi | Entry::kEbp);
+    return g.eax;
 }
 
 /* sub_488470: the cockpit's bar gauges for the car at ecx (eax): how full
@@ -5806,11 +6044,12 @@ void needles(win32::WinApplication* app, x86::CPU& cpu)
  * of four vertices (colour sub_4206f0's) bent by sub_496bf0, scaled to the
  * cabin and placed in it (a port: cabinRect), clip-coded and drawn by
  * sub_4c12e0 between sub_4bed70's clip rectangles 0x7cdb88 and 0x7cdac0. */
-void barGauges(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 barGauges(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
+    const RegisterImage image(args);
     const Memory m{app};
     const Entry entry(cpu);
-    const reg32 car = cpu.eax;
+    const reg32 car = g.eax;
     // push ebx, ecx, edx, esi, edi, ebp; mov ebp, esp; sub esp, 0xc8; sub ebp, 0x82
     const reg32 ebp = entry.esp - 24 - 0x82;
     Calls out(app, cpu, entry.esp - 24 - 0xc8);
@@ -5825,8 +6064,8 @@ void barGauges(win32::WinApplication* app, x86::CPU& cpu)
     // the four vertices: z 2^-16, 1/w 1, the colour, clip code 0
     for (reg32 c = 0; c < 4; ++c)
     {
-        if (!out.call(0x4206f0, {car + 0xc, 1}))
-            return;
+        if (!out.go<0x4206f0, trackdata::placeColour>(car + 0xc, 1))
+            return g.eax;
         m.word(vertex(c) + 0x10, out.result());
         m.word(vertex(c) + 0xc, 0x3f7fff00);
         m.word(vertex(c) + 0x14, 0);
@@ -5863,8 +6102,8 @@ void barGauges(win32::WinApplication* app, x86::CPU& cpu)
             out.push(asBits(float(full)));
             out.push(ys[c]);
             out.push(xs[c]);
-            if (!out.call(0x496bf0))
-                return;
+            if (!out.go<0x496bf0, frontend::rendc::rotatePlane>())
+                return g.eax;
             const double x = M::mul(M::add(fild32(m, 0x792304), m.load(corner)), scaleX);
             const double y = M::mul(M::add(fild32(m, 0x792308), m.load(corner + 4)), scaleY);
             m.store(corner, M::add(x, double(i32(cabinX))));
@@ -5904,15 +6143,16 @@ void barGauges(win32::WinApplication* app, x86::CPU& cpu)
             m.word(vertex(2) + 0x1c, m.word(vertex(3) + 0x1c));
         }
         // drawn under the bar's texture state between the cabin's clip rectangle and the screen's
-        if (!out.call(0x431900, {1, m.word(m.word(bar) + 4)}) || !out.call(0x4bed70, {0x7cdb88}))
-            return;
+        if (!out.go<0x431900, graphics::sendState>(1, m.word(m.word(bar) + 4)) || !out.go<0x4bed70, frontend::loopb::useClip>(0x7cdb88))
+            return g.eax;
         for (reg32 c = 0; c < 4; ++c)
             m.byte(vertex(c) + 0x14, screenCodeOf(app, vertex(c)));
-        if (!out.call(0x4c12e0, {vertex(0), vertex(1), vertex(2), vertex(3)}) || !out.call(0x4bed70, {0x7cdac0}))
-            return;
+        if (!out.go<0x4c12e0, vertices::quadClipped>(vertex(0), vertex(1), vertex(2), vertex(3)) || !out.go<0x4bed70, frontend::loopb::useClip>(0x7cdac0))
+            return g.eax;
     }
-    cpu.eax = index;  // as the loop leaves it: a caller reads eax
+    g.eax = index;  // as the loop leaves it: a caller reads eax
     entry.restore(cpu, Entry::kEbx | Entry::kEcx | Entry::kEdx | Entry::kEsi | Entry::kEdi | Entry::kEbp);
+    return g.eax;
 }
 
 /* sub_489240: the cockpit ([0x7922fc], not [0x7a3d10], sub_423b00(0) 1, not
@@ -5925,21 +6165,22 @@ void barGauges(win32::WinApplication* app, x86::CPU& cpu)
  * [0x7a3a58]; then the needles (sub_4880b0), the gear (when [0x55d6a4]: the
  * view's +0x50b picks 0x791c10's 44-byte entry, a size and the texture) at
  * [0x55d69c], [0x55d6a0] of the cabin, and the bar gauges (sub_488470). */
-void cockpit(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 cockpit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
+    const RegisterImage image(args);
     const Memory m{app};
     const Entry entry(cpu);
     // push ebx, ecx, edx, esi, edi, ebp; mov ebp, esp; sub esp, 0xc4; sub ebp, 0x82
     const reg32 ebp = entry.esp - 24 - 0x82;
     Calls out(app, cpu, entry.esp - 24 - 0xc4);
     // eax as the last callee leaves it (or as it came), which a caller reads
-    auto leave = [&]() {
+    auto leave = [&]() -> x86::reg32 {
         entry.restore(cpu, Entry::kEbx | Entry::kEcx | Entry::kEdx | Entry::kEsi | Entry::kEdi | Entry::kEbp);
-    };
+        return g.eax; };
     // The quad on the frame for THRASH_drawquad: its corners from the top right, clockwise.
     const reg32 corner[4] = {ebp - 0x42, ebp - 0x22, ebp - 2, ebp + 0x1e};
     auto drawQuad = [&](reg32 state) {
-        if (!out.call(0x431900, {1, state}))
+        if (!out.go<0x431900, graphics::sendState>(1, state))
             return false;
         for (const reg32 c : {3, 2, 0, 1})
             out.push(corner[c]);
@@ -5964,8 +6205,8 @@ void cockpit(win32::WinApplication* app, x86::CPU& cpu)
     };
     if (!m.word(0x7922fc) || m.word(0x7a3d10))
         return leave();
-    if (!out.call(0x423b00, {0}))
-        return;
+    if (!out.go<0x423b00, carstate::modeOfCamera>(0))
+        return g.eax;
     if (out.result() != 1 || m.word(0x79c4a0) || gameSettings(app).wideScreen)
         return leave();
     // port (apply_cabin): the cabin fitted to 4:3, was [0x7cdb98], [0x7cdb9c], [0x7cdba0], [0x7cdba4]
@@ -5974,14 +6215,14 @@ void cockpit(win32::WinApplication* app, x86::CPU& cpu)
     const double height = single(M::mul(M::mul(tiles, double(i32(cabinRect(app, 3)))), m.loadDouble(0x53b77c)));
     const reg32 left = cabinRect(app, 0), right = cabinRect(app, 2) + left;
     const reg32 top = cabinRect(app, 1), bottom = cabinRect(app, 3) + top;
-    if (!out.call(0x422bd0, {0}))
-        return;
+    if (!out.go<0x422bd0, carstate::targetOfCamera>(0))
+        return g.eax;
     const reg32 view = out.result();
-    if (!out.call(0x4206f0, {view + 0xc, 1}))
-        return;
+    if (!out.go<0x4206f0, trackdata::placeColour>(view + 0xc, 1))
+        return g.eax;
     if (gameSettings(app).night
-        && (!out.call(0x4b97b0, {view, out.result()}) || !out.call(0x4b9550, {view, out.result()})))
-        return;
+        && (!out.go<0x4b97b0, render::nightColourOf>(view, out.result()) || !out.go<0x4b9550, frontend::rendd::trackLitColour>(view, out.result())))
+        return g.eax;
     // the quad's corners: colour, z 2^-16, 1/w 1, +0x14 0
     const reg32 colour = out.result();
     for (const reg32 c : {2, 0, 1, 3})
@@ -5992,8 +6233,8 @@ void cockpit(win32::WinApplication* app, x86::CPU& cpu)
         m.word(corner[c] + 8, 0x37800080);
     for (const reg32 c : {3, 2, 0, 1})
         m.word(corner[c] + 0x14, 0);
-    if ((m.byte(0x7a3a58) & 2) && !out.call(0x431900, {0x2bf, 3}))
-        return;
+    if ((m.byte(0x7a3a58) & 2) && !out.go<0x431900, graphics::sendState>(0x2bf, 3))
+        return g.eax;
     // the tiles, a column at a time, each cut at the cabin's right and bottom edges
     reg32 tile = 0;
     double x = single(double(i32(left)));
@@ -6014,16 +6255,16 @@ void cockpit(win32::WinApplication* app, x86::CPU& cpu)
             edges(asBits(float(x)), asBits(float(toX)), asBits(float(y)), asBits(float(toY)));
             texture(tile * 44 + 0x791d78);
             if (!drawQuad(m.word(tile * 44 + 0x791d74)))
-                return;
+                return g.eax;
             y = single(M::add(y, height));
             ++tile;
         }
         x = nextX;
     }
-    if ((m.byte(0x7a3a58) & 2) && !out.call(0x431900, {0x2bf, 0}))
-        return;
-    if (!out.call(0x4880b0, {view}))
-        return;
+    if ((m.byte(0x7a3a58) & 2) && !out.go<0x431900, graphics::sendState>(0x2bf, 0))
+        return g.eax;
+    if (!out.go<0x4880b0, render::needlesDrawn>(view))
+        return g.eax;
     if (m.word(0x55d6a4))
     {
         // the gear: the view's +0x50b picks the entry (44 bytes: its size, its texture state, s and t)
@@ -6039,10 +6280,11 @@ void cockpit(win32::WinApplication* app, x86::CPU& cpu)
         edges(asBits(float(fromX)), asBits(float(toX)), asBits(float(fromY)), asBits(float(toY)));
         texture(gear + 8);
         if (!drawQuad(m.word(gear + 4)))
-            return;
+            return g.eax;
     }
-    if (out.call(0x488470, {view}))
+    if (out.go<0x488470, render::barGaugesDrawn>(view))
         leave();
+    return g.eax;
 }
 
 /* sub_4c0b20: a line between the vertices at eax and edx (0x20 bytes: x, y,
@@ -6053,21 +6295,23 @@ void cockpit(win32::WinApplication* app, x86::CPU& cpu)
  * them, each cut where it leaves the view by every plane its code has (near
  * [0x7d34f0] on 1/w, then x [0x7d34f4], [0x7d34ec], then y [0x7d34e0],
  * [0x7d34dc]) against the other's original, codes cleared, depths as above. */
-void line(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 line(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
+    const RegisterImage image(args);
     const Memory m{app};
     const Entry entry(cpu);
-    const reg32 a = cpu.eax, b = cpu.edx;
+    const reg32 a = g.eax, b = g.edx;
     // push ebx, ecx, esi, edi, ebp; mov ebp, esp; sub esp, 0xac; sub ebp, 0x82
     const reg32 ebp = entry.esp - 20 - 0x82;
     Calls out(app, cpu, entry.esp - 20 - 0xac);
     // eax a, or as THRASH_drawline leaves it: a caller reads eax
-    auto leave = [&]() { entry.restore(cpu, Entry::kEbx | Entry::kEcx | Entry::kEsi | Entry::kEdi | Entry::kEbp); };
-    auto drawLine = [&](reg32 from, reg32 to) {
+    auto leave = [&]() -> x86::reg32 { entry.restore(cpu, Entry::kEbx | Entry::kEcx | Entry::kEsi | Entry::kEdi | Entry::kEbp); return g.eax; };
+    auto drawLine = [&](reg32 from, reg32 to) -> x86::reg32 {
         out.push(to);
         out.push(from);
         if (out.driver<thrash::kThrashDrawLine, &port::driver::drawLine>())
             leave();
+        return g.eax;
     };
     // 1 - 1/w as a float, or 0 when 1/w is negative or past 1 (as an int compare does it)
     auto nearness = [&](reg32 v) {
@@ -6135,6 +6379,7 @@ void line(win32::WinApplication* app, x86::CPU& cpu)
     m.store(clipped + 0x28, M::mul(loaded(near1), m.load(0x560094)));
     m.store(clipped + 0x28, M::add(m.load(clipped + 0x28), m.load(0x560098)));
     drawLine(clipped, clipped + 0x20);
+    return g.eax;
 }
 
 /* sub_48c0e0: a meter of segments at x edx, y ebx, ecx wide and [esp+4]
@@ -6145,13 +6390,14 @@ void line(win32::WinApplication* app, x86::CPU& cpu)
  * [0x53b994], [0x53b998].., the first [esp+8] of them lit (0xffff0000,
  * 0xccff5050; with bit 2 of [0x7a3a58] drawn flat in that colour,
  * sub_432390, by the list at 0x55e214); [esp+0xc] the colour of two corners.
- * The x87 work follows the generated code's order (sym/ssa2native.py).
+ * The x87 work follows the game's code's order (sym/ssa2native.py).
  * ret 0xc. */
-void segmentMeter(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 segmentMeter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
+    const RegisterImage image(args);
     const Memory m{app};
     const Entry entry(cpu);
-    const reg32 x = cpu.edx, y = cpu.ebx, width = cpu.ecx;
+    const reg32 x = g.edx, y = g.ebx, width = g.ecx;
     const reg32 height = m.word(entry.esp + 4), lit = m.word(entry.esp + 8), corner = m.word(entry.esp + 0xc);
     // push esi, edi, ebp; mov ebp, esp; sub esp, 0x1c
     Calls out(app, cpu, entry.esp - 12 - 0x1c);
@@ -6161,7 +6407,7 @@ void segmentMeter(win32::WinApplication* app, x86::CPU& cpu)
             out.push(v);
         return out.driver<thrash::kThrashDrawQuadMesh, &port::driver::drawQuadMesh>();
     };
-    auto state = [&](reg32 a, reg32 d) { return out.call(0x431900, {a, d}); };
+    auto state = [&](reg32 a, reg32 d) { return out.go<0x431900, graphics::sendState>(a, d); };
     // the frame's floats (each fstp dword there, read back by fld dword) and a float's bits copied
     double wide, high, x0, y0, gap, piece, step;
     reg32 word;
@@ -6409,25 +6655,26 @@ void segmentMeter(win32::WinApplication* app, x86::CPU& cpu)
         }
     }
     if (!state(1, 0) || !mesh(3, 0x55e284))
-        return;
+        return g.eax;
     if (!state(1, m.word(0x76da48)) || !mesh(9, 0x55e164))
-        return;
+        return g.eax;
     if (i32(lit) > -1)
     {
         if (!state(0x68, 1) || !state(1, m.word(0x8b4844)))
-            return;
+            return g.eax;
         if (m.byte(0x7a3a58) & 2)
         {
-            if (lit && (!out.call(0x432390, {0xccff5050}) || !mesh(lit + lit - 1, 0x55e214)))
-                return;
+            if (lit && (!out.go<0x432390, graphics::softwareBlendColour>(0xccff5050) || !mesh(lit + lit - 1, 0x55e214)))
+                return g.eax;
         }
         else if (!mesh(9, 0x55e1f4))
-            return;
+            return g.eax;
         if (!state(0x68, 0))
-            return;
+            return g.eax;
     }
     // eax as the last callee leaves it: a caller reads eax
     entry.restore(cpu, Entry::kEsi | Entry::kEdi | Entry::kEbp, 12);
+    return g.eax;
 }
 
 /* sub_4800a0: the dark band behind player eax's HUD in split screen (with
@@ -6441,22 +6688,24 @@ void segmentMeter(win32::WinApplication* app, x86::CPU& cpu)
  * them overlap.  A new count of rectangles at 0x700240 rebuilds them
  * (sub_4808b0, sub_49bd30 from [0x791a88]); each is a quad at [0x791ac0]
  * (0x380 bytes a player) shaded down the band by [0x53b508], [0x53b50c]. */
-void hudBand(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 hudBand(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
+    const RegisterImage image(args);
     const Memory m{app};
     const Entry entry(cpu);
-    const reg32 player = cpu.eax;
+    const reg32 player = g.eax;
     // push ebx, ecx, edx, esi, edi, ebp; mov ebp, esp; sub esp, 0xf0; sub ebp, 0x82
     const reg32 ebp = entry.esp - 24 - 0x82;
     Calls out(app, cpu, entry.esp - 24 - 0xf0);
     // eax as the code leaves it, which a caller reads: sub_4808b0's, or the last quad's address
-    auto leave = [&]() {
+    auto leave = [&]() -> x86::reg32 {
         entry.restore(cpu, Entry::kEbx | Entry::kEcx | Entry::kEdx | Entry::kEsi | Entry::kEdi | Entry::kEbp);
-    };
+        return g.eax; };
     // no band: sub_4808b0 for the player
-    auto none = [&]() {
-        if (out.call(0x4808b0, {player}))
+    auto none = [&]() -> x86::reg32 {
+        if (out.go<0x4808b0, frontend::hudz::unqueueViewQuads>(player))
             leave();
+        return g.eax;
     };
     auto lt = [](reg32 a, reg32 b) { return i32(a) < i32(b); };
     auto le = [](reg32 a, reg32 b) { return i32(a) <= i32(b); };
@@ -6468,8 +6717,8 @@ void hudBand(win32::WinApplication* app, x86::CPU& cpu)
     auto Y1 = [&](reg32 k) { return ebp - 0x1a + 4 * k; };
     const reg32 quads = m.word(0x791ac0) + player * 0x380;
     const reg32 row = player + (gameSettings(app).playMode == 1 ? 1u : 0u);
-    if (!out.call(0x422bd0, {player}))
-        return;
+    if (!out.go<0x422bd0, carstate::targetOfCamera>(player))
+        return g.eax;
     const reg32 view = out.result();
     const reg32 cop = (m.byte(view + 0x200) & 0x20) ? 1 : 0;
     const reg32 rects = player * 0x170 + kHudRects;
@@ -6487,8 +6736,8 @@ void hudBand(win32::WinApplication* app, x86::CPU& cpu)
     reg32 bottom = top;
     for (reg32 element = 0; lt(element, 0x17); ++element)
     {
-        if (!out.call(0x47bc20, {element}))
-            return;
+        if (!out.go<0x47bc20, frontend::rendb::kindIsText>(element))
+            return g.eax;
         if (!out.result())
             continue;
         // 0..9, and the racer's 10..17 or the cop's 18..22
@@ -6516,9 +6765,11 @@ void hudBand(win32::WinApplication* app, x86::CPU& cpu)
     bool mirrorIn = false;
     if (row == 0 && (gameSettings(app).hudAt(cop * kHudLayoutBytes).rearView || m.word(0x559264)))
     {
-        if (!out.call(0x422aa0, {0}))
-            return;
-        if (out.result())
+        cpu.esp = out.esp;
+        const bool inside = guest::direct<0x422aa0, carstate::insideView>(app, cpu, 0);
+        if (cpu.terminate)
+            return g.eax;
+        if (inside)
         {
             const reg32 mirror = m.word(0x791a90);
             if (fcomBelow(double(i32(top)), m.load(mirror + 0x244)))
@@ -6677,7 +6928,7 @@ void hudBand(win32::WinApplication* app, x86::CPU& cpu)
         {
             const std::optional<x86::Float> chop = chopped(out, x86::Float(corners[i]));
             if (!chop)
-                return;
+                return g.eax;
             whole[i] = reg32(fp::toInteger<x86::sreg32>(double(*chop)));
         }
         cutAround(whole[0], whole[1]);
@@ -6705,15 +6956,15 @@ void hudBand(win32::WinApplication* app, x86::CPU& cpu)
     // a new count: the quads rebuilt
     if (count != m.word(player * 4 + 0x700240))
     {
-        if (!out.call(0x4808b0, {player}))
-            return;
+        if (!out.go<0x4808b0, frontend::hudz::unqueueViewQuads>(player))
+            return g.eax;
         m.word(player * 4 + 0x700240, count);
         reg32 at = m.word(0x791a88) + player * 28;
         for (reg32 n = count; n--;)
         {
             out.push(at + 3);
-            if (!out.call(0x49bd30, {0x749a38, at, at + 1, at + 2}))
-                return;
+            if (!out.go<0x49bd30, port::text::quadQueued>(out.esp - 4, 0x749a38, at, at + 1, at + 2))
+                return g.eax;
             at += 4;
         }
     }
@@ -6767,9 +7018,60 @@ void hudBand(win32::WinApplication* app, x86::CPU& cpu)
         last = q;
     }
     // (the loop runs at least once: the count is one or more)
-    cpu.eax = last ? *last : out.result();
+    g.eax = last ? *last : out.result();
     leave();
+    return g.eax;
 }
+
+/* The HUD's calls out to typed cores: the registers it works with are in `r`, and a callee is handed the ones
+ * it reads as parameters (the values in `r` at the call), then the words the code pushed since the last call,
+ * the last pushed first.  Nothing is set in a register or written to the stack for it; esp goes where the
+ * original has it before the words, ebp at the frame.  After the call r.eax is the callee's eax where the core
+ * returns one -- the other registers are as they were, which every callee keeps. */
+class RegisterCalls
+{
+public:
+    RegisterCalls(App* app, CPU& cpu, Registers& r, reg32 ebp, reg32& esp) : app(app), cpu(cpu), r(r), ebp(ebp), esp(esp) {}
+    void clear() { pending = 0; }
+    // The frame base of a callee called now: the return address's slot under the words pushed so far.
+    reg32 frame() const { return esp - 4; }
+    void note(reg32 value)
+    {
+        if (pending < 16)
+            pushed[pending] = value;
+        ++pending;
+    }
+    template <reg32 Address, auto Core, typename... V>
+    bool go(V... values)
+    {
+        using Signature = CoreSignature<std::decay_t<decltype(Core)>>;
+        constexpr std::size_t count = Signature::count;
+        static_assert(sizeof...(V) <= count, "a call hands the callee no more than it takes");
+        // The callee's stack words are the last ones pushed, read where they lie as the callee reads them; the
+        // words pushed before them stay (a callee that takes none leaves every pushed word).
+        constexpr std::size_t stackWords = count - sizeof...(V);
+        reg32 words[count + 1] = {reg32(values)..., 0};
+        for (std::size_t k = 0; k < stackWords; ++k)
+            words[sizeof...(V) + k] = at(app, esp + 4 * reg32(k));
+        const reg32 before = esp + 4 * reg32(stackWords);
+        pending = 0;
+        esp = before;
+        g.eax = r.eax;
+        if (!coreCallWords<Address, Core, true>(app, cpu, ebp, before, words, std::make_index_sequence<count>{}))
+            return false;
+        r.eax = g.eax;
+        return true;
+    }
+
+private:
+    App* const app;
+    CPU& cpu;
+    Registers& r;
+    const reg32 ebp;
+    reg32& esp;
+    reg32 pushed[16] = {};
+    std::size_t pending = 0;
+};
 
 /* sub_482b00: the HUD of the player in the record at eax (+4 the player): the
  * frame's whole sequence -- sub_4beb80's clip rectangle, the cockpit, the
@@ -6777,20 +7079,21 @@ void hudBand(win32::WinApplication* app, x86::CPU& cpu)
  * behind the HUD in split screen, the lap and race clocks, the position, the
  * laps, the gauges by the layout's kinds (the jump table at 0x482ae8), the
  * speedometer and gear, the pursuit's messages, the rear-view mirror's frame
- * -- each as the generated code calls it, with its registers and arguments;
+ * -- each as the game's code calls it, with its registers and arguments;
  * nothing at all while the player's car is in the pit (+0x9a4) or before
  * frame 0x140 or for a driver of kind 0x10.  The registers every call is
- * handed are the ones the generated code leaves, stale ones too. */
-void hud(win32::WinApplication* app, x86::CPU& cpu)
+ * handed are the ones the game's code leaves, stale ones too. */
+x86::reg32 hud(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
+    const RegisterImage image(args);
     const Memory m{app};
     const x86::reg32 entry = cpu.esp;
-    const x86::reg32 saved[] = { cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp };
+    const x86::reg32 saved[] = { g.ebx, g.ecx, g.edx, g.esi, g.edi, g.ebp };
     // push ebx, ecx, edx, esi, edi, ebp; mov ebp, esp; sub esp, 0x5c
     const x86::reg32 ebp = entry - 24;
     x86::reg32 esp = ebp - 0x5c;
     IntegerFlags flags;
-    Registers r{ cpu.eax, cpu.ebx, cpu.ecx, cpu.edx, cpu.eax, cpu.edi };
+    Registers r{ g.eax, g.ebx, g.ecx, g.edx, g.eax, g.edi };
     auto callTo = [&](x86::reg32 target) {
         if (!callWithRegisters(app, cpu, flags, r, ebp, esp, target))
             return false;
@@ -6801,17 +7104,17 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
         esp -= 4;
         m.word(esp, value);
     };
-    auto leave = [&]() {
+    auto leave = [&]() -> x86::reg32 {
         flags.store(cpu);
-        cpu.eax = r.eax;
-        cpu.ebx = saved[0];
-        cpu.ecx = saved[1];
-        cpu.edx = saved[2];
-        cpu.esi = saved[3];
-        cpu.edi = saved[4];
-        cpu.ebp = saved[5];
+        g.eax = r.eax;
+        g.ebx = saved[0];
+        g.ecx = saved[1];
+        g.edx = saved[2];
+        g.esi = saved[3];
+        g.edi = saved[4];
+        g.ebp = saved[5];
         cpu.esp = entry + 4;
-    };
+        return g.eax; };
     // a value through sub_4dfd56 and fistp [ebp-0x40]
     auto truncate = [&](double value) {
         const std::optional<double> whole = chopValue(app, cpu, flags, r, ebp, esp, value);
@@ -6822,11 +7125,14 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
     };
     // fcomp; fnstsw ax; sahf
     auto sahfCompare = [&](double a, double b) {
-        flags.store(cpu);
-        cpu.fpu.compare(x86::Float(a), x86::Float(b));
-        r.eax = (r.eax & 0xffff0000) | cpu.fpu.status.word;
-        cpu.flags.lo = x86::reg8(0x02 | ((cpu.fpu.status.word >> 8) & 0xd7));
-        flags.load(cpu);
+        const x86::reg16 status = fp::compare(a, b);
+        r.eax = (r.eax & 0xffff0000) | status;
+        // sahf: the flags' low byte from ah (cf, zf and sf; of stays)
+        const x86::reg8 lo = x86::reg8(0x02 | ((status >> 8) & 0xd7));
+        flags.cf = lo & 1;
+        flags.zf = (lo >> 6) & 1;
+        flags.sf = (lo >> 7) & 1;
+        flags.set = false;
     };
     auto lt = [](x86::reg32 a, x86::reg32 b) { return x86::sreg32(a) < x86::sreg32(b); };
     auto le = [](x86::reg32 a, x86::reg32 b) { return x86::sreg32(a) <= x86::sreg32(b); };
@@ -6834,12 +7140,12 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
     auto player = [&]() { return m.word(r.esi + 4); };
     r.eax = player();
     if (!callTo(0x422bd0))
-        return;
+        return g.eax;
     r.edx = r.eax;
     r.edi = r.eax;  // the player's car
     r.eax = 1;
     if (!callTo(0x422bd0))
-        return;
+        return g.eax;
     m.word(ebp - 0x34, r.eax);
     flags.logic8(m.byte(r.edx + 0x200) & 0x20);
     r.eax = (m.byte(r.edx + 0x200) & 0x20) ? 1 : 0;
@@ -6881,15 +7187,15 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
             r.edx = 0;
             m.word(0x559264, r.ebx);
             if (!callTo(0x482030))
-                return;
+                return g.eax;
             r.edx = 1;
             r.eax = 0xffffffff;
             r.ebx = 0;
             if (!callTo(0x482030))
-                return;
+                return g.eax;
             r.eax = 0;
             if (!callTo(0x4844c0))
-                return;
+                return g.eax;
         }
     }
     flags.compare(m.word(r.edi + 0x9a4), 0);
@@ -6907,12 +7213,12 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
         flags.compare(r.eax, r.edx);
         r.eax = le(r.eax, r.edx) ? 0x1a7 : 0x1a6;
         if (!callTo(0x4d1850))
-            return;
+            return g.eax;
         r.ecx = player();
         r.edx = r.eax;
         r.eax = r.ecx;
         if (!callTo(0x482940))
-            return;
+            return g.eax;
         return leave();
     }
     r.ecx = ebp - 0x58;
@@ -6920,7 +7226,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
     r.edx = ebp - 0x54;
     r.eax = ebp - 0x5c;
     if (!callTo(0x4beb80))
-        return;
+        return g.eax;
     // the cop's arrests in a pursuit (kind 7) for game mode 3
     flags.compare(gameSettings(app).raceType, 3);
     if (gameSettings(app).raceType == 3)
@@ -6946,7 +7252,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
                         r.ebx = m.word(ebp - 0x50);
                         r.eax = r.esi;
                         if (!callTo(0x47d580))
-                            return;
+                            return g.eax;
                         break;
                     }
                 }
@@ -6956,7 +7262,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
         }
     }
     if (!callTo(0x489240))
-        return;
+        return g.eax;
     // r.eax = player * 23, as lea, sub, shl 3, sub leave it (eax from edx)
     auto times23 = [](x86::reg32 v) { return ((v * 4 - v) << 3) - v; };
     // the frame's end: the mirror's rectangle (sub_482880) in split screen, sub_4d1340
@@ -6972,14 +7278,15 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
                 {
                     flags.compare(m.word(0x55fe3c), 0);
                     if (m.word(0x55fe3c) && !callTo(0x482880))
-                        return;
+                        return g.eax;
                 }
             }
         }
         flags.compare(m.word(ebp - 0xc), 1);
         if (m.word(ebp - 0xc) != 1 && !callTo(0x4d1340))
-            return;
+            return g.eax;
         leave();
+        return g.eax;
     };
     // the speeders' table (the cop's): sub_481c50, then its rows (sub_48a660)
     auto copTable = [&]() {
@@ -7104,7 +7411,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
                     r.eax = 0x151;
                     push(m.word(0x791b3c));
                     if (!callTo(0x4d1850) || !callTo(0x4897f0))
-                        return;
+                        return g.eax;
                 }
             }
         }
@@ -7146,14 +7453,14 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
         r.eax = 0x749a38;
         r.ebx = r.edx + 1;
         if (!callTo(0x49bdc0))
-            return;
+            return g.eax;
         r.edx = m.word(ebp - 0xc) * 0x348;
         r.eax = player();
         r.ecx = m.word(0x791ac8);
         r.eax = (r.eax << 5) + r.ecx;
         r.ecx = m.word(ebp - 4);
         if (!callTo(0x47fcb0))
-            return;
+            return g.eax;
         r.eax = r.ecx * 0x1a4;
         r.ebx = gameSettings(app).hudAt(r.edx + r.eax).opponentList;
         flags.logic(r.ebx);
@@ -7163,7 +7470,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
             if (r.ecx)
             {
                 if (!copTable())
-                    return;
+                    return g.eax;
             }
             else
             {
@@ -7173,10 +7480,10 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
                     r.edx = r.edi;
                     r.eax = player();
                     if (!callTo(0x47ee80))
-                        return;
+                        return g.eax;
                     r.eax = player();
                     if (!callTo(0x481c50))
-                        return;
+                        return g.eax;
                     r.edx = player();
                     r.eax = (r.edx * 4 - r.edx) << 3;
                     r.ecx = m.word(r.edx * 4 + 0x724780);
@@ -7188,7 +7495,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
                     push(r.eax);
                     push(m.word(0x791b4c));
                     if (!callTo(0x48ae70))
-                        return;
+                        return g.eax;
                 }
             }
         }
@@ -7196,9 +7503,9 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
         r.edx = m.word(ebp - 0xc) * 0x348;
         flags.compare(gameSettings(app).hudAt(r.edx + r.eax).mapStyle, 0);
         if (gameSettings(app).hudAt(r.edx + r.eax).mapStyle && !map())
-            return;
+            return g.eax;
         if (!layers(false))
-            return;
+            return g.eax;
         return finish();
     }
     // the full HUD
@@ -7234,7 +7541,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
     r.eax = r.edi;
     m.word(ebp - 0x18, r.edx);
     if (!callTo(0x4cded0))
-        return;
+        return g.eax;
     m.word(0x725234, r.eax);
     // the car the HUD follows: none for the cop, else the leader or the one ahead
     flags.logic(r.ebx);
@@ -7264,7 +7571,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
             }
         }
         if (call && !callTo(0x4cdef0))
-            return;
+            return g.eax;
         m.word(0x725210, r.eax);
         flags.compare(r.edi, m.word(0x725210));
         if (r.edi == m.word(0x725210))
@@ -7419,11 +7726,11 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
     }
     r.eax = r.edi;
     if (!callTo(0x47f090))
-        return;
+        return g.eax;
     push(m.word(0x791b3c));
     r.ebx = m.word(ebp - 4);
     if (!textScalePushed(app, cpu, flags, r, ebp, esp))
-        return;
+        return g.eax;
     flags.logic(r.ebx);
     if (r.ebx)
     {
@@ -7450,7 +7757,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
         r.eax = m.word(r.edi + 0x2cc);
         push(m.word(0x791b3c));
         if (!callTo(0x489a50))
-            return;
+            return g.eax;
     }
     // the lap clock (element 5)
     r.edx = player();
@@ -7470,7 +7777,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
     r.eax = m.word(0x72522c);
     push(m.word(0x791b3c));
     if (!callTo(0x4898b0))
-        return;
+        return g.eax;
     // the percentage done (element 7) after frame 0x200
     flags.compare(gameSettings(app).raceOptionCones, 0);
     if (gameSettings(app).raceOptionCones)
@@ -7517,7 +7824,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
             r.eax = r.ebx;
             push(m.word(0x791b3c));
             if (!callTo(0x489900))
-                return;
+                return g.eax;
         }
     }
     // the laps (element 4): the cop's by the most any car has done
@@ -7565,7 +7872,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
         r.eax = r.edx * 4;
         r.eax -= r.edx;
         if (!truncate(m.load(ebp - 0x38)))
-            return;
+            return g.eax;
         r.eax <<= 3;
         r.eax -= r.edx;
         r.ebx = m.word(ebp - 0x40);
@@ -7581,7 +7888,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
         r.eax = r.ecx;
         push(m.word(0x791b3c));
         if (!callTo(0x4899d0))
-            return;
+            return g.eax;
     }
     // the position (element 14), for the racer with [0x725234]
     flags.compare(m.word(ebp - 4), 0);
@@ -7616,12 +7923,12 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
             if (!small)
                 push(m.word(0x791b54));
             if (!callTo(0x4cdee0))
-                return;
+                return g.eax;
             r.ecx = m.word(0x725234);
             r.edx = r.eax;
             r.eax = r.ecx;
             if (!callTo(small ? 0x48a320 : 0x48a3a0))
-                return;
+                return g.eax;
         }
     }
     // the race-mode meter (game mode 3, the racer): sub_48c0e0 lit by the place (sub_4013b0)
@@ -7633,7 +7940,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
         {
             r.eax = r.edi;
             if (!callTo(0x4013b0))
-                return;
+                return g.eax;
             r.edx = r.eax - 0xf;
             r.ecx = 10;
             r.eax = r.edx;
@@ -7688,7 +7995,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
                     r.eax = r.ecx;
                     r.edx = player();
                     if (!callTo(0x418990))
-                        return;
+                        return g.eax;
                 }
             }
             r.edx = player();
@@ -7705,7 +8012,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
             r.ebx = m.word(r.eax + 0x74985c);
             r.eax = player();
             if (!callTo(0x48c0e0))
-                return;
+                return g.eax;
         }
     }
     // the opponents' count (element 2 of the racer's, game mode 3)
@@ -7735,7 +8042,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
             r.edx = gameSettings(app).pursuitOutCount;
             push(m.word(0x791b3c));
             if (!callTo(0x489a50))
-                return;
+                return g.eax;
         }
     }
     // the tables (layout +0x6fbc58)
@@ -7749,7 +8056,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
         if (r.ebx)
         {
             if (!copTable())
-                return;
+                return g.eax;
         }
         else
         {
@@ -7759,10 +8066,10 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
                 r.edx = r.edi;
                 r.eax = player();
                 if (!callTo(0x47ee80))
-                    return;
+                    return g.eax;
                 r.eax = player();
                 if (!callTo(0x481c50))
-                    return;
+                    return g.eax;
                 r.edx = player();
                 r.eax = (r.edx * 4 - r.edx) << 3;
                 r.ecx = player();
@@ -7776,7 +8083,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
                 push(r.eax);
                 push(m.word(0x791b4c));
                 if (!callTo(0x48ae70))
-                    return;
+                    return g.eax;
             }
         }
     }
@@ -7786,13 +8093,13 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
         r.edx = r.edi;
         r.eax = player();
         if (!callTo(0x47d480))
-            return;
+            return g.eax;
     }
     r.eax = m.word(ebp - 0xc) * 0x348;
     r.edx = m.word(ebp - 4) * 0x1a4;
     flags.compare(gameSettings(app).hudAt(r.edx + r.eax).mapStyle, 0);
     if (gameSettings(app).hudAt(r.edx + r.eax).mapStyle && !map())
-        return;
+        return g.eax;
     // the rev counter by its kind (layout +0x6fbc6c): 1 the digital one, else the dial
     r.eax = m.word(ebp - 4) * 0x1a4;
     r.edx = m.word(ebp - 0xc) * 0x348;
@@ -7827,7 +8134,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
             const double yValue = m.load(ebp - 0x20), xValue = m.load(ebp - 0x24);
             const std::optional<double> yWhole = chopValue(app, cpu, flags, r, ebp, esp, yValue);
             if (!yWhole)
-                return;
+                return g.eax;
             m.word(ebp - 0x40, x86::reg32(fp::toInteger<x86::sreg32>(*yWhole)));
             if (redline)
                 r.ebx = m.word(ebp - 0x40);
@@ -7835,7 +8142,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
                 r.edx = m.word(ebp - 0x40);
             const std::optional<double> xWhole = chopValue(app, cpu, flags, r, ebp, esp, xValue);
             if (!xWhole)
-                return;
+                return g.eax;
             if (redline)
             {
                 push(r.ebx);
@@ -7859,7 +8166,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
             }
             push(m.word(0x791b50));
             if (!callTo(0x489c40))
-                return;
+                return g.eax;
         }
         else
         {
@@ -7869,7 +8176,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
             r.ebx = m.word(r.eax + 0x1c4);
             r.eax = player();
             if (!callTo(0x489e00))
-                return;
+                return g.eax;
         }
     }
     // the speedometer by its kind (layout +0x6fbc68): 4 and 2 digital, 3 and 1 the dial
@@ -7880,7 +8187,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
     // |speed| to [ebp+at]: fldz; fcomp; jae, fchs
     auto speed = [&](x86::reg32 at) {
         sahfCompare(0.0, m.load(r.edi + 0x4f4));
-        if (cpu.flags.cf)
+        if (flags.cf)
         {
             r.eax = m.word(r.edi + 0x4f4);
             m.word(ebp + at, r.eax);
@@ -7902,7 +8209,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
         r.eax = player();
         push(m.word(ebp - 0x2c));
         if (!callTo(0x48a220))
-            return;
+            return g.eax;
     }
     else
     {
@@ -7956,7 +8263,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
             speed(0xffffffd8);
             push(m.word(ebp - 0x28));
             if (!callTo(0x489d70))
-                return;
+                return g.eax;
         }
     }
     // the gear (element 3's kinds): sub_4a8bb9's, red with the limiter on +0x1f0
@@ -7968,7 +8275,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
     {
         r.eax = r.edi;
         if (!callTo(0x4a8bb9))
-            return;
+            return g.eax;
         setByte(r.ecx, 0, m.byte(0x7d3684));
         r.ebx = r.eax;
         flags.logic8(m.byte(0x7d3684) & 0x10);
@@ -8030,7 +8337,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
             r.eax = m.word(r.eax + 0x749760);
             push(r.eax);
             if (!truncate(M::sub(x1, inset)))
-                return;
+                return g.eax;
             r.eax = m.word(ebp - 0x40);
             push(r.eax);
         }
@@ -8049,7 +8356,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
         setByte(r.edx, 0, m.byte(r.edi + 0x50b));
         push(m.word(0x791b54));
         if (!callTo(0x489b30))
-            return;
+            return g.eax;
     }
     // the clocks for the racer, by the lap clock's kind (layout +0x6fbc64, the jump table at 0x482ae8)
     flags.compare(m.word(ebp - 4), 0);
@@ -8091,7 +8398,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
                             r.eax = times23(r.edx);
                             r.ebx = m.word(r.eax * 4 + 0x7256bc);
                             if (!truncate(m.load(ebp - 0x10)))
-                                return;
+                                return g.eax;
                             push(r.ebx);
                             r.eax = m.word(ebp - 0x40);
                             push(r.eax);
@@ -8116,7 +8423,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
                             r.ecx = m.word(r.eax * 4 + 0x7256bc);
                             r.eax = r.edx * 4;
                             if (!truncate(m.load(ebp - 0x10)))
-                                return;
+                                return g.eax;
                             r.eax -= r.edx;
                             r.eax <<= 3;
                             r.ebx = m.word(ebp - 0x40);
@@ -8135,7 +8442,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
                             push(m.word(0x791b3c));
                         }
                         if (!callTo(0x4898b0))
-                            return;
+                            return g.eax;
                     }
                     else
                     {
@@ -8150,7 +8457,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
                             r.eax = r.edx * 4;
                             r.eax -= r.edx;
                             if (!truncate(m.load(ebp - 0x10)))
-                                return;
+                                return g.eax;
                             r.eax <<= 3;
                             r.eax -= r.edx;
                             r.ecx = m.word(ebp - 0x40);
@@ -8166,7 +8473,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
                             r.eax = m.word(ebp - 0x14);
                             push(m.word(0x791b3c));
                             if (!callTo(0x4898b0))
-                                return;
+                                return g.eax;
                         }
                     }
                 }
@@ -8192,7 +8499,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
                             {
                                 r.eax = r.edi;
                                 if (!callTo(0x485a60))
-                                    return;
+                                    return g.eax;
                                 r.ebx = r.eax;
                                 m.word(ebp - 0x1c, r.eax);
                                 flags.compare(0, r.ebx);
@@ -8218,7 +8525,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
                                 r.edx = r.edi;
                                 r.eax = r.ecx;
                                 if (!callTo(0x485a60))
-                                    return;
+                                    return g.eax;
                                 m.word(ebp - 0x1c, r.eax);
                                 break;
                             }
@@ -8236,7 +8543,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
                     r.eax = r.edx * 4;
                     r.eax -= r.edx;
                     if (!truncate(m.load(ebp - 0x10)))
-                        return;
+                        return g.eax;
                     r.eax <<= 3;
                     r.eax -= r.edx;
                     r.ebx = m.word(ebp - 0x40);
@@ -8251,7 +8558,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
                     r.eax = m.word(ebp - 0x1c);
                     push(m.word(0x791b3c));
                     if (!callTo(0x4898b0))
-                        return;
+                        return g.eax;
                 }
             }
             else if (target == 0x483cf6)
@@ -8274,7 +8581,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
                         r.ecx = m.word(r.eax * 4 + 0x7256bc);
                         r.eax = r.edx * 4;
                         if (!truncate(m.load(ebp - 0x10)))
-                            return;
+                            return g.eax;
                         r.eax -= r.edx;
                         r.eax <<= 3;
                         r.ebx = m.word(ebp - 0x40);
@@ -8292,7 +8599,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
                         r.eax = m.word(ebp - 0x14);
                         push(m.word(0x791b3c));
                         if (!callTo(0x4898b0))
-                            return;
+                            return g.eax;
                     }
                 }
             }
@@ -8315,7 +8622,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
                     r.eax -= r.ecx;
                     r.ecx = m.word(r.eax * 4 + 0x7256bc);
                     if (!truncate(m.load(ebp - 0x10)))
-                        return;
+                        return g.eax;
                     push(r.ecx);
                     r.ebx = m.word(ebp - 0x40);
                     push(r.ebx);
@@ -8341,7 +8648,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
                     }
                     push(m.word(0x791b3c));
                     if (!callTo(0x4898b0))
-                        return;
+                        return g.eax;
                 }
             }
         }
@@ -8381,7 +8688,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
                     r.eax = r.edx;
                     push(m.word(0x791b54));
                     if (!callTo(0x4897f0))
-                        return;
+                        return g.eax;
                 }
             }
         }
@@ -8407,12 +8714,12 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
     r.eax = 0x749a38;
     r.edx = m.word(ebp - 0x18);
     if (!callTo(quads))
-        return;
+        return g.eax;
     // the mirror's view: the band rebuilt (sub_4800a0) when it comes or goes
     r.eax = 0;
     r.edx = m.word(ebp - 0xc);
     if (!callTo(0x422aa0))
-        return;
+        return g.eax;
     flags.logic(r.edx);
     if (!r.edx)
     {
@@ -8422,7 +8729,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
             m.word(0x55d444, r.eax);
             r.eax = player();
             if (!callTo(0x4800a0))
-                return;
+                return g.eax;
         }
     }
     // the layers, or in the top half of split screen with the other car's HUD off only the mirror's frame
@@ -8443,7 +8750,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
     if (!layersOnly)
     {
         if (!layers(true))
-            return;
+            return g.eax;
     }
     else
     {
@@ -8453,17 +8760,18 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
             r.eax = 0x2bf;
             r.edx = r.ebx;
             if (!callTo(0x431900))
-                return;
+                return g.eax;
             r.eax = player();
             if (!callTo(0x482190))
-                return;
+                return g.eax;
             r.edx = 0;
             r.eax = 0x2bf;
             if (!callTo(0x431900))
-                return;
+                return g.eax;
         }
     }
     finish();
+    return g.eax;
 }
 
 /* sub_4b7d30: the textures of the car at eax (edx the 3D shape's): the name
@@ -8474,21 +8782,22 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
  * for the player's car and 128 for the rest (256 for all with
  * NFS_CAR_DETAIL_FULL, a port); the player's shared to [0x55fe24] as well
  * when [0x55d000] is 1. */
-void carTextures(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 carTextures(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
+    const RegisterImage image(args);
     const Memory m{app};
     const Entry entry(cpu);
-    const reg32 car = cpu.eax, shape = cpu.edx;
+    const reg32 car = g.eax, shape = g.edx;
     // push ebx, ecx, esi, edi, ebp; mov ebp, esp; sub esp, 0x108
     const reg32 frame = entry.esp - 20;
     Calls out(app, cpu, frame - 0x108);
-    auto leave = [&]() { entry.restore(cpu, Entry::kEbx | Entry::kEcx | Entry::kEsi | Entry::kEdi | Entry::kEbp); };
+    auto leave = [&]() -> x86::reg32 { entry.restore(cpu, Entry::kEbx | Entry::kEcx | Entry::kEsi | Entry::kEdi | Entry::kEbp); return g.eax; };
     const reg32 name = frame - 0x108;  // the model's name, on the frame for the loaders
     auto isPlayer = [&]() { return car == m.word(gameSettings(app).localPlayer * 4 + 0x5efa48); };
     // port (apply_car_detail): every car at the player's texture size
     const reg32 size = isPlayer() ? 256u : (fullCarDetail() ? 256u : 128u);
-    if (!out.call(0x439300, {gameSettings(app).entryAt(m.word(car + 0x1f0) * 108).car}))
-        return;
+    if (!out.go<0x439300, load::prefixOf>(gameSettings(app).entryAt(m.word(car + 0x1f0) * 108).car))
+        return g.eax;
     // the model's name, as the inline strcpy copies it
     for (reg32 k = 0;; ++k)
     {
@@ -8502,8 +8811,8 @@ void carTextures(win32::WinApplication* app, x86::CPU& cpu)
     if (model >= 0 && model <= 0x31 && !(m.byte(car + 0x200) & 0x20))
     {
         out.push(shape);
-        if (!out.call(0x4b7a60, {car, name, size, SETTINGS_ADDRESS(entries) + m.word(car + 0x1f0) * 108 + 0x20}))
-            return;
+        if (!out.go<0x4b7a60, load::vivModelLoaded>(car, name, size, SETTINGS_ADDRESS(entries) + m.word(car + 0x1f0) * 108 + 0x20))
+            return g.eax;
     }
     else
     {
@@ -8514,23 +8823,24 @@ void carTextures(win32::WinApplication* app, x86::CPU& cpu)
             if (m.word(other + 0x8a4)
                 && m.word(m.word(other + 0x220) + 0x14) == m.word(m.word(car + 0x220) + 0x14))
             {
-                if (!out.call(0x4b7ba0, {other, name, shape}))
-                    return;
+                if (!out.go<0x4b7ba0, load::vivModelCopied>(other, name, shape))
+                    return g.eax;
                 m.word(car + 0x8a4, out.result());
                 return leave();
             }
         }
         out.push(shape);
-        if (!out.call(0x4b7a60, {car, name, size, 0}))
-            return;
+        if (!out.go<0x4b7a60, load::vivModelLoaded>(car, name, size, 0))
+            return g.eax;
     }
     m.word(car + 0x8a4, out.result());
     if (!isPlayer() || m.word(0x55d000) != 1)
         return leave();
-    if (!out.call(0x4b7ba0, {car, name, shape}))
-        return;
+    if (!out.go<0x4b7ba0, load::vivModelCopied>(car, name, shape))
+        return g.eax;
     m.word(0x55fe24, out.result());
     leave();
+    return g.eax;
 }
 
 /* sub_494cb0: the loading screen: the picture at eax (sub_4f09c0 into an
@@ -8541,23 +8851,35 @@ void carTextures(win32::WinApplication* app, x86::CPU& cpu)
  * then the "loading" text (string 0x18c) at its place and [0x79f280],
  * [0x79f284] set from its width (sub_4d1000) for the progress bar.  The
  * whole picture is fitted to 4:3 first (a port: loadingScreenFit). */
-void loadingScreen(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 loadingScreen(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
+    const RegisterImage image(args);
     // port (apply_loading_screen): the loading screen at 4:3
     loadingScreenFit(app, cpu, true);
     const Memory m{app};
     const Entry entry(cpu);
-    const reg32 picture = cpu.eax;
+    const reg32 picture = g.eax;
     // push ebx, ecx, edx, esi, edi, ebp; mov ebp, esp; sub esp, 0x184; sub ebp, 0x82
     const reg32 ebp = entry.esp - 24 - 0x82;
     Calls out(app, cpu, entry.esp - 24 - 0x184);
-    // sub esp, 8; fstp qword [esp]
-    auto pushDouble = [&](double value) {
-        out.esp -= 8;
-        app->getMemory<double>(out.esp) = value;
+    // sub_4f1c30 (floor) and sub_4f2d78 (ceil) of the double the code pushes for them: what they leave on st(0);
+    // nullopt when the game stopped
+    auto floorOf = [&](double value) -> std::optional<double> {
+        const Kept kept(cpu);
+        cpu.esp = out.esp;
+        const x86::Float whole = guest::direct<0x4f1c30, watcom::floored>(app, cpu, x86::Float(value));
+        if (cpu.terminate)
+            return std::nullopt;
+        return double(whole);
     };
-    // fstp dword of what a callee returned on st(0), read back by fld dword
-    auto popped = [&]() { return single(double(cpu.fpu.take())); };
+    auto ceilOf = [&](double value) -> std::optional<double> {
+        const Kept kept(cpu);
+        cpu.esp = out.esp;
+        const x86::Float whole = guest::direct<0x4f2d78, watcom::ceiled>(app, cpu, x86::Float(value));
+        if (cpu.terminate)
+            return std::nullopt;
+        return double(whole);
+    };
     // a value through __CHP and fistp; nullopt when the game stopped
     auto truncate = [&](double value) -> std::optional<reg32> {
         const std::optional<x86::Float> whole = chopped(out, x86::Float(value));
@@ -8568,62 +8890,62 @@ void loadingScreen(win32::WinApplication* app, x86::CPU& cpu)
     /* The calls hand on what the code has in eax, edx, ebx and ecx, stale values too: sub_4ef190
      * and sub_4f09c0 pass them on to the functions they call, sub_4ef1b0 pushes eax, and the
      * check compares those of sub_4d4080, sub_4d79b0 and sub_4ead90. */
-    if ((m.byte(0x7a3a58) & 2) && !out.call(0x431900, {0x2bf, 3}))
-        return;
+    if ((m.byte(0x7a3a58) & 2) && !out.go<0x431900, graphics::sendState>(0x2bf, 3))
+        return g.eax;
     // the window's rectangle (sub_4beb20 of 0x7cdac0) to the frame
     const reg32 rect = ebp + 0x42;
     m.word(0x79f288, 1);
     out.push(rect + 0xc);
-    if (!out.call(0x4beb20, {0x7cdac0, rect, rect + 4, rect + 8}))
-        return;
+    if (!out.go<0x4beb20, frontend::pause::readRect>(0x7cdac0, rect, rect + 4, rect + 8))
+        return g.eax;
     // the picture's scale to the window
     const double across = single(M::mul(fild32(m, rect + 8), m.load(0x53bddc)));
     const double down = single(M::mul(fild32(m, rect + 0xc), m.load(0x53bde0)));
     // the picture into a buffer of 32x32 tiles, 20 rows of 15
     const reg32 rows = 0x14, columns = 0xf;
-    if (!out.call(0x431bc0, {m.word(rect + 0xc), 0x20, 0x10, 0x10}) || !out.call(0x4ef190, {0x20, 0x20, 0x10, 0x10}))
-        return;
+    if (!out.go<0x431bc0, collide::screenStates>() || !out.go<0x4ef190, frontend::eab::windowBitmapCreateDefault>(0x20, 0x20, 0x10, 0x10))
+        return g.eax;
     const reg32 tiles = out.result();
-    if (!out.call(0x4eada0, {tiles, 0x20, columns, rows}) || !out.call(0x4ef760, {0xff000000, 0x1e0, columns, rows})
-        || !out.call(0x4ef1b0, {out.result(), 0x1e0, columns, rows})
-        || !out.call(0x4ef190, {0x280, 0x1e0, 0x10, 0x10}))
-        return;
+    if (!out.go<0x4eada0, frontend::eaa::bitmapDrawInto>(tiles) || !out.go<0x4ef760, frontend::eab::colourPack>(0xff000000)
+        || !out.go<0x4ef1b0, frontend::eab::drawClearClip>(out.result())
+        || !out.go<0x4ef190, frontend::eab::windowBitmapCreateDefault>(0x280, 0x1e0, 0x10, 0x10))
+        return g.eax;
     const reg32 screen = out.result();
-    if (!out.call(0x4eada0, {screen, 0x1e0, 0x10, 0x10})
-        || !out.call(0x4ef1b0, {m.byte(0x565010) == 8 ? 0xffu : 0u, 0x1e0, 0x10, 0x10})
-        || !out.call(0x4f09c0, {picture, 0, 0, 0x10}))
-        return;
+    if (!out.go<0x4eada0, frontend::eaa::bitmapDrawInto>(screen)
+        || !out.go<0x4ef1b0, frontend::eab::drawClearClip>(m.byte(0x565010) == 8 ? 0xffu : 0u)
+        || !out.go<0x4f09c0, frontend::wata::blitDispatchAt>(picture, 0, 0))
+        return g.eax;
     reg32 edx = 0;  // as the code leaves it for sub_4ead90
     for (reg32 row = 0; i32(row) < i32(rows); ++row)
         for (reg32 column = 0; i32(column) < i32(columns); ++column)
         {
             const reg32 texture = ebp - 2;  // sub_4f2cb0's on the frame
-            if (!out.call(0x4f2cb0, {m.word(tiles + 0x20), row << 5, column << 5, texture}))
-                return;
+            if (!out.go<0x4f2cb0, frontend::eab::shapeMoveWithSpot>(m.word(tiles + 0x20), row << 5, column << 5))
+                return g.eax;
             out.push(0);
-            if (!out.call(0x4d4080, {0, m.word(tiles + 0x20), 0x20, texture}))
-                return;
+            if (!out.go<0x4d4080, frontend::rende::loadShapeTexture>(0, m.word(tiles + 0x20), 0x20, texture))
+                return g.eax;
             // the tile's corners: floor of its top left, ceil of its bottom right
             const double D = m.loadDouble(0x53bde8);
-            pushDouble(M::mul(M::mul(double(i32(row)), D), across));
-            if (!out.call(0x4f1c30))
-                return;
+            const std::optional<double> firstFloor = floorOf(M::mul(M::mul(double(i32(row)), D), across));
+            if (!firstFloor)
+                return g.eax;
             const double x = M::mul(double(i32(column)), D);
-            pushDouble(M::mul(x, down));
-            const double floorY = popped();
-            if (!out.call(0x4f1c30))
-                return;
-            pushDouble(M::mul(across, D));
-            const double floorX = popped();
-            if (!out.call(0x4f2d78))
-                return;
-            pushDouble(M::mul(down, D));
-            const double ceilY = popped();
-            if (!out.call(0x4f2d78))
-                return;
+            const std::optional<double> secondFloor = floorOf(M::mul(x, down));
+            if (!secondFloor)
+                return g.eax;
+            const double floorY = single(*firstFloor);  // fstp dword, read back by fld dword
+            const std::optional<double> firstCeil = ceilOf(M::mul(across, D));
+            if (!firstCeil)
+                return g.eax;
+            const double floorX = single(*secondFloor);
+            const std::optional<double> secondCeil = ceilOf(M::mul(down, D));
+            if (!secondCeil)
+                return g.eax;
+            const double ceilY = single(*firstCeil);
             // the last ceil as it returned it, and the three stored before, each through __CHP in
             // the order the code's fxch's take them, then stored by fistp
-            const double ceilX = double(cpu.fpu.take());
+            const double ceilX = *secondCeil;
             out.push(0xffffffff);
             const reg32 eax = m.word(ebp + 2);
             const double corners[4] = {ceilY, floorX, floorY, ceilX};
@@ -8632,48 +8954,55 @@ void loadingScreen(win32::WinApplication* app, x86::CPU& cpu)
             {
                 const std::optional<reg32> w = truncate(corners[i]);
                 if (!w)
-                    return;
+                    return g.eax;
                 whole[i] = *w;
             }
             out.push(whole[3]);
             edx = whole[2];
-            if (!out.call(0x4d79b0, {eax, edx, whole[1], whole[0]}))
-                return;
+            if (!out.go<0x4d79b0, port::obj3d::drawLogoOf>(out.esp - 4, eax, edx, whole[1], whole[0]))
+                return g.eax;
         }
-    if (!out.call(0x4eff00, {tiles}) || !out.call(0x4ead90, {out.result(), edx}) || !out.call(0x4eff00, {screen}))
-        return;
+    if (!out.go<0x4eff00, frontend::eab::windowBitmapFree>(tiles) || !out.go<0x4ead90, frontend::eaa::bitmapDrawToScreen>() || !out.go<0x4eff00, frontend::eab::windowBitmapFree>(screen))
+        return g.eax;
     // the text: its size, "loading" at its place
     if (!setTextScale(out, m.word(0x791b54)))
-        return;
+        return g.eax;
     m.word(0x561b34, 0xffffffff);
     m.word(0x561b3c, 0);
-    if (!out.call(0x4d1850, {0x18c}))
-        return;
+    if (!out.go<0x4d1850, port::text::lineText>(out.esp - 4, 0x18c, 0))
+        return g.eax;
     const reg32 text = ebp - 0x102;
-    out.push(out.result());
-    out.push(0x53bdd8);
-    out.push(text);
-    if (!out.call(0x4df690))
-        return;
+    if (!sprintfAt(app, cpu, g.ebp, out.esp - 12, text, 0x53bdd8, guest::Words({ out.result() })))
+        return g.eax;
     const double textY = M::mul(down, m.load(0x53bdf0));
     const double textX = M::mul(across, m.load(0x53bdf4));
-    out.esp += 0xc;
     const std::optional<reg32> y = truncate(textY);
     if (!y)
-        return;
+        return g.eax;
     const std::optional<reg32> x = truncate(textX);
-    if (!x || !out.call(0x4d1000, {text, *x, *y}))
-        return;
+    if (!x)
+        return g.eax;
+    double drawnWidth;  // what the text's drawing leaves on the x87's top
+    {
+        const Kept kept(cpu);
+        cpu.esp = out.esp;
+        const port::text::WidthResult drawn = guest::direct<0x4d1000, port::text::textDrawn>(app, cpu, out.esp - 4, text, i32(*x), i32(*y));
+        if (!drawn)
+            return g.eax;
+        g.eax = drawn->eax;
+        drawnWidth = double(drawn->value);
+    }
     // the progress bar: from the text's right edge, over [0x53bdfc] of the width
     const double scale = M::div(m.load(0x53bdfc), fild32(m, 0x7cdac8));
-    m.store(0x79f284, double(cpu.fpu.take()));
+    m.store(0x79f284, drawnWidth);
     m.store(0x79f280, M::add(M::add(single(textX), m.load(0x79f284)), m.load(0x53bdf8)));
     m.store(0x79f280, M::mul(scale, m.load(0x79f280)));
-    if (!out.call(0x4d1340))
-        return;
-    if ((m.byte(0x7a3a58) & 2) && !out.call(0x431900, {0x2bf, 0}))
-        return;
+    if (!out.go<0x4d1340, port::text::fontsDrawn>(out.esp - 4))
+        return g.eax;
+    if ((m.byte(0x7a3a58) & 2) && !out.go<0x431900, graphics::sendState>(0x2bf, 0))
+        return g.eax;
     entry.restore(cpu, Entry::kEbx | Entry::kEcx | Entry::kEdx | Entry::kEsi | Entry::kEdi | Entry::kEbp);
+    return g.eax;
 }
 
 /* sub_4d0a10: the 2D picture at [0x56727c] (+4, +6 its width and height) made
@@ -8682,16 +9011,17 @@ void loadingScreen(win32::WinApplication* app, x86::CPU& cpu)
  * (sub_4d37a0, its format to [ebp-0x34]) and copied into a square of 64, 128
  * or 256 by its depth (sub_4d18b0: 8, 16 or 32 bits), cut or padded to it,
  * then THRASH_talloc and THRASH_tupdate. */
-void pictureTexture(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 pictureTexture(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
+    const RegisterImage image(args);
     const Memory m{app};
     const Entry entry(cpu);
     // push ebx, ecx, edx, esi, edi, ebp; mov ebp, esp; sub esp, 0x34
     const reg32 frame = entry.esp - 24;
     Calls out(app, cpu, frame - 0x34);
-    auto leave = [&]() {
+    auto leave = [&]() -> x86::reg32 {
         entry.restore(cpu, Entry::kEbx | Entry::kEcx | Entry::kEdx | Entry::kEsi | Entry::kEdi | Entry::kEbp);
-    };
+        return g.eax; };
     // the picture's width and height (+4, +6), read afresh each time: a copy may lie over them
     auto width = [&]() { return reg32(i32(m.word(m.word(0x56727c) + 2)) >> 16); };
     auto height = [&]() { return reg32(i32(m.word(m.word(0x56727c) + 4)) >> 16); };
@@ -8701,8 +9031,8 @@ void pictureTexture(win32::WinApplication* app, x86::CPU& cpu)
     {
         // a big one: sub_4d4080 at 256
         out.push(3);
-        if (!out.call(0x4d4080, {0, picture, 0x100, 0x83f6a8 + m.word(0x840184) * 44}))
-            return;
+        if (!out.go<0x4d4080, frontend::rende::loadShapeTexture>(0, picture, 0x100, 0x83f6a8 + m.word(0x840184) * 44))
+            return g.eax;
         const reg32 texture = m.word(0x840184) * 44;
         app->getMemory<x86::reg16>(texture + 0x83f6aa) = 0x100;
         app->getMemory<x86::reg16>(texture + 0x83f6a8) = 0x100;
@@ -8719,15 +9049,15 @@ void pictureTexture(win32::WinApplication* app, x86::CPU& cpu)
     else if (half(m.word(0x56727c) + 4) < 0x80 && half(m.word(0x56727c) + 6) < 0x80)
         size = 0x80;
     const reg32 bytes = ((size * size) << 2) + 0x14;
-    if (!out.call(kAllocate, {0x540b90, bytes, 0}))
-        return;
+    if (!out.go<kAllocate, ea::reserved>(0x540b90, bytes, 0))
+        return g.eax;
     const reg32 decoded = out.result();
-    if (!out.call(kAllocate, {0x540b90, bytes, 0, 0}))
-        return;
+    if (!out.go<kAllocate, ea::reserved>(0x540b90, bytes, 0))
+        return g.eax;
     const reg32 square = out.result();
     out.push(format);
-    if (!out.call(0x4d37a0, {decoded, m.word(0x56727c), format + 4, 0}) || !out.call(0x4d18b0, {m.word(format)}))
-        return;
+    if (!out.go<0x4d37a0, port::shapes::shapeToPixelsOf>(out.esp - 4, decoded, m.word(0x56727c), format + 4, 0) || !out.go<0x4d18b0, frontend::rende::formatBits>(m.word(format)))
+        return g.eax;
     /* The rows copied, `bytes` a pixel, from the decoded picture to the square, each min(size,
      * width) pixels, the square or the picture stepped past the rest. */
     auto copy = [&](reg32 pixel) {
@@ -8775,16 +9105,17 @@ void pictureTexture(win32::WinApplication* app, x86::CPU& cpu)
     out.push(size);
     out.push(size);
     if (!out.driver<thrash::kThrashTAlloc, &port::driver::tAlloc>())
-        return;
+        return g.eax;
     const reg32 handle = out.result();
     out.push(0);
     out.push(square + 0x10);
     out.push(handle);
     m.word(m.word(0x840184) * 44 + 0x83f6ac, handle);
-    if (!out.driver<thrash::kThrashTUpdate, &port::driver::tUpdate>() || !out.call(0x4e1890, {decoded})
-        || !out.call(0x4e1890, {square}))
-        return;
+    if (!out.driver<thrash::kThrashTUpdate, &port::driver::tUpdate>() || !out.go<0x4e1890, ea::purgeBlock>(decoded)
+        || !out.go<0x4e1890, ea::purgeBlock>(square))
+        return g.eax;
     leave();
+    return g.eax;
 }
 
 /* sub_4d3f50: a texture of ecx x ecx from the picture at eax (sub_4d37a0
@@ -8793,23 +9124,24 @@ void pictureTexture(win32::WinApplication* app, x86::CPU& cpu)
  * THRASH_tupdate; the handle to eax, and at ebx the texture's corners inset
  * by half a texel ([0x549438] times its size): s, t at +8..+0x24, +0x28 0.
  * ret 4. */
-void squareTexture(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 squareTexture(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
+    const RegisterImage image(args);
     const Memory m{app};
     const Entry entry(cpu);
-    const reg32 picture = cpu.eax, palette = cpu.edx, corners = cpu.ebx;
+    const reg32 picture = g.eax, palette = g.edx, corners = g.ebx;
     const reg32 format = entry.esp + 4;  // the caller's word, sub_4d37a0's to write
     // push esi, edi, ebp; mov ebp, esp; sub esp, 0x20
     Calls out(app, cpu, entry.esp - 12 - 0x20);
     // port: a picture of 512 a side or more at 512 (port_thrash.h)
-    const reg32 side = reg32(port::driver::texture512Side(i32(cpu.ecx), x86::sreg16(app->getMemory<x86::reg16>(picture + 4))));
+    const reg32 side = reg32(port::driver::texture512Side(i32(g.ecx), x86::sreg16(app->getMemory<x86::reg16>(picture + 4))));
     if (!out.driver<thrash::kThrashAbout, &port::driver::about>()
-        || !out.call(kAllocate, {0x549434, ((side * side) << 2) + 0x14, 0, side}))
-        return;
+        || !out.go<kAllocate, ea::reserved>(0x549434, ((side * side) << 2) + 0x14, 0))
+        return g.eax;
     const reg32 buffer = out.result();
     out.push(format);
-    if (!out.call(0x4d37a0, {buffer, picture, palette, side}))
-        return;
+    if (!out.go<0x4d37a0, port::shapes::shapeToPixelsOf>(out.esp - 4, buffer, picture, palette, side))
+        return g.eax;
     const bool paletted = m.word(format) == 2;
     out.push(0);
     out.push(paletted ? 4 : 0);
@@ -8817,13 +9149,13 @@ void squareTexture(win32::WinApplication* app, x86::CPU& cpu)
     out.push(reg32(i32(m.word(buffer + 4)) >> 16));
     out.push(reg32(i32(m.word(buffer + 2)) >> 16));
     if (!out.driver<thrash::kThrashTAlloc, &port::driver::tAlloc>())
-        return;
+        return g.eax;
     const reg32 handle = out.result();
     out.push(paletted ? m.word(0x563a84) : 0);
     out.push(buffer + 0x10);
     out.push(handle);
     if (!out.driver<thrash::kThrashTUpdate, &port::driver::tUpdate>())
-        return;
+        return g.eax;
     // the corners half a texel in, each a float
     const double half = m.load(0x549438);
     const reg32 s0 = asBits(float(M::div(1.0, M::mul(double(x86::sreg16(app->getMemory<x86::reg16>(buffer + 4))), half))));
@@ -8839,10 +9171,11 @@ void squareTexture(win32::WinApplication* app, x86::CPU& cpu)
     m.word(corners + 0x20, s0);
     m.word(corners + 0x24, t1);
     m.byte(corners + 0x28, 0);
-    if (!out.call(0x4e1890, {buffer}))
-        return;
-    cpu.eax = handle;  // a caller reads eax
+    if (!out.go<0x4e1890, ea::purgeBlock>(buffer))
+        return g.eax;
+    g.eax = handle;  // a caller reads eax
     entry.restore(cpu, Entry::kEsi | Entry::kEdi | Entry::kEbp, 4);
+    return g.eax;
 }
 
 /* sub_4d41a0: the paletted picture at eax as a texture into the record at
@@ -8852,17 +9185,18 @@ void squareTexture(win32::WinApplication* app, x86::CPU& cpu)
  * of 1 KB, round robin); then with sub_4f24e0's name in sub_4e0820's list
  * ("0x54943c") expanded to 16 bits (sub_4d3380, format 7), else paletted
  * (format 2 with flag 4). */
-void paletteTexture(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 paletteTexture(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
+    const RegisterImage image(args);
     const Memory m{app};
     const Entry entry(cpu);
-    const reg32 picture = cpu.eax, record = cpu.edx;
+    const reg32 picture = g.eax, record = g.edx;
     // push ebx, ecx, esi, edi, ebp; mov ebp, esp; sub esp, 0x1c
     const reg32 frame = entry.esp - 20;
     Calls out(app, cpu, frame - 0x1c);
     auto half = [&](reg32 at) { return x86::reg16(app->getMemory<x86::reg16>(at)); };
     auto putHalf = [&](reg32 at, x86::reg16 value) { app->getMemory<x86::reg16>(at) = value; };
-    auto leave = [&]() { entry.restore(cpu, Entry::kEbx | Entry::kEcx | Entry::kEsi | Entry::kEdi | Entry::kEbp); };
+    auto leave = [&]() -> x86::reg32 { entry.restore(cpu, Entry::kEbx | Entry::kEcx | Entry::kEsi | Entry::kEdi | Entry::kEbp); return g.eax; };
     // the record: the picture's size, its corners 0..1
     putHalf(record, half(picture + 4));
     const x86::reg16 tall = half(picture + 6);
@@ -8872,20 +9206,20 @@ void paletteTexture(win32::WinApplication* app, x86::CPU& cpu)
         m.word(record + 8 + 4 * k, corners[k]);
     m.byte(record + 0x29, 0);
     putHalf(record + 2, tall);
-    if (!out.call(0x4d4120, {reg32(i32(m.word(picture + 4)) >> 16), reg32(i32(m.word(picture + 2)) >> 16)}))
-        return;
+    if (!out.go<0x4d4120, frontend::rende::fitPowerOfTwo>(reg32(i32(m.word(picture + 4)) >> 16), reg32(i32(m.word(picture + 2)) >> 16)))
+        return g.eax;
     // resized to that
     const reg32 size = out.result();
     out.push(frame - 0x14);  // a word on the frame for sub_4d1ce0
     out.push(size);
     out.push(size);
-    if (!out.call(0x4d1ce0, {picture + 0x10, picture + 0x10, reg32(i32(m.word(picture + 2)) >> 16),
-                             reg32(i32(m.word(picture + 4)) >> 16)}))
-        return;
+    if (!out.go<0x4d1ce0, port::shapes::pixelsConverted8>(picture + 0x10, picture + 0x10, reg32(i32(m.word(picture + 2)) >> 16),
+                                                          reg32(i32(m.word(picture + 4)) >> 16)))
+        return g.eax;
     putHalf(record, x86::reg16(size));
     putHalf(record + 2, x86::reg16(size));
-    if (!out.call(0x4fd1c0, {picture}))
-        return;
+    if (!out.go<0x4fd1c0, frontend::watb::shapeClut>(picture))
+        return g.eax;
     // the palette: 1555 to ARGB, alpha 0 or 0xff, into the round robin's slot
     const reg32 from = out.result() + 0x10;
     for (reg32 k = 0; k < 0x100; ++k)
@@ -8896,13 +9230,13 @@ void paletteTexture(win32::WinApplication* app, x86::CPU& cpu)
         const reg32 blue = half(from + k * 2) & 0x1f;
         m.word((m.word(0x563a98) << 10) + k * 4 + 0x8401a0, (green << 8) | (alpha << 24) | (red << 16) | (blue << 3));
     }
-    if (!out.call(0x4f24e0, {picture}))
-        return;
+    if (!out.go<0x4f24e0, frontend::eab::shapeFindHotspot>(picture))
+        return g.eax;
     bool expand = out.result() != 0;
     if (expand)
     {
-        if (!out.call(0x4e0820, {out.result(), 0x54943c}))
-            return;
+        if (!out.go<0x4e0820, watcom::clib::strstr>(out.result(), 0x54943c))
+            return g.eax;
         expand = out.result() != 0;
     }
     if (expand)
@@ -8910,24 +9244,24 @@ void paletteTexture(win32::WinApplication* app, x86::CPU& cpu)
         // expanded to 16 bits through the palette
         const reg32 pixels = reg32(half(record)) * reg32(half(record + 2));
         m.byte(record + 0x28, m.byte(record + 0x28) | 6);
-        if (!out.call(kAllocate, {0x549434, pixels * 2, 0x10}))
-            return;
+        if (!out.go<kAllocate, ea::reserved>(0x549434, pixels * 2, 0x10))
+            return g.eax;
         const reg32 buffer = out.result();
-        if (!out.call(0x4d3380, {picture, buffer, 0x8401a0 + (m.word(0x563a98) << 10)}))
-            return;
+        if (!out.go<0x4d3380, frontend::rende::expandPalettedShape>(picture, buffer, 0x8401a0 + (m.word(0x563a98) << 10)))
+            return g.eax;
         out.push(0);
         out.push(0);
         out.push(7);
         out.push(half(record + 2));
         out.push(half(record));
         if (!out.driver<thrash::kThrashTAlloc, &port::driver::tAlloc>())
-            return;
+            return g.eax;
         out.push(0);
         out.push(buffer);
         out.push(out.result());
         m.word(record + 4, out.result());
-        if (!out.driver<thrash::kThrashTUpdate, &port::driver::tUpdate>() || !out.call(0x4e1890, {buffer}))
-            return;
+        if (!out.driver<thrash::kThrashTUpdate, &port::driver::tUpdate>() || !out.go<0x4e1890, ea::purgeBlock>(buffer))
+            return g.eax;
         return leave();
     }
     // paletted
@@ -8939,17 +9273,18 @@ void paletteTexture(win32::WinApplication* app, x86::CPU& cpu)
     out.push(half(record));
     m.byte(record + 0x28, flags);
     if (!out.driver<thrash::kThrashTAlloc, &port::driver::tAlloc>())
-        return;
+        return g.eax;
     m.word(record + 4, out.result());
     out.push((m.word(0x563a98) << 10) + 0x8401a0);
     out.push(picture + 0x10);
     out.push(m.word(record + 4));
     if (!out.driver<thrash::kThrashTUpdate, &port::driver::tUpdate>())
-        return;
+        return g.eax;
     m.word(0x563a98, m.word(0x563a98) + 1);
     if (i32(m.word(0x563a98)) >= 0x190)
         m.word(0x563a98, 0);
     leave();
+    return g.eax;
 }
 
 /* sub_4d4580: a piece of the picture at eax -- from x ecx, y [esp+4], at
@@ -8961,18 +9296,20 @@ void paletteTexture(win32::WinApplication* app, x86::CPU& cpu)
  * then THRASH_talloc (format 2 with the palette [0x563a84]), THRASH_tupdate
  * and the record's corners (+8..+0x24 by [0x549450], [0x549454], +0x28 4).
  * eax 1 when no texture could be had, else 0.  ret 8. */
-void pieceTexture(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 pieceTexture(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
+    const RegisterImage image(args);
     const Memory m{app};
     const Entry entry(cpu);
-    const reg32 picture = cpu.eax, record = cpu.edx, format = cpu.ebx, x = cpu.ecx;
+    const reg32 picture = g.eax, record = g.edx, format = g.ebx, x = g.ecx;
     const reg32 y = m.word(entry.esp + 4), barArgument = m.word(entry.esp + 8);
     // push esi, edi, ebp; mov ebp, esp; sub esp, 0x48
     Calls out(app, cpu, entry.esp - 12 - 0x48);
     // eax 1 when no texture could be had, else 0: a caller reads it
-    auto leave = [&](reg32 result) {
-        cpu.eax = result;
+    auto leave = [&](reg32 result) -> x86::reg32 {
+        g.eax = result;
         entry.restore(cpu, Entry::kEsi | Entry::kEdi | Entry::kEbp, 8);
+        return g.eax;
     };
     // n / 8 toward 0 (sar, shl, sbb, sar)
     auto eighth = [](reg32 n) { return reg32(i32(n + (reg32(i32(n) >> 31) & 7)) >> 3); };
@@ -8983,8 +9320,8 @@ void pieceTexture(win32::WinApplication* app, x86::CPU& cpu)
             return std::nullopt;
         return reg32(fp::toInteger<x86::sreg32>(double(*whole)));
     };
-    if (!out.call(0x4d18b0, {format}))
-        return;
+    if (!out.go<0x4d18b0, frontend::rende::formatBits>(format))
+        return g.eax;
     const reg32 bits = out.result();
     // where the piece starts, its size to 256 (each a float)
     const reg32 wide = reg32(i32(m.word(picture + 2)) >> 16);
@@ -8997,8 +9334,8 @@ void pieceTexture(win32::WinApplication* app, x86::CPU& cpu)
     const double rowBytes = M::mul(M::mul(double(i32(bits)), across), m.load(0x549448));
     const double down = single(double(i32(pieceHeight)));
     const std::optional<reg32> rowSize = truncate(rowBytes);
-    if (!rowSize || !out.call(kAllocate, {0x549434, 0x40000, 0, 0}))
-        return;
+    if (!rowSize || !out.go<kAllocate, ea::reserved>(0x549434, 0x40000, 0))
+        return g.eax;
     const reg32 buffer = out.result();
     // the rows: rep movsd, rep movsb, the destination 256 pixels on
     reg32 to = buffer;
@@ -9027,7 +9364,7 @@ void pieceTexture(win32::WinApplication* app, x86::CPU& cpu)
             const reg32 at = bar(m.word(0x792310));
             const std::optional<reg32> width = truncate(across);
             if (!width)
-                return;
+                return g.eax;
             m.word(at + 0x792090, record);
             const double rest = single(M::sub(K, across));
             m.word(at + 0x792098, *width);
@@ -9038,14 +9375,14 @@ void pieceTexture(win32::WinApplication* app, x86::CPU& cpu)
             const double roomFloat = single(double(i32(room)));
             const std::optional<reg32> height = truncate(fcomBelow(rest, roomFloat) ? rest : roomFloat);
             if (!height)
-                return;
+                return g.eax;
             const reg32 next = bar(m.word(0x792310));
             m.word(next + 0x7920a8, *height);
             m.word(next + 0x7920ac, 0x100);
             m.word(next + 0x792094, 0x100);
             m.word(next + 0x7920b0, 0);
-            if (!out.call(0x4d4440, {m.word(0x792310), barArgument, buffer, bits}))
-                return;
+            if (!out.go<0x4d4440, frontend::rende::copyCabinBar>(m.word(0x792310), barArgument, buffer))
+                return g.eax;
             const double left = M::sub(K, across);
             const reg32 count = m.word(0x792310) + 1;
             const double stripStart0 = fild32(m, 0x8b441c);
@@ -9062,7 +9399,7 @@ void pieceTexture(win32::WinApplication* app, x86::CPU& cpu)
                 // narrow, tall: its whole height
                 const std::optional<reg32> width = truncate(across);
                 if (!width)
-                    return;
+                    return g.eax;
                 m.word(at + 0x7920a0, strip);
                 const double roomFloat = single(double(i32(room)));
                 m.word(at + 0x792090, record);
@@ -9072,14 +9409,14 @@ void pieceTexture(win32::WinApplication* app, x86::CPU& cpu)
                 m.word(at + 0x7920a4, 0);
                 const std::optional<reg32> height = truncate(fcomBelow(rest, roomFloat) ? rest : roomFloat);
                 if (!height)
-                    return;
+                    return g.eax;
                 const reg32 next = bar(m.word(0x792310));
                 m.word(next + 0x7920a8, *height);
                 m.word(next + 0x7920ac, 0x100);
                 m.word(next + 0x7920b0, 0);
                 m.word(next + 0x792094, 0x100);
-                if (!out.call(0x4d4440, {m.word(0x792310), barArgument, buffer, bits}))
-                    return;
+                if (!out.go<0x4d4440, frontend::rende::copyCabinBar>(m.word(0x792310), barArgument, buffer))
+                    return g.eax;
                 const double left = M::sub(K, across);
                 const reg32 count = m.word(0x792310) + 1;
                 const double stripStart0 = fild32(m, 0x8b441c);
@@ -9093,7 +9430,7 @@ void pieceTexture(win32::WinApplication* app, x86::CPU& cpu)
                 m.word(at + 0x792090, record);
                 const std::optional<reg32> height = truncate(down);
                 if (!height)
-                    return;
+                    return g.eax;
                 m.word(at + 0x7920a4, 0);
                 m.word(at + 0x792098, 0);
                 m.word(at + 0x79209c, *height);
@@ -9102,13 +9439,13 @@ void pieceTexture(win32::WinApplication* app, x86::CPU& cpu)
                 const double rest = single(M::sub(K, down));
                 const std::optional<reg32> width = truncate(rest);
                 if (!width)
-                    return;
+                    return g.eax;
                 m.word(next + 0x7920a8, widthLimit);
                 m.word(next + 0x7920b0, 1);
                 m.word(next + 0x792094, 0x100);
                 m.word(next + 0x7920ac, *width);
-                if (!out.call(0x4d4440, {m.word(0x792310), barArgument, buffer, bits}))
-                    return;
+                if (!out.go<0x4d4440, frontend::rende::copyCabinBar>(m.word(0x792310), barArgument, buffer))
+                    return g.eax;
                 const double stripStart0 = fild32(m, 0x8b441c);
                 m.word(0x792310, m.word(0x792310) + 1);
                 stripStart = M::add(stripStart0, rest);
@@ -9117,7 +9454,7 @@ void pieceTexture(win32::WinApplication* app, x86::CPU& cpu)
         // fstp st(1), the strip dropped: the strip's new start, through __CHP
         const std::optional<reg32> start = truncate(stripStart);
         if (!start)
-            return;
+            return g.eax;
         m.word(0x8b441c, *start);
     }
     // the texture
@@ -9128,20 +9465,20 @@ void pieceTexture(win32::WinApplication* app, x86::CPU& cpu)
     out.push(0x100);
     out.push(0x100);
     if (!out.driver<thrash::kThrashTAlloc, &port::driver::tAlloc>())
-        return;
+        return g.eax;
     const reg32 handle = out.result();
     m.word(record + 4, handle);
     if (!handle)
     {
-        if (out.call(0x4e1890, {buffer}))
+        if (out.go<0x4e1890, ea::purgeBlock>(buffer))
             leave(1);
-        return;
+        return g.eax;
     }
     out.push(paletted ? m.word(0x563a84) : 0);
     out.push(buffer);
     out.push(handle);
     if (!out.driver<thrash::kThrashTUpdate, &port::driver::tUpdate>())
-        return;
+        return g.eax;
     // its corners: half a texel in, out to the piece's size over 256
     const double scale = m.load(0x549450);
     const double s1 = M::mul(across, scale);
@@ -9158,8 +9495,9 @@ void pieceTexture(win32::WinApplication* app, x86::CPU& cpu)
     m.word(record + 0x1c, t);
     m.word(record + 0x24, t);
     m.byte(record + 0x28, 4);
-    if (out.call(0x4e1890, {buffer}))
+    if (out.go<0x4e1890, ea::purgeBlock>(buffer))
         leave(0);
+    return g.eax;
 }
 
 /* sub_4d4ae0: a picture as cabin textures -- eax a compressed picture (or 0
@@ -9171,20 +9509,22 @@ void pieceTexture(win32::WinApplication* app, x86::CPU& cpu)
  * packed, as bars at 0x792090 (sub_4d4440), into one square texture of the
  * least power of two that holds it: THRASH_talloc, THRASH_tupdate.  eax the
  * number of records used, 0 when a texture could not be had.  ret 8. */
-void cabinTextures(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 cabinTextures(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
+    const RegisterImage image(args);
     const Memory m{app};
     const Entry entry(cpu);
-    const reg32 compressed = cpu.eax, plain = cpu.edx, plainSecond = cpu.ebx, records = cpu.ecx;
+    const reg32 compressed = g.eax, plain = g.edx, plainSecond = g.ebx, records = g.ecx;
     const reg32 format = entry.esp + 4;  // the caller's word, sub_4d37a0's to write
     const reg32 first = m.word(entry.esp + 8);
     // push esi, edi, ebp; mov ebp, esp; sub esp, 0x48
     const reg32 frame = entry.esp - 12;
     Calls out(app, cpu, frame - 0x48);
     // eax 0 when a texture could not be had, else the records used: a caller reads it
-    auto leave = [&](reg32 result) {
-        cpu.eax = result;
+    auto leave = [&](reg32 result) -> x86::reg32 {
+        g.eax = result;
         entry.restore(cpu, Entry::kEsi | Entry::kEdi | Entry::kEbp, 8);
+        return g.eax;
     };
     auto half = [](reg32 v) { return reg32(i32(v) >> 16); };
     auto less = [](reg32 a, reg32 b) { return i32(a) < i32(b); };
@@ -9204,11 +9544,11 @@ void cabinTextures(win32::WinApplication* app, x86::CPU& cpu)
     reg32 second;
     if (compressed)
     {
-        if (!out.call(0x4ef1e0, {compressed, plain}))
-            return;
+        if (!out.go<0x4ef1e0, frontend::eab::shapeFileFind>(compressed, plain))
+            return g.eax;
         m.word(first, out.result());
-        if (!out.call(0x4ef1e0, {compressed, plainSecond}))
-            return;
+        if (!out.go<0x4ef1e0, frontend::eab::shapeFileFind>(compressed, plainSecond))
+            return g.eax;
         second = out.result();
     }
     else
@@ -9223,19 +9563,19 @@ void cabinTextures(win32::WinApplication* app, x86::CPU& cpu)
     m.word(0x792308, reg32(i32(m.word(second + 0xc) << 4) >> 20));
     // buffers for both pictures, unpacked
     const reg32 shape = m.word(first);
-    if (!out.call(kAllocate, {0x549434, ((half(m.word(shape + 2)) * half(m.word(shape + 4))) << 2) + 0x14, 0}))
-        return;
+    if (!out.go<kAllocate, ea::reserved>(0x549434, ((half(m.word(shape + 2)) * half(m.word(shape + 4))) << 2) + 0x14, 0))
+        return g.eax;
     const reg32 pieces = out.result();
-    if (!out.call(kAllocate, {0x549434, ((half(m.word(second + 2)) * half(m.word(second + 4))) << 2) + 0x14, 0}))
-        return;
+    if (!out.go<kAllocate, ea::reserved>(0x549434, ((half(m.word(second + 2)) * half(m.word(second + 4))) << 2) + 0x14, 0))
+        return g.eax;
     const reg32 strip = out.result();
     const reg32 flag = frame - 0x48;  // sub_4d37a0's on the frame
     out.push(format);
-    if (!out.call(0x4d37a0, {pieces, m.word(first), flag, 0}))
-        return;
+    if (!out.go<0x4d37a0, port::shapes::shapeToPixelsOf>(out.esp - 4, pieces, m.word(first), flag, 0))
+        return g.eax;
     out.push(format);
-    if (!out.call(0x4d37a0, {strip, second, flag, 0}))
-        return;
+    if (!out.go<0x4d37a0, port::shapes::shapeToPixelsOf>(out.esp - 4, strip, second, flag, 0))
+        return g.eax;
     m.word(0x792310, 0);
     m.word(0x8b441c, 0);
     m.word(0x8b4418, half(m.word(second + 2)));
@@ -9248,17 +9588,17 @@ void cabinTextures(win32::WinApplication* app, x86::CPU& cpu)
             out.push(y);
             const reg32 record = used * 44 + records;
             ++used;
-            if (!out.call(0x4d4580, {pieces, record, m.word(format), x}))
-                return;
+            if (!out.go<0x4d4580, render::pieceTextureMade>(pieces, record, m.word(format), x))
+                return g.eax;
             if (out.result())
             {
-                if (out.call(0x4e1890, {strip}) && out.call(0x4e1890, {pieces}))
+                if (out.go<0x4e1890, ea::purgeBlock>(strip) && out.go<0x4e1890, ea::purgeBlock>(pieces))
                     leave(0);
-                return;
+                return g.eax;
             }
         }
-    if (!out.call(0x4e1890, {pieces}))
-        return;
+    if (!out.go<0x4e1890, ea::purgeBlock>(pieces))
+        return g.eax;
     // the strip's area, and the least square of 16 << n holding it
     reg32 area = (m.word(0x8b4414) - 0x100) * m.word(0x8b4418);
     if (less(m.word(0x8b441c), m.word(0x8b4418)))
@@ -9266,8 +9606,8 @@ void cabinTextures(win32::WinApplication* app, x86::CPU& cpu)
     reg32 side = 0x10;
     while (less(side * side, area))
         side += side;
-    if (!out.call(kAllocate, {0x549434, (side * side) << 2, 0}))
-        return;
+    if (!out.go<kAllocate, ea::reserved>(0x549434, (side * side) << 2, 0))
+        return g.eax;
     const reg32 square = out.result();
     // the part 256 high above: bars down each column of the square
     const reg32 step = least(side, m.word(0x8b4418));
@@ -9283,8 +9623,8 @@ void cabinTextures(win32::WinApplication* app, x86::CPU& cpu)
             m.word(at + 0x7920ac, least(tall, m.word(0x8b4414) - y));
             m.word(at + 0x7920b0, 0);
             m.word(at + 0x792094, side);
-            if (!out.call(0x4d4440, {count, strip, square, 0x10}))
-                return;
+            if (!out.go<0x4d4440, frontend::rende::copyCabinBar>(count, strip, square))
+                return g.eax;
             m.word(0x792310, m.word(0x792310) + 1);
             if (less(tall, step))
                 fullHeight += tall;
@@ -9309,8 +9649,8 @@ void cabinTextures(win32::WinApplication* app, x86::CPU& cpu)
                 m.word(at + 0x7920ac, height);
                 m.word(at + 0x792094, side);
                 m.word(at + 0x7920b0, 0);
-                if (!out.call(0x4d4440, {count, strip, square, 0x10}))
-                    return;
+                if (!out.go<0x4d4440, frontend::rende::copyCabinBar>(count, strip, square))
+                    return g.eax;
                 m.word(0x792310, m.word(0x792310) + 1);
                 if (less(high, wide))
                     fullHeight += high;
@@ -9330,23 +9670,369 @@ void cabinTextures(win32::WinApplication* app, x86::CPU& cpu)
     out.push(side);
     out.push(side);
     if (!out.driver<thrash::kThrashTAlloc, &port::driver::tAlloc>())
-        return;
+        return g.eax;
     const reg32 handle = out.result();
     m.word(record + 4, handle);
-    auto drop = [&]() { return out.call(0x4e1890, {square}) && out.call(0x4e1890, {strip}); };
+    auto drop = [&]() { return out.go<0x4e1890, ea::purgeBlock>(square) && out.go<0x4e1890, ea::purgeBlock>(strip); };
     if (!handle)
     {
         if (drop())
             leave(0);
-        return;
+        return g.eax;
     }
     out.push(paletted ? m.word(0x563a84) : 0);
     out.push(square);
     out.push(handle);
     if (out.driver<thrash::kThrashTUpdate, &port::driver::tUpdate>() && drop())
         leave(used);
+    return g.eax;
 }
 
 }
 
+}
+
+
+namespace nfs3hp
+{
+namespace render
+{
+
+namespace
+{
+
+/* The one place the typed cores of native_render.h meet the registers: a thunk run with `registers` in eax,
+ * edx, ebx and ecx in turn, esi `list` when given and `stack` words on the stack; what it leaves in eax, nullopt
+ * when the game stopped.  Without stack words the thunk pops the return address's slot guest::direct leaves
+ * under esp; with them that slot is taken back, so the words lie where a call's push puts them, and given again. */
+std::optional<reg32> runAsThunk(win32::WinApplication* app, x86::CPU& cpu,
+                                x86::reg32 (*thunk)(win32::WinApplication*, x86::CPU&, x86::Args&),
+                                std::initializer_list<reg32> registers, std::initializer_list<reg32> stack = {},
+                                const reg32* list = nullptr)
+{
+    reg32* const into[] = {&g.eax, &g.edx, &g.ebx, &g.ecx};
+    unsigned i = 0;
+    for (const reg32 value : registers)
+        *into[i++] = value;
+    if (list)
+        g.esi = *list;
+    if (stack.size() == 0)
+    {
+        thunk(app, cpu, g);
+    }
+    else
+    {
+        cpu.esp += 4;
+        const reg32 esp = cpu.esp;
+        reg32 slot = esp - 4 * reg32(stack.size());
+        cpu.esp = slot - 4;
+        for (const reg32 word : stack)
+        {
+            put(app, slot, word);
+            slot += 4;
+        }
+        thunk(app, cpu, g);
+        const bool done = !cpu.terminate;
+        if (done)
+            cpu.esp = esp;
+        cpu.esp -= 4;
+        if (!done)
+            return std::nullopt;
+    }
+    if (cpu.terminate)
+        return std::nullopt;
+    return g.eax;
+}
+
+/* runAsThunk for a thunk of another file, by its address (guest::pointerCall): `registers` in eax, edx, ebx and ecx in
+ * turn, `stack` words pushed; what it leaves in eax, nullopt when the game stopped. */
+std::optional<reg32> runAt(win32::WinApplication* app, x86::CPU& cpu, reg32 address, std::initializer_list<reg32> registers,
+                           std::initializer_list<reg32> stack = {})
+{
+    reg32* const into[] = {&g.eax, &g.edx, &g.ebx, &g.ecx};
+    unsigned i = 0;
+    for (const reg32 value : registers)
+        *into[i++] = value;
+    cpu.esp += 4;  // the return address's slot guest::direct leaves under esp: the pointer call makes its own
+    const std::optional<reg32> eax = guest::pointerCall(app, cpu, address, g, stack);
+    cpu.esp -= 4;
+    if (!eax)
+        return std::nullopt;
+    g.eax = *eax;
+    return eax;
+}
+
+}  // namespace
+
+/* The cores of native_render.h: each runs the thunk's body (the registers and frames line by line) as C++. */
+std::optional<reg32> viewDistancesSet(win32::WinApplication* app, x86::CPU& cpu)
+{
+    return runAsThunk(app, cpu, viewDistances, {});
+}
+
+std::optional<reg32> detailSettingsSet(win32::WinApplication* app, x86::CPU& cpu)
+{
+    return runAsThunk(app, cpu, detailSettings, {});
+}
+
+bool screenModeSet(win32::WinApplication* app, x86::CPU& cpu, reg32 mode)
+{
+    return runAsThunk(app, cpu, screenMode, {mode}).has_value();
+}
+
+bool pictureTextured(win32::WinApplication* app, x86::CPU& cpu)
+{
+    return runAsThunk(app, cpu, pictureTexture, {}).has_value();
+}
+
+bool paletteTextured(win32::WinApplication* app, x86::CPU& cpu, reg32 picture, reg32 record)
+{
+    return runAsThunk(app, cpu, paletteTexture, {picture, record}).has_value();
+}
+
+bool smokeDrawn(win32::WinApplication* app, x86::CPU& cpu, reg32 view, reg32 count, reg32 list)
+{
+    return runAsThunk(app, cpu, smoke, {view, count}, {}, &list).has_value();
+}
+
+bool streaksDrawn(win32::WinApplication* app, x86::CPU& cpu, reg32 view, reg32 count, reg32 liveCount, reg32 list)
+{
+    return runAsThunk(app, cpu, streaks, {view, count, liveCount}, {}, &list).has_value();
+}
+
+bool polygonDrawersSet(win32::WinApplication* app, x86::CPU& cpu)
+{
+    return runAsThunk(app, cpu, polygonDrawers, {}).has_value();
+}
+
+bool driverStarted(win32::WinApplication* app, x86::CPU& cpu, reg32 driver, reg32 message)
+{
+    return runAsThunk(app, cpu, startDriver, {driver, message}).has_value();
+}
+
+bool carTexturesMade(win32::WinApplication* app, x86::CPU& cpu, reg32 car, reg32 shape)
+{
+    return runAsThunk(app, cpu, carTextures, {car, shape}).has_value();
+}
+
+bool viewSkyMade(win32::WinApplication* app, x86::CPU& cpu, reg32 view, reg32 to)
+{
+    return runAsThunk(app, cpu, viewSky, {view}, {}, &to).has_value();
+}
+
+bool raceViewsSet(win32::WinApplication* app, x86::CPU& cpu)
+{
+    return runAsThunk(app, cpu, raceViews, {}).has_value();
+}
+
+bool loadingPictureShown(win32::WinApplication* app, x86::CPU& cpu, reg32 picture)
+{
+    return runAsThunk(app, cpu, loadingScreen, {picture}).has_value();
+}
+
+std::optional<reg32> sunLightingReset(win32::WinApplication* app, x86::CPU& cpu)
+{
+    return runAt(app, cpu, 0x49d640, {});
+}
+
+std::optional<reg32> viewPassDrawn(win32::WinApplication* app, x86::CPU& cpu, reg32 view, reg32 esi)
+{
+    return runAsThunk(app, cpu, viewPass, {view}, {}, &esi);
+}
+
+std::optional<reg32> hudDrawn(win32::WinApplication* app, x86::CPU& cpu, reg32 view, reg32 esi)
+{
+    return runAsThunk(app, cpu, hud, {view}, {}, &esi);
+}
+
+std::optional<reg32> countdownDrawn(win32::WinApplication* app, x86::CPU& cpu, reg32 view, reg32 esi)
+{
+    return runAsThunk(app, cpu, countdown, {view}, {}, &esi);
+}
+
+std::optional<reg32> quadByZDrawn(win32::WinApplication* app, x86::CPU& cpu, reg32 a, reg32 b, reg32 c, reg32 d)
+{
+    return runAsThunk(app, cpu, quadByZ, {a, b, c, d});
+}
+
+std::optional<reg32> chaseLevelRaised(win32::WinApplication* app, x86::CPU& cpu, reg32 level, reg32 player)
+{
+    return runAt(app, cpu, 0x418990, {level, player});
+}
+
+std::optional<reg32> viewRecordMade(win32::WinApplication* app, x86::CPU& cpu, reg32 kind, reg32 size, reg32 record)
+{
+    return runAsThunk(app, cpu, viewRecord, {kind, size, record});
+}
+
+std::optional<reg32> quadPieceDrawn(win32::WinApplication* app, x86::CPU& cpu, reg32 depth, reg32 sa, reg32 sb, reg32 sc,
+                                    reg32 sd, reg32 a, reg32 b, reg32 c, reg32 d)
+{
+    return runAsThunk(app, cpu, subdivideQuad, {depth, sa, sb, sc}, {sd, a, b, c, d});
+}
+
+std::optional<reg32> quadWholeDrawn(win32::WinApplication* app, x86::CPU& cpu, reg32 a, reg32 b, reg32 c, reg32 d)
+{
+    return runAsThunk(app, cpu, quadSubdivided, {a, b, c, d});
+}
+
+std::optional<reg32> solidTextDrawn(win32::WinApplication* app, x86::CPU& cpu, reg32 text, reg32 x, reg32 y, reg32 scale,
+                                    reg32 size, reg32 texture, reg32 matrix)
+{
+    return runAsThunk(app, cpu, solidText, {text, x, y}, {scale, size, texture, matrix});
+}
+
+std::optional<reg32> skyDrawn(win32::WinApplication* app, x86::CPU& cpu, reg32 view)
+{
+    return runAsThunk(app, cpu, sky, {view});
+}
+
+std::optional<reg32> flatSkyDrawn(win32::WinApplication* app, x86::CPU& cpu)
+{
+    return runAsThunk(app, cpu, flatSky, {});
+}
+
+std::optional<reg32> glareVerticesSet(win32::WinApplication* app, x86::CPU& cpu, reg32 count, reg32 vertices)
+{
+    return runAsThunk(app, cpu, glareVertices, {count, vertices});
+}
+
+std::optional<reg32> skyDomeDrawn(win32::WinApplication* app, x86::CPU& cpu, reg32 view)
+{
+    return runAsThunk(app, cpu, skyDome, {view});
+}
+
+std::optional<reg32> lightningDrawn(win32::WinApplication* app, x86::CPU& cpu, reg32 view)
+{
+    return runAsThunk(app, cpu, lightning, {view});
+}
+
+std::optional<reg32> needlesDrawn(win32::WinApplication* app, x86::CPU& cpu, reg32 view)
+{
+    return runAsThunk(app, cpu, needles, {view});
+}
+
+std::optional<reg32> barGaugesDrawn(win32::WinApplication* app, x86::CPU& cpu, reg32 view)
+{
+    return runAsThunk(app, cpu, barGauges, {view});
+}
+
+std::optional<reg32> cockpitDrawn(win32::WinApplication* app, x86::CPU& cpu)
+{
+    return runAsThunk(app, cpu, cockpit, {});
+}
+
+std::optional<reg32> clippedByZ(win32::WinApplication* app, x86::CPU& cpu, reg32 list, reg32 codes, reg32 any)
+{
+    return runAsThunk(app, cpu, clipByZ, {list, codes, any});
+}
+
+std::optional<reg32> nearTriangleDrawn(win32::WinApplication* app, x86::CPU& cpu, reg32 record, reg32 nearBits, reg32 ebx,
+                                       reg32 ecx)
+{
+    return runAsThunk(app, cpu, nearTriangle, {record, nearBits, ebx, ecx});
+}
+
+std::optional<reg32> pieceTextureMade(win32::WinApplication* app, x86::CPU& cpu, reg32 pieces, reg32 record, reg32 format,
+                                      reg32 x)
+{
+    return runAsThunk(app, cpu, pieceTexture, {pieces, record, format, x});
+}
+
+std::optional<reg32> hudBandBuilt(win32::WinApplication* app, x86::CPU& cpu, reg32 player)
+{
+    return runAsThunk(app, cpu, hudBand, {player});
+}
+
+bool hudRectPlaced(win32::WinApplication* app, x86::CPU& cpu, reg32 view, reg32 element, reg32 width, reg32 height)
+{
+    return runAsThunk(app, cpu, hudRect, {view, element, width, height}).has_value();
+}
+
+std::optional<reg32> hudPicturePlaced(win32::WinApplication* app, x86::CPU& cpu, reg32 view)
+{
+    return runAsThunk(app, cpu, hudPicture, {view});
+}
+
+std::optional<reg32> hudDialPlaced(win32::WinApplication* app, x86::CPU& cpu, reg32 view)
+{
+    return runAsThunk(app, cpu, hudDial, {view});
+}
+
+std::optional<reg32> hudPanelPlaced(win32::WinApplication* app, x86::CPU& cpu, reg32 view)
+{
+    return runAsThunk(app, cpu, hudPanel, {view});
+}
+
+std::optional<reg32> hudTablePlaced(win32::WinApplication* app, x86::CPU& cpu, reg32 view)
+{
+    return runAsThunk(app, cpu, hudTable, {view});
+}
+
+std::optional<reg32> meterDrawn(win32::WinApplication* app, x86::CPU& cpu, reg32 view, reg32 x, reg32 y, reg32 width,
+                                reg32 height, reg32 lit, reg32 corner)
+{
+    return runAsThunk(app, cpu, segmentMeter, {view, x, y, width}, {height, lit, corner});
+}
+
+std::optional<reg32> startLightsDrawn(win32::WinApplication* app, x86::CPU& cpu, reg32 first, reg32 second, reg32 third,
+                                      reg32 fourth, reg32 lit)
+{
+    return runAsThunk(app, cpu, startLights, {first, second, third, fourth}, {lit});
+}
+
+void glareColoursSet(win32::WinApplication* app, reg32 first, reg32 second)
+{
+    setGlareColours(app, first, second);
+}
+
+std::optional<reg32> transformBufferAllocated(win32::WinApplication* app, x86::CPU& cpu, reg32 size)
+{
+    return allocateTransformBuffer(app, cpu, size);
+}
+
+std::optional<reg32> nightColourOf(win32::WinApplication* app, x86::CPU& cpu, reg32 car, reg32 colour)
+{
+    return runAsThunk(app, cpu, nightColour, {car, colour});
+}
+
+bool carLightsDrawn(win32::WinApplication* app, x86::CPU& cpu, reg32 car, reg32 view)
+{
+    return runAsThunk(app, cpu, carLights, {car, view}).has_value();
+}
+
+bool mediumCarLightsDrawn(win32::WinApplication* app, x86::CPU& cpu, reg32 car, reg32 view)
+{
+    return runAsThunk(app, cpu, mediumCarLights, {car, view}).has_value();
+}
+
+std::optional<reg32> lineDrawn(win32::WinApplication* app, x86::CPU& cpu, reg32 first, reg32 second)
+{
+    return runAsThunk(app, cpu, line, {first, second});
+}
+
+bool sparksDrawn(win32::WinApplication* app, x86::CPU& cpu, reg32 view)
+{
+    return runAsThunk(app, cpu, sparks, {view}).has_value();
+}
+
+std::optional<reg32> squareTextureMade(win32::WinApplication* app, x86::CPU& cpu, reg32 picture, reg32 palette,
+                                       reg32 corners, reg32 side, reg32 format)
+{
+    return runAsThunk(app, cpu, squareTexture, {picture, palette, corners, side}, {format});
+}
+
+std::optional<reg32> hudFrameBuilt(win32::WinApplication* app, x86::CPU& cpu, reg32 quads, reg32 top, reg32 left,
+                                   reg32 bottom, reg32 right)
+{
+    return runAsThunk(app, cpu, hudFrame, {quads, top, left, bottom}, {right});
+}
+
+}  // namespace render
+}  // namespace nfs3hp
+
+x86::Args& nfs3hp::guest::registerImage()
+{
+    thread_local x86::Args image;
+    return image;
 }

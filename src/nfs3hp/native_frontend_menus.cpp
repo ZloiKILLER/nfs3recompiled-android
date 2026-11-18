@@ -10,7 +10,7 @@
  * itself.
  *
  * Plan step 5: the lookup a typed core in frontend::menus (native_frontend_menus.h), in a frame of
- * its own (fe::Frame: what it calls runs at the stack addresses it did), and an adapter under the
+ * its own (fe::Frame: what it calls runs at the stack addresses it did), and a thunk under the
  * game's name for the calls by address. */
 namespace nfs3hp
 {
@@ -54,16 +54,15 @@ using fe::kRestoreEcx;
 using fe::kRestoreEsi;
 using fe::kRestoreEdi;
 
-/* Native whole, no generated code behind it (disassemble_nfs3hp.py's
- * MENU_NATIVES): the main menu looks its items up with it. */
+/* Native whole: the main menu looks its items up with it. */
 namespace frontend
 {
 
-void menuFindItem(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 menuFindItem(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_442a40", 0, 0, nullptr, 0, kRestoreEbx | kRestoreEcx | kRestoreEsi | kRestoreEdi };
-    const x86::reg32 menu = cpu.eax, name = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return menus::findItem(app, cpu, menu, name); });
+    const x86::reg32 menu = args.eax, name = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menus::findItem(app, cpu, menu, name); });
 }
 
 }  // namespace frontend

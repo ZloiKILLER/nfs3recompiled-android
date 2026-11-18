@@ -5,7 +5,7 @@
 
 /* native_frontend_text.cpp's typed functions (a display mode's or a controller's name, the checks
  * of a player's name and of a line typed in), which other files call as C++ (guest::direct), and
- * how the game's code calls each by address (ByAddress, for the checks' stand-ins).
+ * how the game's code calls each by address.
  *
  * They are written as their code is, register by register: each takes its arguments into the
  * registers the game's function takes them in, runs on `cpu` as the code does, and returns what
@@ -44,105 +44,6 @@ reg32 lineAllowed(App* app, CPU& cpu, reg32 line, reg32 mode);
 
 namespace guest
 {
-
-/* Each by address as the game's code calls it: its arguments in eax and edx, every other register
- * as the caller has it; eax back.  With cpu.terminate set when the game stopped in it. */
-template <>
-struct ByAddress<frontend::text::displayModeName>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 mode)
-    {
-        cpu.eax = mode;
-        guest::call(app, cpu, Address);
-        return cpu.eax;
-    }
-};
-
-template <>
-struct ByAddress<frontend::text::controllerName>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 controller)
-    {
-        cpu.eax = controller;
-        guest::call(app, cpu, Address);
-        return cpu.eax;
-    }
-};
-
-template <>
-struct ByAddress<frontend::text::nameValid>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 name)
-    {
-        cpu.eax = name;
-        guest::call(app, cpu, Address);
-        return cpu.eax;
-    }
-};
-
-template <>
-struct ByAddress<frontend::text::shortNameCharacter>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 character)
-    {
-        cpu.eax = character;
-        guest::call(app, cpu, Address);
-        return cpu.eax;
-    }
-};
-
-template <>
-struct ByAddress<frontend::text::shortNameValid>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 line)
-    {
-        cpu.eax = line;
-        guest::call(app, cpu, Address);
-        return cpu.eax;
-    }
-};
-
-template <>
-struct ByAddress<frontend::text::languageNameValid>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 line)
-    {
-        cpu.eax = line;
-        guest::call(app, cpu, Address);
-        return cpu.eax;
-    }
-};
-
-template <>
-struct ByAddress<frontend::text::languageFileNameValid>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 line)
-    {
-        cpu.eax = line;
-        guest::call(app, cpu, Address);
-        return cpu.eax;
-    }
-};
-
-template <>
-struct ByAddress<frontend::text::lineAllowed>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 line, x86::reg32 mode)
-    {
-        cpu.eax = line;
-        cpu.edx = mode;
-        guest::call(app, cpu, Address);
-        return cpu.eax;
-    }
-};
 
 }  // namespace guest
 }  // namespace nfs3hp

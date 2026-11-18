@@ -5,6 +5,7 @@
 #include "native_carstate.h"
 #include "native_controls_input.h"
 #include "native_ea_files.h"
+#include "native_ea_formats.h"
 #include "native_ea_memory.h"
 #include "native_ea_threads.h"
 #include "native_frontend_eaa.h"
@@ -20,16 +21,21 @@
 #include "native_frontend_rendf.h"
 #include "native_frontend_simd.h"
 #include "native_frontend_watb.h"
+#include "native_frontend_watc.h"
 #include "native_frontend_wina.h"
+#include "native_load_saves.h"
 #include "port_snd_stream_calls.h"
 #include "port_text.h"
 #include "native_frontend.h"
+#include "native_frontend_pcall.h"
 #include "native_windows.h"
+#include "port_timer.h"
 #include "host_window.h"
 #include <nfs3hp.h>
 #include <fpu.h>
 #include "host_files.h"
 #include "host_system.h"
+#include "native_render.h"
 struct SDL_AtomicInt;
 struct SDL_Semaphore;
 #include <lib/thread.h>
@@ -40,39 +46,108 @@ struct SDL_Semaphore;
 #include <utility>
 #include <cstddef>
 
+/* The thunks defined below by qualified name, declared where they are defined. */
 namespace nfs3hp
 {
-namespace
-{
-
-/* A typed core called as C++ (fe::direct) whose function changes no register but eax (as
- * tools/frontend_checks/specs_from_exe.py reads it): the registers left as the call by address
- * leaves them -- `words` in eax, edx, ebx and ecx as that call loads them, the first `Taken` of
- * them the core's arguments -- and its result in eax, which the call by address leaves there. */
-template <x86::reg32 Address, auto Core, std::size_t... I>
-auto directOf(win32::WinApplication* app, x86::CPU& cpu, const x86::reg32* words, std::index_sequence<I...>)
-{
-    return fe::direct<Address, Core>(app, cpu, words[I]...);
-}
-
-template <x86::reg32 Address, auto Core, std::size_t Taken, typename... Words>
-x86::reg32 directKept(win32::WinApplication* app, x86::CPU& cpu, Words... words)
-{
-    const x86::reg32 all[] = { x86::reg32(words)..., 0 };
-    x86::reg32* const into[] = { &cpu.eax, &cpu.edx, &cpu.ebx, &cpu.ecx };
-    for (std::size_t i = 0; i < sizeof...(Words) && i < 4; ++i)
-        *into[i] = all[i];
-    const auto result = directOf<Address, Core>(app, cpu, all, std::make_index_sequence<Taken>{});
-    if constexpr (std::is_same_v<std::remove_cv_t<decltype(result)>, x86::reg32>)
-        cpu.eax = result;
-    else
-        cpu.eax = *result;
-    return cpu.eax;
-}
-
-}  // namespace
+namespace frontend {
+x86::reg32 carDataReadInteger(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 carDataReadByte(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 carDataReadFloat(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 carDataReadFixed(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 carDataLineHasValues(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 carDataFindKey(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 carDataNextLine(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 carDataFillDefaults(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 carDataRead(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 exceptionName(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 npsLoadDll(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 npsDevelopMode(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 npsDllPath(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 npsEnsureDll(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 installFileRead(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 findFirstFile(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 findNextFile(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 carBadgeColour(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 windowCheckField(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 windowCheck(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 pathInDirectory(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 textMeasureBox(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 lockKeySet(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 commandLineRead(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 discCheck(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 driveIsCd(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 driveNumberOfPath(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 asyncRequestHasId(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 asyncNoRequest(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 asyncCancelCurrent(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 asyncRunCallbacks(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 asyncInit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 asyncShutdown(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 asyncSetFile(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 asyncReadAt(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 asyncRead(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 asyncReadStatus(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 asyncThreadMain(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 timerNow(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 timerSinceLast(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 timerWait(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 textDepth(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 textSetPen(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 textSetAttribute(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 mixA4Bit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 mixA16Bit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 mixA32Bit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 mixB4Bit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 mixB16Bit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 mixB32Bit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 mixC4Bit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 mixC16Bit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 mixC32Bit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 mixD4Bit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 mixD16Bit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 mixD32Bit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 mixA24Bit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 mixB24Bit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 mixC24Bit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 mixD24Bit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 blitDispatch(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 blitShapeAtPosition(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 surfaceFillAndDraw(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 textMeasureGlyph(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 textMeasure(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 processorCountLoops(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 registryAddEntry(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 screenPixels(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 windowSave(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 windowRestore(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 textStateSave(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 textStateRestore(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 blockChecksum(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 shapeEndsAtBend(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 thrashOpenByName(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 windowReshow(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 heapStart(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 heapStartDefault(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 fontsStart(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 tapiInitialize(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 tapiSetup(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 screenTakeSize(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 screenLockCountUp(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 screenLockCountDown(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 screenInstallDriver(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 numLockOff(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 bigFileOpenEntry(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 windowApply(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 exitFunctionsRun(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 nothingA(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 nothingB(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 nothingC(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 graphicsStart(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 skyLoad(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 hudEditorDrop(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 hudEditorDrag(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+}  // frontend
 }  // namespace nfs3hp
-
 
 /* What sat among the C runtime in the rough map, decompiled, most of it the game's
  * and EA's own libraries:
@@ -84,8 +159,11 @@ x86::reg32 directKept(win32::WinApplication* app, x86::CPU& cpu, Words... words)
  *   the rest            the command line, the error box's text, the window's fields, the
  *                       timer, and the small functions the libraries share.
  *
- * All of the game's state stays in guest memory.  What each function leaves in eax and in
- * the registers it does not save is kept. */
+ * All of the game's state stays in guest memory.  Each function's typed core takes its
+ * arguments as parameters and hands back its result; what the game's code leaves in the
+ * registers it does not save is not kept (no caller reads it), and where a function hands
+ * back eax as it came its thunk does that.  Its calls of typed cores are C++ (fe::direct);
+ * by address only what is called through a pointer and what has no typed core yet. */
 #if defined(__clang__)
 #pragma clang fp contract(off)
 #else
@@ -128,7 +206,7 @@ void moveFloat(Guest& guest, reg32 to, reg32 from)
     guest.setFloat(to, guest.floatAt(from));
 }
 
-/* What a wait does each time round, as the port's generated code has it at the head of its loop:
+/* What a wait does each time round, as the game's code has it at the head of its loop:
  * the game's lock let go, the thread's turn given up, and a safepoint. */
 void giveWayInWait(win32::WinApplication* app, x86::CPU& cpu)
 {
@@ -240,30 +318,21 @@ reg32 frontend::wata::carDataReadInteger(App* app, CPU& cpu, reg32 line, reg32 w
         return isDigit(guest, std::uint8_t(c + 1)) || c == '-';
     });
     const reg32 value = fe::direct<kAtoi, watcom::clib::atoi>(guest.app(), guest.cpu(), buffer);
-    reg32 edx = guest.edx();
     for (reg32 at = buffer;; ++at)
     {
         const std::uint8_t c = guest.byte(at);
-        edx = (edx & 0xffffff00u) | c;
         if (c == 0)
-        {
-            guest.leaveEdx(edx);
             return value;
-        }
-        edx = std::uint8_t(c + 1);
-        if (!isDigit(guest, edx) && c != '-')
-        {
-            guest.leaveEdx(edx);
+        if (!isDigit(guest, std::uint8_t(c + 1)) && c != '-')
             return 0;
-        }
     }
 }
 
-void frontend::carDataReadInteger(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::carDataReadInteger(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4b0700", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 line = cpu.eax, wanted = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::carDataReadInteger(app, cpu, line, wanted); });
+    const reg32 line = args.eax, wanted = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::carDataReadInteger(app, cpu, line, wanted); });
 }
 
 /* sub_4b07b0: the same, for a field the caller keeps a byte of. */
@@ -271,15 +340,14 @@ reg32 frontend::wata::carDataReadByte(App* app, CPU& cpu, reg32 line, reg32 want
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 4);
-    // By address: the edx it leaves goes back to sub_4b1380, which reads it.
-    return guest.call(kReadInteger, args({ line, wanted }));
+    return fe::direct<kReadInteger, carDataReadInteger>(app, cpu, line, wanted);
 }
 
-void frontend::carDataReadByte(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::carDataReadByte(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4b07b0", 0, 0, nullptr, 0, 0 };
-    const reg32 line = cpu.eax, wanted = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::carDataReadByte(app, cpu, line, wanted); });
+    const reg32 line = args.eax, wanted = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::carDataReadByte(app, cpu, line, wanted); });
 }
 
 /* A float's bits as the float, as fld dword loads it. */
@@ -290,7 +358,7 @@ static Float floatOfBits(reg32 bits)
     return Float(value);
 }
 
-/* sub_4b07d0: the wanted float of a line of values, its bits in eax (the float itself its adapter
+/* sub_4b07d0: the wanted float of a line of values, its bits in eax (the float itself its thunk
  * leaves on the x87, as the code does); 0 if what it found has anything but digits, points and minus
  * signs in it. */
 reg32 frontend::wata::carDataReadFloat(App* app, CPU& cpu, reg32 line, reg32 wanted)
@@ -302,8 +370,7 @@ reg32 frontend::wata::carDataReadFloat(App* app, CPU& cpu, reg32 line, reg32 wan
     gatherNumber(guest, line, wanted, buffer, [&](std::uint8_t c) {
         return isDigit(guest, std::uint8_t(c + 1)) || c == '.' || c == '-';
     });
-    guest.call(kStrtod, args({ buffer, 0 }));
-    guest.setFloat(parsed, guest.popFloat());
+    guest.setFloat(parsed, float(fe::direct<kStrtod, watcom::clib::strtod>(app, cpu, buffer, 0u, nullptr)));
     reg32 bits = guest.dword(parsed);
     for (reg32 at = buffer;; ++at)
     {
@@ -311,7 +378,6 @@ reg32 frontend::wata::carDataReadFloat(App* app, CPU& cpu, reg32 line, reg32 wan
         if (c == 0)
             break;
         const reg32 classIndex = std::uint8_t(c + 1);
-        guest.leaveEdx(classIndex);
         if (!isDigit(guest, classIndex) && c != '.' && c != '-')
         {
             bits = 0;
@@ -322,13 +388,14 @@ reg32 frontend::wata::carDataReadFloat(App* app, CPU& cpu, reg32 line, reg32 wan
     return bits;
 }
 
-void frontend::carDataReadFloat(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::carDataReadFloat(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4b07d0", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 line = cpu.eax, wanted = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) {
+    const reg32 line = args.eax, wanted = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
         const reg32 bits = wata::carDataReadFloat(app, cpu, line, wanted);
-        cpu.fpu.push(floatOfBits(bits));
+        args.floatSet = true;
+        args.floatResult = floatOfBits(bits);
         return bits;
     });
 }
@@ -344,11 +411,11 @@ reg32 frontend::wata::carDataReadFixed(App* app, CPU& cpu, reg32 line, reg32 wan
     return reg32(fp::toInteger<sreg32>(fp::mul(value, scale)));
 }
 
-void frontend::carDataReadFixed(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::carDataReadFixed(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4b08b0", 0, 0, nullptr, 0, 0 };
-    const reg32 line = cpu.eax, wanted = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::carDataReadFixed(app, cpu, line, wanted); });
+    const reg32 line = args.eax, wanted = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::carDataReadFixed(app, cpu, line, wanted); });
 }
 
 /* sub_4b0900: whether a line starts with a digit or a minus sign: values, not a key. */
@@ -359,11 +426,11 @@ reg32 frontend::wata::carDataLineHasValues(App* app, CPU& cpu, reg32 line)
     return isDigit(guest, std::uint8_t(first + 1)) || first == '-' ? 1 : 0;
 }
 
-void frontend::carDataLineHasValues(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::carDataLineHasValues(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4b0900", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    const reg32 line = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::carDataLineHasValues(app, cpu, line); });
+    const reg32 line = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::carDataLineHasValues(app, cpu, line); });
 }
 
 /* sub_4b0940: which field a line of the file is the key of: its name and its number in brackets
@@ -381,7 +448,6 @@ reg32 frontend::wata::carDataFindKey(App* app, CPU& cpu, reg32 line, reg32 index
     for (reg32 field = 0; field < kCarFieldCount; ++field)
     {
         const reg32 key = kKeys + field * 8;
-        guest.leaveEdx(field * 8);
         const reg32 name = guest.dword(key);
         if (name == 0)
             continue;
@@ -398,11 +464,11 @@ reg32 frontend::wata::carDataFindKey(App* app, CPU& cpu, reg32 line, reg32 index
     return 0;
 }
 
-void frontend::carDataFindKey(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::carDataFindKey(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4b0940", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 line = cpu.eax, indexOut = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::carDataFindKey(app, cpu, line, indexOut); });
+    const reg32 line = args.eax, indexOut = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::carDataFindKey(app, cpu, line, indexOut); });
 }
 
 /* sub_4b09d0: the next line of the file, lowered and without its spaces, into `out`; where the
@@ -437,15 +503,14 @@ reg32 frontend::wata::carDataNextLine(App* app, CPU& cpu, reg32 text, reg32 out,
         guest.setByte(out + written, 0);
     }
     guest.setDword(kCarFileOffset, position);
-    guest.leaveEdx(position);
     return position;
 }
 
-void frontend::carDataNextLine(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::carDataNextLine(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4b09d0", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 text = cpu.eax, out = cpu.edx, length = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::carDataNextLine(app, cpu, text, out, length); });
+    const reg32 text = args.eax, out = args.edx, length = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::carDataNextLine(app, cpu, text, out, length); });
 }
 
 /* sub_4b0bb0: the fields the file did not give, from the default record at 0x55f874; or, with
@@ -492,15 +557,14 @@ reg32 frontend::wata::carDataFillDefaults(App* app, CPU& cpu, reg32 record, reg3
                     guest.setDword(to + 4 * i, guest.dword(from + 4 * i));
             }
     }
-    guest.leaveEdx(kCarFieldCount);
     return record;
 }
 
-void frontend::carDataFillDefaults(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::carDataFillDefaults(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4b0bb0", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 record = cpu.eax, whole = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::carDataFillDefaults(app, cpu, record, whole); });
+    const reg32 record = args.eax, whole = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::carDataFillDefaults(app, cpu, record, whole); });
 }
 
 /* sub_4b1380: carp.txt into a car's performance record: lines of keys, each followed by a line of
@@ -515,7 +579,6 @@ reg32 frontend::wata::carDataRead(App* app, CPU& cpu, reg32 record, reg32 text, 
     const reg32 fieldAt = line + kLineDwords * 4;
     copyDwords(guest, line, kEmptyLine, kLineDwords);
     guest.setDword(fieldAt, 0);
-    guest.leaveEcx(0);
     if (text == 0 || length == 0)
         return 0;
     guest.setDword(kCarFileOffset, 0);
@@ -531,19 +594,13 @@ reg32 frontend::wata::carDataRead(App* app, CPU& cpu, reg32 record, reg32 text, 
             else if (field.kind == CarValue::Fixed)
                 guest.setDword(to + 4 * i, fe::direct<0x4b08b0, carDataReadFixed>(app, cpu, line, i));
             else if (field.kind == CarValue::Byte)
-                // By address: field 26's mark below reads the edx it leaves.
-                guest.setByte(to + i, reg8(guest.call(kReadByte, args({ line, i }))));
+                guest.setByte(to + i, reg8(fe::direct<kReadByte, carDataReadByte>(app, cpu, line, i)));
             else
             {
                 guest.setFloat(to + 4 * i, float(floatOfBits(fe::direct<0x4b07d0, carDataReadFloat>(app, cpu, line, i))));
             }
-            if (field.leavesRecordInEdx)
-                guest.leaveEdx(record);
             if (index == kFieldMarkedPerValue)
-            {
                 guest.setByte(kCarFieldRead + guest.dword(fieldAt), 1);
-                guest.leaveEdx((guest.edx() & 0xffffff00u) | 1);
-            }
         }
     };
 
@@ -577,18 +634,16 @@ reg32 frontend::wata::carDataRead(App* app, CPU& cpu, reg32 record, reg32 text, 
     reg32 fieldsRead = 0;
     for (reg32 i = 0; i < kCarFieldCount; ++i)
         fieldsRead += guest.byte(kCarFieldRead + i);
-    guest.leaveEbx(kCarFieldCount);
-    guest.leaveEcx(fieldsRead);
     if (fieldsRead != kCarFieldCount)
         fe::direct<0x4b0bb0, carDataFillDefaults>(app, cpu, record, 0);
     return fieldsRead;
 }
 
-void frontend::carDataRead(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::carDataRead(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4b1380", 0, 0, nullptr, 0, fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 record = cpu.eax, text = cpu.edx, length = cpu.ebx, firstOut = cpu.ecx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::carDataRead(app, cpu, record, text, length, firstOut); });
+    const reg32 record = args.eax, text = args.edx, length = args.ebx, firstOut = args.ecx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::carDataRead(app, cpu, record, text, length, firstOut); });
 }
 
 /* ---------------------------------------------------------------------------
@@ -605,8 +660,8 @@ constexpr reg32 kRegOpenKeyEx = 0x53446c, kRegQueryValueEx = 0x534470, kRegClose
 constexpr reg32 kFindClose = 0x5344c8, kFindFirstFile = 0x5344cc, kFindNextFile = 0x5344d0, kGetFileAttributes = 0x534520;
 
 /* A Windows function, its words as the code pushes them: the port's own, called as C++
- * (native_windows.h); in the checks through its import's slot, as a call of the guest's.  Its
- * answer, eax; the game stopped in it ends the stand-in as Guest::call's do. */
+ * (native_windows.h).  Its
+ * answer, eax; the game stopped in it ends the function as Guest::call's do. */
 template <reg32 Slot, auto Function, typename... Words>
 reg32 callImport(Guest& guest, x86::CPU& cpu, Words... words)
 {
@@ -681,11 +736,11 @@ reg32 frontend::wata::exceptionName(App* app, CPU& cpu, reg32 code)
     }
 }
 
-void frontend::exceptionName(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::exceptionName(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4a3070", 0, 0, nullptr, 0, 0 };
-    const reg32 code = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::exceptionName(app, cpu, code); });
+    const reg32 code = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::exceptionName(app, cpu, code); });
 }
 
 /* sub_4a54f0: an NPS DLL loaded, and with edx 0 every function of it looked up into its slot. */
@@ -716,11 +771,11 @@ reg32 frontend::wata::npsLoadDll(App* app, CPU& cpu, reg32 path, reg32 type)
     return module;
 }
 
-void frontend::npsLoadDll(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::npsLoadDll(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4a54f0", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 path = cpu.eax, type = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::npsLoadDll(app, cpu, path, type); });
+    const reg32 path = args.eax, type = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::npsLoadDll(app, cpu, path, type); });
 }
 
 /* sub_4a5780: whether the registry's NPS key says this is a developer's install: 1 for any of the
@@ -744,10 +799,10 @@ reg32 frontend::wata::npsDevelopMode(App* app, CPU& cpu)
     return 0;
 }
 
-void frontend::npsDevelopMode(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::npsDevelopMode(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4a5780", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::npsDevelopMode(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::npsDevelopMode(app, cpu); });
 }
 
 /* sub_4a5880: the path of an NPS DLL from the registry, at 0x7a2020, with backslashes; on a
@@ -780,11 +835,11 @@ reg32 frontend::wata::npsDllPath(App* app, CPU& cpu, reg32 type)
     return 1;
 }
 
-void frontend::npsDllPath(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::npsDllPath(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4a5880", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 type = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::npsDllPath(app, cpu, type); });
+    const reg32 type = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::npsDllPath(app, cpu, type); });
 }
 
 /* sub_4a59c0: an NPS DLL of a type loaded once; a message box if it cannot be. */
@@ -816,11 +871,11 @@ reg32 frontend::wata::npsEnsureDll(App* app, CPU& cpu, reg32 type)
     return 0;
 }
 
-void frontend::npsEnsureDll(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::npsEnsureDll(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4a59c0", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 type = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::npsEnsureDll(app, cpu, type); });
+    const reg32 type = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::npsEnsureDll(app, cpu, type); });
 }
 
 /* sub_4a6e10: install.win read: its lines into the table at 0x7a2634, and the first of them taken
@@ -842,7 +897,7 @@ reg32 frontend::wata::installFileRead(App* app, CPU& cpu)
     reg32 count = 0;
     while ((guest.byte(file + kStreamFlags) & kStreamAtEnd) == 0)
     {
-        guest.call(kFgets, args({ line, kLineLength, file }));
+        fe::direct<kFgets, watcom::clib::fgets>(guest.app(), guest.cpu(), line, kLineLength, file);
         cutAt(guest, line, '\n');
         cutAt(guest, line, '\r');
         if (guest.byte(line) == 0)
@@ -864,10 +919,10 @@ reg32 frontend::wata::installFileRead(App* app, CPU& cpu)
     return 1;
 }
 
-void frontend::installFileRead(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::installFileRead(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4a6e10", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx | fe::kRestoreEsi | fe::kRestoreEdi };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::installFileRead(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::installFileRead(app, cpu); });
 }
 
 /* sub_4f0330: findfirst: the first file, not a folder, a pattern finds, its path at 0x9f0ac9. */
@@ -901,11 +956,11 @@ reg32 frontend::wata::findFirstFile(App* app, CPU& cpu, reg32 pattern)
     return guest::direct<0x4f0280, findNextFile>(app, cpu);
 }
 
-void frontend::findFirstFile(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::findFirstFile(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4f0330", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 pattern = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::findFirstFile(app, cpu, pattern); });
+    const reg32 pattern = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::findFirstFile(app, cpu, pattern); });
 }
 
 /* sub_4f0280: findnext: the next file, not a folder, or 0 and the search closed. */
@@ -936,10 +991,10 @@ reg32 frontend::wata::findNextFile(App* app, CPU& cpu)
     }
 }
 
-void frontend::findNextFile(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::findNextFile(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4f0280", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx | fe::kRestoreEsi | fe::kRestoreEdi };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::findNextFile(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::findNextFile(app, cpu); });
 }
 
 /* sub_4a46f0: the colour of a car's badge in the showcase, by the words in its name. */
@@ -958,18 +1013,19 @@ reg32 frontend::wata::carBadgeColour(App* app, CPU& cpu)
         { 0x53cf5c, 0xff0000ff }, { 0x53cf68, 0xffc02028 }, { 0x53cf70, 0xffbbeeff },
     };
     const std::int16_t id = std::int16_t(guest.word(kCarNameTexts + 2 * gameSettings(guest).players[0].car));
-    // The game's code hands it edx as it has it.
-        const reg32 name = reg32(*fe::direct<0x4d1850, port::text::lineText>(app, cpu, cpu.esp - 4, std::int32_t(id), cpu.edx));
+    // The game's code hands it edx as it has it, which only the controllers' names would hand on (and
+    // set their own): none here.
+    const reg32 name = reg32(*fe::direct<0x4d1850, port::text::lineText>(app, cpu, cpu.esp - 4, std::int32_t(id), reg32(0)));
     for (const Badge& badge : kBadges)
         if (fe::direct<kStrstr, watcom::clib::strstr>(guest.app(), guest.cpu(), name, badge.word) != 0)
             return badge.colour;
     return kOtherColour;
 }
 
-void frontend::carBadgeColour(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::carBadgeColour(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4a46f0", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::carBadgeColour(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::carBadgeColour(app, cpu); });
 }
 
 /* ---------------------------------------------------------------------------
@@ -1011,14 +1067,15 @@ reg32 frontend::wata::windowCheckField(App* app, CPU& cpu, reg32 window, reg32 v
     return 0;
 }
 
-void frontend::windowCheckField(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::windowCheckField(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4f4920", 8, 0, nullptr, 0, fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 window = cpu.eax, value = cpu.edx, name = cpu.ebx, least = cpu.ecx;
+    const reg32 window = args.eax, value = args.edx, name = args.ebx, least = args.ecx;
     const reg32 most = app->getMemory<reg32>(cpu.esp + 4);
     const reg32 wanted = app->getMemory<reg32>(cpu.esp + 8);
-    fe::runWhole(app, cpu, site,
+    return fe::runThunk(app, cpu, args, site,
                  [&](Guest&) { return wata::windowCheckField(app, cpu, window, value, name, least, most, wanted); });
+    return args.eax;
 }
 
 /* sub_4f4a80: a window's description checked, field by field: 1 when all are in their limits. */
@@ -1043,11 +1100,11 @@ reg32 frontend::wata::windowCheck(App* app, CPU& cpu, reg32 window)
     return all;
 }
 
-void frontend::windowCheck(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::windowCheck(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4f4a80", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 window = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::windowCheck(app, cpu, window); });
+    const reg32 window = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::windowCheck(app, cpu, window); });
 }
 
 /* sub_4f9390: a directory joined to a file's name in a buffer of the size given: 0 if it will
@@ -1056,23 +1113,19 @@ reg32 frontend::wata::pathInDirectory(App* app, CPU& cpu, reg32 buffer, reg32 fi
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 3 * 4);
-    // In edx and ebx as they came across sub_4e33a0, and read again after it, which keeps them.
-    cpu.edx = fileName;
-    cpu.ebx = size;
     fe::direct<0x4e33a0, ea::currentDirectory>(app, cpu, buffer);
-    const reg32 room = cpu.ebx - guest.length(fileName) - 1;
-    guest.leaveEbx(room);
+    const reg32 room = size - guest.length(fileName) - 1;
     if (guest.length(buffer) > room)
         return 0;
-    appendString(guest, buffer, guest.edx());
+    appendString(guest, buffer, fileName);
     return 1;
 }
 
-void frontend::pathInDirectory(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::pathInDirectory(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4f9390", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 buffer = cpu.eax, fileName = cpu.edx, size = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::pathInDirectory(app, cpu, buffer, fileName, size); });
+    const reg32 buffer = args.eax, fileName = args.edx, size = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::pathInDirectory(app, cpu, buffer, fileName, size); });
 }
 
 /* sub_4f0b60: a string run through the text's own measure (sub_4efb50) with its output turned
@@ -1082,7 +1135,6 @@ reg32 frontend::wata::textMeasureBox(App* app, CPU& cpu, reg32 text, sreg32 give
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 3 * 4 + 0x110);
-    cpu.ecx = topOut;   // read where the code reads ecx, its callees keeping it
     constexpr reg32 kPenX = 0x5671f8, kPenY = 0x5671fc;
     constexpr reg32 kBoxLeft = 0x9f0bdc, kBoxTop = 0x9f0bd8, kBoxRight = 0x9f0bd0, kBoxBottom = 0x9f0bd4;
     constexpr reg32 kPutGlyph = 0x567288, kPutGlyph2 = 0x56728c, kPutGlyph3 = 0x567290;
@@ -1105,29 +1157,26 @@ reg32 frontend::wata::textMeasureBox(App* app, CPU& cpu, reg32 text, sreg32 give
     if (guest.byte(copy) != 0)
         fe::direct<0x4efb50, eab::textDrawAtPen>(app, cpu, copy);
     guest.setDword(leftOut, guest.dword(kBoxLeft));
-    guest.setDword(cpu.ecx, guest.dword(kBoxTop));
+    guest.setDword(topOut, guest.dword(kBoxTop));
     const sreg32 width = sreg32(guest.dword(kBoxRight) - guest.dword(kBoxLeft));
     const sreg32 least = sreg32(guest.dword(kPenX));
     guest.setDword(widthOut, reg32(width < least ? least : width));
     guest.setDword(heightOut, guest.dword(kBoxBottom) - guest.dword(kBoxTop));
-    guest.leaveEcx(widthOut);
     guest::direct<0x4f0850, textSetPen>(app, cpu, penX, penY);
-    guest.leaveEdx(penY);   // as the call by address left it, on to the end
     guest.setDword(kPutGlyph2, put2);
     guest.setDword(kPutGlyph3, put3);
     guest.setDword(kPutGlyph, put1);
-    guest.leaveEbx(put3);
     return put1;
 }
 
-void frontend::textMeasureBox(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::textMeasureBox(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4f0b60", 8, 0, nullptr, 0, fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 text = cpu.eax, leftOut = cpu.ebx, topOut = cpu.ecx;
-    const sreg32 given = sreg32(cpu.edx);
+    const reg32 text = args.eax, leftOut = args.ebx, topOut = args.ecx;
+    const sreg32 given = sreg32(args.edx);
     const reg32 widthOut = app->getMemory<reg32>(cpu.esp + 4);
     const reg32 heightOut = app->getMemory<reg32>(cpu.esp + 8);
-    fe::runWhole(app, cpu, site, [&](Guest&) {
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
         return wata::textMeasureBox(app, cpu, text, given, leftOut, topOut, widthOut, heightOut);
     });
 }
@@ -1164,18 +1213,17 @@ reg32 frontend::wata::lockKeySet(App* app, CPU& cpu, reg32 lock, reg32 wanted)
     }
     const reg32 state = callImport<kGetKeyState, &host::keyState>(guest, cpu, key);
     const reg32 lit = state & 1;
-    guest.leaveEdx(wanted);
     if (lit == wanted)
         return lit;
     callImport<kKeybdEvent, &host::keyboardEvent>(guest, cpu, key, scan, down, 0);
     return callImport<kKeybdEvent, &host::keyboardEvent>(guest, cpu, key, scan, up, 0);
 }
 
-void frontend::lockKeySet(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::lockKeySet(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4fb710", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 lock = cpu.eax, wanted = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::lockKeySet(app, cpu, lock, wanted); });
+    const reg32 lock = args.eax, wanted = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::lockKeySet(app, cpu, lock, wanted); });
 }
 
 /* ---------------------------------------------------------------------------
@@ -1224,8 +1272,7 @@ reg32 frontend::wata::commandLineRead(App* app, CPU& cpu, reg32 count, reg32 wor
                 break;
             }
         guest.copyString(word, argument);
-        guest.leaveEdx(words);
-        guest.call(kStrupr, args({ word }));
+        fe::direct<kStrupr, watcom::clib::strupr>(guest.app(), guest.cpu(), word);
         if (!understood && fe::direct<kStrncmp, watcom::clib::strncmp>(guest.app(), guest.cpu(), word, kNumberedPrefix, 4) == 0
             && fe::direct<kSscanf, watcom::clib::sscanf>(guest.app(), guest.cpu(), word + 4, kNumberFormat, guest::Words{number}) != 0)
         {
@@ -1297,11 +1344,11 @@ reg32 frontend::wata::commandLineRead(App* app, CPU& cpu, reg32 count, reg32 wor
     return 1;
 }
 
-void frontend::commandLineRead(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::commandLineRead(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4a5080", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 count = cpu.eax, words = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::commandLineRead(app, cpu, count, words); });
+    const reg32 count = args.eax, words = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::commandLineRead(app, cpu, count, words); });
 }
 
 /* sub_4b6320: the game's disc looked for, a box and the end if it is run from one or there is none. */
@@ -1313,11 +1360,12 @@ reg32 frontend::wata::discCheck(App* app, CPU& cpu)
     constexpr reg32 kPathPattern = 0x4b5688, kRunFromDiscTexts = 0x4b5694, kNoDiscTexts = 0x4b56ac;
     constexpr reg32 kBoxWarning = 0x30, kDrives = 0x1a;
     const reg32 ownPath = guest.frame(), noDisc = ownPath + 0x100, runFromDisc = ownPath + 0x118, pattern = ownPath + 0x130;
+    // A box and the end: what exit hands back, should it come back.
     const auto refuse = [&](reg32 texts, reg32 local) {
         copyDwords(guest, local, texts, 6);
         const reg32 text = guest.dword(local + 4 * guest.dword(kLanguage));
         callImport<kMessageBox, &host::messageBox>(guest, cpu, 0, text, kTitle, kBoxWarning);
-        fe::direct<kExit, watcom::clib::exit>(guest.app(), guest.cpu(), 0);
+        return fe::direct<kExit, watcom::clib::exit>(guest.app(), guest.cpu(), 0);
     };
     copyDwords(guest, pattern, kPathPattern, 2);
     guest.setWord(pattern + 8, guest.word(kPathPattern + 8));
@@ -1338,14 +1386,13 @@ reg32 frontend::wata::discCheck(App* app, CPU& cpu)
         if (const reg32 found = guest::direct<0x4f0330, findFirstFile>(app, cpu, pattern); found != 0)
             return found;
     }
-    refuse(kNoDiscTexts, noDisc);
-    return guest.eax();
+    return refuse(kNoDiscTexts, noDisc);
 }
 
-void frontend::discCheck(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::discCheck(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4b6320", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx | fe::kRestoreEsi | fe::kRestoreEdi };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::discCheck(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::discCheck(app, cpu); });
 }
 
 /* sub_4f9410: whether a drive, 0 for A:, is a CD. */
@@ -1360,11 +1407,11 @@ reg32 frontend::wata::driveIsCd(App* app, CPU& cpu, reg32 drive)
     return callImport<kGetDriveType, &host::driveType>(guest, cpu, root) == kDriveCdrom ? 1 : 0;
 }
 
-void frontend::driveIsCd(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::driveIsCd(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4f9410", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEdx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 drive = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::driveIsCd(app, cpu, drive); });
+    const reg32 drive = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::driveIsCd(app, cpu, drive); });
 }
 
 /* sub_4f93f0: a path's drive, 0 for A:, or -1. */
@@ -1377,11 +1424,11 @@ reg32 frontend::wata::driveNumberOfPath(App* app, CPU& cpu, reg32 path)
     return fe::direct<kToupper, watcom::clib::toupper>(guest.app(), guest.cpu(), guest.byte(path)) - 'A';
 }
 
-void frontend::driveNumberOfPath(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::driveNumberOfPath(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4f93f0", 0, 0, nullptr, 0, 0 };
-    const reg32 path = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::driveNumberOfPath(app, cpu, path); });
+    const reg32 path = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::driveNumberOfPath(app, cpu, path); });
 }
 
 /* ---------------------------------------------------------------------------
@@ -1446,7 +1493,6 @@ void asyncDrain(Guest& guest, x86::CPU& cpu, reg32 queue)
 void asyncWake(Guest& guest, x86::CPU& cpu)
 {
     const reg32 event = guest.dword(asyncRecord(guest) + kAsyncEvent);
-    guest.leaveEdx(event);   // where the game's code hands it, which keeps it
     fe::direct<0x4dfb20, ea::eventPosted>(guest.app(), cpu, event);
 }
 
@@ -1459,11 +1505,11 @@ reg32 frontend::wata::asyncRequestHasId(App* app, CPU& cpu, reg32 request, reg32
     return id == guest.dword(request + kRequestId) ? 1 : 0;
 }
 
-void frontend::asyncRequestHasId(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::asyncRequestHasId(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4f0cb0", 0, 0, nullptr, 0, 0 };
-    const reg32 request = cpu.eax, id = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::asyncRequestHasId(app, cpu, request, id); });
+    const reg32 request = args.eax, id = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::asyncRequestHasId(app, cpu, request, id); });
 }
 
 /* sub_4f0cc0: nothing found. */
@@ -1472,19 +1518,20 @@ reg32 frontend::wata::asyncNoRequest(App* app, CPU& cpu)
     return 0;
 }
 
-void frontend::asyncNoRequest(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::asyncNoRequest(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4f0cc0", 0, 0, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::asyncNoRequest(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::asyncNoRequest(app, cpu); });
 }
 
-/* sub_4f0cd0: what the thread is at told to stop, and waited for. */
+/* sub_4f0cd0: what the thread is at told to stop, and waited for.  With no reader, no result: eax
+ * as it came, which its thunk does. */
 reg32 frontend::wata::asyncCancelCurrent(App* app, CPU& cpu)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 2 * 4);
     if (asyncRecord(guest) == 0)
-        return guest.eax();
+        return 0;
     const reg32 request = guest.dword(asyncRecord(guest) + kAsyncCurrent);
     if (request != 0)
         guest.setDword(request + kRequestKind, 0);
@@ -1498,10 +1545,15 @@ reg32 frontend::wata::asyncCancelCurrent(App* app, CPU& cpu)
     }
 }
 
-void frontend::asyncCancelCurrent(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::asyncCancelCurrent(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4f0cd0", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::asyncCancelCurrent(app, cpu); });
+    const reg32 previous = args.eax;
+    const bool none = app->getMemory<reg32>(kAsync) == 0;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
+        const reg32 result = wata::asyncCancelCurrent(app, cpu);
+        return none ? previous : result;
+    });
 }
 
 /* sub_4f0d20: the system task: finished requests' callbacks, in the game's own thread. */
@@ -1509,7 +1561,7 @@ reg32 frontend::wata::asyncRunCallbacks(App* app, CPU& cpu)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 4);
-    if (directKept<0x50e1d0, ea::queueLengthOf, 1>(guest.app(), guest.cpu(), asyncRecord(guest) + kAsyncDoneCallback) == 0)
+    if (fe::direct<0x50e1d0, ea::queueLengthOf>(app, cpu, asyncRecord(guest) + kAsyncDoneCallback) == 0)
         return 0;
     for (reg32 request = fe::direct<0x50dff0, netb::qpoplast>(app, cpu, asyncRecord(guest) + kAsyncDoneCallback); request != 0;
          request = fe::direct<0x50dff0, netb::qpoplast>(app, cpu, asyncRecord(guest) + kAsyncDoneCallback))
@@ -1517,20 +1569,21 @@ reg32 frontend::wata::asyncRunCallbacks(App* app, CPU& cpu)
         const reg32 owned = guest.dword(request + kRequestOwned);
         const bool kept = owned != 0 && owned != guest.dword(asyncRecord(guest) + kAsyncSharedBuffer);
         fe::direct<0x50de50, netb::qpush>(app, cpu, asyncRecord(guest) + (kept ? kAsyncDone : kAsyncFree), request);
-        guest.call(guest.dword(request + kRequestCallback), args({ guest.dword(request + kRequestId) }));
+        fe::pointerCall(guest, guest.dword(request + kRequestCallback), args({ guest.dword(request + kRequestId) }));
     }
     return 0;
 }
 
-void frontend::asyncRunCallbacks(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::asyncRunCallbacks(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4f0d20", 0, 0, nullptr, 0, fe::kRestoreEcx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::asyncRunCallbacks(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::asyncRunCallbacks(app, cpu); });
 }
 
 /* sub_4f0da0: the reader started, with room for twice this many requests: its record, its queues,
- * its task and its thread, waited for. */
-reg32 frontend::wata::asyncInit(App* app, CPU& cpu, reg32 requests)
+ * its task and its thread, waited for.  `memoryClass` the class its record is reserved in: what
+ * the caller's code has in ebx, which the game's code hands on to reservememadr as it is. */
+reg32 frontend::wata::asyncInit(App* app, CPU& cpu, reg32 requests, reg32 memoryClass)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 4 * 4);
@@ -1543,8 +1596,7 @@ reg32 frontend::wata::asyncInit(App* app, CPU& cpu, reg32 requests)
     guest.setDword(kErrorLine, 0xc8);
     guest.setDword(kErrorFunction, kFunction);
     const reg32 bytes = requests * kRequestBytes + kAsyncRequests;
-    // The class in ebx as the game's code has it.
-    const reg32 record = *fe::direct<0x4e1620, ea::reserved>(app, cpu, kTag, bytes, cpu.ebx);
+    const reg32 record = *fe::direct<0x4e1620, ea::reserved>(app, cpu, kTag, bytes, memoryClass);
     guest.setDword(kAsync, record);
     fe::direct<kFillZeroes, ea::clearBytes>(guest.app(), guest.cpu(), record, bytes);
     guest.setDword(asyncRecord(guest) + kAsyncSharedBuffer, asyncRecord(guest));
@@ -1555,9 +1607,8 @@ reg32 frontend::wata::asyncInit(App* app, CPU& cpu, reg32 requests)
         fe::direct<0x50de50, netb::qpush>(app, cpu, asyncRecord(guest) + kAsyncFree, request);
     // The game's code hands it 0xffffffff in ecx too, which it does not read.
     fe::direct<0x4e7520, port::stream::scheduleTask>(app, cpu, cpu.esp - 4, kAsyncTask, 4, 3);
-    if (guest.call(kCreateThread, args({ kAsyncThread, 0, 1 }, { kAsyncWake })) == 0)
+    if (*fe::direct<kCreateThread, ea::threadStarted>(app, cpu, kAsyncThread, 0u, 1u, kAsyncWake) == 0)
     {
-        guest.leaveEbx(kAsyncSource);
         reportError(guest, kAsyncSource, kFunction, 0xde, 0x54c6d4);
     }
     for (;;)
@@ -1570,11 +1621,11 @@ reg32 frontend::wata::asyncInit(App* app, CPU& cpu, reg32 requests)
     }
 }
 
-void frontend::asyncInit(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::asyncInit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4f0da0", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 requests = cpu.eax * 2;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::asyncInit(app, cpu, requests); });
+    const reg32 requests = args.eax * 2, memoryClass = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::asyncInit(app, cpu, requests, memoryClass); });
 }
 
 /* sub_4f0f40: the reader stopped and everything it holds freed. */
@@ -1583,15 +1634,12 @@ reg32 frontend::wata::asyncShutdown(App* app, CPU& cpu)
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 5 * 4);
     constexpr reg32 kFunction = 0x54c704;
-    // What the calls left in eax: whether a surface is locked, or the error's.
-    reg32 left = 0;
+    // No result with no reader: what the call left in eax, whether a surface is locked -- 0, as the
+    // game ends in the error where one is.
     if (fe::direct<0x4f9070, ea::surfaceIsLocked>(app, cpu))
-    {
         reportError(guest, kAsyncSource, kFunction, 0x108, 0x54c710);
-        left = guest.eax();
-    }
     if (asyncRecord(guest) == 0)
-        return left;
+        return 0;
     guest.setDword(asyncRecord(guest) + kAsyncClosing, 1);
     guest::direct<0x4f0cd0, asyncCancelCurrent>(app, cpu);
     while (guest.dword(asyncRecord(guest) + kAsyncEvent) != 0)
@@ -1600,10 +1648,10 @@ reg32 frontend::wata::asyncShutdown(App* app, CPU& cpu)
     asyncDrain(guest, cpu, kAsyncDone);
     asyncDrain(guest, cpu, kAsyncDoneCallback);
     fe::direct<0x4e75e0, port::stream::unscheduleTask>(app, cpu, kAsyncTask);
-    directKept<0x50dde0, ea::queueLockFreed, 1>(guest.app(), guest.cpu(), asyncRecord(guest) + kAsyncFree);
-    directKept<0x50dde0, ea::queueLockFreed, 1>(guest.app(), guest.cpu(), asyncRecord(guest) + kAsyncDone);
-    directKept<0x50dde0, ea::queueLockFreed, 1>(guest.app(), guest.cpu(), asyncRecord(guest) + kAsyncWaiting);
-    directKept<0x50dde0, ea::queueLockFreed, 1>(guest.app(), guest.cpu(), asyncRecord(guest) + kAsyncDoneCallback);
+    fe::direct<0x50dde0, ea::queueLockFreed>(app, cpu, asyncRecord(guest) + kAsyncFree);
+    fe::direct<0x50dde0, ea::queueLockFreed>(app, cpu, asyncRecord(guest) + kAsyncDone);
+    fe::direct<0x50dde0, ea::queueLockFreed>(app, cpu, asyncRecord(guest) + kAsyncWaiting);
+    fe::direct<0x50dde0, ea::queueLockFreed>(app, cpu, asyncRecord(guest) + kAsyncDoneCallback);
     const reg32 file = guest.dword(asyncRecord(guest) + kAsyncFile);
     if (file != 0)
         fe::direct<0x4e2da0, ea::closeChecked>(app, cpu, file);
@@ -1612,10 +1660,10 @@ reg32 frontend::wata::asyncShutdown(App* app, CPU& cpu)
     return result;
 }
 
-void frontend::asyncShutdown(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::asyncShutdown(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4f0f40", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx | fe::kRestoreEsi | fe::kRestoreEdi };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::asyncShutdown(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::asyncShutdown(app, cpu); });
 }
 
 /* sub_4f1370: the file the reader reads from next, by name; 0 for none.  A request of kind 2. */
@@ -1627,11 +1675,9 @@ reg32 frontend::wata::asyncSetFile(App* app, CPU& cpu, reg32 name)
     constexpr reg32 kKindSetFile = 2;
     if (asyncRecord(guest) == 0)
         reportError(guest, kAsyncSource, kFunction, 0x203, 0x54c7b4);
-    // By address: the edx it leaves is read after it, and left at the end.
-    const reg32 request = guest.call(kQueueTake, args({ asyncRecord(guest) + kAsyncFree }));
+    const reg32 request = fe::direct<kQueueTake, netb::qpop>(app, cpu, asyncRecord(guest) + kAsyncFree);
     if (request == 0)
         return 0;
-    const reg32 edx = guest.edx();
     guest.setDword(request + kRequestBuffer, 0);
     guest.setDword(request + kRequestOffset, 0);
     guest.setDword(request + kRequestSize, 0);
@@ -1647,11 +1693,9 @@ reg32 frontend::wata::asyncSetFile(App* app, CPU& cpu, reg32 name)
         guest.setDword(kErrorFile, kAsyncSource);
         guest.setDword(kErrorFunction, kFunction);
         guest.setDword(kErrorLine, 0x214);
-        const reg32 edi = cpu.edi;
         const reg32 copy = *fe::direct<0x4e1620, ea::reserved>(app, cpu, kTag, guest.length(name) + 1, guest.dword(kCurrentPool));
         guest.setDword(request + kRequestName, copy);
         guest.copyString(copy, name);
-        cpu.edi = edi;
     }
     else
     {
@@ -1660,15 +1704,14 @@ reg32 frontend::wata::asyncSetFile(App* app, CPU& cpu, reg32 name)
     fe::direct<0x50de50, netb::qpush>(app, cpu, asyncRecord(guest) + kAsyncWaiting, request);
     // The game's code hands it the event's slot in eax too, which it does not read.
     const reg32 posted = *fe::direct<0x4dfb20, ea::eventPosted>(app, cpu, guest.dword(asyncRecord(guest) + kAsyncEvent));
-    guest.leaveEdx(edx);
     return posted;
 }
 
-void frontend::asyncSetFile(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::asyncSetFile(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4f1370", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi };
-    const reg32 name = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::asyncSetFile(app, cpu, name); });
+    const reg32 name = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::asyncSetFile(app, cpu, name); });
 }
 
 /* sub_4f1500: a read of the open file asked for, with a callback or none: its id, 0 with no free
@@ -1677,13 +1720,10 @@ reg32 frontend::wata::asyncReadAt(App* app, CPU& cpu, reg32 offset, reg32 buffer
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 3 * 4 + 4);
-    cpu.edx = buffer;   // read after the queue's call, which keeps it
     constexpr reg32 kFunction = 0x54c820, kKindRead = 3;
-    guest.leaveEbx(callback);
     if (asyncRecord(guest) == 0)
         reportError(guest, kAsyncSource, kFunction, 0x27d, 0x54c83c);
     const reg32 request = fe::direct<0x50df60, netb::qpop>(app, cpu, asyncRecord(guest) + kAsyncFree);
-    guest.leaveEcx(request);
     if (request == 0)
         return 0;
     const reg32 id = guest.dword(kNextRequestId);
@@ -1704,11 +1744,11 @@ reg32 frontend::wata::asyncReadAt(App* app, CPU& cpu, reg32 offset, reg32 buffer
     return guest.dword(request + kRequestId);
 }
 
-void frontend::asyncReadAt(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::asyncReadAt(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4f1500", 0, 0, nullptr, 0, fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 offset = cpu.eax, buffer = cpu.edx, size = cpu.ebx, callback = cpu.ecx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::asyncReadAt(app, cpu, offset, buffer, size, callback); });
+    const reg32 offset = args.eax, buffer = args.edx, size = args.ebx, callback = args.ecx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::asyncReadAt(app, cpu, offset, buffer, size, callback); });
 }
 
 /* sub_4f15d0: a read with no callback. */
@@ -1720,11 +1760,11 @@ reg32 frontend::wata::asyncRead(App* app, CPU& cpu, reg32 offset, reg32 buffer, 
     return fe::direct<0x4f1500, asyncReadAt>(app, cpu, offset, buffer, size, 0);
 }
 
-void frontend::asyncRead(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::asyncRead(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4f15d0", 0, 0, nullptr, 0, fe::kRestoreEcx };
-    const reg32 offset = cpu.eax, buffer = cpu.edx, size = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::asyncRead(app, cpu, offset, buffer, size); });
+    const reg32 offset = args.eax, buffer = args.edx, size = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::asyncRead(app, cpu, offset, buffer, size); });
 }
 
 /* sub_4f1790: a read's end: 1 done, -1 failed, 0 not yet. */
@@ -1742,11 +1782,11 @@ reg32 frontend::wata::asyncReadStatus(App* app, CPU& cpu, reg32 id)
     return guest.dword(request + kRequestKind) != 0 ? 1 : 0xffffffffu;
 }
 
-void frontend::asyncReadStatus(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::asyncReadStatus(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4f1790", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 id = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::asyncReadStatus(app, cpu, id); });
+    const reg32 id = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::asyncReadStatus(app, cpu, id); });
 }
 
 /* sub_4f1820: the reader's thread: a request at a time from the waiting queue, until it is told
@@ -1774,7 +1814,7 @@ reg32 frontend::wata::asyncThreadMain(App* app, CPU& cpu)
                 fe::direct<0x4e2da0, ea::closeChecked>(app, cpu, file);
             guest.setDword(asyncRecord(guest) + kAsyncFile, 0);
             guest.setDword(asyncRecord(guest) + kAsyncCurrent, 0);
-            directKept<0x4dfc00, ea::eventClosed, 1>(guest.app(), guest.cpu(), guest.dword(asyncRecord(guest) + kAsyncEvent));
+            fe::direct<0x4dfc00, ea::eventClosed>(app, cpu, guest.dword(asyncRecord(guest) + kAsyncEvent));
             const reg32 record = asyncRecord(guest);
             guest.setDword(record + kAsyncEvent, 0);
             return record;
@@ -1803,7 +1843,7 @@ reg32 frontend::wata::asyncThreadMain(App* app, CPU& cpu)
             if (file != 0)
             {
                 const reg32 blocks = reg32(sreg32(guest.dword(request + kRequestSize)) / sreg32(kBlockBytes));
-                const reg32 wanted = blocks + guest.call(kBlockSize, args({ 0, 0 }));
+                const reg32 wanted = blocks + fe::direct<kBlockSize, port::stream::loadBlockSizeIs>(app, cpu);
                 if (guest.dword(request + kRequestBuffer) == 0)
                 {
                     guest.setDword(kErrorFile, kAsyncSource);
@@ -1817,14 +1857,14 @@ reg32 frontend::wata::asyncThreadMain(App* app, CPU& cpu)
                 {
                     guest.setDword(request + kRequestOwned, guest.dword(asyncRecord(guest) + kAsyncSharedBuffer));
                 }
-                guest.call(kTopUp, args({ wanted }));
-                guest.call(kWaitTopUp);
-                guest.call(kLockDrive, args({ guest.dword(handle), request }));
+                fe::direct<kTopUp, port::stream::topUpAsked>(app, cpu, cpu.esp - 4, wanted);
+                fe::direct<kWaitTopUp, port::stream::topUpWaited>(app, cpu, cpu.esp - 4);
+                fe::direct<kLockDrive, ea::handleDriveLocked>(app, cpu, guest.dword(handle));
                 // The game's code hands it the request in ebx too, which it does not read.
                 fe::direct<0x4e2e60, ea::seekChecked>(app, cpu, guest.dword(handle), guest.dword(request + kRequestOffset));
                 if (*fe::direct<0x4e2de0, ea::readChecked>(app, cpu, guest.dword(handle), guest.dword(request + kRequestBuffer), guest.dword(request + kRequestSize)) == 0)
                     guest.setDword(request + kRequestKind, 0);
-                guest.call(kUnlockDrive, args({ guest.dword(handle) }));
+                fe::direct<kUnlockDrive, ea::handleDriveUnlocked>(app, cpu, guest.dword(handle));
                 fe::direct<0x4e2da0, ea::closeChecked>(app, cpu, guest.dword(handle));
                 guest.setDword(handle, 0);
                 if (guest.dword(request + kRequestKind) == 0
@@ -1849,8 +1889,8 @@ reg32 frontend::wata::asyncThreadMain(App* app, CPU& cpu)
             guest.setDword(asyncRecord(guest) + kAsyncFile, 0);
             if (guest.dword(request + kRequestName) != 0)
             {
-                guest.call(kTopUp, args({ guest.call(kBlockSize, args({ 0, 0 })) }));
-                guest.call(kWaitTopUp);
+                fe::direct<kTopUp, port::stream::topUpAsked>(app, cpu, cpu.esp - 4, fe::direct<kBlockSize, port::stream::loadBlockSizeIs>(app, cpu));
+                fe::direct<kWaitTopUp, port::stream::topUpWaited>(app, cpu, cpu.esp - 4);
                 const reg32 record = asyncRecord(guest);
                 fe::direct<0x4e28d0, ea::openToRead>(app, cpu, guest.dword(request + kRequestName), record + kAsyncFile, record + kAsyncFileStart, record + kAsyncFileSize);
                 fe::direct<0x4e1890, ea::purgeBlock>(app, cpu, guest.dword(request + kRequestName));
@@ -1867,13 +1907,13 @@ reg32 frontend::wata::asyncThreadMain(App* app, CPU& cpu)
             else
             {
                 const reg32 blocks = reg32(sreg32(guest.dword(request + kRequestSize)) / sreg32(kBlockBytes));
-                guest.call(kTopUp, args({ guest.call(kBlockSize, args({ 0, 0 })) + blocks }));
-                guest.call(kWaitTopUp);
-                guest.call(kLockDrive, args({ guest.dword(asyncRecord(guest) + kAsyncFile) }));
+                fe::direct<kTopUp, port::stream::topUpAsked>(app, cpu, cpu.esp - 4, fe::direct<kBlockSize, port::stream::loadBlockSizeIs>(app, cpu) + blocks);
+                fe::direct<kWaitTopUp, port::stream::topUpWaited>(app, cpu, cpu.esp - 4);
+                fe::direct<kLockDrive, ea::handleDriveLocked>(app, cpu, guest.dword(asyncRecord(guest) + kAsyncFile));
                 fe::direct<0x4e2e60, ea::seekChecked>(app, cpu, guest.dword(asyncRecord(guest) + kAsyncFile), guest.dword(request + kRequestOffset));
                 if (*fe::direct<0x4e2de0, ea::readChecked>(app, cpu, guest.dword(asyncRecord(guest) + kAsyncFile), guest.dword(request + kRequestBuffer), guest.dword(request + kRequestSize)) == 0)
                     guest.setDword(request + kRequestKind, 0);
-                guest.call(kUnlockDrive, args({ guest.dword(asyncRecord(guest) + kAsyncFile) }));
+                fe::direct<kUnlockDrive, ea::handleDriveUnlocked>(app, cpu, guest.dword(asyncRecord(guest) + kAsyncFile));
             }
             finished();
         }
@@ -1895,10 +1935,10 @@ reg32 frontend::wata::asyncThreadMain(App* app, CPU& cpu)
     }
 }
 
-void frontend::asyncThreadMain(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::asyncThreadMain(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4f1820", 0, 0, nullptr, 0, fe::kRestoreAll };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::asyncThreadMain(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::asyncThreadMain(app, cpu); });
 }
 
 /* ---------------------------------------------------------------------------
@@ -1913,20 +1953,20 @@ constexpr reg32 kTailCall = reg32(0) - 4;
 
 constexpr reg32 kTicks = 0x79c1a4;
 
-// The mixers: B (sub_50d560) has a typed core, called as C++; the others by address.
+// The mixers: B (sub_50d560) has a typed core, called as C++; the others none yet: by address.
 constexpr reg32 kMixA = 0x50356c, kMixB = 0x50d560, kMixC = 0x503280, kMixD = 0x5033e4;
 
-/* A tail call with ebx turned from a count of one size into another's; the other registers on to
- * the mixer as they came. */
+/* A tail call with the count (ebx) turned from one size into another's, the samples (eax) and where
+ * they go (edx) on to the mixer as they came. */
 template <typename Scale>
-reg32 tailScaled(win32::WinApplication* app, x86::CPU& cpu, reg32 count, reg32 target, Scale scale)
+reg32 tailScaled(win32::WinApplication* app, x86::CPU& cpu, reg32 from, reg32 to, reg32 count, reg32 target,
+                 Scale scale)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, kTailCall);
-    guest.leaveEbx(scale(count));
     if (target == kMixB)
-        return fe::direct<0x50d560, frontend::watb::copyBlock>(app, cpu, cpu.eax, cpu.edx, cpu.ebx);
-    return guest.call(target);
+        return fe::direct<0x50d560, frontend::watb::copyBlock>(app, cpu, from, to, scale(count));
+    return fe::pointerCall(guest, target, args({ from, to, scale(count) }));
 }
 
 reg32 half(reg32 count) { return reg32(sreg32(count) >> 1); }
@@ -1942,10 +1982,10 @@ reg32 frontend::wata::timerNow(App* app, CPU& cpu)
     return guest.dword(kTicks);
 }
 
-void frontend::timerNow(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::timerNow(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4f0630", 0, 0, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::timerNow(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::timerNow(app, cpu); });
 }
 
 /* sub_4f0650: the ticks since the last time it was asked. */
@@ -1960,10 +2000,10 @@ reg32 frontend::wata::timerSinceLast(App* app, CPU& cpu)
     return now - last;
 }
 
-void frontend::timerSinceLast(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::timerSinceLast(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4f0650", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::timerSinceLast(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::timerSinceLast(app, cpu); });
 }
 
 /* sub_4f06e0: ticks waited for, the system's tasks run meanwhile. */
@@ -1982,11 +2022,11 @@ reg32 frontend::wata::timerWait(App* app, CPU& cpu, reg32 ticks)
     return left;
 }
 
-void frontend::timerWait(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::timerWait(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4f06e0", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    const reg32 ticks = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::timerWait(app, cpu, ticks); });
+    const reg32 ticks = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::timerWait(app, cpu, ticks); });
 }
 
 /* sub_4f0840: the screen's colour depth, as the text keeps it. */
@@ -1996,10 +2036,10 @@ reg32 frontend::wata::textDepth(App* app, CPU& cpu)
     return guest.dword(0x567218);
 }
 
-void frontend::textDepth(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::textDepth(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4f0840", 0, 0, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::textDepth(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::textDepth(app, cpu); });
 }
 
 /* sub_4f0850: the text's pen. */
@@ -2011,277 +2051,287 @@ reg32 frontend::wata::textSetPen(App* app, CPU& cpu, reg32 x, reg32 y)
     return x;
 }
 
-void frontend::textSetPen(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::textSetPen(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4f0850", 0, 0, nullptr, 0, 0 };
-    const reg32 x = cpu.eax, y = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::textSetPen(app, cpu, x, y); });
-}
-
-/* sub_4f0860: the text's attribute set, and on to what follows it. */
-reg32 frontend::wata::textSetAttribute(App* app, CPU& cpu, reg32 value)
-{
-    Guest guest(app, cpu);
-    const fe::Frame frame(guest, cpu, kTailCall);
-    cpu.eax = value;   // on to sub_50c0d0 as it came
-    guest.setDword(0x56720c, value);
-    return fe::direct<0x50c0d0, watb::initTextDraw>(app, cpu);
-}
-
-void frontend::textSetAttribute(win32::WinApplication* app, x86::CPU& cpu)
-{
-    static Site site{ "sub_4f0860", 0, 0, nullptr, 0, 0 };
-    const reg32 value = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::textSetAttribute(app, cpu, value); });
-}
-
-/* The mixers' front doors, a table for each format at 0x5651e0: a count of samples turned into one
- * of bytes (halved for 4 bits, doubled for 16, three times for 24, four times for 32). */
-reg32 frontend::wata::mixA4Bit(App* app, CPU& cpu, reg32 count)
-{
-    return tailScaled(app, cpu, count, kMixA, half);
-}
-
-void frontend::mixA4Bit(win32::WinApplication* app, x86::CPU& cpu)
-{
-    static Site site{ "sub_4f0880", 0, 0, nullptr, 0, 0 };
-    const reg32 count = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::mixA4Bit(app, cpu, count); });
-}
-
-reg32 frontend::wata::mixA16Bit(App* app, CPU& cpu, reg32 count)
-{
-    return tailScaled(app, cpu, count, kMixA, twice);
-}
-
-void frontend::mixA16Bit(win32::WinApplication* app, x86::CPU& cpu)
-{
-    static Site site{ "sub_4f0890", 0, 0, nullptr, 0, 0 };
-    const reg32 count = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::mixA16Bit(app, cpu, count); });
-}
-
-reg32 frontend::wata::mixA32Bit(App* app, CPU& cpu, reg32 count)
-{
-    return tailScaled(app, cpu, count, kMixA, fourTimes);
-}
-
-void frontend::mixA32Bit(win32::WinApplication* app, x86::CPU& cpu)
-{
-    static Site site{ "sub_4f08c0", 0, 0, nullptr, 0, 0 };
-    const reg32 count = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::mixA32Bit(app, cpu, count); });
-}
-
-reg32 frontend::wata::mixB4Bit(App* app, CPU& cpu, reg32 count)
-{
-    return tailScaled(app, cpu, count, kMixB, half);
-}
-
-void frontend::mixB4Bit(win32::WinApplication* app, x86::CPU& cpu)
-{
-    static Site site{ "sub_4f08d0", 0, 0, nullptr, 0, 0 };
-    const reg32 count = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::mixB4Bit(app, cpu, count); });
-}
-
-reg32 frontend::wata::mixB16Bit(App* app, CPU& cpu, reg32 count)
-{
-    return tailScaled(app, cpu, count, kMixB, twice);
-}
-
-void frontend::mixB16Bit(win32::WinApplication* app, x86::CPU& cpu)
-{
-    static Site site{ "sub_4f08e0", 0, 0, nullptr, 0, 0 };
-    const reg32 count = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::mixB16Bit(app, cpu, count); });
-}
-
-reg32 frontend::wata::mixB32Bit(App* app, CPU& cpu, reg32 count)
-{
-    return tailScaled(app, cpu, count, kMixB, fourTimes);
-}
-
-void frontend::mixB32Bit(win32::WinApplication* app, x86::CPU& cpu)
-{
-    static Site site{ "sub_4f0910", 0, 0, nullptr, 0, 0 };
-    const reg32 count = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::mixB32Bit(app, cpu, count); });
-}
-
-reg32 frontend::wata::mixC4Bit(App* app, CPU& cpu, reg32 count)
-{
-    return tailScaled(app, cpu, count, kMixC, half);
-}
-
-void frontend::mixC4Bit(win32::WinApplication* app, x86::CPU& cpu)
-{
-    static Site site{ "sub_4f0920", 0, 0, nullptr, 0, 0 };
-    const reg32 count = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::mixC4Bit(app, cpu, count); });
-}
-
-reg32 frontend::wata::mixC16Bit(App* app, CPU& cpu, reg32 count)
-{
-    return tailScaled(app, cpu, count, kMixC, twice);
-}
-
-void frontend::mixC16Bit(win32::WinApplication* app, x86::CPU& cpu)
-{
-    static Site site{ "sub_4f0930", 0, 0, nullptr, 0, 0 };
-    const reg32 count = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::mixC16Bit(app, cpu, count); });
-}
-
-reg32 frontend::wata::mixC32Bit(App* app, CPU& cpu, reg32 count)
-{
-    return tailScaled(app, cpu, count, kMixC, fourTimes);
-}
-
-void frontend::mixC32Bit(win32::WinApplication* app, x86::CPU& cpu)
-{
-    static Site site{ "sub_4f0960", 0, 0, nullptr, 0, 0 };
-    const reg32 count = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::mixC32Bit(app, cpu, count); });
-}
-
-reg32 frontend::wata::mixD4Bit(App* app, CPU& cpu, reg32 count)
-{
-    return tailScaled(app, cpu, count, kMixD, half);
-}
-
-void frontend::mixD4Bit(win32::WinApplication* app, x86::CPU& cpu)
-{
-    static Site site{ "sub_4f0970", 0, 0, nullptr, 0, 0 };
-    const reg32 count = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::mixD4Bit(app, cpu, count); });
-}
-
-reg32 frontend::wata::mixD16Bit(App* app, CPU& cpu, reg32 count)
-{
-    return tailScaled(app, cpu, count, kMixD, twice);
-}
-
-void frontend::mixD16Bit(win32::WinApplication* app, x86::CPU& cpu)
-{
-    static Site site{ "sub_4f0980", 0, 0, nullptr, 0, 0 };
-    const reg32 count = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::mixD16Bit(app, cpu, count); });
-}
-
-reg32 frontend::wata::mixD32Bit(App* app, CPU& cpu, reg32 count)
-{
-    return tailScaled(app, cpu, count, kMixD, fourTimes);
-}
-
-void frontend::mixD32Bit(win32::WinApplication* app, x86::CPU& cpu)
-{
-    static Site site{ "sub_4f09b0", 0, 0, nullptr, 0, 0 };
-    const reg32 count = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::mixD32Bit(app, cpu, count); });
+    const reg32 x = args.eax, y = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::textSetPen(app, cpu, x, y); });
 }
 
 namespace
 {
-/* Three times the count, for 24 bits; the samples in eax, and in ecx too. */
-reg32 mixTriple(win32::WinApplication* app, x86::CPU& cpu, reg32 samples, reg32 count, reg32 target)
+constexpr reg32 kFontPalette = 0x567280;
+
+/* Whether sub_50c180 calls nothing and hands back eax as it came: no colours given, no fade. */
+bool textPaletteLeavesEax(const Guest& guest)
+{
+    return guest.dword(0x5672a4) == 0 && !(guest.dword(0x56720c) != 0 && guest.dword(0x567208) == 4);
+}
+}
+
+/* sub_4f0860: the text's attribute set, and on to what follows it, sub_50c0d0, which hands back the
+ * value as it came where its palette's code hands eax on. */
+reg32 frontend::wata::textSetAttribute(App* app, CPU& cpu, reg32 value)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, kTailCall);
+    guest.setDword(0x56720c, value);
+    const bool passedOn = guest.dword(kFontPalette) != 0 && textPaletteLeavesEax(guest);
+    const reg32 result = fe::direct<0x50c0d0, watb::initTextDraw>(app, cpu);
+    return passedOn ? value : result;
+}
+
+x86::reg32 frontend::textSetAttribute(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+{
+    static Site site{ "sub_4f0860", 0, 0, nullptr, 0, 0 };
+    const reg32 value = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::textSetAttribute(app, cpu, value); });
+}
+
+/* The mixers' front doors, a table for each format at 0x5651e0: a count of samples turned into one
+ * of bytes (halved for 4 bits, doubled for 16, three times for 24, four times for 32). */
+reg32 frontend::wata::mixA4Bit(App* app, CPU& cpu, reg32 from, reg32 to, reg32 count)
+{
+    return tailScaled(app, cpu, from, to, count, kMixA, half);
+}
+
+x86::reg32 frontend::mixA4Bit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+{
+    static Site site{ "sub_4f0880", 0, 0, nullptr, 0, 0 };
+    const reg32 from = args.eax, to = args.edx, count = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::mixA4Bit(app, cpu, from, to, count); });
+}
+
+reg32 frontend::wata::mixA16Bit(App* app, CPU& cpu, reg32 from, reg32 to, reg32 count)
+{
+    return tailScaled(app, cpu, from, to, count, kMixA, twice);
+}
+
+x86::reg32 frontend::mixA16Bit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+{
+    static Site site{ "sub_4f0890", 0, 0, nullptr, 0, 0 };
+    const reg32 from = args.eax, to = args.edx, count = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::mixA16Bit(app, cpu, from, to, count); });
+}
+
+reg32 frontend::wata::mixA32Bit(App* app, CPU& cpu, reg32 from, reg32 to, reg32 count)
+{
+    return tailScaled(app, cpu, from, to, count, kMixA, fourTimes);
+}
+
+x86::reg32 frontend::mixA32Bit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+{
+    static Site site{ "sub_4f08c0", 0, 0, nullptr, 0, 0 };
+    const reg32 from = args.eax, to = args.edx, count = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::mixA32Bit(app, cpu, from, to, count); });
+}
+
+reg32 frontend::wata::mixB4Bit(App* app, CPU& cpu, reg32 from, reg32 to, reg32 count)
+{
+    return tailScaled(app, cpu, from, to, count, kMixB, half);
+}
+
+x86::reg32 frontend::mixB4Bit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+{
+    static Site site{ "sub_4f08d0", 0, 0, nullptr, 0, 0 };
+    const reg32 from = args.eax, to = args.edx, count = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::mixB4Bit(app, cpu, from, to, count); });
+}
+
+reg32 frontend::wata::mixB16Bit(App* app, CPU& cpu, reg32 from, reg32 to, reg32 count)
+{
+    return tailScaled(app, cpu, from, to, count, kMixB, twice);
+}
+
+x86::reg32 frontend::mixB16Bit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+{
+    static Site site{ "sub_4f08e0", 0, 0, nullptr, 0, 0 };
+    const reg32 from = args.eax, to = args.edx, count = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::mixB16Bit(app, cpu, from, to, count); });
+}
+
+reg32 frontend::wata::mixB32Bit(App* app, CPU& cpu, reg32 from, reg32 to, reg32 count)
+{
+    return tailScaled(app, cpu, from, to, count, kMixB, fourTimes);
+}
+
+x86::reg32 frontend::mixB32Bit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+{
+    static Site site{ "sub_4f0910", 0, 0, nullptr, 0, 0 };
+    const reg32 from = args.eax, to = args.edx, count = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::mixB32Bit(app, cpu, from, to, count); });
+}
+
+reg32 frontend::wata::mixC4Bit(App* app, CPU& cpu, reg32 from, reg32 to, reg32 count)
+{
+    return tailScaled(app, cpu, from, to, count, kMixC, half);
+}
+
+x86::reg32 frontend::mixC4Bit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+{
+    static Site site{ "sub_4f0920", 0, 0, nullptr, 0, 0 };
+    const reg32 from = args.eax, to = args.edx, count = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::mixC4Bit(app, cpu, from, to, count); });
+}
+
+reg32 frontend::wata::mixC16Bit(App* app, CPU& cpu, reg32 from, reg32 to, reg32 count)
+{
+    return tailScaled(app, cpu, from, to, count, kMixC, twice);
+}
+
+x86::reg32 frontend::mixC16Bit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+{
+    static Site site{ "sub_4f0930", 0, 0, nullptr, 0, 0 };
+    const reg32 from = args.eax, to = args.edx, count = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::mixC16Bit(app, cpu, from, to, count); });
+}
+
+reg32 frontend::wata::mixC32Bit(App* app, CPU& cpu, reg32 from, reg32 to, reg32 count)
+{
+    return tailScaled(app, cpu, from, to, count, kMixC, fourTimes);
+}
+
+x86::reg32 frontend::mixC32Bit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+{
+    static Site site{ "sub_4f0960", 0, 0, nullptr, 0, 0 };
+    const reg32 from = args.eax, to = args.edx, count = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::mixC32Bit(app, cpu, from, to, count); });
+}
+
+reg32 frontend::wata::mixD4Bit(App* app, CPU& cpu, reg32 from, reg32 to, reg32 count)
+{
+    return tailScaled(app, cpu, from, to, count, kMixD, half);
+}
+
+x86::reg32 frontend::mixD4Bit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+{
+    static Site site{ "sub_4f0970", 0, 0, nullptr, 0, 0 };
+    const reg32 from = args.eax, to = args.edx, count = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::mixD4Bit(app, cpu, from, to, count); });
+}
+
+reg32 frontend::wata::mixD16Bit(App* app, CPU& cpu, reg32 from, reg32 to, reg32 count)
+{
+    return tailScaled(app, cpu, from, to, count, kMixD, twice);
+}
+
+x86::reg32 frontend::mixD16Bit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+{
+    static Site site{ "sub_4f0980", 0, 0, nullptr, 0, 0 };
+    const reg32 from = args.eax, to = args.edx, count = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::mixD16Bit(app, cpu, from, to, count); });
+}
+
+reg32 frontend::wata::mixD32Bit(App* app, CPU& cpu, reg32 from, reg32 to, reg32 count)
+{
+    return tailScaled(app, cpu, from, to, count, kMixD, fourTimes);
+}
+
+x86::reg32 frontend::mixD32Bit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+{
+    static Site site{ "sub_4f09b0", 0, 0, nullptr, 0, 0 };
+    const reg32 from = args.eax, to = args.edx, count = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::mixD32Bit(app, cpu, from, to, count); });
+}
+
+namespace
+{
+/* Three times the count, for 24 bits; the samples in eax (and in ecx too, which no mixer reads),
+ * where they go in edx. */
+reg32 mixTriple(win32::WinApplication* app, x86::CPU& cpu, reg32 samples, reg32 to, reg32 count, reg32 target)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 4);
-    cpu.eax = samples;
-    guest.leaveEcx(samples);
-    guest.leaveEbx(count * 3);
     if (target == kMixB)
-        return fe::direct<0x50d560, frontend::watb::copyBlock>(app, cpu, samples, cpu.edx, count * 3);
-    return guest.call(target);
+        return fe::direct<0x50d560, frontend::watb::copyBlock>(app, cpu, samples, to, count * 3);
+    return fe::pointerCall(guest, target, args({ samples, to, count * 3 }));
 }
 }
 
-reg32 frontend::wata::mixA24Bit(App* app, CPU& cpu, reg32 samples, reg32 count)
+reg32 frontend::wata::mixA24Bit(App* app, CPU& cpu, reg32 samples, reg32 to, reg32 count)
 {
-    return mixTriple(app, cpu, samples, count, kMixA);
+    return mixTriple(app, cpu, samples, to, count, kMixA);
 }
 
-void frontend::mixA24Bit(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::mixA24Bit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4f08a0", 0, 0, nullptr, 0, fe::kRestoreEcx };
-    const reg32 samples = cpu.eax, count = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::mixA24Bit(app, cpu, samples, count); });
+    const reg32 samples = args.eax, to = args.edx, count = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::mixA24Bit(app, cpu, samples, to, count); });
 }
 
-reg32 frontend::wata::mixB24Bit(App* app, CPU& cpu, reg32 samples, reg32 count)
+reg32 frontend::wata::mixB24Bit(App* app, CPU& cpu, reg32 samples, reg32 to, reg32 count)
 {
-    return mixTriple(app, cpu, samples, count, kMixB);
+    return mixTriple(app, cpu, samples, to, count, kMixB);
 }
 
-void frontend::mixB24Bit(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::mixB24Bit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4f08f0", 0, 0, nullptr, 0, fe::kRestoreEcx };
-    const reg32 samples = cpu.eax, count = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::mixB24Bit(app, cpu, samples, count); });
+    const reg32 samples = args.eax, to = args.edx, count = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::mixB24Bit(app, cpu, samples, to, count); });
 }
 
-reg32 frontend::wata::mixC24Bit(App* app, CPU& cpu, reg32 samples, reg32 count)
+reg32 frontend::wata::mixC24Bit(App* app, CPU& cpu, reg32 samples, reg32 to, reg32 count)
 {
-    return mixTriple(app, cpu, samples, count, kMixC);
+    return mixTriple(app, cpu, samples, to, count, kMixC);
 }
 
-void frontend::mixC24Bit(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::mixC24Bit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4f0940", 0, 0, nullptr, 0, fe::kRestoreEcx };
-    const reg32 samples = cpu.eax, count = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::mixC24Bit(app, cpu, samples, count); });
+    const reg32 samples = args.eax, to = args.edx, count = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::mixC24Bit(app, cpu, samples, to, count); });
 }
 
-reg32 frontend::wata::mixD24Bit(App* app, CPU& cpu, reg32 samples, reg32 count)
+reg32 frontend::wata::mixD24Bit(App* app, CPU& cpu, reg32 samples, reg32 to, reg32 count)
 {
-    return mixTriple(app, cpu, samples, count, kMixD);
+    return mixTriple(app, cpu, samples, to, count, kMixD);
 }
 
-void frontend::mixD24Bit(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::mixD24Bit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4f0990", 0, 0, nullptr, 0, fe::kRestoreEcx };
-    const reg32 samples = cpu.eax, count = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::mixD24Bit(app, cpu, samples, count); });
+    const reg32 samples = args.eax, to = args.edx, count = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::mixD24Bit(app, cpu, samples, to, count); });
 }
 
-/* sub_4f09c0: the blitter that suits the processor, chosen the first time, called. */
-reg32 frontend::wata::blitDispatch(App* app, CPU& cpu)
+/* sub_4f09c0: the blitter that suits the processor, chosen the first time, called: the shape and
+ * its place (eax, edx and ebx, which the game's code hands on as they came) and the blitters the
+ * choice names.  The MMX blitter's emms is nothing here: the x87 is not shared. */
+reg32 frontend::wata::blitDispatchAt(App* app, CPU& cpu, reg32 shape, reg32 x, reg32 y)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 4);
     constexpr reg32 kChoice = 0x565270, kHasMmx = 0x5643b4, kTable = 0x565274;
     if (sreg32(guest.dword(kChoice)) < 0)
         guest.setDword(kChoice, guest.dword(kHasMmx) != 0 ? 3 : 1);
-    guest.leaveEcx(guest.dword(kTable + 4 * guest.dword(kChoice)));
-    // The shape and its place on to it as they came; the MMX blitter's emms is nothing here: the x87
-    // is not shared.
-    return fe::direct<0x50b0b0, watb::moveShape>(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx);
+    const reg32 blitters = guest.dword(kTable + 4 * guest.dword(kChoice));
+    return fe::direct<0x50b0b0, watb::moveShape>(app, cpu, shape, x, y, blitters);
 }
 
-void frontend::blitDispatch(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::blitDispatch(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4f09c0", 0, 0, nullptr, 0, fe::kRestoreEcx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::blitDispatch(app, cpu); });
+    const reg32 shape = args.eax, x = args.edx, y = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::blitDispatchAt(app, cpu, shape, x, y); });
 }
 
-/* sub_4f0a10: the same, with the two 12-bit fields of a shape's position word in ebx and edx. */
+/* sub_4f0a10: the same, the place the two 12-bit fields of the shape's position word. */
 reg32 frontend::wata::blitShapeAtPosition(App* app, CPU& cpu, reg32 shape)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 2 * 4);
-    cpu.eax = shape;   // on to the blitter as it came
     const reg32 position = guest.dword(shape + 0xc);
-    guest.leaveEbx(reg32(sreg32(position << 4) >> 20));
-    guest.leaveEdx(reg32(sreg32(position << 20) >> 20));
-    return fe::direct<0x4f09c0, blitDispatch>(app, cpu);
+    const reg32 y = reg32(sreg32(position << 4) >> 20), x = reg32(sreg32(position << 20) >> 20);
+    return fe::direct<0x4f09c0, blitDispatchAt>(app, cpu, shape, x, y);
 }
 
-void frontend::blitShapeAtPosition(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::blitShapeAtPosition(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4f0a10", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEdx };
-    const reg32 shape = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::blitShapeAtPosition(app, cpu, shape); });
+    const reg32 shape = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::blitShapeAtPosition(app, cpu, shape); });
 }
 
 /* sub_4f0a90: a surface filled with a colour and drawn. */
@@ -2291,19 +2341,18 @@ reg32 frontend::wata::surfaceFillAndDraw(App* app, CPU& cpu, reg32 x, reg32 y, r
     const fe::Frame frame(guest, cpu, 2 * 4);
     constexpr reg32 kFillWord = 0x4e0721;
     const reg32 surface = fe::direct<0x4ef190, eab::windowBitmapCreateDefault>(app, cpu, width, height, 0x20, 0);
-    guest.leaveEcx(surface);
     const reg32 words = guest.dword(surface + 8) * guest.dword(surface + 0x28);
-    guest.call(kFillWord, args({ guest.dword(surface + 0x20) + 0x10, words, colour }));
-    fe::direct<0x50db30, watb::drawAlphaShape>(app, cpu, guest.dword(cpu.ecx + 0x20), x, y);
-    return fe::direct<0x4eff00, eab::windowBitmapFree>(app, cpu, cpu.ecx);
+    fe::direct<kFillWord, ea::fillPattern>(app, cpu, guest.dword(surface + 0x20) + 0x10, words, colour);
+    fe::direct<0x50db30, watb::drawAlphaShape>(app, cpu, guest.dword(surface + 0x20), x, y);
+    return fe::direct<0x4eff00, eab::windowBitmapFree>(app, cpu, surface);
 }
 
-void frontend::surfaceFillAndDraw(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::surfaceFillAndDraw(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4f0a90", 4, 0, nullptr, 0, fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 x = cpu.eax, y = cpu.edx, width = cpu.ebx, height = cpu.ecx;
+    const reg32 x = args.eax, y = args.edx, width = args.ebx, height = args.ecx;
     const reg32 colour = app->getMemory<reg32>(cpu.esp + 4);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::surfaceFillAndDraw(app, cpu, x, y, width, height, colour); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::surfaceFillAndDraw(app, cpu, x, y, width, height, colour); });
 }
 
 /* sub_4f0af0: the text's measure, in place of its drawing: the box grown by a glyph.  Its arguments
@@ -2324,19 +2373,16 @@ reg32 frontend::wata::textMeasureGlyph(App* app, CPU& cpu, sreg32 x, sreg32 y, s
     const sreg32 foot = sreg32(reg32(y) + reg32(height));
     const reg32 newBottom = reg32(foot < bottom ? bottom : foot);
     guest.setDword(kBottom, newBottom);
-    guest.leaveEbx(reg32(top));
-    guest.leaveEcx(newTop);
-    guest.leaveEdx(newBottom);
     return reg32(bottom);
 }
 
-void frontend::textMeasureGlyph(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::textMeasureGlyph(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4f0af0", 0x10, 0, nullptr, 0, fe::kRestoreEsi | fe::kRestoreEdi };
-    const sreg32 x = sreg32(cpu.eax), y = sreg32(cpu.edx);
+    const sreg32 x = sreg32(args.eax), y = sreg32(args.edx);
     const sreg32 width = sreg32(app->getMemory<reg32>(cpu.esp + 8));
     const sreg32 height = sreg32(app->getMemory<reg32>(cpu.esp + 12));
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::textMeasureGlyph(app, cpu, x, y, width, height); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::textMeasureGlyph(app, cpu, x, y, width, height); });
 }
 
 /* sub_4f0c90: sub_4f0b60 with room for the whole string. */
@@ -2347,12 +2393,12 @@ reg32 frontend::wata::textMeasure(App* app, CPU& cpu, reg32 text, reg32 leftOut,
     return fe::direct<0x4f0b60, textMeasureBox>(app, cpu, text, sreg32(0x100), leftOut, topOut, widthOut, heightOut);
 }
 
-void frontend::textMeasure(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::textMeasure(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4f0c90", 4, 0, nullptr, 0, fe::kRestoreEsi };
-    const reg32 text = cpu.eax, leftOut = cpu.edx, topOut = cpu.ebx, widthOut = cpu.ecx;
+    const reg32 text = args.eax, leftOut = args.edx, topOut = args.ebx, widthOut = args.ecx;
     const reg32 heightOut = app->getMemory<reg32>(cpu.esp + 4);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::textMeasure(app, cpu, text, leftOut, topOut, widthOut, heightOut); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::textMeasure(app, cpu, text, leftOut, topOut, widthOut, heightOut); });
 }
 
 /* sub_4f2170: how many times round a loop in so many ticks: the processor's speed. */
@@ -2372,11 +2418,11 @@ reg32 frontend::wata::processorCountLoops(App* app, CPU& cpu, sreg32 ticks)
     return loops;
 }
 
-void frontend::processorCountLoops(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::processorCountLoops(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4f2170", 0, 0, nullptr, 0, fe::kRestoreAll };
-    const sreg32 ticks = sreg32(cpu.eax);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::processorCountLoops(app, cpu, ticks); });
+    const sreg32 ticks = sreg32(args.eax);
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::processorCountLoops(app, cpu, ticks); });
 }
 
 /* sub_4f4650: a string and a value into the next row of the table at 0x79f524. */
@@ -2388,15 +2434,14 @@ reg32 frontend::wata::registryAddEntry(App* app, CPU& cpu, reg32 name, reg32 val
     const reg32 row = guest.dword(kCount);
     guest.setDword(kValues + row * kRowBytes, value);
     guest.setDword(kCount, row + 1);
-    guest.leaveEdx(row + 1);
     return row * 3;
 }
 
-void frontend::registryAddEntry(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::registryAddEntry(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4f4650", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 name = cpu.eax, value = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::registryAddEntry(app, cpu, name, value); });
+    const reg32 name = args.eax, value = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::registryAddEntry(app, cpu, name, value); });
 }
 
 /* sub_4f46b0: the current screen's surface's pixels. */
@@ -2406,10 +2451,10 @@ reg32 frontend::wata::screenPixels(App* app, CPU& cpu)
     return guest.dword(guest.dword(0x55e558) * 8 + guest.dword(0x79f5c4)) + 0x10;
 }
 
-void frontend::screenPixels(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::screenPixels(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4f46b0", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::screenPixels(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::screenPixels(app, cpu); });
 }
 
 namespace
@@ -2426,11 +2471,11 @@ reg32 frontend::wata::windowSave(App* app, CPU& cpu, reg32 to)
     return to;
 }
 
-void frontend::windowSave(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::windowSave(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4f46d0", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 to = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::windowSave(app, cpu, to); });
+    const reg32 to = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::windowSave(app, cpu, to); });
 }
 
 /* sub_4f4700: the window's descriptions put back as sub_4f46d0 kept them: the check off, for it. */
@@ -2447,11 +2492,11 @@ reg32 frontend::wata::windowRestore(App* app, CPU& cpu, reg32 from)
     return result;
 }
 
-void frontend::windowRestore(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::windowRestore(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4f4700", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEdx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 from = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::windowRestore(app, cpu, from); });
+    const reg32 from = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::windowRestore(app, cpu, from); });
 }
 
 namespace
@@ -2467,11 +2512,11 @@ reg32 frontend::wata::textStateSave(App* app, CPU& cpu, reg32 to)
     return to;
 }
 
-void frontend::textStateSave(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::textStateSave(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4f4740", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 to = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::textStateSave(app, cpu, to); });
+    const reg32 to = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::textStateSave(app, cpu, to); });
 }
 
 /* sub_4f4760: and put back. */
@@ -2480,15 +2525,17 @@ reg32 frontend::wata::textStateRestore(App* app, CPU& cpu, reg32 from)
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 3 * 4);
     copyDwords(guest, kTextState, from, kTextStateDwords);
-    cpu.eax = from;   // on to sub_50c180 as it came
-    return fe::direct<0x50c180, watb::textPalette>(app, cpu);
+    // On to sub_50c180, which hands back `from` as it came where it calls nothing.
+    const bool passedOn = textPaletteLeavesEax(guest);
+    const reg32 result = fe::direct<0x50c180, watb::textPalette>(app, cpu);
+    return passedOn ? from : result;
 }
 
-void frontend::textStateRestore(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::textStateRestore(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4f4760", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 from = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::textStateRestore(app, cpu, from); });
+    const reg32 from = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::textStateRestore(app, cpu, from); });
 }
 
 /* sub_4f4780: the checksum of a block, by the table at 0x566b54. */
@@ -2503,15 +2550,14 @@ reg32 frontend::wata::blockChecksum(App* app, CPU& cpu, reg32 start, reg32 size)
         const reg32 index = (sum & 0xff) ^ guest.byte(at);
         sum = (sum >> 8) ^ guest.word(kTable + index * 2);
     }
-    guest.leaveEdx(sum);
     return sum;
 }
 
-void frontend::blockChecksum(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::blockChecksum(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4f4780", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi };
-    const reg32 start = cpu.eax, size = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::blockChecksum(app, cpu, start, size); });
+    const reg32 start = args.eax, size = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::blockChecksum(app, cpu, start, size); });
 }
 
 /* sub_4f47c0: how a shape's file ends: 1 at a BEND, 0 not, 2 of a kind that has no such end. */
@@ -2527,11 +2573,11 @@ reg32 frontend::wata::shapeEndsAtBend(App* app, CPU& cpu, reg32 shape)
     return word == kBend ? 1 : 0;
 }
 
-void frontend::shapeEndsAtBend(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::shapeEndsAtBend(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4f47c0", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx };
-    const reg32 shape = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::shapeEndsAtBend(app, cpu, shape); });
+    const reg32 shape = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::shapeEndsAtBend(app, cpu, shape); });
 }
 
 /* sub_4f87e0: a graphics driver's DLL opened: the name given, after a '!', or the environment's. */
@@ -2556,14 +2602,14 @@ reg32 frontend::wata::thrashOpenByName(App* app, CPU& cpu, reg32 given)
         guest.setDword(kStarted, 1);
     if (guest.dword(kOpened) != 0)
         fe::direct<0x4f87a0, wina::releaseDriverSlot>(app, cpu);
-    return guest.call(kOpen, args({ name }));
+    return *fe::direct<kOpen, ea::thrashOpened>(app, cpu, name);
 }
 
-void frontend::thrashOpenByName(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::thrashOpenByName(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4f87e0", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    const reg32 given = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::thrashOpenByName(app, cpu, given); });
+    const reg32 given = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::thrashOpenByName(app, cpu, given); });
 }
 
 /* sub_4f90e0: the window shown again, its descriptions kept through it. */
@@ -2582,10 +2628,10 @@ reg32 frontend::wata::windowReshow(App* app, CPU& cpu)
     return 1;
 }
 
-void frontend::windowReshow(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::windowReshow(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4f90e0", 0, 0, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::windowReshow(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::windowReshow(app, cpu); });
 }
 
 /* sub_4f92b0: the heap's block allocated and handed over. */
@@ -2593,54 +2639,57 @@ reg32 frontend::wata::heapStart(App* app, CPU& cpu, reg32 size)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 4);
-    guest.leaveEcx(size);  // read after it, as the code has it
     const reg32 block = fe::direct<0x4f7900, watcom::clib::malloc>(app, cpu, size);
     guest.setDword(0x5644fc, block);
-    return fe::direct<0x4f9270, menz::memClassCreateRam>(app, cpu, block, cpu.ecx);
+    return fe::direct<0x4f9270, menz::memClassCreateRam>(app, cpu, block, size);
 }
 
-void frontend::heapStart(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::heapStart(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4f92b0", 0, 0, nullptr, 0, fe::kRestoreEcx };
-    const reg32 size = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::heapStart(app, cpu, size); });
+    const reg32 size = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::heapStart(app, cpu, size); });
 }
 
-/* sub_4f92d0: 64 megabytes of it: tools/apply_heap_budget.py's, 16 in the game. */
+/* sub_4f92d0: 64 megabytes of it: the port's heap budget change's, 16 in the game. */
 reg32 frontend::wata::heapStartDefault(App* app, CPU& cpu)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 4);
-    guest.leaveEdx(0);   // the game's code hands it 0 in edx too, which it does not read
     return fe::direct<0x4f92b0, heapStart>(app, cpu, 0x4000000);
 }
 
-void frontend::heapStartDefault(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::heapStartDefault(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4f92d0", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::heapStartDefault(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::heapStartDefault(app, cpu); });
 }
 
-/* sub_4f9320: the fonts' system started, once. */
+/* sub_4f9320: the fonts' system started, once.  Started already, no result: eax as it came, which
+ * its thunk does. */
 reg32 frontend::wata::fontsStart(App* app, CPU& cpu)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 4);
     if (guest.dword(0x567194) != 0)
-        return guest.eax();
+        return 0;
     fe::direct<0x518fd0, menz::videoBuffersStart>(app, cpu, 0);
     guest.setDword(0x567190, fe::direct<0x519f10, menz::fontCreate>(app, cpu, 0x569064));
-    guest.leaveEcx(1);
-    // By address: the ecx it leaves is read after it.
-    const reg32 result = guest.call(0x4f2a78, args({ 0x4f9360 }));
-    guest.setDword(0x567194, cpu.ecx);
+    const reg32 result = fe::direct<0x4f2a78, eab::atexitJump>(app, cpu, reg32(0x4f9360));
+    // The 1 the code put in ecx before atexit, which keeps it.
+    guest.setDword(0x567194, 1);
     return result;
 }
 
-void frontend::fontsStart(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::fontsStart(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4f9320", 0, 0, nullptr, 0, fe::kRestoreEcx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::fontsStart(app, cpu); });
+    const reg32 previous = args.eax;
+    const bool started = app->getMemory<reg32>(0x567194) != 0;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
+        const reg32 result = wata::fontsStart(app, cpu);
+        return started ? previous : result;
+    });
 }
 
 /* sub_4f99f0: TAPI's line opened, the callback at 0x4f9500. */
@@ -2655,19 +2704,18 @@ reg32 frontend::wata::tapiInitialize(App* app, CPU& cpu, reg32 instance, reg32 w
     guest.setDword(0x9f4da4, 0);
     guest.setDword(0x9f4da0, 0);
     guest.setDword(0x9f4d94, 0);
-    guest.leaveEdx(0);
-    // By address: the ebx its stub may leave is left at the end, which sub_4f9920 reads.
-    const reg32 result = guest.call(kLineInitialize, args({}, { kLineApp, instance, kCallback, 0, kLines }));
+    const reg32 result = fe::direct<kLineInitialize, watc::lineInitialize>(app, cpu, kLineApp, instance, kCallback,
+                                                                          reg32(0), kLines);
     if (result != 0)
         return 0xa;
     return guest.dword(kLines) == 0 ? 7 : result;
 }
 
-void frontend::tapiInitialize(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::tapiInitialize(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4f99f0", 0, 0, nullptr, 0, fe::kRestoreEcx };
-    const reg32 instance = cpu.eax, wanted = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::tapiInitialize(app, cpu, instance, wanted); });
+    const reg32 instance = args.eax, wanted = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::tapiInitialize(app, cpu, instance, wanted); });
 }
 
 /* sub_4f9920: TAPI set up for the modem games: 0, or what went wrong. */
@@ -2687,12 +2735,9 @@ reg32 frontend::wata::tapiSetup(App* app, CPU& cpu, reg32 wanted)
         fe::direct<kError, ea::error>(guest.app(), guest.cpu(), 0x54daa4, guest::Words({}));
         return kFailed;
     }
-    const reg32 window = guest.call(kAcquireWindow, args({}, { kGwlHinstance }));
+    const reg32 window = fe::direct<kAcquireWindow, ea::acquireWindow>(app, cpu);
     const reg32 instance = callImport<kGetWindowLong, &host::windowLong>(guest, cpu, window, kGwlHinstance);
-    guest.leaveEbx(wanted);
-    guest.leaveEcx(instance);
-    // By address: the ebx it may leave is read after it, as the second's wanted.
-    const reg32 first = guest.call(kInitialize, args({ instance, 1 }));
+    const reg32 first = fe::direct<kInitialize, tapiInitialize>(app, cpu, instance, reg32(1));
     if (first != 0)
     {
         fe::direct<0x4f97c0, eab::lineShutdown>(app, cpu);
@@ -2703,8 +2748,9 @@ reg32 frontend::wata::tapiSetup(App* app, CPU& cpu, reg32 wanted)
         fe::direct<0x4f9df0, netb::tapiGetCommHandleConfig>(app, cpu);
         fe::direct<0x4f97c0, eab::lineShutdown>(app, cpu);
         fe::direct<0x4df8e0, ea::sleepFor>(app, cpu, 0x1f4);
-        // The instance and the wanted kept in ecx and ebx across the calls.
-        if (fe::direct<0x4f99f0, tapiInitialize>(app, cpu, cpu.ecx, cpu.ebx) != kFailed)
+        // The instance and the wanted, which the code keeps in ecx and ebx across the calls (where
+        // TAPI's stub keeps them: the port's TAPI changes no register).
+        if (fe::direct<0x4f99f0, tapiInitialize>(app, cpu, instance, wanted) != kFailed)
         {
             if (fe::direct<0x4f9d20, netb::tapiOpenLine>(app, cpu) != 0)
                 return 0;
@@ -2715,11 +2761,11 @@ reg32 frontend::wata::tapiSetup(App* app, CPU& cpu, reg32 wanted)
     return kFailed;
 }
 
-void frontend::tapiSetup(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::tapiSetup(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4f9920", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 wanted = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::tapiSetup(app, cpu, wanted); });
+    const reg32 wanted = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::tapiSetup(app, cpu, wanted); });
 }
 
 /* sub_4fb380: the screen's size and depth from the driver's record into the global ones. */
@@ -2732,37 +2778,46 @@ reg32 frontend::wata::screenTakeSize(App* app, CPU& cpu)
     return guest.dword(0x564374);
 }
 
-void frontend::screenTakeSize(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::screenTakeSize(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4fb380", 0, 0, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::screenTakeSize(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::screenTakeSize(app, cpu); });
 }
 
-/* sub_4fb3b0 and sub_4fb3c0: the screen's lock count. */
+/* sub_4fb3b0 and sub_4fb3c0: the screen's lock count.  No result: eax as it came, which their
+ * thunks do. */
 reg32 frontend::wata::screenLockCountUp(App* app, CPU& cpu)
 {
     Guest guest(app, cpu);
     guest.setDword(0x9f4f48, guest.dword(0x9f4f48) + 1);
-    return guest.eax();
+    return 0;
 }
 
-void frontend::screenLockCountUp(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::screenLockCountUp(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4fb3b0", 0, 0, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::screenLockCountUp(app, cpu); });
+    const reg32 previous = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
+        wata::screenLockCountUp(app, cpu);
+        return previous;
+    });
 }
 
 reg32 frontend::wata::screenLockCountDown(App* app, CPU& cpu)
 {
     Guest guest(app, cpu);
     guest.setDword(0x9f4f48, guest.dword(0x9f4f48) - 1);
-    return guest.eax();
+    return 0;
 }
 
-void frontend::screenLockCountDown(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::screenLockCountDown(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4fb3c0", 0, 0, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::screenLockCountDown(app, cpu); });
+    const reg32 previous = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
+        wata::screenLockCountDown(app, cpu);
+        return previous;
+    });
 }
 
 /* sub_4fb3d0: the driver's record set up for the screen, and these functions hooked in. */
@@ -2782,10 +2837,10 @@ reg32 frontend::wata::screenInstallDriver(App* app, CPU& cpu)
     return 1;
 }
 
-void frontend::screenInstallDriver(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::screenInstallDriver(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4fb3d0", 0, 0, nullptr, 0, fe::kRestoreEdx | fe::kRestoreEsi | fe::kRestoreEdi };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::screenInstallDriver(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::screenInstallDriver(app, cpu); });
 }
 
 /* sub_4fb700: the num lock off. */
@@ -2796,10 +2851,10 @@ reg32 frontend::wata::numLockOff(App* app, CPU& cpu)
     return guest::direct<0x4fb710, lockKeySet>(app, cpu, 1, 0);
 }
 
-void frontend::numLockOff(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::numLockOff(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4fb700", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::numLockOff(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::numLockOff(app, cpu); });
 }
 
 /* sub_4fb790: a directory's search: a big file's entry opened by its name, 0 when found. */
@@ -2813,19 +2868,20 @@ reg32 frontend::wata::bigFileOpenEntry(App* app, CPU& cpu, reg32 big, reg32 sear
     const bool anyFile = guest.byte(wantedFile) == 0;
     if (!anyFile && fe::direct<kStrcmp, watcom::clib::strcmp>(guest.app(), guest.cpu(), big + 0x14, guest.dword(search)) != 0)
         return 1;
-    // By address: the edx it leaves is left at the end.
-    if (guest.call(kFindEntry, args({ guest.dword(big + 0x10), guest.dword(search + 4), 0, entryOffset }, { entrySize })) == 0)
+    const std::optional<load::BigEntry> found = fe::direct<kFindEntry, load::findEntry>(
+        app, cpu, guest.dword(big + 0x10), guest.dword(search + 4), reg32(0), entryOffset, entrySize);
+    if (found->name == 0)
         return anyFile ? 1 : 0;
-    const reg32 handle = guest.call(kOpenMemory, args({ guest.dword(big + 0x10) + guest.dword(entryOffset), guest.dword(entrySize), guest.dword(big + 8), 0 }, { search + 8 }));
+    const reg32 handle = *fe::direct<kOpenMemory, ea::memoryOpened>(app, cpu, guest.dword(big + 0x10) + guest.dword(entryOffset), guest.dword(entrySize), guest.dword(big + 8), 0u, search + 8);
     guest.setDword(search + 0xc, handle);
     return 0;
 }
 
-void frontend::bigFileOpenEntry(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::bigFileOpenEntry(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4fb790", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 big = cpu.eax, search = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::bigFileOpenEntry(app, cpu, big, search); });
+    const reg32 big = args.eax, search = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::bigFileOpenEntry(app, cpu, big, search); });
 }
 
 /* sub_4ead20: the window as it stands set: an error if it is locked. */
@@ -2836,25 +2892,22 @@ reg32 frontend::wata::windowApply(App* app, CPU& cpu)
     constexpr reg32 kLockedBy = 0x9f3d2f, kWindow = 0x56502c;
     if (guest.byte(kLockedBy) != 0)
     {
-        const reg32 ebx = cpu.ebx, ecx = cpu.ecx, edx = cpu.edx;
         guest.setDword(kErrorFile, 0x54b6c8);
         guest.setDword(kErrorFunction, 0x54b6d8);
         guest.setDword(kErrorLine, 0x5d);
         fe::direct<0x401010, ea::error>(app, cpu, 0x54b6e8u, guest::Words({ guest.byte(kLockedBy) }));
-        guest.leaveEbx(ebx);
-        guest.leaveEcx(ecx);
-        guest.leaveEdx(edx);
     }
     return fe::direct<0x4eada0, eaa::bitmapDrawInto>(app, cpu, kWindow);
 }
 
-void frontend::windowApply(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::windowApply(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4ead20", 0, 0, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::windowApply(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::windowApply(app, cpu); });
 }
 
-/* sub_4f7c48: the exit functions registered at 0x9f380c run, last first, once. */
+/* sub_4f7c48: the exit functions registered at 0x9f380c run, last first, once.  No result: what
+ * the last of them left in eax, or with none run eax as it came, which its thunk does. */
 reg32 frontend::wata::exitFunctionsRun(App* app, CPU& cpu)
 {
     Guest guest(app, cpu);
@@ -2862,57 +2915,74 @@ reg32 frontend::wata::exitFunctionsRun(App* app, CPU& cpu)
     constexpr reg32 kCount = 0x9f3890, kTable = 0x9f380c, kDone = 0x21;
     const reg32 count = guest.dword(kCount);
     if (count == kDone)
-        return guest.eax();
+        return 0;
     guest.setDword(kCount, kDone);
+    reg32 last = 0;
     for (reg32 left = count; left != 0; --left)
     {
         const reg32 function = guest.dword(kTable + left * 4);
-        guest.call(function, args({ function }));
+        last = fe::pointerCall(guest, function, args({ function }));
     }
-    return guest.eax();
+    return last;
 }
 
-void frontend::exitFunctionsRun(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::exitFunctionsRun(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4f7c48", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::exitFunctionsRun(app, cpu); });
+    const reg32 previous = args.eax;
+    const reg32 count = app->getMemory<reg32>(0x9f3890);
+    const bool noneRun = count == 0x21 || count == 0;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
+        const reg32 last = wata::exitFunctionsRun(app, cpu);
+        return noneRun ? previous : last;
+    });
 }
 
-/* sub_4e0658, sub_4e0659 and sub_4f45d0: nothing, in a table of what can be hooked. */
+/* sub_4e0658, sub_4e0659 and sub_4f45d0: nothing, in a table of what can be hooked.  No result: eax
+ * as it came, which their thunks do. */
 reg32 frontend::wata::nothingA(App* app, CPU& cpu)
 {
-    Guest guest(app, cpu);
-    return guest.eax();
+    return 0;
 }
 
-void frontend::nothingA(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::nothingA(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4e0658", 0, 0, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::nothingA(app, cpu); });
+    const reg32 previous = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
+        wata::nothingA(app, cpu);
+        return previous;
+    });
 }
 
 reg32 frontend::wata::nothingB(App* app, CPU& cpu)
 {
-    Guest guest(app, cpu);
-    return guest.eax();
+    return 0;
 }
 
-void frontend::nothingB(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::nothingB(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4e0659", 0, 0, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::nothingB(app, cpu); });
+    const reg32 previous = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
+        wata::nothingB(app, cpu);
+        return previous;
+    });
 }
 
 reg32 frontend::wata::nothingC(App* app, CPU& cpu)
 {
-    Guest guest(app, cpu);
-    return guest.eax();
+    return 0;
 }
 
-void frontend::nothingC(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::nothingC(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4f45d0", 0, 0, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::nothingC(app, cpu); });
+    const reg32 previous = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
+        wata::nothingC(app, cpu);
+        return previous;
+    });
 }
 
 /* sub_4f8930: the graphics started: the driver's settings in the environment the first time, the
@@ -2933,21 +3003,21 @@ reg32 frontend::wata::graphicsStart(App* app, CPU& cpu)
         { 0x54d80c, kNo, 1 }, { 0x54d818, kNo, 1 }, { 0x54d824, kYes, 1 }, { 0x54d834, kNo, 1 }, { 0x54d844, kNo, 1 },
         { 0x54d854, kNo, 1 }, { 0x54d864, kNo, 1 }, { 0x54d870, kYes, 1 },
     };
-    guest.call(0x4df740, args({ 0 }));
+    fe::direct<0x4df740, ea::threadsSetUp>(app, cpu, 0u);
     if (guest.dword(kHeap) == 0)
         fe::direct<0x4f92d0, heapStartDefault>(app, cpu);
     if (guest.dword(kModeSet) == 0)
     {
         for (const Setting& setting : kSettings)
-            guest.call(kSetenv, args({ setting.name, setting.value, setting.overwrite }));
+            fe::direct<kSetenv, watcom::clib::setenv>(app, cpu, setting.name, setting.value, setting.overwrite);
         const reg32 shown = fe::direct<0x5089d0, rendf::setDisplayMode>(app, cpu, guest.dword(kWidth), guest.dword(kHeight), guest.dword(kDepth));
         if (guest.dword(kModeSet) == 0)
             return shown;
     }
     fe::direct<0x503e50, wina::paletteSet>(app, cpu, 0, 0x100, 0x568c30);
-    guest.call(0x48eff0, args({ guest.dword(0x5643d8) }));
-    guest.call(0x4f1c70);
-    guest.call(0x4f1ef0);
+    fe::direct<0x48eff0, port::timerStarted>(app, cpu, guest.dword(0x5643d8));
+    fe::direct<0x4f1c70, removed::checkProcessor>(app, cpu);
+    fe::direct<0x4f1ef0, removed::timeProcessor>(app, cpu);
     fe::direct<0x517b30, menz::eaTextStart>(app, cpu);
     fe::direct<0x4ef520, eab::fontUse>(app, cpu, 0x5662e4);
     const reg32 black = fe::direct<0x4ef760, eab::colourPack>(app, cpu, 0xff000000u);
@@ -2957,32 +3027,26 @@ reg32 frontend::wata::graphicsStart(App* app, CPU& cpu)
     fe::direct<0x4f9320, fontsStart>(app, cpu);
     if (guest.dword(0x564368) == 0)
         fe::direct<0x4fb3d0, screenInstallDriver>(app, cpu);
-    const reg32 ecx = cpu.ecx, edi = cpu.edi;
-    // What it gives back in eax, on to sub_4f01f0 as the game's code has it.
-    cpu.eax = fe::direct<0x4fb700, numLockOff>(app, cpu);
+    // What it gives back in eax the game's code has on to sub_4f01f0, which does not read it.
+    fe::direct<0x4fb700, numLockOff>(app, cpu);
     fe::direct<0x4f01f0, eab::inputStateOpen>(app, cpu);
     fe::direct<0x517ba0, menz::keyboardIsPc98>(app, cpu);
-    cpu.edi = 0x517d60;
     // Its own address handed in eax, which it does not read.
     fe::direct<0x4feffc, watb::returnZero>(app, cpu);
-    // And 0 in edx, which it does not read, kept on to sub_4fc250's count of records.
-    guest.leaveEdx(0);
     fe::direct<0x4f00f0, eab::keySetHookFlag>(app, cpu, 0x4f00e0);
-    guest.setDword(0x564404, cpu.edi);
+    // What the code holds in edi meanwhile (no callee touches it): the keys' hook.
+    guest.setDword(0x564404, 0x517d60);
     fe::direct<0x517de0, menz::debugKeysBind>(app, cpu);
     fe::direct<0x4fc250, eab::asyncFilesInit>(app, cpu, 0, 0);
     fe::direct<0x518040, menz::eaSetLoadHook>(app, cpu);
     fe::direct<0x4fd3f0, mova::projectionViewDegrees>(app, cpu, 0x1e, 0x14, guest.dword(kWidth), guest.dword(kHeight));
-    const reg32 result = fe::direct<0x4fd280, mova::projectionCentre>(app, cpu, 0, 0);
-    guest.leaveEcx(ecx);
-    cpu.edi = edi;
-    return result;
+    return fe::direct<0x4fd280, mova::projectionCentre>(app, cpu, 0, 0);
 }
 
-void frontend::graphicsStart(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::graphicsStart(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_4f8930", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::graphicsStart(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::graphicsStart(app, cpu); });
 }
 
 /* sub_47a970: the sky's shape for a track: its description's words in the shape's name give the
@@ -2997,7 +3061,7 @@ reg32 frontend::wata::skyLoad(App* app, CPU& cpu, reg32 shapes, reg32 shapeName)
     constexpr reg32 kFogWord = 0x53b30c, kNoFogWord = 0x53b314, kBrightWord = 0x53b31c;
     const reg32 buffer = guest.frame(), angleBits = buffer + 0x114;
     guest.setDword(kLoaded, 0);
-    const reg32 shape = guest.call(kLocateShape, args({ shapes, shapeName }));
+    const reg32 shape = fe::direct<kLocateShape, ea::shapeLocated>(app, cpu, shapes, shapeName);
     if (shape == 0)
         return 0;
     const reg32 name = fe::direct<0x4f24e0, eab::shapeFindHotspot>(app, cpu, shape);
@@ -3065,18 +3129,18 @@ reg32 frontend::wata::skyLoad(App* app, CPU& cpu, reg32 shapes, reg32 shapeName)
     return result;
 }
 
-void frontend::skyLoad(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::skyLoad(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_47a970", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 shapes = cpu.eax, shapeName = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::skyLoad(app, cpu, shapes, shapeName); });
+    const reg32 shapes = args.eax, shapeName = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::skyLoad(app, cpu, shapes, shapeName); });
 }
 
 /* ---------------------------------------------------------------------------
  * The HUD editor: an element under the mouse
  * ------------------------------------------------------------------------- */
 
-/* tools/apply_hud_editor.py's changes, in nfs3hp_main.cpp: the layout as laid out and not as
+/* the port's HUD editor change's changes, in nfs3hp_main.cpp: the layout as laid out and not as
  * drawn, and how far past the screen's edge a box that draws nothing there may go. */
 void hudLayoutDesigned(win32::WinApplication* app, x86::reg32 rect, x86::reg32 element);
 x86::sreg32 hudDragSlack(win32::WinApplication* app, x86::reg32 object, x86::reg32 side);
@@ -3099,6 +3163,13 @@ constexpr reg32 kSplitScreen = 1;  // GameSettings::playMode
 constexpr reg32 kSetPointerBounds = 0x4352d0;
 constexpr std::int16_t kSmallestSide = 0x1a;
 
+/* sub_4dfd56 (__CHP) and fistp: `value` cut to an integer towards zero, as fe::X87::truncated has it. */
+std::int32_t truncated(win32::WinApplication* app, x86::CPU& cpu, Float value)
+{
+    const double chopped = fe::direct<0x4dfd56, watcom::clib::chop>(app, cpu, double(value));
+    return fp::toInteger<sreg32>(chopped);
+}
+
 }
 
 /* sub_459fe0: an element dropped: where it now is into the layout's table, the HUD rebuilt, and
@@ -3108,12 +3179,11 @@ reg32 frontend::wata::hudEditorDrop(App* app, CPU& cpu, reg32 element, reg32 sta
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 5 * 4 + 4);
-    constexpr reg32 kHudBand = 0x4800a0;
     constexpr reg32 kToX = 0x539bbc, kToY = 0x539bc4, kSize = 0x539bcc;   // doubles
     reg32 result = element;
     if (gameSettings(guest).playMode != kSplitScreen)
     {
-        fe::X87 x87(guest);
+        const auto chop = [&](Float value) { return truncated(app, cpu, value); };
         const auto constant = [&](reg32 at) { return Float(app->getMemory<double>(at)); };
         const auto wordField = [&](reg32 field) { return Float(x86::sreg16(guest.word(element + field))); };
         const auto sized = [&](reg32 field, reg32 screen) {
@@ -3121,22 +3191,21 @@ reg32 frontend::wata::hudEditorDrop(App* app, CPU& cpu, reg32 element, reg32 sta
         };
         // The element's view in edx across sub_422bd0 (handed to it too, which keeps it), on to sub_4853c0.
         const reg32 view = guest.dword(element + kElView);
-        guest.leaveEdx(view);
         const reg32 target = fe::direct<0x422bd0, carstate::targetOfCamera>(app, cpu, 0);
         const reg32 side = (guest.byte(target + 0x200) & 0x20) != 0 ? 1 : 0;
         const reg32 layout = SETTINGS_ADDRESS(hud[0].rects) + side * reg32(sizeof(HudRecord)) + (view << 4);
         copyDwords(guest, layout, element + kElDesigned, 4);
         hudLayoutDesigned(app, layout, view); /* port: the layout as laid out, not as drawn */
         fe::direct<0x4853c0, hudr::rebuildElement>(app, cpu, 0, view);
-        guest.call(kHudBand, args({ 0 }));
+        fe::direct<0x4800a0, render::hudBandBuilt>(app, cpu, 0);
         guest.setWord(element + kElPercentX, guest.word(start + 2));
         guest.setWord(element + kElPercentY, guest.word(start));
 
         const reg32 width = guest.dword(kScreenWidth), height = guest.dword(kScreenHeight);
         const Float toX = constant(kToX);
-        guest.setWord(element + kElX, std::uint16_t(x87.truncated(fp::mul(Float(sreg32(sized(kElPercentX, width))), toX))));
+        guest.setWord(element + kElX, std::uint16_t(chop(fp::mul(Float(sreg32(sized(kElPercentX, width))), toX))));
         const Float toY = constant(kToY);
-        guest.setWord(element + kElY, std::uint16_t(x87.truncated(fp::mul(Float(sreg32(sized(kElPercentY, height))), toY))));
+        guest.setWord(element + kElY, std::uint16_t(chop(fp::mul(Float(sreg32(sized(kElPercentY, height))), toY))));
         const Float across = fp::mul(toX, Float(sreg32(sized(kElWidth, width))));
         const Float rightEdge = fp::add(across, wordField(kElX));
         result = sized(kElHeight, height);
@@ -3144,10 +3213,10 @@ reg32 frontend::wata::hudEditorDrop(App* app, CPU& cpu, reg32 element, reg32 sta
         const Float size = constant(kSize);
         const Float right = fp::add(rightEdge, size);
         const Float bottomEdge = fp::add(down, wordField(kElY));
-        const std::int32_t rightPixel = x87.truncated(right);
+        const std::int32_t rightPixel = chop(right);
         const Float bottom = fp::add(size, bottomEdge);
         guest.setDword(element + kElRight, reg32(rightPixel));
-        guest.setDword(element + kElBottom, reg32(x87.truncated(bottom)));
+        guest.setDword(element + kElBottom, reg32(chop(bottom)));
     }
     const reg32 partner = guest.dword(element + kElPartner);
     guest.setDword(element + kElMoved, 1);
@@ -3159,11 +3228,11 @@ reg32 frontend::wata::hudEditorDrop(App* app, CPU& cpu, reg32 element, reg32 sta
     return result;
 }
 
-void frontend::hudEditorDrop(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::hudEditorDrop(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_459fe0", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 element = cpu.eax, start = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::hudEditorDrop(app, cpu, element, start); });
+    const reg32 element = args.eax, start = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::hudEditorDrop(app, cpu, element, start); });
 }
 
 /* sub_45a120: an element under the mouse, each frame: the drag begun when the button goes down
@@ -3174,7 +3243,7 @@ reg32 frontend::wata::hudEditorDrag(App* app, CPU& cpu, reg32 element)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 6 * 4 + 0x64);
-    fe::X87 x87(guest);
+    const auto chop = [&](Float value) { return truncated(app, cpu, value); };
     const auto constant = [&](reg32 at) { return Float(app->getMemory<double>(at)); };
     const auto i16 = [&](reg32 field) -> sreg32 { return sreg32(x86::sreg16(guest.word(element + field))); };
     const auto wordField = [&](reg32 field) { return Float(x86::sreg16(guest.word(element + field))); };
@@ -3188,28 +3257,28 @@ reg32 frontend::wata::hudEditorDrag(App* app, CPU& cpu, reg32 element)
     const auto fit = [&] {
         const Float half = constant(kLastPixel);
         const Float acrossPixels = fp::add(fp::mul(integerOf(reg32(i16(kElWidth)) * screenWidth()), constant(kPercentToX)), wordField(kElX));
-        guest.setDword(element + kElRight, reg32(x87.truncated(fp::add(acrossPixels, half))));
+        guest.setDword(element + kElRight, reg32(chop(fp::add(acrossPixels, half))));
         const reg32 tall = reg32(i16(kElHeight)) * screenHeight();
         const Float percentX = fp::div(fp::mul(wordField(kElX), constant(kXToPercent)), integerOf(screenWidth()));
         const Float downPixels = fp::add(fp::mul(integerOf(tall), constant(kPercentToY)), wordField(kElY));
         const Float bottom = fp::add(half, downPixels);
-        guest.setDword(element + kElBottom, reg32(x87.truncated(bottom)));
-        setWordTo(kElPercentX, x87.truncated(percentX));
-        setWordTo(kElPercentY, x87.truncated(fp::div(fp::mul(wordField(kElY), constant(kYToPercent)), integerOf(screenHeight()))));
+        guest.setDword(element + kElBottom, reg32(chop(bottom)));
+        setWordTo(kElPercentX, chop(percentX));
+        setWordTo(kElPercentY, chop(fp::div(fp::mul(wordField(kElY), constant(kYToPercent)), integerOf(screenHeight()))));
     };
     const auto percentYNow = [&] {
-        setWordTo(kElPercentY, x87.truncated(fp::div(fp::mul(wordField(kElY), constant(kYToPercent)), integerOf(screenHeight()))));
+        setWordTo(kElPercentY, chop(fp::div(fp::mul(wordField(kElY), constant(kYToPercent)), integerOf(screenHeight()))));
     };
     const auto percentXNow = [&] {
-        setWordTo(kElPercentX, x87.truncated(fp::div(fp::mul(wordField(kElX), constant(kXToPercent)), integerOf(screenWidth()))));
+        setWordTo(kElPercentX, chop(fp::div(fp::mul(wordField(kElX), constant(kXToPercent)), integerOf(screenWidth()))));
     };
 
     // The box's size on the screen, what the editing camera's layout adds to its height.
     const Float boxWidth = fp::mul(integerOf(reg32(i16(kElWidth)) * screenWidth()), constant(kPercentToX));
     const Float boxHeight = fp::mul(integerOf(reg32(i16(kElHeight)) * screenHeight()), constant(kPercentToY));
     const reg32 camera = guest.dword(kEditedCamera);
-    const reg32 widthPixels = reg32(x87.truncated(boxWidth));
-    reg32 heightPixels = reg32(x87.truncated(boxHeight));
+    const reg32 widthPixels = reg32(chop(boxWidth));
+    reg32 heightPixels = reg32(chop(boxHeight));
     if (camera == 0 || camera == 1)
     {
         const reg32 row = guest.dword(kEditedSide) * 368;
@@ -3224,8 +3293,9 @@ reg32 frontend::wata::hudEditorDrag(App* app, CPU& cpu, reg32 element)
         guest.setWord(element + kElDragging, 0);
         guest.setByte(element + kElFlags, flags & std::uint8_t(~kFlagDragged));
         guest::direct<0x459fe0, hudEditorDrop>(app, cpu, element, kDragStart);
-        // By address: what it leaves in eax is handed back, which its core does not give.
-        return guest.call(kSetPointerBounds, args({ 0, 0, screenWidth(), screenHeight() }));
+        // What it leaves in eax the game's code hands back: no result, which no caller reads.
+        fe::direct<kSetPointerBounds, controls::boundPointer>(app, cpu, reg32(0), reg32(0), screenWidth(), screenHeight());
+        return 0;
     }
 
     if (guest.word(element + kElDragging) == 0)
@@ -3234,13 +3304,13 @@ reg32 frontend::wata::hudEditorDrag(App* app, CPU& cpu, reg32 element)
         guest.setByte(element + kElFlags, guest.byte(element + kElFlags) | kFlagDragged);
         const reg32 handle = guest.dword(element + kElHandle);
         if (handle == 0 || handle == 0x108 || handle == 0x208 || handle == 0x409 || handle == 0x50a || handle == 0x60b)
-            guest.setDword(element + kElGrabX, reg32(x87.truncated(fp::sub(mouseX(), wordField(kElX)))));
+            guest.setDword(element + kElGrabX, reg32(chop(fp::sub(mouseX(), wordField(kElX)))));
         else if (handle == 0x809 || handle == 0x90b || handle == 0xa0a)
-            guest.setDword(element + kElGrabX, reg32(x87.truncated(fp::sub(dwordField(kElRight), mouseX()))));
+            guest.setDword(element + kElGrabX, reg32(chop(fp::sub(dwordField(kElRight), mouseX()))));
         if (handle == 0 || handle == 0x108 || handle == 0x409 || handle == 0x50a || handle == 0x809 || handle == 0x90b)
-            guest.setDword(element + kElGrabY, reg32(x87.truncated(fp::sub(mouseY(), wordField(kElY)))));
+            guest.setDword(element + kElGrabY, reg32(chop(fp::sub(mouseY(), wordField(kElY)))));
         else if (handle == 0x208 || handle == 0x60b || handle == 0xa0a)
-            guest.setDword(element + kElGrabY, reg32(x87.truncated(fp::sub(dwordField(kElBottom), mouseY()))));
+            guest.setDword(element + kElGrabY, reg32(chop(fp::sub(dwordField(kElBottom), mouseY()))));
         fit();
         if (gameSettings(guest).playMode == kSplitScreen && guest.dword(element + kElView) != 8)
         {
@@ -3254,16 +3324,16 @@ reg32 frontend::wata::hudEditorDrag(App* app, CPU& cpu, reg32 element)
             // Inside the half of the screen the mouse is in.
             if (sreg32(guest.dword(kMouseY)) < 0xf0)
             {
-                const reg32 top = reg32(x87.truncated(above));
-                const reg32 bottom = reg32(x87.truncated(fp::sub(Float(halfTall), below)));
+                const reg32 top = reg32(chop(above));
+                const reg32 bottom = reg32(chop(fp::sub(Float(halfTall), below)));
                 fe::direct<0x4352d0, controls::boundPointer>(app, cpu, 0, top, screenWidth(), bottom);
             }
             else
             {
                 const Float lowest = fp::sub(heightAsFloat, below);
-                const reg32 bottom = reg32(x87.truncated(lowest));
+                const reg32 bottom = reg32(chop(lowest));
                 const Float highest = fp::add(fp::add(above, Float(halfTall)), Float(1.0));
-                const reg32 top = reg32(x87.truncated(highest));
+                const reg32 top = reg32(chop(highest));
                 fe::direct<0x4352d0, controls::boundPointer>(app, cpu, 0, top, screenWidth(), bottom);
             }
         }
@@ -3280,8 +3350,8 @@ reg32 frontend::wata::hudEditorDrag(App* app, CPU& cpu, reg32 element)
     {
         const Float x = mouseX();
         const Float y = fp::mul(integerOf(mouseRawY), constant(kPercentToY));
-        setWordTo(kElX, x87.truncated(fp::sub(x, dwordField(kElGrabX))));
-        setWordTo(kElY, x87.truncated(fp::sub(y, dwordField(kElGrabY))));
+        setWordTo(kElX, chop(fp::sub(x, dwordField(kElGrabX))));
+        setWordTo(kElY, chop(fp::sub(y, dwordField(kElGrabY))));
 
         reg32 room = screenWidth() - widthPixels;
         room += reg32(hudDragSlack(app, element, 1)); /* port: what is drawn stays on the screen */
@@ -3308,23 +3378,23 @@ reg32 frontend::wata::hudEditorDrag(App* app, CPU& cpu, reg32 element)
         {
             // By its top edge.
             const Float y = fp::mul(integerOf(mouseRawY), constant(kPercentToY));
-            setWordTo(kElY, x87.truncated(fp::sub(y, dwordField(kElGrabY))));
+            setWordTo(kElY, chop(fp::sub(y, dwordField(kElGrabY))));
             const Float scaled = fp::mul(integerOf(bottomPixel() - reg32(i16(kElY)) + 1), constant(kYToPercent));
             const Float perPixel = oneOver(screenHeight());
-            const std::int32_t percent = x87.truncated(fp::mul(scaled, perPixel));
+            const std::int32_t percent = chop(fp::mul(scaled, perPixel));
             setWordTo(kElHeight, percent);
             if (std::int16_t(percent) < kSmallestSide)
             {
                 const Float smallest = fp::mul(integerOf(tall * 26), constant(kPercentToY));
                 setWordTo(kElHeight, kSmallestSide);
-                setWordTo(kElY, x87.truncated(fp::add(fp::sub(dwordField(kElBottom), smallest), one)));
+                setWordTo(kElY, chop(fp::add(fp::sub(dwordField(kElBottom), smallest), one)));
             }
             else if (i16(kElY) < 0)
             {
                 const Float wanted = fp::mul(fp::mul(dwordField(kElBottom), constant(kYToPercent)), perPixel);
                 const Float whole = fp::add(wanted, one);
                 setWordTo(kElY, 0);
-                setWordTo(kElHeight, x87.truncated(whole));
+                setWordTo(kElHeight, chop(whole));
             }
             percentYNow();
         }
@@ -3332,66 +3402,66 @@ reg32 frontend::wata::hudEditorDrag(App* app, CPU& cpu, reg32 element)
         {
             // By its bottom edge.
             const Float y = fp::mul(integerOf(mouseRawY), constant(kPercentToY));
-            guest.setDword(element + kElBottom, reg32(x87.truncated(fp::add(y, dwordField(kElGrabY)))));
+            guest.setDword(element + kElBottom, reg32(chop(fp::add(y, dwordField(kElGrabY)))));
             const Float scaled = fp::mul(integerOf(bottomPixel() - reg32(i16(kElY)) + 1), constant(kYToPercent));
             const Float perPixel = oneOver(screenHeight());
-            const std::int32_t percent = x87.truncated(fp::mul(scaled, perPixel));
+            const std::int32_t percent = chop(fp::mul(scaled, perPixel));
             setWordTo(kElHeight, percent);
             if (std::int16_t(percent) < kSmallestSide)
             {
                 const Float smallest = fp::mul(integerOf(tall * 26), constant(kPercentToY));
                 setWordTo(kElHeight, kSmallestSide);
-                guest.setDword(element + kElBottom, reg32(x87.truncated(fp::add(fp::add(smallest, wordField(kElY)), constant(kLastPixel)))));
+                guest.setDword(element + kElBottom, reg32(chop(fp::add(fp::add(smallest, wordField(kElY)), constant(kLastPixel)))));
             }
             else if (sreg32(screenHeight()) <= sreg32(bottomPixel()))
             {
                 guest.setDword(element + kElBottom, screenHeight() - 1);
                 const Float scaledRest = fp::mul(integerOf(screenHeight() - reg32(i16(kElY))), constant(kYToPercent));
-                setWordTo(kElHeight, x87.truncated(fp::mul(scaledRest, perPixel)));
+                setWordTo(kElHeight, chop(fp::mul(scaledRest, perPixel)));
             }
         }
         const reg32 wide = screenWidth();
         if ((edges & 4) != 0)
         {
             // By its left edge.
-            setWordTo(kElX, x87.truncated(fp::sub(mouseX(), dwordField(kElGrabX))));
+            setWordTo(kElX, chop(fp::sub(mouseX(), dwordField(kElGrabX))));
             const Float scaled = fp::mul(integerOf(rightPixel() - reg32(i16(kElX)) + 1), constant(kXToPercent));
             const Float perPixel = oneOver(wide);
-            const std::int32_t percent = x87.truncated(fp::mul(scaled, perPixel));
+            const std::int32_t percent = chop(fp::mul(scaled, perPixel));
             setWordTo(kElWidth, percent);
             if (std::int16_t(percent) < kSmallestSide)
             {
                 const Float smallest = fp::mul(integerOf(wide * 26), constant(kPercentToX));
                 setWordTo(kElWidth, kSmallestSide);
-                setWordTo(kElX, x87.truncated(fp::add(fp::sub(dwordField(kElRight), smallest), one)));
+                setWordTo(kElX, chop(fp::add(fp::sub(dwordField(kElRight), smallest), one)));
             }
             else if (i16(kElX) < 0)
             {
                 const Float wanted = fp::mul(fp::mul(integerOf(rightPixel() + 1), constant(kXToPercent)), perPixel);
                 setWordTo(kElX, 0);
-                setWordTo(kElWidth, x87.truncated(wanted));
+                setWordTo(kElWidth, chop(wanted));
             }
             percentXNow();
         }
         else if ((edges & 8) != 0)
         {
             // By its right edge.
-            guest.setDword(element + kElRight, reg32(x87.truncated(fp::add(mouseX(), dwordField(kElGrabX)))));
+            guest.setDword(element + kElRight, reg32(chop(fp::add(mouseX(), dwordField(kElGrabX)))));
             const Float scaled = fp::mul(integerOf(rightPixel() - reg32(i16(kElX)) + 1), constant(kXToPercent));
             const Float perPixel = oneOver(wide);
-            const std::int32_t percent = x87.truncated(fp::mul(scaled, perPixel));
+            const std::int32_t percent = chop(fp::mul(scaled, perPixel));
             setWordTo(kElWidth, percent);
             if (std::int16_t(percent) < kSmallestSide)
             {
                 const Float smallest = fp::mul(integerOf(wide * 26), constant(kPercentToX));
                 setWordTo(kElWidth, kSmallestSide);
-                guest.setDword(element + kElRight, reg32(x87.truncated(fp::add(fp::add(smallest, wordField(kElX)), constant(kLastPixel)))));
+                guest.setDword(element + kElRight, reg32(chop(fp::add(fp::add(smallest, wordField(kElX)), constant(kLastPixel)))));
             }
             else if (sreg32(wide) <= sreg32(rightPixel()))
             {
                 guest.setDword(element + kElRight, wide - 1);
                 const Float scaledRest = fp::mul(integerOf(wide - reg32(i16(kElX))), constant(kXToPercent));
-                setWordTo(kElWidth, x87.truncated(fp::mul(scaledRest, perPixel)));
+                setWordTo(kElWidth, chop(fp::mul(scaledRest, perPixel)));
             }
         }
     }
@@ -3404,11 +3474,11 @@ reg32 frontend::wata::hudEditorDrag(App* app, CPU& cpu, reg32 element)
     return element;
 }
 
-void frontend::hudEditorDrag(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::hudEditorDrag(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site{ "sub_45a120", 0, 0, nullptr, 0, fe::kRestoreAll };
-    const reg32 element = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::hudEditorDrag(app, cpu, element); });
+    const reg32 element = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return wata::hudEditorDrag(app, cpu, element); });
 }
 
 }

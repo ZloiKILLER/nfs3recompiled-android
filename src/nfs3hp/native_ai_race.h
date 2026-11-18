@@ -8,7 +8,7 @@
 #include <optional>
 
 /* native_ai_race.cpp's typed functions that other files call as C++ (guest::direct), and how the
- * game's code calls each by address (ByAddress, for the check's stand-ins).  Those that take `cpu`
+ * game's code calls each by address.  Those that take `cpu`
  * may call the game's other functions by address on it, and are false or nullopt when the game
  * stopped in one.  The ...Done ones are for callers that ask only whether the game went on: their
  * cores answer more than what the game's code leaves (the file's own types, kept there). */
@@ -23,11 +23,20 @@ std::optional<bool> wasReleased(win32::WinApplication* app, x86::CPU& cpu, x86::
 std::optional<std::int32_t> nearestCopGapOf(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 car);
 // The game's 0x401500: whether car's pursuit has it pulled over.
 bool isPulledOver(win32::WinApplication* app, x86::reg32 car);
+// The same as the game's code leaves it in eax: 1 or 0.
+x86::reg32 pulledOverOf(win32::WinApplication* app, x86::reg32 car);
 // The game's 0x401650: racer stops for cop `index` (its pursuit pulled over, a free cop joining).
 bool stopForCopDone(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 racer, x86::reg32 index);
+// The same, and the eax its code leaves on each way out.
+std::optional<x86::reg32> stopForCopLeaving(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 racer,
+                                            x86::reg32 index);
 // The game's 0x4018b0: cop joins the pursuit of car (by `kind`; kind 0 keeps its speeding against `speed`); whether it joined.
 std::optional<bool> joinPursuitOf(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 kind, x86::reg32 cop,
                                   x86::reg32 car, float speed);
+// The same, and the eax the game's code leaves: the kind where the cop was on a pursuit already, the
+// pursuit for a player's cop, else as the radio's word leaves it.
+std::optional<x86::reg32> joinPursuitLeaving(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 kind,
+                                             x86::reg32 cop, x86::reg32 car, float speed);
 // joinPursuitOf for a caller that asks only whether the game went on.
 inline bool joinPursuitDone(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 kind, x86::reg32 cop,
                             x86::reg32 car, float speed)
@@ -42,6 +51,10 @@ bool copStopsByDone(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 cop);
 std::optional<bool> stopOverOf(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 cop);
 // The game's 0x4029c0: cop placed at the race's start.
 bool placeCopAtStartOf(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 cop);
+// The same, and the eax the code leaves; nullopt when the game stopped.
+std::optional<x86::reg32> placeCopAtStartLeaving(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 cop);
+// copStopsByDone with the eax the code leaves; nullopt when the game stopped.
+std::optional<x86::reg32> copStopsByLeaving(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 cop);
 // The game's 0x402c70: 1, whatever it is asked.
 x86::reg32 alwaysOneOf(win32::WinApplication* app);
 // The game's 0x4032e0: a cop's driver, each tick, by its step.
@@ -50,6 +63,8 @@ bool copDriverDone(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 cop);
 x86::reg32 classRuleOf(win32::WinApplication* app, x86::reg32 car);
 // The game's 0x404690: a racer's ramming rules by its class's kind.
 void setRammingRulesOf(win32::WinApplication* app, x86::reg32 racer);
+// The same, and the eax the code leaves: the racer, for a player's, else its place times 5.
+x86::reg32 setRammingRulesLeaving(win32::WinApplication* app, x86::reg32 racer);
 // The game's 0x404840: racer's rivalry, each tick (its wait, its rival, its lane by it, the chase's sound).
 bool rivalTickDone(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 racer);
 // The game's 0x404a00: car touched by another (a cop hit by a racer, a racer's ram, the hit's time).
@@ -59,214 +74,14 @@ std::optional<bool> slowForClassOf(win32::WinApplication* app, x86::CPU& cpu, x8
 // The game's 0x404c80: the leader among the players' cars, and how many other racers have more laps.
 void findLeaderOf(win32::WinApplication* app, x86::reg32 car);
 
+// The game's 0x4015b0: the car pulled over when a cop on it is near; false when the game stopped (eax: the car).
+bool carStoppedIfCopNear(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 car);
+// The game's 0x4047f0: the value of the class of the model.
+x86::reg32 classValueOf(win32::WinApplication* app, x86::reg32 model);
 }  // namespace airace
 
 namespace guest
 {
-
-// The car in eax; 1 or 0 in eax.
-template <>
-struct ByAddress<airace::wasReleased>
-{
-    template <x86::reg32 Address>
-    static std::optional<bool> call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 car)
-    {
-        if (!watcom(app, cpu, Address, {car}))
-            return std::nullopt;
-        return cpu.eax != 0;
-    }
-};
-
-// The car in eax; the gap in eax.
-template <>
-struct ByAddress<airace::nearestCopGapOf>
-{
-    template <x86::reg32 Address>
-    static std::optional<std::int32_t> call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 car)
-    {
-        const std::optional<x86::reg32> gap = watcomEax(app, cpu, Address, {car});
-        if (!gap)
-            return std::nullopt;
-        return std::int32_t(*gap);
-    }
-};
-
-// The car in eax; 1 or 0 in eax.
-template <>
-struct ByAddress<airace::isPulledOver>
-{
-    template <x86::reg32 Address>
-    static bool call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 car)
-    {
-        watcom(app, cpu, Address, {car});
-        return cpu.eax != 0;
-    }
-};
-
-// The racer in eax, the cop's index in edx.
-template <>
-struct ByAddress<airace::stopForCopDone>
-{
-    template <x86::reg32 Address>
-    static bool call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 racer, x86::reg32 index)
-    {
-        return watcom(app, cpu, Address, {racer, index});
-    }
-};
-
-// Stdcall: the kind in eax, the cop in edx, the car in ebx, the speed's bits pushed.
-template <>
-struct ByAddress<airace::joinPursuitDone>
-{
-    template <x86::reg32 Address>
-    static bool call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 kind, x86::reg32 cop, x86::reg32 car,
-                     float speed)
-    {
-        x86::reg32 bits;
-        std::memcpy(&bits, &speed, sizeof bits);
-        const KeptRegisters kept(cpu);
-        cpu.eax = kind;
-        cpu.edx = cop;
-        cpu.ebx = car;
-        return guest::call(app, cpu, Address, {bits});
-    }
-};
-
-// The cop in eax.
-template <>
-struct ByAddress<airace::giveUpPursuitOf>
-{
-    template <x86::reg32 Address>
-    static bool call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 cop)
-    {
-        return watcom(app, cpu, Address, {cop});
-    }
-};
-
-template <>
-struct ByAddress<airace::copStopsByDone>
-{
-    template <x86::reg32 Address>
-    static bool call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 cop)
-    {
-        return watcom(app, cpu, Address, {cop});
-    }
-};
-
-// The cop in eax; 1 or 0 in eax.
-template <>
-struct ByAddress<airace::stopOverOf>
-{
-    template <x86::reg32 Address>
-    static std::optional<bool> call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 cop)
-    {
-        if (!watcom(app, cpu, Address, {cop}))
-            return std::nullopt;
-        return cpu.eax != 0;
-    }
-};
-
-// The cop in eax.
-template <>
-struct ByAddress<airace::placeCopAtStartOf>
-{
-    template <x86::reg32 Address>
-    static bool call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 cop)
-    {
-        return watcom(app, cpu, Address, {cop});
-    }
-};
-
-// Nothing handed over; the answer in eax.
-template <>
-struct ByAddress<airace::alwaysOneOf>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        watcom(app, cpu, Address, {});
-        return cpu.eax;
-    }
-};
-
-// The cop in eax.
-template <>
-struct ByAddress<airace::copDriverDone>
-{
-    template <x86::reg32 Address>
-    static bool call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 cop)
-    {
-        return watcom(app, cpu, Address, {cop});
-    }
-};
-
-// The car in eax; the rule in eax.
-template <>
-struct ByAddress<airace::classRuleOf>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 car)
-    {
-        watcom(app, cpu, Address, {car});
-        return cpu.eax;
-    }
-};
-
-// The racer in eax.
-template <>
-struct ByAddress<airace::setRammingRulesOf>
-{
-    template <x86::reg32 Address>
-    static void call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 racer)
-    {
-        watcom(app, cpu, Address, {racer});
-    }
-};
-
-template <>
-struct ByAddress<airace::rivalTickDone>
-{
-    template <x86::reg32 Address>
-    static bool call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 racer)
-    {
-        return watcom(app, cpu, Address, {racer});
-    }
-};
-
-// The car in eax.
-template <>
-struct ByAddress<airace::carContactDone>
-{
-    template <x86::reg32 Address>
-    static bool call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 car)
-    {
-        return watcom(app, cpu, Address, {car});
-    }
-};
-
-// The racer in eax; 1 or 0 in eax.
-template <>
-struct ByAddress<airace::slowForClassOf>
-{
-    template <x86::reg32 Address>
-    static std::optional<bool> call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 car)
-    {
-        if (!watcom(app, cpu, Address, {car}))
-            return std::nullopt;
-        return cpu.eax != 0;
-    }
-};
-
-// The car in eax.
-template <>
-struct ByAddress<airace::findLeaderOf>
-{
-    template <x86::reg32 Address>
-    static void call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 car)
-    {
-        watcom(app, cpu, Address, {car});
-    }
-};
 
 }  // namespace guest
 }  // namespace nfs3hp

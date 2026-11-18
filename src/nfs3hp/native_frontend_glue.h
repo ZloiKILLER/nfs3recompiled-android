@@ -6,7 +6,7 @@
 /* native_frontend_glue.cpp's typed functions (what the main menu calls of the game's own: the
  * controls' digital flags, the sliders' entries, the attract mode's movies, the network's locks,
  * the mouse and the keyboard as keys), which other files call as C++ (guest::direct), and how the
- * game's code calls each by address (ByAddress, for the checks' stand-ins).
+ * game's code calls each by address.
  *
  * They are written as their code is, register by register: each takes its arguments into the
  * registers the game's function takes them in, runs on `cpu` as the code does, and returns what
@@ -28,7 +28,7 @@ using reg32 = x86::reg32;
 // The game's 0x43c000: whether `binding` is digital: 1 unless a controller's that is not a game pad.
 reg32 bindingIsDigital(App* app, CPU& cpu, reg32 binding);
 // The game's 0x43c040: the game mode's control set looked at, whose steering, throttle and brake are digital.
-void noteDigitalControls(App* app, CPU& cpu);
+reg32 noteDigitalControls(App* app, CPU& cpu);
 // The game's 0x46c9b0: the slider's value (a range's end `end`), as a float, which its code leaves on the x87's
 // stack.
 double sliderValue(App* app, CPU& cpu, reg32 slider, reg32 end);
@@ -58,158 +58,6 @@ reg32 nextKey(App* app, CPU& cpu);
 
 namespace guest
 {
-
-/* Each by address as the game's code calls it: its arguments in eax, edx and ebx, every other
- * register as the caller has it.  With cpu.terminate set when the game stopped in it. */
-template <>
-struct ByAddress<frontend::glue::bindingIsDigital>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 binding)
-    {
-        cpu.eax = binding;
-        guest::call(app, cpu, Address);
-        return cpu.eax;
-    }
-};
-
-template <>
-struct ByAddress<frontend::glue::noteDigitalControls>
-{
-    template <x86::reg32 Address>
-    static void call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        guest::call(app, cpu, Address);
-    }
-};
-
-template <>
-struct ByAddress<frontend::glue::sliderValue>
-{
-    template <x86::reg32 Address>
-    static double call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 slider, x86::reg32 end)
-    {
-        cpu.eax = slider;
-        cpu.edx = end;
-        if (!guest::call(app, cpu, Address))
-            return 0.0;
-        return double(cpu.fpu.take());
-    }
-};
-
-template <>
-struct ByAddress<frontend::glue::sliderSetOnMove>
-{
-    template <x86::reg32 Address>
-    static void call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 slider, x86::reg32 function)
-    {
-        cpu.eax = slider;
-        cpu.edx = function;
-        guest::call(app, cpu, Address);
-    }
-};
-
-template <>
-struct ByAddress<frontend::glue::sliderSetColour>
-{
-    template <x86::reg32 Address>
-    static void call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 slider, x86::reg32 second,
-                     x86::reg32 first)
-    {
-        cpu.eax = slider;
-        cpu.edx = second;
-        cpu.ebx = first;
-        guest::call(app, cpu, Address);
-    }
-};
-
-template <>
-struct ByAddress<frontend::glue::playMovie>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 movie)
-    {
-        cpu.eax = movie;
-        guest::call(app, cpu, Address);
-        return cpu.eax;
-    }
-};
-
-template <>
-struct ByAddress<frontend::glue::resetAttractTimer>
-{
-    template <x86::reg32 Address>
-    static void call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        guest::call(app, cpu, Address);
-    }
-};
-
-template <>
-struct ByAddress<frontend::glue::attractMode>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        guest::call(app, cpu, Address);
-        return cpu.eax;
-    }
-};
-
-template <>
-struct ByAddress<frontend::glue::freeNetworkLocks>
-{
-    template <x86::reg32 Address>
-    static void call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        guest::call(app, cpu, Address);
-    }
-};
-
-template <>
-struct ByAddress<frontend::glue::allPlayersReady>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        guest::call(app, cpu, Address);
-        return cpu.eax;
-    }
-};
-
-template <>
-struct ByAddress<frontend::glue::mouseKey>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        guest::call(app, cpu, Address);
-        return cpu.eax;
-    }
-};
-
-template <>
-struct ByAddress<frontend::glue::pointerInBox>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 box)
-    {
-        cpu.eax = box;
-        guest::call(app, cpu, Address);
-        return cpu.eax;
-    }
-};
-
-template <>
-struct ByAddress<frontend::glue::nextKey>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        guest::call(app, cpu, Address);
-        return cpu.eax;
-    }
-};
 
 }  // namespace guest
 }  // namespace nfs3hp

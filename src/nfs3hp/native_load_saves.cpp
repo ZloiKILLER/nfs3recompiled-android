@@ -31,9 +31,8 @@
 #include <type_traits>
 
 /* The files the game saves and loads, and EA's formats under its loaders.
- * disassemble_nfs3hp.py binds each address to the function of that name here
- * (LOAD_SAVES_NATIVES), and the generated code calls it by name.
- * tools/game_checks holds each against its generated code.
+ * Each address is bound to the function of that name here
+ * (LOAD_SAVES_NATIVES), and the game's code calls it by name.
  *
  * Replays: the race just run is replay.rp3, 0x296f8 bytes -- config.dat's
  * 0x20f0 (the race's settings) copied to its head at 0x7a3e50, its version
@@ -70,7 +69,7 @@
  * a block written to a file whole; and the fixed-point sine and cosine
  * (0x10000 a turn, 16.16 results) from the quarter wave at 0x5672ac.
  *
- * Each is a typed function under a name of its own, with an adapter under
+ * Each is a typed function under a name of its own, with a thunk under
  * the game's name for the callers still on registers and the dispatch: it
  * leaves eax, and the registers the game's code does not keep, as that code
  * leaves them.  The typed functions other headers declare are called as C++
@@ -80,12 +79,10 @@
  * its arguments in registers and on the guest's stack as the code hands them
  * (call); Windows' functions through their imports' slots.  A frame
  * whose address a callee is handed -- a path sprintf'd, a handle opened into,
- * a FILETIME -- or under which Error is called (the checks see its va_list's
- * address) stays on the guest's stack at the original's depth (GuestFrame,
+ * a FILETIME -- or under which Error is called
+ * stays on the guest's stack at the original's depth (GuestFrame,
  * asCalled).  savefileadr is called by address where this file's own code
- * calls it, as the checks stand in for it for other files' natives (the
- * file's age compared goes through guest::direct, which does the same in
- * the checks). */
+ * calls it (the file's age compared goes through guest::direct). */
 namespace nfs3hp
 {
 namespace load
@@ -149,8 +146,7 @@ constexpr reg32 kRandomByte = 0x57126b;
 constexpr reg32 kCompareFileTime = 0x53448c, kGetFileTime = 0x534528, kGetModuleFileNameA = 0x534544;
 constexpr reg32 kLclose = 0x534644, kLopen = 0x534648;
 // The game's functions, by address: those with no typed function, Error (its
-// va_list where the code has it) and savefileadr (the checks stand in for
-// it).  Every other is called as C++:
+// va_list where the code has it) and savefileadr.  Every other is called as C++:
 // the other typed files' (a car's id made, its name, its index by id, the
 // controllers loaded, the frames' log written and read, the controls made
 // afresh, the random numbers seeded, a file there, loaded and loaded
@@ -172,7 +168,7 @@ void where(App* app, reg32 file, reg32 function, reg32 line)
 }
 
 /* The frame of a core whose callees see where it is -- handed its locals' addresses, or reading
- * the stack's words past theirs, or Error, whose va_list's address the check sees -- kept on the
+ * the stack's words past theirs, or Error -- kept on the
  * guest's stack at the original's depth: `pushed` bytes of registers below the return address's
  * slot, then `bytes` of locals.  frame - n is the original's ebp - n. */
 class GuestFrame
@@ -204,66 +200,56 @@ auto asCalled(CPU& cpu, Core core, reg32 handed = 0)
     return result;
 }
 
-/* A call by address: eax, edx, ebx and ecx from `registers`, as many as given, the rest left as
- * they are; `words` pushed (cdecl or stdcall: esp back where it was after).  What it leaves in eax
- * back; nullopt when the game stopped. */
-std::optional<reg32> call(App* app, CPU& cpu, reg32 target, std::initializer_list<reg32> registers,
-                          std::initializer_list<reg32> words = {})
+/* The runtime's unlink, chmod and chdir on a path (native_watcom.h); nothing when the game stopped. */
+std::optional<reg32> unlinkFile(App* app, CPU& cpu, reg32 path)
 {
-    reg32* const slots[] = {&cpu.eax, &cpu.edx, &cpu.ebx, &cpu.ecx};
-    std::size_t i = 0;
-    for (const reg32 value : registers)
-        *slots[i++] = value;
-    if (!guest::call(app, cpu, target, words))
+    const reg32 result = guest::direct<0x4e28a0, watcom::clib::unlink>(app, cpu, path);
+    if (cpu.terminate)
         return std::nullopt;
-    return cpu.eax;
+    return result;
+}
+
+std::optional<reg32> chmodFile(App* app, CPU& cpu, reg32 path, reg32 mode)
+{
+    const reg32 result = guest::direct<0x4ee3c0, watcom::clib::chmod>(app, cpu, path, mode);
+    if (cpu.terminate)
+        return std::nullopt;
+    return result;
+}
+
+std::optional<reg32> changeDirectory(App* app, CPU& cpu, reg32 path)
+{
+    const reg32 result = guest::direct<0x4f0260, watcom::clib::chdir>(app, cpu, path);
+    if (cpu.terminate)
+        return std::nullopt;
+    return result;
 }
 
 /* A native_frontend_* file's typed core called as C++ (guest::direct): nothing (false) when the
- * game stopped in it (its calls into the game throw fe::Terminated).  tools/game_checks does not
- * build those files: there it goes by address, through its ByAddress, as the game's code calls it,
- * every register but eax kept.  A reg32 result is the eax the function leaves: eax set to it (in the
+ * game stopped in it (its calls into the game throw fe::Terminated).  Every register but eax is kept.  A reg32 result is the eax the function leaves: eax set to it (in the
  * game too); after any other, eax spoilt there, so that code still reading what the callee left in
  * eax differs there. */
 template <reg32 Address, auto Core, typename... Args>
 auto feCore(App* app, CPU& cpu, Args... args)
 {
-    const auto run = [&] {
-#ifdef NFS_GAME_CHECKS
-        const guest::KeptRegisters kept(cpu);
-        return guest::ByAddress<Core>::template call<Address>(app, cpu, args...);
-#else
-        return guest::direct<Address, Core>(app, cpu, args...);
-#endif
-    };
-    using Result = decltype(run());
-    const auto spoil = [&] {
-#ifdef NFS_GAME_CHECKS
-        cpu.eax = 0x5b0115edu;
-#endif
-    };
+    using Result = decltype(guest::direct<Address, Core>(app, cpu, args...));
     if constexpr (std::is_void_v<Result>)
     {
         try
         {
-            run();
+            guest::direct<Address, Core>(app, cpu, args...);
         }
         catch (const fe::Terminated&)
         {
             return false;
         }
-        spoil();
         return !cpu.terminate;
     }
     else
     {
         try
         {
-            const Result result = run();
-            if constexpr (std::is_same_v<Result, x86::reg32>)
-                cpu.eax = result;  // a menu core's result: the eax it leaves, as the call by address does
-            else
-                spoil();
+            const Result result = guest::direct<Address, Core>(app, cpu, args...);
             return cpu.terminate ? std::optional<Result>() : std::optional<Result>(result);
         }
         catch (const fe::Terminated&)
@@ -273,22 +259,19 @@ auto feCore(App* app, CPU& cpu, Args... args)
     }
 }
 
-/* For a typed core called as C++ where the code calls it by address: eax, edx, ebx and ecx
- * loaded from `registers` (as many as given) as the code loads them for the call -- the direct
- * call keeps them, so after it they are what the call by address left -- and after it eax the
- * core's result, as the call left it (`leaves`).  Nothing when the game stopped. */
-void load(CPU& cpu, std::initializer_list<reg32> registers)
+/* A typed core called as C++ where the code calls it by address: after it eax the core's result,
+ * as the call left it (`leaves`) -- the code's result of the functions that end in it.  Nothing
+ * when the game stopped. */
+std::optional<reg32> leaves(const std::optional<reg32>& result)
 {
-    reg32* const slots[] = {&cpu.eax, &cpu.edx, &cpu.ebx, &cpu.ecx};
-    std::size_t i = 0;
-    for (const reg32 value : registers)
-        *slots[i++] = value;
+    return result;
 }
 
-std::optional<reg32> leaves(CPU& cpu, const std::optional<reg32>& result)
+// The same, `eax` (the register as the code has it, where a result is wanted) set to it.
+std::optional<reg32> leaves(reg32* eax, const std::optional<reg32>& result)
 {
-    if (result)
-        cpu.eax = *result;
+    if (result && eax)
+        *eax = *result;
     return result;
 }
 
@@ -319,35 +302,28 @@ guest::Words wordsFrom(std::initializer_list<reg32> words, std::size_t first)
 }
 
 /* The language's text (port_text's 0x4d1850) of `id`, the registers as the code loads them for
- * the call (its stand-in in the checks logs edx, ebx and ecx too).  Nothing when the game
+ * the call.  Nothing when the game
  * stopped. */
-std::optional<reg32> languageText(App* app, CPU& cpu, reg32 id, reg32 edx, reg32 ebx, reg32 ecx)
+std::optional<reg32> languageText(App* app, CPU& cpu, reg32 id, reg32 edx, reg32 ebx, reg32 ecx, reg32* eax = nullptr)
 {
-    load(cpu, {id, edx, ebx, ecx});
-    return leaves(cpu, unlessStopped(cpu, guest::direct<0x4d1850, port::text::lineText>(
+    return leaves(eax, unlessStopped(cpu, guest::direct<0x4d1850, port::text::lineText>(
                                               app, cpu, cpu.esp - 4, std::int32_t(id), edx)));
 }
 
 /* The tasks due run (the port's 0x4e7630) with 0, eax loaded with it as the code loads it.  False
  * when the game stopped. */
-bool runTasks(App* app, CPU& cpu)
+bool runTasks(App* app, CPU& cpu, reg32* eax = nullptr)
 {
-    load(cpu, {0});
-    return leaves(cpu, unlessStopped(cpu, guest::direct<0x4e7630, port::stream::runDueTasks>(app, cpu, cpu.esp - 4, 0u)))
+    return leaves(eax, unlessStopped(cpu, guest::direct<0x4e7630, port::stream::runDueTasks>(app, cpu, cpu.esp - 4, 0u)))
         .has_value();
 }
 
-/* A Windows function (`Function`), eax, edx, ebx and ecx from `registers` as call sets them,
- * `words` handed: the port's own, called as C++ (native_windows.h); in the check through its
- * import's slot `Slot`, as call calls it.  What it leaves in eax back; nullopt when the game
+/* A Windows function (`Function`), `words` handed: the port's own, called as C++ (native_windows.h).
+ * What it leaves in eax back; nullopt when the game
  * stopped. */
 template <reg32 Slot, auto Function, typename... Words>
-std::optional<reg32> windows(App* app, CPU& cpu, std::initializer_list<reg32> registers, Words... words)
+std::optional<reg32> windows(App* app, CPU& cpu, Words... words)
 {
-    reg32* const slots[] = {&cpu.eax, &cpu.edx, &cpu.ebx, &cpu.ecx};
-    std::size_t i = 0;
-    for (const reg32 value : registers)
-        *slots[i++] = value;
     return guest::windows<Slot, Function>(app, cpu, words...);
 }
 
@@ -356,9 +332,11 @@ std::optional<reg32> windows(App* app, CPU& cpu, std::initializer_list<reg32> re
 bool error(App* app, CPU& cpu, reg32 file, reg32 function, reg32 line, std::initializer_list<reg32> words)
 {
     where(app, file, function, line);
-    // By address: the checks see its va_list's address, which a direct call
-    // (ea::error) would put 4 bytes lower.
-    return guest::call(app, cpu, kError, words);
+    guest::Words rest({});
+    for (const reg32* word = words.begin() + 1; word < words.end(); ++word)
+        rest.word[rest.count++] = *word;
+    guest::direct<0x401010, ea::error>(app, cpu, *words.begin(), rest);
+    return !cpu.terminate;
 }
 
 /* The big-endian number of `bytes` (2 to 4) at `address`. */
@@ -391,39 +369,41 @@ void copyText(App* app, reg32 to, reg32 from)
 }
 
 /* The registers the game's code keeps for its caller -- all but eax and
- * esp -- put back when the adapter is done. */
+ * esp -- put back when the thunk is done. */
 class Kept
 {
 public:
-    explicit Kept(CPU& cpu)
-        : cpu_(cpu), ebx_(cpu.ebx), ecx_(cpu.ecx), edx_(cpu.edx), esi_(cpu.esi), edi_(cpu.edi), ebp_(cpu.ebp)
+    explicit Kept(x86::Args& args)
+        : args_(args), ebx_(args.ebx), ecx_(args.ecx), edx_(args.edx), esi_(args.esi), edi_(args.edi), ebp_(args.ebp)
     {
     }
     ~Kept()
     {
-        cpu_.ebx = ebx_;
-        cpu_.ecx = ecx_;
-        cpu_.edx = edx_;
-        cpu_.esi = esi_;
-        cpu_.edi = edi_;
-        cpu_.ebp = ebp_;
+        args_.ebx = ebx_;
+        args_.ecx = ecx_;
+        args_.edx = edx_;
+        args_.esi = esi_;
+        args_.edi = edi_;
+        args_.ebp = ebp_;
     }
     Kept(const Kept&) = delete;
     Kept& operator=(const Kept&) = delete;
 
 private:
-    CPU& cpu_;
+    x86::Args& args_;
     const reg32 ebx_, ecx_, edx_, esi_, edi_, ebp_;
 };
 
-/* An adapter's way out: eax the core's result, the return address popped;
+/* A thunk's way out: eax the core's result, the return address popped;
  * nothing when the game stopped. */
-void returns(CPU& cpu, const std::optional<reg32>& result)
+x86::reg32 returns(CPU& cpu, x86::Args& args, const std::optional<reg32>& result)
 {
-    if (!result)
-        return;
-    cpu.eax = *result;
-    cpu.esp += 4;
+    if (result)
+    {
+        args.eax = *result;
+        cpu.esp += 4;
+    }
+    return args.eax;
 }
 
 // The flags loadFile and loadFileQuietly are handed here.
@@ -439,14 +419,12 @@ std::optional<bool> fileExists(App* app, CPU& cpu, reg32 name)
  * it is not. */
 std::optional<reg32> loadFile(App* app, CPU& cpu, reg32 name, reg32 flags)
 {
-    cpu.edx = flags;  // as the code hands it, which the loading keeps: the code's own after it
     return guest::direct<0x4e0ec0, ea::loadWhole>(app, cpu, name, flags);
 }
 
 /* loadFileQuietly (0x4e0fe0): loadFile without the complaint at a missing file. */
 std::optional<reg32> loadQuietly(App* app, CPU& cpu, reg32 name, reg32 flags)
 {
-    cpu.edx = flags;  // as loadFile's
     return guest::direct<0x4e0fe0, ea::loadQuietly>(app, cpu, name, flags);
 }
 
@@ -454,8 +432,6 @@ std::optional<reg32> loadQuietly(App* app, CPU& cpu, reg32 name, reg32 flags)
 std::optional<reg32> allocate(App* app, CPU& cpu, reg32 name, reg32 bytes, reg32 flags)
 {
     // edx and ebx as the code hands them, which the allocator keeps: the code's own after it.
-    cpu.edx = bytes;
-    cpu.ebx = flags;
     return guest::direct<0x4e1620, ea::reserved>(app, cpu, name, bytes, flags);
 }
 
@@ -493,28 +469,28 @@ std::optional<reg32> openHandle(App* app, CPU& cpu, reg32 name, reg32 handle, re
     return guest::direct<0x4e28d0, ea::openToRead>(app, cpu, name, handle, where, size);
 }
 
-/* savefileadr by address (0x4eeae0; the checks stand in for it): `count`
- * bytes at `bytes` written to the file named `name`; how many back. */
+/* savefileadr (0x4eeae0): `count` bytes at `bytes` written to the file named `name`; how many
+ * back. */
 std::optional<reg32> saveFile(App* app, CPU& cpu, reg32 name, reg32 bytes, reg32 count)
 {
-    return call(app, cpu, kSavefileadr, {name, bytes, count});
+    return guest::direct<0x4eeae0, load::blockSaved>(app, cpu, name, bytes, count);
 }
 
 /* strcmp (0x4ee310): the strings at `a` and `b` compared, 0 alike. */
-std::optional<reg32> compareText(App* app, CPU& cpu, reg32 a, reg32 b)
+std::optional<reg32> compareText(App* app, CPU& cpu, reg32 a, reg32 b, reg32* eax = nullptr)
 {
-    load(cpu, {a, b});
-    return leaves(cpu, unlessStopped(cpu, guest::direct<0x4ee310, watcom::clib::strcmp>(app, cpu, a, b)));
+    return leaves(eax, unlessStopped(cpu, guest::direct<0x4ee310, watcom::clib::strcmp>(app, cpu, a, b)));
 }
 
 /* sprintf (0x4df690, cdecl): its words, the buffer first. */
-bool print(App* app, CPU& cpu, std::initializer_list<reg32> words)
+bool print(App* app, CPU& cpu, std::initializer_list<reg32> words, reg32* eax = nullptr)
 {
     const reg32* const word = words.begin();
     const reg32 printed = guest::direct<0x4df690, watcom::clib::sprintf>(app, cpu, word[0], word[1], wordsFrom(words, 2));
     if (cpu.terminate)
         return false;
-    cpu.eax = printed;
+    if (eax)
+        *eax = printed;
     return true;
 }
 
@@ -535,7 +511,7 @@ constexpr reg32 kTrackTexts = 0x66, kLapsText = 5, kLastTrack = 8, kReplayCarByt
 std::optional<reg32> showReplayInfo(App* app, CPU& cpu, reg32 name)
 {
     // sprintf's words past those handed are the frame's: the caller's
-    // registers the adapter keeps where the code pushes them.
+    // registers the thunk keeps where the code pushes them.
     const GuestFrame frame(cpu, 0x18, 0);
     if (byte(app, name) == 0)
         copyText(app, name, kReplayName);
@@ -552,22 +528,19 @@ std::optional<reg32> showReplayInfo(App* app, CPU& cpu, reg32 name)
     const reg32 kindText = kind < kRaceKinds ? kKindTexts[kind] : 0xffffffff;
     if (track <= sreg32(kLastTrack) && track >= 0 && sreg32(kindText) > 0)
     {
-        cpu.eax = *replay;
-        const std::optional<reg32> valid = leaves(cpu, feCore<0x478090, frontend::loada::savedResolvePlayers>(app, cpu, *replay));
+        const std::optional<reg32> valid = leaves(feCore<0x478090, frontend::loada::savedResolvePlayers>(app, cpu, *replay));
         if (!valid)
             return std::nullopt;
         if (*valid != 0)
         {
-            cpu.eax = *replay;
-            const std::optional<reg32> checked = leaves(cpu, feCore<0x478100, frontend::loada::savedResolveEntries>(app, cpu, *replay));
+            const std::optional<reg32> checked = leaves(feCore<0x478100, frontend::loada::savedResolveEntries>(app, cpu, *replay));
             if (!checked)
                 return std::nullopt;
             if (*checked != 0)
             {
                 const reg32 player = at(app, *replay + kReplayPlayer);
                 const reg32 car = at(app, *replay + player * kReplayCarBytes + kReplayCars);
-                // The language's text: its stand-in logs edx, ebx and ecx too -- the
-                // replay, the car and the kind's text, as the code has them there.
+                // The language's text: the replay, the car and the kind's text, as the code has them there.
                 const auto text = [&](reg32 id) { return languageText(app, cpu, id, *replay, car, kindText); };
                 const std::optional<reg32> trackName = text(reg32(track) + kTrackTexts);
                 if (!trackName || !print(app, cpu, {kReplayTrackLine, kPercentS, *trackName}))
@@ -611,7 +584,7 @@ std::optional<reg32> keepAs(App* app, CPU& cpu, reg32 name, reg32 extension, reg
     return 1;
 }
 
-bool saveSettings(App* app, CPU& cpu);
+bool saveSettings(App* app, CPU& cpu, reg32& eax);
 
 /* A replay picked from the list made the race's replay and loaded: an empty
  * name is the last race's (replay.rp3 itself); another file's loaded whole
@@ -628,7 +601,7 @@ std::optional<reg32> loadKept(App* app, CPU& cpu, reg32 name)
             return std::nullopt;
         if (*replay == 0)
             return 0;
-        if (!call(app, cpu, kUnlink, {kReplayName}))
+        if (!unlinkFile(app, cpu, kReplayName))
             return std::nullopt;
         const std::optional<reg32> size = blockSize(app, cpu, *replay);
         if (!size)
@@ -639,9 +612,10 @@ std::optional<reg32> loadKept(App* app, CPU& cpu, reg32 name)
         if (*written == 0)
             return 0;
     }
-    if (!asCalled(cpu, [&] { return saveSettings(app, cpu); }))
+    reg32 eaxLeft = 0;
+    if (!asCalled(cpu, [&] { return saveSettings(app, cpu, eaxLeft); }))
         return std::nullopt;
-    const std::optional<reg32> loaded = leaves(cpu, feCore<0x4bcb00, frontend::loada::readReplayKeepingSettings>(app, cpu));
+    const std::optional<reg32> loaded = leaves(feCore<0x4bcb00, frontend::loada::readReplayKeepingSettings>(app, cpu));
     if (!loaded)
         return std::nullopt;
     return *loaded != 0 ? 1 : 0;
@@ -650,39 +624,38 @@ std::optional<reg32> loadKept(App* app, CPU& cpu, reg32 name)
 }  // namespace
 
 /* 0x446060: showReplayInfo of the name eax. */
-void readReplayInfo(App* app, CPU& cpu)
+x86::reg32 readReplayInfo(App* app, CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
+    const Kept kept(args);
     // The caller's edi and ebp where the code pushes them, under the four it
-    // keeps above: sprintf's stand-in in the checks logs five words, past the
-    // three or four handed.
-    put(app, cpu.esp - 0x14, cpu.edi);
-    put(app, cpu.esp - 0x18, cpu.ebp);
-    returns(cpu, showReplayInfo(app, cpu, cpu.eax));
+    // keeps above.
+    put(app, cpu.esp - 0x14, args.edi);
+    put(app, cpu.esp - 0x18, args.ebp);
+    return returns(cpu, args, showReplayInfo(app, cpu, args.eax));
 }
 
 /* 0x446780: the ghost (ghost.gst) kept as "<name eax>.gst" in the replays'
  * folder (keepAs).  Called through the menus' table at 0x447a30. */
-void saveGhostAs(App* app, CPU& cpu)
+x86::reg32 saveGhostAs(App* app, CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    returns(cpu, keepAs(app, cpu, cpu.eax, kGhostExtension, kGhostName));
+    const Kept kept(args);
+    return returns(cpu, args, keepAs(app, cpu, args.eax, kGhostExtension, kGhostName));
 }
 
 /* 0x446990: loadKept of the name eax. */
-void loadKeptReplay(App* app, CPU& cpu)
+x86::reg32 loadKeptReplay(App* app, CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    returns(cpu, loadKept(app, cpu, cpu.eax));
+    const Kept kept(args);
+    return returns(cpu, args, loadKept(app, cpu, args.eax));
 }
 
 /* 0x446a10: the last race's replay (replay.rp3) kept as "<name eax>.rp3" in
  * the replays' folder (keepAs).  Called through the menus' table at
  * 0x447a30. */
-void saveReplayAs(App* app, CPU& cpu)
+x86::reg32 saveReplayAs(App* app, CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    returns(cpu, keepAs(app, cpu, cpu.eax, kReplayExtension, kReplayName));
+    const Kept kept(args);
+    return returns(cpu, args, keepAs(app, cpu, args.eax, kReplayExtension, kReplayName));
 }
 
 namespace
@@ -735,8 +708,7 @@ std::optional<reg32> listReplayFiles(App* app, CPU& cpu, reg32 list, reg32 exten
     put(app, list + kListBlock, *block);
     const reg32 entriesEnd = at(app, list + kListCount) * 8 + at(app, list + kListBlock);
     const reg32 namesEnd = entriesEnd + kListNamesEnd;
-    // Kept in the frame above the pattern, as the code keeps it: findfirst's
-    // stand-in in the checks logs the pattern's first 0x10 bytes.
+    // Kept in the frame above the pattern, as the code keeps it.
     put(app, namesEndKept, namesEnd);
     reg32 name = entriesEnd + 8;
     reg32 count = 0;
@@ -755,8 +727,7 @@ std::optional<reg32> listReplayFiles(App* app, CPU& cpu, reg32 list, reg32 exten
             return std::nullopt;
         if (*there)
         {
-            // The language's text: its stand-in logs edx, ebx and ecx too -- as
-            // the code has them there.
+            // The language's text, as the code has the registers there.
             const auto lastRace = [&] { return languageText(app, cpu, kLastRaceText, kReplayExtension, name, 0); };
             const std::optional<reg32> text = lastRace();
             if (!text)
@@ -770,11 +741,10 @@ std::optional<reg32> listReplayFiles(App* app, CPU& cpu, reg32 list, reg32 exten
             count = 1;
         }
     }
-    if (!guest::direct<0x4e33a0, ea::currentDirectory>(app, cpu, directory) || !call(app, cpu, kChdir, {kReplayFolder})
+    if (!guest::direct<0x4e33a0, ea::currentDirectory>(app, cpu, directory) || !changeDirectory(app, cpu, kReplayFolder)
         || !print(app, cpu, {pattern, kAllOfKind, extension}))
         return std::nullopt;
-    cpu.eax = pattern;
-    std::optional<reg32> found = leaves(cpu, feCore<0x4f0330, frontend::wata::findFirstFile>(app, cpu, pattern));
+    std::optional<reg32> found = leaves(feCore<0x4f0330, frontend::wata::findFirstFile>(app, cpu, pattern));
     if (!found)
         return std::nullopt;
     if (*found != 0)
@@ -788,7 +758,7 @@ std::optional<reg32> listReplayFiles(App* app, CPU& cpu, reg32 list, reg32 exten
             ++count;
             if (sreg32(count) >= sreg32(kListEntries))
                 break;
-            found = leaves(cpu, feCore<0x4f0280, frontend::wata::findNextFile>(app, cpu));
+            found = leaves(feCore<0x4f0280, frontend::wata::findNextFile>(app, cpu));
             if (!found)
                 return std::nullopt;
             if (*found == 0)
@@ -810,24 +780,25 @@ std::optional<reg32> listReplayFiles(App* app, CPU& cpu, reg32 list, reg32 exten
     }
     else
         put(app, list + kListChosen, 0);
-    return call(app, cpu, kChdir, {directory});
+    return changeDirectory(app, cpu, directory);
 }
 
 }  // namespace
 
 /* 0x4475a0: listReplayFiles of the menu's record eax, the extension edx;
  * edx left the record, as the code leaves it. */
-void listReplays(App* app, CPU& cpu)
+x86::reg32 listReplays(App* app, CPU& cpu, x86::Args& args)
 {
-    const reg32 ebx = cpu.ebx, ecx = cpu.ecx, list = cpu.eax;
-    const std::optional<reg32> left = listReplayFiles(app, cpu, list, cpu.edx);
+    const reg32 ebx = args.ebx, ecx = args.ecx, list = args.eax;
+    const std::optional<reg32> left = listReplayFiles(app, cpu, list, args.edx);
     if (!left)
-        return;
-    cpu.eax = *left;
-    cpu.ebx = ebx;
-    cpu.ecx = ecx;
-    cpu.edx = list;
+        return args.eax;
+    args.eax = *left;
+    args.ebx = ebx;
+    args.ecx = ecx;
+    args.edx = list;
     cpu.esp += 4;
+    return args.eax;
 }
 
 namespace
@@ -875,7 +846,6 @@ bool loadRecordsTable(App* app, CPU& cpu)
         if (!table)
             return false;
         put(app, kRecords, *table);
-        load(cpu, {*table, kRecordsBytes});
         guest::direct<0x4e070c, ea::clearBytes>(app, cpu, *table, kRecordsBytes);
         if (cpu.terminate)
             return false;
@@ -891,16 +861,16 @@ bool loadRecordsTable(App* app, CPU& cpu)
  * frame; made writable first if it is there; savefileadr) and freed.  What
  * its last call leaves in eax is the code's result.  False when the game
  * stopped. */
-bool saveRecordsTable(App* app, CPU& cpu)
+bool saveRecordsTable(App* app, CPU& cpu, reg32& eax)
 {
     if (at(app, kRecords) == 0)
         return true;
     const GuestFrame frame(cpu, 0x10, 0x100);
     const reg32 path = frame - 0x100;
-    if (!print(app, cpu, {path, kRecordsFormat, kRecordsFolder}))
+    if (!print(app, cpu, {path, kRecordsFormat, kRecordsFolder}, &eax))
         return false;
     const std::optional<bool> there = fileExists(app, cpu, path);
-    if (!there || (*there && !call(app, cpu, kChmod, {path, kWritable})))
+    if (!there || (*there && !chmodFile(app, cpu, path, kWritable)))
         return false;
     if (!saveFile(app, cpu, path, at(app, kRecords), kRecordsBytes) || !freeBlock(app, cpu, at(app, kRecords)))
         return false;
@@ -912,31 +882,36 @@ bool saveRecordsTable(App* app, CPU& cpu)
 
 /* 0x44f510: loadRecordsTable; eax the second part's address where it loaded
  * them, as it was where they were. */
-void loadRecords(App* app, CPU& cpu)
+x86::reg32 loadRecords(App* app, CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
+    const Kept kept(args);
     const bool loaded = at(app, kRecords) != 0;
     if (!loadRecordsTable(app, cpu))
-        return;
+        return args.eax;
     if (!loaded)
-        cpu.eax = at(app, kRecordsSecond);
+        args.eax = at(app, kRecordsSecond);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x44f5f0: saveRecordsTable. */
-void saveRecords(App* app, CPU& cpu)
+x86::reg32 saveRecords(App* app, CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    if (saveRecordsTable(app, cpu))
+    const Kept kept(args);
+    reg32 eax = args.eax;
+    if (saveRecordsTable(app, cpu, eax))
         cpu.esp += 4;
+    args.eax = eax;
+    return args.eax;
 }
 
 /* 0x472230: the language checked against the game's mode eax -- an empty
  * function, its body compiled away: it compares the language with 1 and 2
  * and eax with 1, and does nothing.  defaultConfig's call of it is gone. */
-void languageStub(App*, CPU& cpu)
+x86::reg32 languageStub(App*, CPU& cpu, x86::Args& args)
 {
     cpu.esp += 4;
+    return args.eax;
 }
 
 namespace
@@ -947,12 +922,12 @@ constexpr reg32 kLanguages = 6;
 /* The language ([0x6fbb4c]) from its name at 0x7a2634 -- english, german,
  * french, spanish, italian, swedish (the names 8 bytes apart at 0x53afd8): 0
  * to 5 -- left as it is for another name.  The last strcmp's difference back. */
-std::optional<reg32> pickLanguage(App* app, CPU& cpu)
+std::optional<reg32> pickLanguage(App* app, CPU& cpu, reg32* eax = nullptr)
 {
     reg32 difference = 0;
     for (reg32 language = 0; language < kLanguages; ++language)
     {
-        const std::optional<reg32> d = compareText(app, cpu, kLanguageNames + 8 * language, kLanguageName);
+        const std::optional<reg32> d = compareText(app, cpu, kLanguageNames + 8 * language, kLanguageName, eax);
         if (!d)
             return std::nullopt;
         difference = *d;
@@ -979,22 +954,24 @@ reg32 cameraViewsFromChosen(App* app)
 }  // namespace
 
 /* 0x472250: pickLanguage; eax the last strcmp's. */
-void setLanguage(App* app, CPU& cpu)
+x86::reg32 setLanguage(App* app, CPU& cpu, x86::Args& args)
 {
-    const reg32 edx = cpu.edx;
+    const reg32 edx = args.edx;
     const std::optional<reg32> difference = pickLanguage(app, cpu);
     if (!difference)
-        return;
-    cpu.eax = *difference;
-    cpu.edx = edx;
+        return args.eax;
+    args.eax = *difference;
+    args.edx = edx;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x472300: cameraViewsFromChosen; eax the last. */
-void setCameraViews(App* app, CPU& cpu)
+x86::reg32 setCameraViews(App* app, CPU& cpu, x86::Args& args)
 {
-    cpu.eax = cameraViewsFromChosen(app);
+    args.eax = cameraViewsFromChosen(app);
     cpu.esp += 4;
+    return args.eax;
 }
 
 namespace
@@ -1025,22 +1002,21 @@ reg32 lowHalf(reg32 word)
  * the speedometer it sets, the sound's volumes and 3D, the game's options,
  * the two players' colours and tuning, the controls (0x4904f0, each player),
  * and what a demo's command line sets; the controls' menus told (0x485880).
- * With the port's change of tools/apply_track_detail.py in it: View Distance
+ * With the port's change of the port's track detail change in it: View Distance
  * starts Full.  What its last call leaves in eax is the code's result.  False
  * when the game stopped. */
-bool makeDefaultSettings(App* app, CPU& cpu)
+bool makeDefaultSettings(App* app, CPU& cpu, reg32& eax)
 {
     // At the code's depth: Error, which a callee may raise, sees where.
     const GuestFrame frame(cpu, 0x18, 0);
     GameSettings& settings = gameSettings(app);
-    load(cpu, {SETTINGS_ADDRESS(fileSize), 0, kConfigBytes});
-    if (!leaves(cpu, unlessStopped(cpu, guest::direct<0x4e0640, watcom::clib::memset>(
+    if (!leaves(&eax, unlessStopped(cpu, guest::direct<0x4e0640, watcom::clib::memset>(
                                             app, cpu, SETTINGS_ADDRESS(fileSize), 0u, kConfigBytes))))
         return false;
     settings.fileSize = kConfigBytes;
     put(app, SETTINGS_ADDRESS(fileSize) + 4, at(app, kDefaultHead));
     put(app, SETTINGS_ADDRESS(fileSize) + 8, at(app, kDefaultHead + 4));
-    const std::optional<reg32> seed = leaves(cpu, feCore<0x4b56d0, frontend::wina::tickCount>(app, cpu));
+    const std::optional<reg32> seed = leaves(&eax, feCore<0x4b56d0, frontend::wina::tickCount>(app, cpu));
     if (!seed)
         return false;
     settings.raceSeed = *seed;
@@ -1054,8 +1030,7 @@ bool makeDefaultSettings(App* app, CPU& cpu)
     const reg32 track = lowHalf(settings.track);
     settings.cameraViewsChosen[3] = 0;
     settings.cameraViewsChosen[1] = 2;
-    cpu.eax = track;
-    const std::optional<reg32> width = leaves(cpu, feCore<0x4cef00, frontend::misc::recordsHolder>(app, cpu, track));
+    const std::optional<reg32> width = leaves(&eax, feCore<0x4cef00, frontend::misc::recordsHolder>(app, cpu, track));
     if (!width)
         return false;
     settings.recordsHolder = lowHalf(*width);
@@ -1073,8 +1048,7 @@ bool makeDefaultSettings(App* app, CPU& cpu)
     const reg32 laps = lowHalf(settings.laps);
     settings.unknown19ac = 1;
     settings.pursuitOption = 1;
-    cpu.eax = laps;
-    const std::optional<reg32> depth = leaves(cpu, feCore<0x4cf160, frontend::menue::lapsToOption>(app, cpu, laps));
+    const std::optional<reg32> depth = leaves(&eax, feCore<0x4cf160, frontend::menue::lapsToOption>(app, cpu, laps));
     if (!depth)
         return false;
     settings.lapsClass = lowHalf(*depth);
@@ -1097,7 +1071,7 @@ bool makeDefaultSettings(App* app, CPU& cpu)
     settings.trafficLevel = 2;
     settings.noTraffic = 0;
     settings.players[1].transmission = 1;
-    if (!pickLanguage(app, cpu))
+    if (!pickLanguage(app, cpu, &eax))
         return false;
     // The speedometer: English's (0) in mph, another language's in km/h.
     const reg32 speedometer = settings.language == 0 ? 1 : 3;
@@ -1113,7 +1087,8 @@ bool makeDefaultSettings(App* app, CPU& cpu)
     settings.musicMode = 2;
     settings.menuMusicAsked = 0;
     settings.soundSurround = 0;
-    const std::optional<reg32> threeD = call(app, cpu, kIs3DSoundAvailable, {});
+    x86::Args threeDRegisters;
+    const std::optional<reg32> threeD = leaves(&eax, guest::pointerCall(app, cpu, kIs3DSoundAvailable, threeDRegisters));
     if (!threeD)
         return false;
     settings.soundSetup = *threeD != 0 ? 3 : 0;
@@ -1125,7 +1100,7 @@ bool makeDefaultSettings(App* app, CPU& cpu)
     settings.forceDeviceCount = 0;
     settings.unknown1868 = 2;
     settings.screenMode = 0;
-    settings.viewDistance = 0;  // the port's (tools/apply_track_detail.py): View Distance Full, was Far (1)
+    settings.viewDistance = 0;  // the port's (the port's track detail change): View Distance Full, was Far (1)
     settings.detailLevel = 0;
     settings.useSpecular = 1;
     settings.useLights = 1;
@@ -1159,8 +1134,7 @@ bool makeDefaultSettings(App* app, CPU& cpu)
         || !guest::direct<0x4904f0, controls::defaultSets>(app, cpu, reg32(1)))
         return false;
     const reg8 command = byte(app, kCommandFlags);
-    // What the code has in eax at the controls' menus' call, which its
-    // stand-in in the checks keeps now and then: 0, or the demo's laps' class.
+    // What the code has in eax at the controls' menus' call: 0, or the demo's laps' class.
     reg32 left = 0;
     settings.forceCollision = kForceDefault;
     settings.forceRoad = kForceDefault;
@@ -1175,9 +1149,8 @@ bool makeDefaultSettings(App* app, CPU& cpu)
         const reg32 demoLaps = lowHalf(settings.laps);
         settings.raceType = 3;
         settings.track = 3;
-        cpu.eax = demoLaps;
         const std::optional<reg32> demoDepth =
-            leaves(cpu, feCore<0x4cf160, frontend::menue::lapsToOption>(app, cpu, demoLaps));
+            leaves(&eax, feCore<0x4cf160, frontend::menue::lapsToOption>(app, cpu, demoLaps));
         if (!demoDepth)
             return false;
         settings.opponentClass = 2;
@@ -1189,18 +1162,20 @@ bool makeDefaultSettings(App* app, CPU& cpu)
         settings.raceType = 0;
         settings.track = 3;
     }
-    cpu.eax = left;
-    return leaves(cpu, feCore<0x485880, frontend::simd::hudDefaults>(app, cpu)).has_value();
+    return leaves(&eax, feCore<0x485880, frontend::simd::hudDefaults>(app, cpu)).has_value();
 }
 
 }  // namespace
 
 /* 0x4723f0: makeDefaultSettings. */
-void defaultConfig(App* app, CPU& cpu)
+x86::reg32 defaultConfig(App* app, CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    if (makeDefaultSettings(app, cpu))
+    const Kept kept(args);
+    reg32 eax = args.eax;
+    if (makeDefaultSettings(app, cpu, eax))
         cpu.esp += 4;
+    args.eax = eax;
+    return args.eax;
 }
 
 namespace
@@ -1215,14 +1190,13 @@ constexpr reg32 kConfigNotSaved = 0x55e88c, kConfigCleared = 0x1860;
  * a replay is shown, there is no room for it (0x4516a0), or [0x55e88c] says
  * not to.  What its last call leaves in eax is the code's result.  False
  * when the game stopped. */
-bool saveSettings(App* app, CPU& cpu)
+bool saveSettings(App* app, CPU& cpu, reg32& eax)
 {
     if ((byte(app, kCommandFlags) & kDemoCommand) != 0 || gameSettings(app).replayMode != 0)
         return true;
     const GuestFrame frame(cpu, 0x18, 0xfc);
     const reg32 path = frame - 0xfc;
-    cpu.eax = kConfigBytes;
-    const std::optional<reg32> room = leaves(cpu, feCore<0x4516a0, frontend::loada::diskHasRoom>(app, cpu, kConfigBytes));
+    const std::optional<reg32> room = leaves(&eax, feCore<0x4516a0, frontend::loada::diskHasRoom>(app, cpu, kConfigBytes));
     if (!room)
         return false;
     if (*room == 0 || at(app, kConfigNotSaved) != 0)
@@ -1233,7 +1207,7 @@ bool saveSettings(App* app, CPU& cpu)
     for (reg32 i = 0; i < kConfigBytes; i += 4)
         put(app, *copy + i, at(app, SETTINGS_ADDRESS(fileSize) + i));
     put(app, *copy + kConfigCleared, 0);
-    return print(app, cpu, {path, kConfigFormat, kSaveFolder}) && saveFile(app, cpu, path, *copy, kConfigBytes)
+    return print(app, cpu, {path, kConfigFormat, kSaveFolder}, &eax) && saveFile(app, cpu, path, *copy, kConfigBytes)
            && freeBlock(app, cpu, *copy);
 }
 
@@ -1247,12 +1221,12 @@ bool writeTimeOf(App* app, CPU& cpu, reg32 name, reg32 to)
     const reg32 time = frame - 0x10;
     put(app, time, at(app, kNoTime));
     put(app, time + 4, at(app, kNoTime + 4));
-    const std::optional<reg32> file = windows<kLopen, &host::openFileByName>(app, cpu, {}, name, 0);
+    const std::optional<reg32> file = windows<kLopen, &host::openFileByName>(app, cpu, name, 0);
     if (!file)
         return false;
     if (*file != 0
-        && (!windows<kGetFileTime, &host::fileTime>(app, cpu, {}, *file, 0, 0, time)
-            || !windows<kLclose, &host::closeFileByName>(app, cpu, {}, *file)))
+        && (!windows<kGetFileTime, &host::fileTime>(app, cpu, *file, 0, 0, time)
+            || !windows<kLclose, &host::closeFileByName>(app, cpu, *file)))
         return false;
     put(app, to, at(app, time));
     put(app, to + 4, at(app, time + 4));
@@ -1274,45 +1248,50 @@ std::optional<reg32> writtenBefore(App* app, CPU& cpu, reg32 name, reg32 other)
     // eax and edx as the code has them there: what CompareFileTime leaves in
     // edx is fileOlder's.
     const std::optional<reg32> order =
-        windows<kCompareFileTime, &host::compareFileTime>(app, cpu, {first, other}, first, second);
+        windows<kCompareFileTime, &host::compareFileTime>(app, cpu, first, second);
     if (!order)
         return std::nullopt;
     return *order == 0xffffffff ? 1 : 0;
 }
 
 /* 0x472820: saveSettings. */
-void saveConfig(App* app, CPU& cpu)
+x86::reg32 saveConfig(App* app, CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    if (saveSettings(app, cpu))
+    const Kept kept(args);
+    reg32 eax = args.eax;
+    if (saveSettings(app, cpu, eax))
         cpu.esp += 4;
+    args.eax = eax;
+    return args.eax;
 }
 
 /* 0x4728e0: writeTimeOf the name eax into esi; esi back in eax, esi itself
  * left at the frame's top, past the copy the code makes there. */
-void fileWriteTime(App* app, CPU& cpu)
+x86::reg32 fileWriteTime(App* app, CPU& cpu, x86::Args& args)
 {
-    const reg32 ecx = cpu.ecx, edx = cpu.edx, to = cpu.esi;
-    if (!writeTimeOf(app, cpu, cpu.eax, to))
-        return;
-    cpu.eax = to;
-    cpu.ecx = ecx;
-    cpu.edx = edx;
-    cpu.esi = cpu.esp - 0x14;
+    const reg32 ecx = args.ecx, edx = args.edx, to = args.esi;
+    if (!writeTimeOf(app, cpu, args.eax, to))
+        return args.eax;
+    args.eax = to;
+    args.ecx = ecx;
+    args.edx = edx;
+    args.esi = cpu.esp - 0x14;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x472940: writtenBefore of the names eax and edx; edx as CompareFileTime
  * leaves it.  loadConfig asks it of config.dat and nfs3.exe. */
-void fileOlder(App* app, CPU& cpu)
+x86::reg32 fileOlder(App* app, CPU& cpu, x86::Args& args)
 {
-    const reg32 ecx = cpu.ecx;
-    const std::optional<reg32> older = writtenBefore(app, cpu, cpu.eax, cpu.edx);
+    const reg32 ecx = args.ecx;
+    const std::optional<reg32> older = writtenBefore(app, cpu, args.eax, args.edx);
     if (!older)
-        return;
-    cpu.eax = *older;
-    cpu.ecx = ecx;
+        return args.eax;
+    args.eax = *older;
+    args.ecx = ecx;
     cpu.esp += 4;
+    return args.eax;
 }
 
 namespace
@@ -1328,7 +1307,7 @@ constexpr reg32 kDemoRaceType = 3;
  * the frame; opened unless the game runs from a demo's command line, its
  * handle and the open's two words in the frame): read into a block and
  * copied over the settings if it is 0x20f0 bytes and not older than nfs3.exe
- * (fileOlder through guest::direct: the checks stand in for it), the sound's volume
+ * (fileOlder through guest::direct), the sound's volume
  * taken from it; else closed and deleted (an old one), and the settings made
  * afresh (makeDefaultSettings), [0x67900c] set -- as for another length or
  * another version.  Then the race's kind for a demo or the other command
@@ -1336,7 +1315,7 @@ constexpr reg32 kDemoRaceType = 3;
  * 0x4b62a0), and the controllers (0x472b60) if they are known.  What its
  * last call leaves in eax is the code's result.  False when the game
  * stopped. */
-bool loadSettings(App* app, CPU& cpu)
+bool loadSettings(App* app, CPU& cpu, reg32& eax)
 {
     GameSettings& settings = gameSettings(app);
     const GuestFrame frame(cpu, 0x18, 0x208);
@@ -1344,8 +1323,8 @@ bool loadSettings(App* app, CPU& cpu)
     const reg32 where = frame - 0x10, handle = frame - 0xc, size = frame - 8;
     put(app, handle, 0);
     put(app, where, 0);
-    if (!windows<kGetModuleFileNameA, &host::moduleFileName>(app, cpu, {}, 0, exe, kExePathBytes)
-        || !print(app, cpu, {path, kConfigFormat, kSaveFolder}) || !runTasks(app, cpu))
+    if (!windows<kGetModuleFileNameA, &host::moduleFileName>(app, cpu, 0, exe, kExePathBytes)
+        || !print(app, cpu, {path, kConfigFormat, kSaveFolder}, &eax) || !runTasks(app, cpu, &eax))
         return false;
     if ((byte(app, kCommandFlags) & kDemoCommand) == 0)
     {
@@ -1353,15 +1332,14 @@ bool loadSettings(App* app, CPU& cpu)
         if (!there || (*there && !openHandle(app, cpu, path, handle, where, size)))
             return false;
     }
-    if (!runTasks(app, cpu))
+    if (!runTasks(app, cpu, &eax))
         return false;
     // The effects' volume, where the code took it from config.dat and made
-    // nothing afresh after: still in eax at the random number's call, which
-    // its stand-in in the checks keeps now and then.
+    // nothing afresh after: still in eax at the random number's call.
     std::optional<reg32> volume;
     const auto makeAfresh = [&] {
         put(app, kConfigMadeAfresh, 1);
-        return asCalled(cpu, [&] { return makeDefaultSettings(app, cpu); });
+        return asCalled(cpu, [&] { return makeDefaultSettings(app, cpu, eax); });
     };
     if (at(app, handle) == 0)
     {
@@ -1374,8 +1352,7 @@ bool loadSettings(App* app, CPU& cpu)
         reg32 older = 1;
         if (bytes == kConfigBytes)
         {
-            load(cpu, {path, exe});
-            const std::optional<reg32> o = leaves(cpu, guest::direct<0x472940, writtenBefore>(app, cpu, path, exe));
+            const std::optional<reg32> o = leaves(&eax, guest::direct<0x472940, writtenBefore>(app, cpu, path, exe));
             if (!o)
                 return false;
             older = *o;
@@ -1383,9 +1360,9 @@ bool loadSettings(App* app, CPU& cpu)
         if (older != 0)
         {
             put(app, kConfigMadeAfresh, 1);
-            if (!closeHandle(app, cpu, at(app, handle)) || !call(app, cpu, kUnlink, {path}))
+            if (!closeHandle(app, cpu, at(app, handle)) || !unlinkFile(app, cpu, path))
                 return false;
-            if (!asCalled(cpu, [&] { return makeDefaultSettings(app, cpu); }))
+            if (!asCalled(cpu, [&] { return makeDefaultSettings(app, cpu, eax); }))
                 return false;
         }
         else
@@ -1417,21 +1394,19 @@ bool loadSettings(App* app, CPU& cpu)
         settings.raceType = kDemoRaceType;
     else if ((command & kOtherCommand) != 0)
         settings.raceType = 0;
-    if (volume)
-        cpu.eax = *volume;
-    const std::optional<reg32> seed = leaves(cpu, feCore<0x4b56d0, frontend::wina::tickCount>(app, cpu));
+    const std::optional<reg32> seed = leaves(&eax, feCore<0x4b56d0, frontend::wina::tickCount>(app, cpu));
     if (!seed)
         return false;
     settings.raceSeed = *seed;
-    const std::optional<reg32> random = leaves(cpu, feCore<0x4b56d0, frontend::wina::tickCount>(app, cpu));
+    const std::optional<reg32> random = leaves(&eax, feCore<0x4b56d0, frontend::wina::tickCount>(app, cpu));
     if (!random)
         return false;
     putByte(app, kRandomByte, reg8(*random));
     guest::direct<0x4e0dee, ea::randomSeeded>(app, cpu, settings.raceSeed);
-    if (cpu.terminate || !pickLanguage(app, cpu))
+    if (cpu.terminate || !pickLanguage(app, cpu, &eax))
         return false;
     settings.networkGame = 0;
-    const std::optional<reg32> remote = leaves(cpu, feCore<0x4b62a0, frontend::loopa::installIsRemote>(app, cpu));
+    const std::optional<reg32> remote = leaves(&eax, feCore<0x4b62a0, frontend::loopa::installIsRemote>(app, cpu));
     if (!remote)
         return false;
     settings.installIsRemote = *remote;
@@ -1447,11 +1422,14 @@ bool loadSettings(App* app, CPU& cpu)
 }  // namespace
 
 /* 0x472980: loadSettings. */
-void loadConfig(App* app, CPU& cpu)
+x86::reg32 loadConfig(App* app, CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    if (loadSettings(app, cpu))
+    const Kept kept(args);
+    reg32 eax = args.eax;
+    if (loadSettings(app, cpu, eax))
         cpu.esp += 4;
+    args.eax = eax;
+    return args.eax;
 }
 
 namespace
@@ -1470,19 +1448,19 @@ constexpr reg32 kReplayLogKept = 0x55d000, kReplayVersion = 2;
  * checksummed (0x478010, 0x4781b0) and written (savefileadr); the log
  * appended (0x477ac0) to the file opened "rb+".  What its last call leaves
  * in eax is the code's result.  False when the game stopped. */
-bool saveReplayFile(App* app, CPU& cpu)
+bool saveReplayFile(App* app, CPU& cpu, reg32& eax)
 {
     const GameSettings& settings = gameSettings(app);
     if (settings.lastTickRaced == 0 || (sreg32(settings.playMode) > 1 && settings.networkGame != 0))
         return true;
     const GuestFrame frame(cpu, 0x18, 0x3c);
     const reg32 path = frame - 0x3c;
-    const std::optional<reg32> network = leaves(cpu, feCore<0x4cf040, frontend::misc::postgameReplayExcluded>(app, cpu));
+    const std::optional<reg32> network = leaves(&eax, feCore<0x4cf040, frontend::misc::postgameReplayExcluded>(app, cpu));
     if (!network)
         return false;
     if (*network != 0)
         return true;
-    if (!print(app, cpu, {path, kRaceReplayName}))
+    if (!print(app, cpu, {path, kRaceReplayName}, &eax))
         return false;
     if (at(app, kReplayRead) == 0)
         put(app, kReplaySeedKept, at(app, kRaceFrames));
@@ -1491,26 +1469,22 @@ bool saveReplayFile(App* app, CPU& cpu)
     put(app, kRaceReplayVersion, kReplayVersion);
     put(app, kRaceReplayLogged, at(app, kReplayLogKept) == 1 ? 1 : 0);
     put(app, kRaceReplaySeed, at(app, kReplaySeedKept));
-    cpu.eax = kRaceReplay;
-    if (!leaves(cpu, feCore<0x478010, frontend::pause::checkSaveable>(app, cpu, kRaceReplay)))
+    if (!leaves(&eax, feCore<0x478010, frontend::pause::checkSaveable>(app, cpu, kRaceReplay)))
         return false;
-    cpu.eax = kRaceReplay;
-    if (!leaves(cpu, feCore<0x4781b0, frontend::loada::savedNameEntries>(app, cpu, kRaceReplay))
+    if (!leaves(&eax, feCore<0x4781b0, frontend::loada::savedNameEntries>(app, cpu, kRaceReplay))
         || !saveFile(app, cpu, path, kRaceReplay, kReplayBytes))
         return false;
     if (at(app, kReplayLogKept) != 1)
         return true;
-    load(cpu, {path, kReadWrite});
     const std::optional<reg32> file =
-        leaves(cpu, unlessStopped(cpu, guest::direct<0x4edfe8, watcom::clib::fopen>(app, cpu, path, kReadWrite)));
+        leaves(&eax, unlessStopped(cpu, guest::direct<0x4edfe8, watcom::clib::fopen>(app, cpu, path, kReadWrite)));
     if (!file)
         return false;
     if (*file == 0)
         return true;
     if (!guest::direct<0x477ac0, writeGhostTo>(app, cpu, *file, kReplayBytes))
         return false;
-    load(cpu, {*file});
-    return leaves(cpu, unlessStopped(cpu, guest::direct<0x4ee100, watcom::clib::fclose>(app, cpu, *file))).has_value();
+    return leaves(&eax, unlessStopped(cpu, guest::direct<0x4ee100, watcom::clib::fclose>(app, cpu, *file))).has_value();
 }
 
 /* replay.rp3 (sprintf'd into the frame) read into the race's replay
@@ -1538,12 +1512,10 @@ std::optional<reg32> readReplayFile(App* app, CPU& cpu)
         return std::nullopt;
     if (!closeHandle(app, cpu, file))
         return std::nullopt;
-    cpu.eax = kRaceReplay;
-    const std::optional<reg32> valid = leaves(cpu, feCore<0x478090, frontend::loada::savedResolvePlayers>(app, cpu, kRaceReplay));
+    const std::optional<reg32> valid = leaves(feCore<0x478090, frontend::loada::savedResolvePlayers>(app, cpu, kRaceReplay));
     if (!valid)
         return std::nullopt;
-    cpu.eax = kRaceReplay;
-    const std::optional<reg32> checked = leaves(cpu, feCore<0x478100, frontend::loada::savedResolveEntries>(app, cpu, kRaceReplay));
+    const std::optional<reg32> checked = leaves(feCore<0x478100, frontend::loada::savedResolveEntries>(app, cpu, kRaceReplay));
     if (!checked)
         return std::nullopt;
     return *valid != 0 && *checked != 0 ? 1 : 0;
@@ -1552,18 +1524,21 @@ std::optional<reg32> readReplayFile(App* app, CPU& cpu)
 }  // namespace
 
 /* 0x4bd1e0: saveReplayFile. */
-void saveRaceReplay(App* app, CPU& cpu)
+x86::reg32 saveRaceReplay(App* app, CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    if (saveReplayFile(app, cpu))
+    const Kept kept(args);
+    reg32 eax = args.eax;
+    if (saveReplayFile(app, cpu, eax))
         cpu.esp += 4;
+    args.eax = eax;
+    return args.eax;
 }
 
 /* 0x4bd2e0: readReplayFile. */
-void readRaceReplay(App* app, CPU& cpu)
+x86::reg32 readRaceReplay(App* app, CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu);
-    returns(cpu, readReplayFile(app, cpu));
+    const Kept kept(args);
+    return returns(cpu, args, readReplayFile(app, cpu));
 }
 
 namespace
@@ -1677,9 +1652,8 @@ std::optional<BigEntry> findEntry(App* app, CPU& cpu, reg32 archive, reg32 name,
         bool match = name == 0 && counted == index;
         if (name != 0)
         {
-            load(cpu, {walked.entry + 2 * number, name});
             const std::optional<reg32> difference = leaves(
-                cpu, unlessStopped(cpu, guest::direct<0x4e9ec0, watcom::clib::stricmp>(app, cpu, walked.entry + 2 * number, name)));
+                unlessStopped(cpu, guest::direct<0x4e9ec0, watcom::clib::stricmp>(app, cpu, walked.entry + 2 * number, name)));
             if (!difference)
                 return std::nullopt;
             match = *difference == 0;
@@ -1730,52 +1704,56 @@ std::optional<BigEntry> locateEntry(App* app, CPU& cpu, reg32 archive, reg32 nam
 }
 
 /* 0x4e9f00, EA's typeofbigfile: bigFileKind of the archive eax. */
-void typeOfBigFile(App* app, CPU& cpu)
+x86::reg32 typeOfBigFile(App* app, CPU& cpu, x86::Args& args)
 {
-    const std::optional<reg32> kind = bigFileKind(app, cpu, cpu.eax);
+    const std::optional<reg32> kind = bigFileKind(app, cpu, args.eax);
     if (!kind)
-        return;
-    cpu.eax = *kind;
+        return args.eax;
+    args.eax = *kind;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4e9fe0: bigHeaderBytes of the archive eax. */
-void bigHeaderLength(App* app, CPU& cpu)
+x86::reg32 bigHeaderLength(App* app, CPU& cpu, x86::Args& args)
 {
-    const std::optional<reg32> bytes = bigHeaderBytes(app, cpu, cpu.eax);
+    const std::optional<reg32> bytes = bigHeaderBytes(app, cpu, args.eax);
     if (!bytes)
-        return;
-    cpu.eax = *bytes;
+        return args.eax;
+    args.eax = *bytes;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4ea040: findEntry in the archive eax of the name edx or the index ebx,
  * [ecx] and [[esp+4]] its offset and size; ret 4.  ebx and ecx as its code
  * leaves them. */
-void findBigEntry(App* app, CPU& cpu)
+x86::reg32 findBigEntry(App* app, CPU& cpu, x86::Args& args)
 {
     const std::optional<BigEntry> found =
-        findEntry(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx, at(app, cpu.esp + 4));
+        findEntry(app, cpu, args.eax, args.edx, args.ebx, args.ecx, at(app, cpu.esp + 4));
     if (!found)
-        return;
-    cpu.eax = found->name;
-    cpu.ebx = found->entry;
-    cpu.ecx = found->last;
+        return args.eax;
+    args.eax = found->name;
+    args.ebx = found->entry;
+    args.ecx = found->last;
     cpu.esp += 8;
+    return args.eax;
 }
 
 /* 0x4ea290, EA's locatebigentry: locateEntry, as findBigEntry's arguments;
  * ret 4.  ecx its result too, ebx as its code leaves it. */
-void locateBigEntry(App* app, CPU& cpu)
+x86::reg32 locateBigEntry(App* app, CPU& cpu, x86::Args& args)
 {
     const std::optional<BigEntry> found =
-        locateEntry(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx, at(app, cpu.esp + 4));
+        locateEntry(app, cpu, args.eax, args.edx, args.ebx, args.ecx, at(app, cpu.esp + 4));
     if (!found)
-        return;
-    cpu.eax = found->name;
-    cpu.ebx = found->entry;
-    cpu.ecx = found->name;
+        return args.eax;
+    args.eax = found->name;
+    args.ebx = found->entry;
+    args.ecx = found->name;
     cpu.esp += 8;
+    return args.eax;
 }
 
 namespace
@@ -1826,7 +1804,7 @@ std::optional<Saved> saveBlock(App* app, CPU& cpu, reg32 name, reg32 bytes, reg3
 }  // namespace
 
 /* savefileadr with its Errors off: [0x56440c] cleared about it, savefileadr
- * called by address (the checks stand in for it).  How many bytes it wrote;
+ * called by address.  How many bytes it wrote;
  * nullopt when the game stopped. */
 std::optional<reg32> saveBlockQuietly(App* app, CPU& cpu, reg32 name, reg32 bytes, reg32 count)
 {
@@ -1841,28 +1819,29 @@ std::optional<reg32> saveBlockQuietly(App* app, CPU& cpu, reg32 name, reg32 byte
 /* 0x4eeae0, EA's savefileadr: saveBlock of the name eax, the bytes edx, the
  * count ebx.  ebx and edx as its calls leave them, or as its Error's where
  * leaves them. */
-void savefileadr(App* app, CPU& cpu)
+x86::reg32 savefileadr(App* app, CPU& cpu, x86::Args& args)
 {
-    const reg32 ecx = cpu.ecx;
-    const std::optional<Saved> saved = saveBlock(app, cpu, cpu.eax, cpu.edx, cpu.ebx);
+    const reg32 ecx = args.ecx;
+    const std::optional<Saved> saved = saveBlock(app, cpu, args.eax, args.edx, args.ebx);
     if (!saved)
-        return;
+        return args.eax;
     if (saved->errorLine == kOpenFailedLine)
     {
-        cpu.ebx = kOpenFailedLine;
-        cpu.edx = kSavefileC;
+        args.ebx = kOpenFailedLine;
+        args.edx = kSavefileC;
     }
     else if (saved->errorLine == kWriteFailedLine)
-        cpu.ebx = kSavefileC;
-    cpu.eax = saved->written;
-    cpu.ecx = ecx;
+        args.ebx = kSavefileC;
+    args.eax = saved->written;
+    args.ecx = ecx;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4eebb0: saveBlockQuietly, as savefileadr's arguments. */
-void savefileadrQuietly(App* app, CPU& cpu)
+x86::reg32 savefileadrQuietly(App* app, CPU& cpu, x86::Args& args)
 {
-    returns(cpu, saveBlockQuietly(app, cpu, cpu.eax, cpu.edx, cpu.ebx));
+    return returns(cpu, args, saveBlockQuietly(app, cpu, args.eax, args.edx, args.ebx));
 }
 
 namespace
@@ -1916,17 +1895,105 @@ reg32 cosineOf(App* app, reg32 angle)
 }
 
 /* 0x4f2380: sineOf the angle eax.  The race's and the menus' 3D call it. */
-void fixedSine(App* app, CPU& cpu)
+x86::reg32 fixedSine(App* app, CPU& cpu, x86::Args& args)
 {
-    cpu.eax = sineOf(app, cpu.eax);
+    args.eax = sineOf(app, args.eax);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4f23f0: cosineOf the angle eax. */
-void fixedCosine(App* app, CPU& cpu)
+x86::reg32 fixedCosine(App* app, CPU& cpu, x86::Args& args)
 {
-    cpu.eax = cosineOf(app, cpu.eax);
+    args.eax = cosineOf(app, args.eax);
     cpu.esp += 4;
+    return args.eax;
+}
+
+/* The typed cores of the thunks above, for callers that call them as C++ (native_load_saves.h). */
+bool recordsTableLoaded(App* app, CPU& cpu)
+{
+    return loadRecordsTable(app, cpu);
+}
+
+std::optional<reg32> recordsTableSavedWith(App* app, CPU& cpu, reg32 eax)
+{
+    if (!saveRecordsTable(app, cpu, eax))
+        return std::nullopt;
+    return eax;  // what its last call leaves, as the code's result
+}
+
+std::optional<reg32> recordsTableSaved(App* app, CPU& cpu)
+{
+    return recordsTableSavedWith(app, cpu, 0);
+}
+
+std::optional<reg32> keptReplayLoaded(App* app, CPU& cpu, reg32 name)
+{
+    return loadKept(app, cpu, name);
+}
+
+std::optional<reg32> replayInfoShown(App* app, CPU& cpu, reg32 name)
+{
+    return showReplayInfo(app, cpu, name);
+}
+
+std::optional<reg32> replaysListed(App* app, CPU& cpu, reg32 list, reg32 extension)
+{
+    return listReplayFiles(app, cpu, list, extension);
+}
+
+std::optional<reg32> configSavedWith(App* app, CPU& cpu, reg32 eax)
+{
+    if (!saveSettings(app, cpu, eax))
+        return std::nullopt;
+    return eax;  // what its last call leaves, as the code's result
+}
+
+std::optional<reg32> configSaved(App* app, CPU& cpu)
+{
+    return configSavedWith(app, cpu, 0);
+}
+
+bool configLoaded(App* app, CPU& cpu)
+{
+    reg32 eax = 0;
+    return loadSettings(app, cpu, eax);
+}
+
+std::optional<reg32> replaySavedWith(App* app, CPU& cpu, reg32 eax)
+{
+    if (!saveReplayFile(app, cpu, eax))
+        return std::nullopt;
+    return eax;  // what its last call leaves, as the code's result
+}
+
+std::optional<reg32> replaySaved(App* app, CPU& cpu)
+{
+    return replaySavedWith(app, cpu, 0);
+}
+
+std::optional<reg32> replayRead(App* app, CPU& cpu)
+{
+    return readReplayFile(app, cpu);
+}
+
+reg32 cameraViewsSet(App* app)
+{
+    return cameraViewsFromChosen(app);
+}
+
+std::optional<reg32> bigFileKindOf(App* app, CPU& cpu, reg32 archive)
+{
+    return bigFileKind(app, cpu, archive);
+}
+
+std::optional<reg32> blockSaved(App* app, CPU& cpu, reg32 name, reg32 bytes, reg32 count)
+{
+    const std::optional<Saved> saved = saveBlock(app, cpu, name, bytes, count);
+    if (!saved)
+        return std::nullopt;
+    return saved->written;
 }
 
 }  // namespace load

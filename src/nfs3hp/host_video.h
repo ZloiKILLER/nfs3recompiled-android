@@ -17,7 +17,7 @@
  * tables hold the addresses the port's Windows had (0x400000..0x400041), each registered to the
  * host function below that answers it.  A call site of the game's code that calls a method by its
  * offset in the table goes through guest::ddraw (below): the host function as C++ where the
- * table has that very method there, else, and in the checks, through the table.
+ * table has that very method there, else through the table.
  *
  * Each method takes the object, then the words the game pushes for it, as the import's words
  * (native_windows.h, WindowsWord), and gives back the HRESULT (0, or 1 for what the port never
@@ -188,25 +188,22 @@ namespace guest
  *     guest::ddraw<0x64, &host::ddraw::surfaceLock>(app, cpu, surface, 0, description, 1, 0)
  *
  * In the game, where the object's table has that very method there, the host function is called
- * as C++ on the object; anywhere else -- another table, the check -- the call goes through the
+ * as C++ on the object; anywhere else -- another table -- the call goes through the
  * table as the game's code makes it (stdcall: the object, then the words). */
 template <x86::reg32 Offset, auto Method, typename... W>
 inline std::optional<x86::reg32> ddraw(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 object, W... words)
 {
     const x86::reg32 target = at(app, at(app, object) + Offset);
-#ifndef NFS_GAME_CHECKS
     static_assert(host::ddraw::kTableAddress<Method> != 0, "a method the host answers");
     if (object != 0 && target == host::ddraw::kTableAddress<Method>)
     {
-        WindowsFunction<decltype(Method)>::template call<Method>(app, cpu, object, words...);
+        const x86::reg32 eax = WindowsFunction<decltype(Method)>::template call<Method>(app, cpu, object, words...);
         if (cpu.terminate)
             return std::nullopt;
-        return cpu.eax;
+        return eax;
     }
-#endif
-    if (!call(app, cpu, target, {object, x86::reg32(words)...}))
-        return std::nullopt;
-    return cpu.eax;
+    x86::Args registers;
+    return pointerCall(app, cpu, target, registers, {object, x86::reg32(words)...});
 }
 
 }  // namespace guest

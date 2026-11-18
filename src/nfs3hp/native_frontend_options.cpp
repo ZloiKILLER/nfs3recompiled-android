@@ -1,4 +1,5 @@
 #include "native_frontend_options.h"
+#include "native_aiplan.h"
 #include "native_watcom.h"
 #include "native_game.h"
 #include "game_settings.h"
@@ -23,9 +24,73 @@
 #include "port_sound_racesetup.h"
 #include "port_text.h"
 #include "dynamic_fullscreen.h"
+#include "native_graphics.h"
 #include <cstring>
 #include <iterator>
 #include <utility>
+#include "native_guest.h"
+
+namespace nfs3hp
+{
+namespace
+{
+
+/* A call through a pointer or to a function of the game's that has no typed core: Watcom's register
+ * arguments (eax, edx, ebx, ecx in turn) and the stack words as `arguments` have them, through
+ * guest::pointerCall; its eax, and Terminated when the game stopped in it. */
+x86::reg32 callAt(fe::Guest& guest, x86::reg32 target, const fe::Arguments& arguments = fe::Arguments())
+{
+    x86::CPU& cpu = guest.cpu();
+    x86::Args registers;
+    x86::reg32* const into[4] = { &registers.eax, &registers.edx, &registers.ebx, &registers.ecx };
+    for (std::size_t i = 0; i < arguments.registerCount; ++i)
+        *into[i] = arguments.registers[i];
+    const x86::reg32 esp = cpu.esp;
+    for (std::size_t i = arguments.stackCount; i-- > 0;)
+    {
+        cpu.esp -= 4;
+        guest.setDword(cpu.esp, arguments.stack[i]);
+    }
+    const std::optional<x86::reg32> result = guest::pointerCall(guest.app(), cpu, target, registers);
+    if (!result)
+        throw fe::Terminated();
+    cpu.esp = esp;
+    return *result;
+}
+
+}  // namespace
+}  // namespace nfs3hp
+
+namespace nfs3hp
+{
+namespace
+{
+
+/* The game's float operations on plain values: fild, the single-precision sum, difference and
+ * product (fp::), what jb and ja read after fcom, and the truncation of sub_4dfd56 and fistp. */
+struct FloatMath
+{
+    explicit FloatMath(fe::Guest& guest) : m_guest(guest) {}
+
+    static x86::Float integer(std::int32_t value) { return x86::Float(x86::sreg32(value)); }
+    x86::Float load(x86::reg32 address) const { return x86::Float(m_guest.floatAt(address)); }
+    x86::Float add(const x86::Float& a, const x86::Float& b) { return fp::add(a, b); }
+    x86::Float sub(const x86::Float& a, const x86::Float& b) { return fp::sub(a, b); }
+    x86::Float mul(const x86::Float& a, const x86::Float& b) { return fp::mul(a, b); }
+    bool above(const x86::Float& a, const x86::Float& b) { return a > b; }
+    bool below(const x86::Float& a, const x86::Float& b) { return !(a >= b); }  // or unordered
+    std::int32_t truncated(const x86::Float& value)
+    {
+        const double chopped = fe::direct<0x4dfd56, watcom::clib::chop>(m_guest.app(), m_guest.cpu(), double(value));
+        return fp::toInteger<x86::sreg32>(chopped);
+    }
+
+private:
+    fe::Guest& m_guest;
+};
+
+}  // namespace
+}  // namespace nfs3hp
 
 /* The options screens, decompiled: where the player sets the sound, the keys,
  * the controllers and the graphics, before a race or, most of them, from a
@@ -52,11 +117,11 @@
  * The settings stay in guest memory where the rest of the game reads them.
  * A screen keeps a copy of them as it opens, and its Cancel button puts the
  * copy back as it closes.  The widgets -- buttons, lists, sliders -- stay the
- * generated code, called by address.
+ * game's code, called by address.
  *
  * Plan step 5: each function a typed core in frontend::options (native_frontend_options.h), in a
  * frame of its own where the game's function has one (fe::Frame: what it calls runs at the stack
- * addresses it did), and an adapter under the game's name for the calls by address.  A core of
+ * addresses it did), and a thunk under the game's name for the calls by address.  A core of
  * this file calls another as C++ (guest::direct); the rest of the game still by address.  Where
  * several of the game's functions share a body, the body stays a helper and each has a core. */
 namespace nfs3hp
@@ -119,7 +184,7 @@ bool leftBy(Guest& guest, CPU& cpu, x86::reg32 menu, const GuestString& codelink
     return guest.dword(item) == kButton
            && *fe::direct<0x4429c0, port::menus::codelinkMatched>(guest.app(), cpu, cpu.esp - 4,
                                                                   guest.dword(item + fe::item::kCodelink),
-                                                                  codelink.address, cpu.ebx)
+                                                                  codelink.address, 0)
                   != 0;
 }
 
@@ -157,7 +222,7 @@ void copyDwords(Guest& guest, x86::reg32 to, x86::reg32 from, std::uint32_t coun
  * the screen, ebx the key, as the menu loop hands them. */
 x86::reg32 passKey(Guest& guest, x86::reg32 handler, x86::reg32 item, x86::reg32 menu, std::uint16_t key)
 {
-    return guest.call(handler, fe::args({ item, menu, x86::reg32(std::int32_t(std::int16_t(key))) }));
+    return callAt(guest, handler, fe::args({ item, menu, x86::reg32(std::int32_t(std::int16_t(key))) }));
 }
 
 /* A slider's value, as 0x46c9b0 gives it. */
@@ -193,7 +258,7 @@ void dimBehind(Guest& guest, CPU& cpu)
 {
     const x86::reg32 slot = guest.frame() - 4;
     guest.setDword(slot, kFloat0_6);
-    fe::direct<0x451530, port::text::dimmed>(guest.app(), cpu, slot, cpu.eax);
+    fe::direct<0x451530, port::text::dimmed>(guest.app(), cpu, slot, 0);  // eax: its result is not read
 }
 
 /* Whether an item is shown (the 0xf the game's code hands it in edx it does not read). */
@@ -211,8 +276,7 @@ void copyBytes(Guest& guest, CPU& cpu, x86::reg32 to, x86::reg32 from, x86::reg3
 /* The x87's compare and what je reads after it: equal, or unordered. */
 bool same(Guest& guest, const x86::Float& a, const x86::Float& b)
 {
-    guest.fpu().compare(a, b);
-    return guest.fpu().status.c3;
+    return !(a < b) && !(a > b);
 }
 
 /* The credits button of a screen, greyed out in a race over a network. */
@@ -326,7 +390,6 @@ x86::reg32 onFeedButtonKey(Guest& guest, x86::reg32 item, x86::reg32 menu, std::
     do
         result = passKey(guest, kButtonKey, item, menu, key);
     while (feed == other1 || feed == other2);
-    guest.leaveEbx(feed);
     return result;
 }
 
@@ -340,7 +403,6 @@ x86::reg32 onFeedListKey(Guest& guest, x86::reg32 item, x86::reg32 menu, std::ui
     const x86::reg32 now = feed;
     if (was != now && (now == other1 || now == other2))
         feed = was;
-    guest.leaveEdx(now);
     return result;
 }
 
@@ -486,8 +548,6 @@ constexpr x86::reg32 kRestartSound = 0x40fcf0;
 constexpr std::uint32_t kSoundRestartedText = 0x1e6;
 
 // Around the sound's restart: the window taken, the picture flipped (by address).
-constexpr x86::reg32 kBeforeRestart = 0x4d9120;
-constexpr x86::reg32 kAfterRestart = 0x4d9140;
 
 // The sliders' own functions.
 constexpr x86::reg32 kVolumeSliderDraw = 0x437a90;
@@ -531,9 +591,9 @@ void setUpVolumeSlider(Guest& guest, CPU& cpu, x86::reg32 menu, const GuestStrin
     if (item == 0)
         return;
     guest.setDword(item + kOnDraw, kVolumeSliderDraw);
-    fe::X87 x87(guest);
+    FloatMath x87(guest);
     const float value =
-        float(x87.mul(fe::X87::integer(std::int32_t(volume)), x86::Float(kVolumeToSlider)));
+        float(x87.mul(FloatMath::integer(std::int32_t(volume)), x86::Float(kVolumeToSlider)));
     setSliderOnMove(guest, cpu, item, moved);
     setSliderValue(guest, cpu, guest.dword(slot), value, 0);
 }
@@ -550,7 +610,7 @@ x86::reg32 frontend::options::onAudioEnter(App* app, CPU& cpu, reg32 menu)
         return 0;
     if (inRace(guest))
         dimBehind(guest, cpu);
-    if (guest.call(kHas3dSound) == 0)
+    if (callAt(guest, kHas3dSound) == 0)
         guest.setWord(kSound3d, 0);
     if (!inRace(guest))
         greyCreditsInNetworkRace(guest, menu, kAudioCredits);
@@ -597,7 +657,7 @@ void applyOutputChange(Guest& guest)
     if (!inRace(guest) && guest.dword(kOutputChanged) != 0)
     {
         guest.setDword(kOutputChanged, 0);
-        guest.call(kApplySound, fe::args({ gameSettings(guest).menuMusicAsked, 1 }));
+        callAt(guest, kApplySound, fe::args({ gameSettings(guest).menuMusicAsked, 1 }));
     }
 }
 
@@ -629,7 +689,7 @@ x86::reg32 frontend::options::onAudioExit(App* app, CPU& cpu, reg32 menu)
             if (volume != 0)
             {
                 const x86::reg32 otherForm = std::int32_t(gameSettings(guest).musicMode) > 2 ? 1 : 0;
-                guest.call(kStartRaceMusic, fe::args({ gameSettings(guest).track, volume, otherForm }));
+                callAt(guest, kStartRaceMusic, fe::args({ gameSettings(guest).track, volume, otherForm }));
                 guest.setByte(kRaceMusicPlaying, 1);
             }
         }
@@ -670,36 +730,36 @@ x86::reg32 frontend::options::onAudioFrame(App* app, CPU& cpu)
         // each call that hands it on is what the call before left there, as the game's code has it.
         const x86::reg32 esp = cpu.esp - 4;
         fe::direct<0x445f00, frontend::dialogs::fadedIn>(app, cpu);
-        guest.call(kBeforeRestart);
+        fe::direct<0x4d9120, graphics::windowTakenAndCleared>(app, cpu);
         const x86::reg32 menu = fe::direct<0x44aeb0, port::loop::currentMenuOf>(app, cpu);
         const x86::reg32 drawn = x86::reg32(*fe::direct<0x44a4f0, port::loop::drawItemsOf>(app, cpu, esp, menu));
-        // By address: what it leaves in eax goes on -- its al, the rest of eax (drawItems's) as it came.
-        const x86::reg32 shown = guest.call(kDialogShown, fe::args({ drawn }));
+                // What it leaves in eax goes on -- its al, the rest of eax (drawItems's) as it came.
+        const x86::reg32 shown = (drawn & ~0xffu) | guest::direct<kDialogShown, port::dialogs::dialogShownOf>(app, cpu);
         if ((shown & 0xff) != 0)
             fe::direct<0x445f50, port::dialogs::dialogPassOf>(app, cpu, esp, shown);
-        guest.call(kAfterRestart);
-        const x86::reg32 stopped = x86::reg32(*fe::direct<0x4109d0, port::musicStopped>(app, cpu, esp, cpu.eax));
-        fe::direct<0x410aa0, port::musicStreamEndOf>(app, cpu, esp, stopped, cpu.ebx, cpu.ecx);
+        const x86::reg32 afterRestart = *fe::direct<0x4d9140, graphics::flipAndWait>(app, cpu);
+        const x86::reg32 stopped = x86::reg32(*fe::direct<0x4109d0, port::musicStopped>(app, cpu, esp, afterRestart));
+        fe::direct<0x410aa0, port::musicStreamEndOf>(app, cpu, esp, stopped, 0, 0);
         const x86::reg32 removed = x86::reg32(*fe::direct<0x410b20, port::banksRemoveOf>(app, cpu, esp));
-        fe::direct<0x40feb0, port::soundExitOf>(app, cpu, esp, port::Args{ removed, cpu.edx, cpu.ebx, cpu.ecx });
-        guest.call(kRestartSound, fe::args({ gameSettings(guest).soundSetup, 1 }));
+        fe::direct<0x40feb0, port::soundExitOf>(app, cpu, esp, port::Args{ removed, 0, 0, 0 });
+        fe::direct<kRestartSound, aiplan::restartLibrary>(guest.app(), guest.cpu(), gameSettings(guest).soundSetup, 1);
         const x86::reg32 bank = x86::reg32(*fe::direct<0x4136e0, port::raceBankLoadOf>(app, cpu, esp));
-        fe::direct<0x410330, port::musicStreamMade>(app, cpu, esp, bank, cpu.ecx);
-        guest.call(kApplySound, fe::args({ gameSettings(guest).menuMusicAsked, 1 }));
-        fe::direct<0x445f10, port::dialogs::closeDialogOf>(app, cpu, cpu.eax);
+        fe::direct<0x410330, port::musicStreamMade>(app, cpu, esp, bank, 0);
+        const x86::reg32 applied = callAt(guest, kApplySound, fe::args({ gameSettings(guest).menuMusicAsked, 1 }));
+        fe::direct<0x445f10, port::dialogs::closeDialogOf>(app, cpu, applied);
     }
     const x86::reg32 output = gameSettings(guest).musicMode;
     if (output != guest.dword(kSoundOutputKept))
     {
         guest.setDword(kSoundOutputKept, output);
-        guest.call(kApplySound, fe::args({ output, 0 }));
+        callAt(guest, kApplySound, fe::args({ output, 0 }));
         guest.setDword(kOutputChanged, 1);
     }
     const x86::reg32 setting = gameSettings(guest).menuMusicAsked;
     if (setting != guest.dword(kSetting1ecKept))
     {
         guest.setDword(kSetting1ecKept, setting);
-        guest.call(kApplySound, fe::args({ setting, 1 }));
+        callAt(guest, kApplySound, fe::args({ setting, 1 }));
     }
     return 0;
 }
@@ -719,7 +779,7 @@ x86::reg32 onVolumeMoved(Guest& guest, CPU& cpu, x86::reg32 item, x86::reg32* vo
         if (inRace(guest))
             volume = raceVolume;
     }
-    fe::X87 x87(guest);
+    FloatMath x87(guest);
     *volume = x86::reg32(x87.truncated(x87.mul(value, x86::Float(kSliderToVolume))));
     // eax as the slider's value leaves it: the slider, which its code keeps there.
     return item;
@@ -734,7 +794,7 @@ x86::reg32 frontend::options::onVolumeSliderDraw(App* app, CPU& cpu, reg32 item,
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 20);
     // By address, and the slider's drawing below: the function leaves edx as these calls hand it.
-    if (guest.call(kShownNow, fe::args({ item, 0xf })) == 0)
+    if (fe::direct<kShownNow, frontend::loop::shownNow>(guest.app(), guest.cpu(), item) == 0)
         return 0;
     if (selected != 0)
     {
@@ -811,8 +871,8 @@ x86::reg32 frontend::options::onVolumeSliderDraw(App* app, CPU& cpu, reg32 item,
         streamVolume(guest, cpu, kMusicStream, gameSettings(guest).menuMusicVolume);
         stopSample(guest, cpu);
     }
-    // By address: the slider's drawing leaves edx for this function's caller, which its core does not hand back.
-    return guest.call(kSliderDraw, fe::args({ item, selected }));
+        return x86::reg32(*fe::direct<kSliderDraw, port::fields::sliderDrawOf>(guest.app(), guest.cpu(), guest.cpu().esp - 4,
+                                                                          item, selected));
 }
 
 namespace
@@ -1102,7 +1162,7 @@ x86::reg32 frontend::options::applyAxis(App* app, CPU& cpu, float first, float s
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 32);
-    fe::X87 x87(guest);
+    FloatMath x87(guest);
     const x86::Float hundred = x86::Float(kHundred);
     const x86::Float firstScaled = x87.mul(x86::Float(first), hundred);
     const x86::Float secondScaled = x87.mul(hundred, x86::Float(second));
@@ -1137,7 +1197,7 @@ x86::reg32 frontend::options::onAxisMoved(App* app, CPU& cpu, reg32 item)
     const float second = float(readSliderValue(guest, cpu, item, 1));
     const x86::Float firstFromBottom = fp::sub(x86::Float(1.0), x86::Float(first));
     const float gap = float(fp::abs(fp::sub(firstFromBottom, x86::Float(second))));
-    fe::X87 x87(guest);
+    FloatMath x87(guest);
     if (x87.below(firstFromBottom, x86::Float(second)) || x87.below(x86::Float(gap), x86::Float(kMinimumGap)))
     {
         setSliderOnMove(guest, cpu, item, 0);
@@ -1170,20 +1230,20 @@ x86::reg32 frontend::options::onAxisDraw(App* app, CPU& cpu, reg32 item, reg32 s
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 24);
     // By address, and the slider's drawing below: the function leaves edx as these calls hand it.
-    if (guest.call(kShownNow, fe::args({ item, 0xf })) == 0)
+    if (fe::direct<kShownNow, frontend::loop::shownNow>(guest.app(), guest.cpu(), item) == 0)
         return 0;
     const x86::reg32 axis = guest::direct<0x442e60, axisIndex>(app, cpu, item);
     const x86::reg32 onMove = guest.dword(item + kSliderOnMove);
     setSliderOnMove(guest, cpu, item, 0);
     fe::direct<0x4358f0, controls::readState>(app, cpu, guest.dword(kControllerChosen), kControllerState);
-    fe::X87 x87(guest);
-    const x86::Float position = x87.mul(fe::X87::integer(std::int32_t(guest.dword(kAxisPositions + 4 * axis))),
+    FloatMath x87(guest);
+    const x86::Float position = x87.mul(FloatMath::integer(std::int32_t(guest.dword(kAxisPositions + 4 * axis))),
                                         x86::Float(kPositionScale));
     const float value = float(x87.sub(x86::Float(1.0), position));
     setSliderValue(guest, cpu, item, value, 2);   // edx, onMove here, is for the next call
     setSliderOnMove(guest, cpu, item, onMove);
-    // By address: the slider's drawing leaves edx for this function's caller, which its core does not hand back.
-    return guest.call(kSliderDraw, fe::args({ item, selected }));
+        return x86::reg32(*fe::direct<kSliderDraw, port::fields::sliderDrawOf>(guest.app(), guest.cpu(), guest.cpu().esp - 4,
+                                                                          item, selected));
 }
 
 /* sub_443070: a controller's axes shown, a slider for each it has, laid out
@@ -1198,7 +1258,7 @@ x86::reg32 frontend::options::showController(App* app, CPU& cpu, reg32 menu, reg
     guest.setDword(kControllerChosen, controller);
     const x86::reg32 record = SETTINGS_ADDRESS(devices) + controller * kControllerSize;
     std::uint16_t order = 0;
-    fe::X87 x87(guest);
+    FloatMath x87(guest);
     for (std::uint32_t axis = 0; axis < kAxes; ++axis)
     {
         const x86::reg32 slider = guest.dword(kAxisSliders + 4 * axis);
@@ -1224,10 +1284,10 @@ x86::reg32 frontend::options::showController(App* app, CPU& cpu, reg32 menu, reg
             // Not told of its own ends being set.
             setSliderOnMove(guest, cpu, slider, 0);
             const float first = float(
-                x87.mul(fe::X87::integer(std::int32_t(ends[1])), x86::Float(kHundredth)));
+                x87.mul(FloatMath::integer(std::int32_t(ends[1])), x86::Float(kHundredth)));
             setSliderValue(guest, cpu, slider, first, 0);
             const float second =
-                float(x87.mul(fe::X87::integer(std::int32_t(ends[0])), x86::Float(kHundredth)));
+                float(x87.mul(FloatMath::integer(std::int32_t(ends[0])), x86::Float(kHundredth)));
             setSliderValue(guest, cpu, slider, second, 1);   // edx, kAxisMoved here, is for the next call
             ++order;
             setSliderOnMove(guest, cpu, slider, kAxisMoved);
@@ -1263,8 +1323,7 @@ x86::reg32 onChooseControllerKey(App* app, CPU& cpu, Guest& guest, x86::reg32 ha
     if (chosen != guest.dword(kControllerShown))
         guest::direct<0x443070, frontend::options::showController>(app, cpu, menu, chosen);
     else
-        guest.leaveEdx(chosen);
-    guest.leaveEbx(result);
+        {}
     return result;
 }
 
@@ -1403,7 +1462,7 @@ x86::reg32 frontend::options::onForceEnter(App* app, CPU& cpu, reg32 menu)
         { 3, &gameSettings(guest).forceCollision, kCollisionMoved },  { 4, &gameSettings(guest).forceEngine, kEngineForceMoved },
         { 6, &gameSettings(guest).forceBodyRoll, kBodyRollMoved },    { 7, &gameSettings(guest).forceRoadGrip, kRoadGripMoved },
     };
-    fe::X87 x87(guest);
+    FloatMath x87(guest);
     for (std::uint32_t i = 0; i < std::size(sliders); ++i)
     {
         const x86::reg32 slot = kForceSliders + 4 * i;
@@ -1427,7 +1486,7 @@ x86::reg32 frontend::options::onForceEnter(App* app, CPU& cpu, reg32 menu)
             guest.setWord(slider + kSliderOrder, s.row);
         }
         // The strength is signed, the effects read as unsigned (fild qword).
-        const x86::Float setting = i == 0 ? fe::X87::integer(std::int32_t(*s.setting))
+        const x86::Float setting = i == 0 ? FloatMath::integer(std::int32_t(*s.setting))
                                           : x86::Float(double(*s.setting));
         const float value = float(x87.mul(setting, x86::Float(kHundredth)));
         if (s.moved == kRoadGripMoved)
@@ -1476,7 +1535,7 @@ x86::reg32 frontend::options::onStrengthMoved(App* app, CPU& cpu, reg32 item)
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 36);
     const x86::Float value = readSliderValue(guest, cpu, item, 0);
-    fe::X87 x87(guest);
+    FloatMath x87(guest);
     const x86::Float hundredths = x87.mul(value, x86::Float(kHundred));
     const x86::Float scaled = x87.mul(value, x86::Float(kStrengthToBrightness));
     const std::int32_t strength = x87.truncated(hundredths);
@@ -1499,7 +1558,7 @@ namespace
 /* sub_447c40, sub_447c70, sub_447ca0: an effect moved, kept in hundredths. */
 x86::reg32 onForceMoved(Guest& guest, CPU& cpu, x86::reg32 item, x86::reg32& setting)
 {
-    fe::X87 x87(guest);
+    FloatMath x87(guest);
     const std::int32_t value = x87.truncated(x87.mul(readSliderValue(guest, cpu, item, 0), x86::Float(kHundred)));
     setting = x86::reg32(value);
     return x86::reg32(value);
@@ -1510,7 +1569,7 @@ x86::reg32 onForceMoved(Guest& guest, CPU& cpu, x86::reg32 item, x86::reg32& set
 x86::reg32 onExclusiveForceMoved(Guest& guest, CPU& cpu, x86::reg32 item, x86::reg32& setting, x86::reg32& other,
                                  x86::reg32 otherSlider)
 {
-    fe::X87 x87(guest);
+    FloatMath x87(guest);
     const x86::Float scaled = x87.mul(readSliderValue(guest, cpu, item, 0), x86::Float(kHundred));
     const x86::reg32 bodyRoll = guest.dword(kBodyRollSlider);
     const std::int32_t value = x87.truncated(scaled);
@@ -1665,8 +1724,8 @@ x86::reg32 frontend::options::onAdvancedEnter(App* app, CPU& cpu, reg32 menu)
         /* Port: the original greys the slider out unless kDisplayFlags has
          * 0x40 -- 1 << the driver's type, and 0x40 is Direct3D's.
          * The port's renderer scales the effects' colours by it on any
-         * driver, so the slider is always there (tools/apply_menu_unlock.py
-         * does the same to the generated code; apply_alpha_intensity.py makes
+         * driver, so the slider is always there (the port's menu unlock change
+         * does the same to the game's code; the port's alpha intensity change makes
          * the value count). */
         guest.setFloat(intensity.address() + kSliderValueField,
                        float(x86::Float(gameSettings(guest).alphaIntensity)));
@@ -1722,7 +1781,7 @@ namespace
 {
 
 /* ---------------------------------------------------------------------------
- * The strings each stand-in hands to the game
+ * The strings each function hands to the game
  * ------------------------------------------------------------------------- */
 
 const GuestString kOptionsStrings[] = { kAudioButton, kLoadButton, kOptionsCredits };
@@ -1770,70 +1829,64 @@ constexpr std::uint8_t kAllButEdx = fe::kRestoreEbx | fe::kRestoreEcx | fe::kRes
  * handler the screen in eax; an item's key handler the item in eax, the screen in edx, the key in
  * bx; a slider's function the item in eax, and for a drawing one whether it is selected in edx. */
 template <typename Core>
-void wholeForMenu(App* app, CPU& cpu, fe::Site& site, Core core)
+x86::reg32 wholeForMenu(App* app, CPU& cpu, x86::Args& args, fe::Site& site, Core core, x86::reg32 menu)
 {
-    const x86::reg32 menu = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return core(app, cpu, menu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return core(app, cpu, menu); });
 }
 
 template <typename Core>
-void wholeForKey(App* app, CPU& cpu, fe::Site& site, Core core)
+x86::reg32 wholeForKey(App* app, CPU& cpu, x86::Args& args, fe::Site& site, Core core, x86::reg32 item, x86::reg32 menu, x86::reg32 ebx)
 {
-    const x86::reg32 item = cpu.eax;
-    const x86::reg32 menu = cpu.edx;
-    const std::uint16_t key = std::uint16_t(cpu.ebx);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return core(app, cpu, item, menu, key); });
+    const std::uint16_t key = std::uint16_t(ebx);
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return core(app, cpu, item, menu, key); });
 }
 
 template <typename Core>
-void wholeForItem(App* app, CPU& cpu, fe::Site& site, Core core)
+x86::reg32 wholeForItem(App* app, CPU& cpu, x86::Args& args, fe::Site& site, Core core, x86::reg32 item)
 {
-    const x86::reg32 item = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return core(app, cpu, item); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return core(app, cpu, item); });
 }
 
 template <typename Core>
-void wholeForDraw(App* app, CPU& cpu, fe::Site& site, Core core)
+x86::reg32 wholeForDraw(App* app, CPU& cpu, x86::Args& args, fe::Site& site, Core core, x86::reg32 item, x86::reg32 selected)
 {
-    const x86::reg32 item = cpu.eax;
-    const x86::reg32 selected = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return core(app, cpu, item, selected); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return core(app, cpu, item, selected); });
 }
 
 template <typename Core>
-void wholeForNone(App* app, CPU& cpu, fe::Site& site, Core core)
+x86::reg32 wholeForNone(App* app, CPU& cpu, x86::Args& args, fe::Site& site, Core core)
 {
-    fe::runWhole(app, cpu, site, [&](Guest&) { return core(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return core(app, cpu); });
 }
 
 }
 
-/* Each stand-in: the generated function, what its ret pops, what its prologue
+/* Each function: the game's function, what its ret pops, what its prologue
  * pushes, the strings it hands to the game and the registers it pushes. */
 
-void frontend::optionsOnEnter(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::optionsOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_442aa0", 0, 0, kOptionsStrings, std::size(kOptionsStrings), kEcxEdx };
-    wholeForMenu(app, cpu, site, options::onOptionsEnter);
+    return wholeForMenu(app, cpu, args, site, options::onOptionsEnter, args.eax);
 }
 
-void frontend::feedOnEnter(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::feedOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4374b0", 0, 0, kFeedEnterStrings, std::size(kFeedEnterStrings), kEcxEdx };
-    wholeForMenu(app, cpu, site, options::onFeedEnter);
+    return wholeForMenu(app, cpu, args, site, options::onFeedEnter, args.eax);
 }
 
-void frontend::feedOnExit(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::feedOnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_437590", 0, 0, kFeedExitStrings, std::size(kFeedExitStrings), fe::kRestoreEdx };
-    wholeForMenu(app, cpu, site, options::onFeedExit);
+    return wholeForMenu(app, cpu, args, site, options::onFeedExit, args.eax);
 }
 
-void frontend::feedSeparate(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::feedSeparate(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_437250", 0, 0, nullptr, 0,
                           fe::kRestoreEbx | fe::kRestoreEdx | fe::kRestoreEdi };
-    wholeForNone(app, cpu, site, options::separateFeeds);
+    return wholeForNone(app, cpu, args, site, options::separateFeeds);
 }
 
 /* The feeds' keys: a button's and a list's for each, one body each (onFeedButtonKey,
@@ -1891,64 +1944,64 @@ namespace
 constexpr std::uint8_t kButtonKeyRestores = fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi;
 }
 
-void frontend::feedTimeButtonKey(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::feedTimeButtonKey(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_437300", 0, 0, nullptr, 0, kButtonKeyRestores };
-    wholeForKey(app, cpu, site, options::feedTimeButtonKey);
+    return wholeForKey(app, cpu, args, site, options::feedTimeButtonKey, args.eax, args.edx, args.ebx);
 }
 
-void frontend::feedPositionButtonKey(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::feedPositionButtonKey(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_437390", 0, 0, nullptr, 0, kButtonKeyRestores };
-    wholeForKey(app, cpu, site, options::feedPositionButtonKey);
+    return wholeForKey(app, cpu, args, site, options::feedPositionButtonKey, args.eax, args.edx, args.ebx);
 }
 
-void frontend::feedSpeedButtonKey(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::feedSpeedButtonKey(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_437420", 0, 0, nullptr, 0, kButtonKeyRestores };
-    wholeForKey(app, cpu, site, options::feedSpeedButtonKey);
+    return wholeForKey(app, cpu, args, site, options::feedSpeedButtonKey, args.eax, args.edx, args.ebx);
 }
 
-void frontend::feedTimeListKey(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::feedTimeListKey(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_437350", 0, 0, nullptr, 0, fe::kRestoreEcx };
-    wholeForKey(app, cpu, site, options::feedTimeListKey);
+    return wholeForKey(app, cpu, args, site, options::feedTimeListKey, args.eax, args.edx, args.ebx);
 }
 
-void frontend::feedPositionListKey(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::feedPositionListKey(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4373e0", 0, 0, nullptr, 0, fe::kRestoreEcx };
-    wholeForKey(app, cpu, site, options::feedPositionListKey);
+    return wholeForKey(app, cpu, args, site, options::feedPositionListKey, args.eax, args.edx, args.ebx);
 }
 
-void frontend::feedSpeedListKey(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::feedSpeedListKey(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_437470", 0, 0, nullptr, 0, fe::kRestoreEcx };
-    wholeForKey(app, cpu, site, options::feedSpeedListKey);
+    return wholeForKey(app, cpu, args, site, options::feedSpeedListKey, args.eax, args.edx, args.ebx);
 }
 
-void frontend::audioOnEnter(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::audioOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_437e00", 0, 0, kAudioEnterStrings, std::size(kAudioEnterStrings), kAllButEbx };
-    wholeForMenu(app, cpu, site, options::onAudioEnter);
+    return wholeForMenu(app, cpu, args, site, options::onAudioEnter, args.eax);
 }
 
-void frontend::audioOnExit(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::audioOnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_438070", 0, 0, kAudioExitStrings, std::size(kAudioExitStrings) };
-    wholeForMenu(app, cpu, site, options::onAudioExit);
+    return wholeForMenu(app, cpu, args, site, options::onAudioExit, args.eax);
 }
 
-void frontend::audioOnFrame(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::audioOnFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_438260", 0, 0, nullptr, 0 };
-    wholeForNone(app, cpu, site, options::onAudioFrame);
+    return wholeForNone(app, cpu, args, site, options::onAudioFrame);
 }
 
-void frontend::audioVolumeDraw(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::audioVolumeDraw(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_437a90", 0, 0, nullptr, 0, kAllButEdx };
-    wholeForDraw(app, cpu, site, options::onVolumeSliderDraw);
+    return wholeForDraw(app, cpu, args, site, options::onVolumeSliderDraw, args.eax, args.edx);
 }
 
 /* The volume sliders' moves: one body (onVolumeMoved) with the volume each moves, and for the
@@ -1988,77 +2041,77 @@ x86::reg32 frontend::options::audioSpeechMoved(App* app, CPU& cpu, reg32 item)
     return onVolumeMoved(guest, cpu, item, &gameSettings(guest).speechVolume, nullptr);
 }
 
-void frontend::audioMenuMusicMoved(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::audioMenuMusicMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_437990", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    wholeForItem(app, cpu, site, options::audioMenuMusicMoved);
+    return wholeForItem(app, cpu, args, site, options::audioMenuMusicMoved, args.eax);
 }
 
-void frontend::audioRaceMusicMoved(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::audioRaceMusicMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4379b0", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    wholeForItem(app, cpu, site, options::audioRaceMusicMoved);
+    return wholeForItem(app, cpu, args, site, options::audioRaceMusicMoved, args.eax);
 }
 
-void frontend::audioEffectsMoved(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::audioEffectsMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4379d0", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    wholeForItem(app, cpu, site, options::audioEffectsMoved);
+    return wholeForItem(app, cpu, args, site, options::audioEffectsMoved, args.eax);
 }
 
-void frontend::audioEngineMoved(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::audioEngineMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_437a20", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    wholeForItem(app, cpu, site, options::audioEngineMoved);
+    return wholeForItem(app, cpu, args, site, options::audioEngineMoved, args.eax);
 }
 
-void frontend::audioSpeechMoved(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::audioSpeechMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_437a70", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    wholeForItem(app, cpu, site, options::audioSpeechMoved);
+    return wholeForItem(app, cpu, args, site, options::audioSpeechMoved, args.eax);
 }
 
-void frontend::graphicsOnEnter(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::graphicsOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_448440", 0, 0, kGraphicsEnterStrings, std::size(kGraphicsEnterStrings) };
-    wholeForMenu(app, cpu, site, options::onGraphicsEnter);
+    return wholeForMenu(app, cpu, args, site, options::onGraphicsEnter, args.eax);
 }
 
-void frontend::graphicsOnExit(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::graphicsOnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4484e0", 0, 0, kGraphicsExitStrings, std::size(kGraphicsExitStrings), kAllButEbx };
-    wholeForMenu(app, cpu, site, options::onGraphicsExit);
+    return wholeForMenu(app, cpu, args, site, options::onGraphicsExit, args.eax);
 }
 
-void frontend::graphicsOnFrame(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::graphicsOnFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     // sub_448430: nothing.
     static fe::Site site{ "sub_448430", 0, 4, nullptr, 0, kRestoreNone };
-    fe::runWhole(app, cpu, site, [](Guest&) { return x86::reg32(0); });
+    return fe::runThunk(app, cpu, args, site, [](Guest&) { return x86::reg32(0); });
 }
 
-void frontend::advancedOnEnter(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::advancedOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_448610", 0, 0, kAdvancedEnterStrings, std::size(kAdvancedEnterStrings) };
-    wholeForMenu(app, cpu, site, options::onAdvancedEnter);
+    return wholeForMenu(app, cpu, args, site, options::onAdvancedEnter, args.eax);
 }
 
-void frontend::advancedOnExit(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::advancedOnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_448770", 0, 0, kAdvancedExitStrings, std::size(kAdvancedExitStrings), kAllButEbx };
-    wholeForMenu(app, cpu, site, options::onAdvancedExit);
+    return wholeForMenu(app, cpu, args, site, options::onAdvancedExit, args.eax);
 }
 
-void frontend::advancedOnFrame(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::advancedOnFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4485a0", 0, 0, kAdvancedFrameStrings, std::size(kAdvancedFrameStrings), kEcxEdx };
-    wholeForMenu(app, cpu, site, options::onAdvancedFrame);
+    return wholeForMenu(app, cpu, args, site, options::onAdvancedFrame, args.eax);
 }
 
-void frontend::advancedIntensityMoved(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::advancedIntensityMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_448570", 0, 0, nullptr, 0, kEcxEdx };
-    wholeForItem(app, cpu, site, options::onEffectsIntensityMoved);
+    return wholeForItem(app, cpu, args, site, options::onEffectsIntensityMoved, args.eax);
 }
 
 /* funkeys and hardkeys as they open: one body (onKeysEnter), instruction for instruction. */
@@ -2155,122 +2208,122 @@ x86::reg32 frontend::options::forceRoadGripMoved(App* app, CPU& cpu, reg32 item)
                                  kBodyRollSlider);
 }
 
-/* The controls' screens, native whole, no generated code behind them
- * (disassemble_nfs3hp.py's MENU_NATIVES): the function keys' and the
+/* The controls' screens, native whole, no the game's code behind them
+ * (MENU_NATIVES): the function keys' and the
  * hardware keys', the controllers' (control1), their dead zones and their
  * force feedback. */
 namespace frontend
 {
 
-void funkeysOnEnter(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 funkeysOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_437600", 0, 0, kKeysStrings, std::size(kKeysStrings), kEcxEdx };
-    wholeForMenu(app, cpu, site, options::funkeysEnter);
+    return wholeForMenu(app, cpu, args, site, options::funkeysEnter, args.eax);
 }
 
-void funkeysOnExit(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 funkeysOnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     // sub_4377c0: nothing to undo.
     static fe::Site site{ "sub_4377c0", 0, 4, nullptr, 0, kRestoreNone };
-    fe::runWhole(app, cpu, site, [](Guest&) { return x86::reg32(0); });
+    return fe::runThunk(app, cpu, args, site, [](Guest&) { return x86::reg32(0); });
 }
 
-void hardkeysOnEnter(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 hardkeysOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     // sub_4377d0: funkeys', instruction for instruction.
     static fe::Site site{ "sub_4377d0", 0, 0, kKeysStrings, std::size(kKeysStrings), kEcxEdx };
-    wholeForMenu(app, cpu, site, options::hardkeysEnter);
+    return wholeForMenu(app, cpu, args, site, options::hardkeysEnter, args.eax);
 }
 
-void controlsOnEnter(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 controlsOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_43d4d0", 0, 0, kControlsStrings, std::size(kControlsStrings),
                           fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx | fe::kRestoreEsi };
-    wholeForMenu(app, cpu, site, options::onControlsEnter);
+    return wholeForMenu(app, cpu, args, site, options::onControlsEnter, args.eax);
 }
 
-void controlsOnExit(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 controlsOnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_43d5f0", 0, 0, nullptr, 0,
                           fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx };
-    wholeForNone(app, cpu, site, options::onControlsExit);
+    return wholeForNone(app, cpu, args, site, options::onControlsExit);
 }
 
-void controlsCancelKey(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 controlsCancelKey(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_43d3f0", 0, 0, nullptr, 0, kRestoreNone };
-    wholeForKey(app, cpu, site, options::controlsCancelKey);
+    return wholeForKey(app, cpu, args, site, options::controlsCancelKey, args.eax, args.edx, args.ebx);
 }
 
-void controlsResetClicked(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 controlsResetClicked(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_43d460", 0, 0, nullptr, 0,
                           fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx };
-    wholeForNone(app, cpu, site, options::onResetClicked);
+    return wholeForNone(app, cpu, args, site, options::onResetClicked);
 }
 
-void controlsResetAnswered(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 controlsResetAnswered(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_43d410", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx };
-    const x86::reg32 answer = cpu.eax;
-    const x86::reg32 close = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return options::onResetAnswered(app, cpu, answer, close); });
+    const x86::reg32 answer = args.eax;
+    const x86::reg32 close = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return options::onResetAnswered(app, cpu, answer, close); });
 }
 
-void deadZoneFillList(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 deadZoneFillList(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_43d9a0", 0, 0, nullptr, 0,
                           fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx };
-    wholeForNone(app, cpu, site, options::fillControllerList);
+    return wholeForNone(app, cpu, args, site, options::fillControllerList);
 }
 
-void deadZoneOnEnter(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 deadZoneOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4432c0", 0, 0, kDeadZoneStrings, std::size(kDeadZoneStrings),
                           fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx | fe::kRestoreEsi };
-    wholeForMenu(app, cpu, site, options::onDeadZoneEnter);
+    return wholeForMenu(app, cpu, args, site, options::onDeadZoneEnter, args.eax);
 }
 
-void deadZoneOnExit(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 deadZoneOnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_443430", 0, 0, nullptr, 0 };
-    wholeForNone(app, cpu, site, options::onDeadZoneExit);
+    return wholeForNone(app, cpu, args, site, options::onDeadZoneExit);
 }
 
-void deadZoneCancelKey(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 deadZoneCancelKey(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_442db0", 0, 0, nullptr, 0, fe::kRestoreEcx };
-    wholeForKey(app, cpu, site, options::deadZoneCancelKey);
+    return wholeForKey(app, cpu, args, site, options::deadZoneCancelKey, args.eax, args.edx, args.ebx);
 }
 
-void deadZoneChooseKey(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 deadZoneChooseKey(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_443260", 0, 0, nullptr, 0, fe::kRestoreEcx };
-    wholeForKey(app, cpu, site, options::deadZoneChooseKey);
+    return wholeForKey(app, cpu, args, site, options::deadZoneChooseKey, args.eax, args.edx, args.ebx);
 }
 
-void deadZoneChooseKeyInRace(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 deadZoneChooseKeyInRace(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_443290", 0, 0, nullptr, 0, fe::kRestoreEcx };
-    wholeForKey(app, cpu, site, options::deadZoneChooseKeyInRace);
+    return wholeForKey(app, cpu, args, site, options::deadZoneChooseKeyInRace, args.eax, args.edx, args.ebx);
 }
 
-void deadZoneShowController(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 deadZoneShowController(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_443070", 0, 0, kShowControllerStrings, std::size(kShowControllerStrings),
                           kAllButEdx };
-    const x86::reg32 menu = cpu.eax;
-    const x86::reg32 controller = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return options::showController(app, cpu, menu, controller); });
+    const x86::reg32 menu = args.eax;
+    const x86::reg32 controller = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return options::showController(app, cpu, menu, controller); });
 }
 
-void deadZoneAxisIndex(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 deadZoneAxisIndex(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_442e60", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    wholeForItem(app, cpu, site, options::axisIndex);
+    return wholeForItem(app, cpu, args, site, options::axisIndex, args.eax);
 }
 
-void deadZoneApplyAxis(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 deadZoneApplyAxis(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_442dd0", 16, 0, nullptr, 0 };
     Guest arguments(app, cpu);
@@ -2278,75 +2331,75 @@ void deadZoneApplyAxis(win32::WinApplication* app, x86::CPU& cpu)
     const float second = arguments.floatAt(cpu.esp + 8);
     const x86::reg32 controller = arguments.dword(cpu.esp + 12);
     const x86::reg32 axis = arguments.dword(cpu.esp + 16);
-    fe::runWhole(app, cpu, site,
+    return fe::runThunk(app, cpu, args, site,
                  [&](Guest&) { return options::applyAxis(app, cpu, first, second, controller, axis); });
 }
 
-void deadZoneAxisMoved(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 deadZoneAxisMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_442ef0", 0, 0, nullptr, 0,
                           fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx | fe::kRestoreEsi };
-    wholeForItem(app, cpu, site, options::onAxisMoved);
+    return wholeForItem(app, cpu, args, site, options::onAxisMoved, args.eax);
 }
 
-void deadZoneAxisDraw(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 deadZoneAxisDraw(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_442ff0", 0, 0, nullptr, 0, kAllButEdx };
-    wholeForDraw(app, cpu, site, options::onAxisDraw);
+    return wholeForDraw(app, cpu, args, site, options::onAxisDraw, args.eax, args.edx);
 }
 
-void forceOnEnter(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 forceOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_447dd0", 0, 0, kForceStrings, std::size(kForceStrings) };
-    wholeForMenu(app, cpu, site, options::onForceEnter);
+    return wholeForMenu(app, cpu, args, site, options::onForceEnter, args.eax);
 }
 
-void forceOnExit(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 forceOnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_4481c0", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEdx };
-    wholeForNone(app, cpu, site, options::onForceExit);
+    return wholeForNone(app, cpu, args, site, options::onForceExit);
 }
 
-void forceCancelKey(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 forceCancelKey(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_447b40", 0, 0, nullptr, 0, kRestoreNone };
-    wholeForKey(app, cpu, site, options::forceCancelKey);
+    return wholeForKey(app, cpu, args, site, options::forceCancelKey, args.eax, args.edx, args.ebx);
 }
 
-void forceStrengthMoved(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 forceStrengthMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_447b60", 0, 0, nullptr, 0 };
-    wholeForItem(app, cpu, site, options::onStrengthMoved);
+    return wholeForItem(app, cpu, args, site, options::onStrengthMoved, args.eax);
 }
 
-void forceRoadEffectsMoved(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 forceRoadEffectsMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_447c40", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    wholeForItem(app, cpu, site, options::forceRoadEffectsMoved);
+    return wholeForItem(app, cpu, args, site, options::forceRoadEffectsMoved, args.eax);
 }
 
-void forceCollisionMoved(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 forceCollisionMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_447c70", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    wholeForItem(app, cpu, site, options::forceCollisionMoved);
+    return wholeForItem(app, cpu, args, site, options::forceCollisionMoved, args.eax);
 }
 
-void forceEngineMoved(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 forceEngineMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_447ca0", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    wholeForItem(app, cpu, site, options::forceEngineMoved);
+    return wholeForItem(app, cpu, args, site, options::forceEngineMoved, args.eax);
 }
 
-void forceBodyRollMoved(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 forceBodyRollMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_447cd0", 0, 0, nullptr, 0, kEcxEdx };
-    wholeForItem(app, cpu, site, options::forceBodyRollMoved);
+    return wholeForItem(app, cpu, args, site, options::forceBodyRollMoved, args.eax);
 }
 
-void forceRoadGripMoved(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 forceRoadGripMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static fe::Site site{ "sub_447d50", 0, 0, nullptr, 0, kEcxEdx };
-    wholeForItem(app, cpu, site, options::forceRoadGripMoved);
+    return wholeForItem(app, cpu, args, site, options::forceRoadGripMoved, args.eax);
 }
 
 }  // namespace frontend

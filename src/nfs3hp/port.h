@@ -12,17 +12,15 @@
  * with arguments and results, the game's records as structs, its variables
  * by name -- rather than the x86's registers and flat memory.
  *
- * While code that is still the game's (generated or register-level natives)
+ * While code that is still the game's (register-level natives)
  * shares the game's memory, a rewritten function keeps its data where the
  * game has it: Var and Table name a variable or a table by its address and
  * read or write it whole (the memory may be unaligned, so through memcpy).
  * It calls what is not rewritten yet through callGame, as Watcom's
- * convention has it.  Called by the game's code, it is entered through an
- * adapter that takes its arguments from the registers and the stack and gives
+ * convention has it.  Called by the game's code, it is entered through a
+ * thunk that takes its arguments from the registers and the stack and gives
  * back what Watcom's convention promises the caller: the result in eax, every
- * other register as it was (tools/game_checks holds port:: functions to
- * that, besides memory and the calls they make; the callers' reading of the
- * registers was checked for the sound module: none reads more). */
+ * other register as it was. */
 namespace nfs3hp
 {
 namespace port
@@ -31,6 +29,7 @@ namespace port
 using App = win32::WinApplication;
 using CPU = x86::CPU;
 using reg32 = x86::reg32;
+using guest::heldEbp;
 using std::int16_t;
 using std::int32_t;
 using std::int8_t;
@@ -109,20 +108,22 @@ struct Args
     reg32 eax = 0, edx = 0, ebx = 0, ecx = 0;
 };
 
-/* A call into the game's code (what is not rewritten yet) as Watcom makes
- * it: the register arguments, `stack` pushed, from the game's stack at esp.
- * Its eax; false when the game stops. */
+/* A call into the game's code by address as Watcom makes it: the register arguments, `stack`
+ * pushed, from the game's stack at esp.  Its eax; false when the game stops. */
 inline bool callGame(App* app, CPU& cpu, reg32 esp, reg32 target, Args a, std::initializer_list<reg32> stack,
                      reg32& result)
 {
     cpu.esp = esp;
-    cpu.eax = a.eax;
-    cpu.edx = a.edx;
-    cpu.ebx = a.ebx;
-    cpu.ecx = a.ecx;
-    if (!guest::call(app, cpu, target, stack))
+    x86::Args registers;
+    registers.ebp = heldEbp();
+    registers.eax = a.eax;
+    registers.edx = a.edx;
+    registers.ebx = a.ebx;
+    registers.ecx = a.ecx;
+    const std::optional<reg32> eax = guest::pointerCall(app, cpu, target, registers, stack);
+    if (!eax)
         return false;
-    result = cpu.eax;
+    result = *eax;
     return true;
 }
 
@@ -132,34 +133,10 @@ inline bool callGame(App* app, CPU& cpu, reg32 esp, reg32 target, Args a = {}, s
     return callGame(app, cpu, esp, target, a, stack, ignored);
 }
 
-/* The same call of another rewrite's adapter, as the game's code calls its
- * address: the same registers, stack and return address, the adapter run as
- * C++ rather than found through the game's address. */
-inline bool callGame(App* app, CPU& cpu, reg32 esp, guest::Native target, Args a, std::initializer_list<reg32> stack,
-                     reg32& result)
-{
-    cpu.esp = esp;
-    cpu.eax = a.eax;
-    cpu.edx = a.edx;
-    cpu.ebx = a.ebx;
-    cpu.ecx = a.ecx;
-    if (!guest::call(app, cpu, target, stack))
-        return false;
-    result = cpu.eax;
-    return true;
-}
-
-inline bool callGame(App* app, CPU& cpu, reg32 esp, guest::Native target, Args a = {},
-                     std::initializer_list<reg32> stack = {})
-{
-    reg32 ignored;
-    return callGame(app, cpu, esp, target, a, stack, ignored);
-}
-
 /* What a rewritten function that calls the game's code gives back: its
  * result -- what the game's code leaves in eax -- or nothing when the game
  * stopped in a call (cpu.terminate), and then its callers stop as well, up to
- * the adapter, which leaves the x86 as the stop left it. */
+ * the thunk, which leaves the x86 as the stop left it. */
 using Result = std::optional<int32_t>;
 
 /* Where a rewritten function calls the game's code from: esp as the game's
@@ -177,13 +154,13 @@ using Result = std::optional<int32_t>;
  * one, the rewrite sets it as well. */
 
 /* ebp as the game's code keeps it while it runs -- its frame pointer -- for
- * what it calls that reads ebp unset; as it was again on the way out. */
+ * what it calls that reads ebp unset (pointerGame hands it on); as it was
+ * again on the way out. */
 struct HeldEbp
 {
-    CPU& cpu;
     reg32 saved;
-    HeldEbp(CPU& c, reg32 ebp) : cpu(c), saved(c.ebp) { c.ebp = ebp; }
-    ~HeldEbp() { cpu.ebp = saved; }
+    HeldEbp(CPU&, reg32 ebp) : saved(heldEbp()) { heldEbp() = ebp; }
+    ~HeldEbp() { heldEbp() = saved; }
     HeldEbp(const HeldEbp&) = delete;
     HeldEbp& operator=(const HeldEbp&) = delete;
 };
@@ -197,37 +174,40 @@ Int chopped(CPU& cpu, const x86::Float& value)
     return fp::toInteger<Int>(std::trunc(value));
 }
 
-/* The adapter's two ends: the caller's registers and stack on the way in,
+/* The thunk's two ends: the caller's registers and stack on the way in,
  * and on the way out its result in eax, every other register as it was, esp
  * past the return address and `popped` (a stdcall's words). */
 struct Entry
 {
     reg32 eax, ebx, ecx, edx, esi, edi, ebp, esp;
-    explicit Entry(const CPU& c)
-        : eax(c.eax), ebx(c.ebx), ecx(c.ecx), edx(c.edx), esi(c.esi), edi(c.edi), ebp(c.ebp), esp(c.esp)
-    {
-    }
     /* The i-th stack argument (0 the first). */
     reg32 arg(App* app, int i) const { return app->getMemory<reg32>(esp + 4 + 4 * reg32(i)); }
     /* esp as the game's code has it after `pushes` registers and `locals`
      * bytes: where its records on the stack are. */
     reg32 frame(reg32 pushes, reg32 locals = 0) const { return esp - 4 * pushes - locals; }
-    void back(CPU& c, reg32 result, reg32 popped = 0) const
+    /* A thunk's (win32::ThunkPtr) entry: its arguments from `a`, esp the machine's. */
+    Entry(const CPU& c, const x86::Args& a)
+        : eax(a.eax), ebx(a.ebx), ecx(a.ecx), edx(a.edx), esi(a.esi), edi(a.edi), ebp(a.ebp), esp(c.esp)
     {
-        c.eax = result;
-        c.ebx = ebx;
-        c.ecx = ecx;
-        c.edx = edx;
-        c.esi = esi;
-        c.edi = edi;
-        c.ebp = ebp;
-        c.esp = esp + 4 + popped;
     }
-    /* back() with the result, when the game did not stop. */
-    void finish(CPU& c, const Result& result, reg32 popped = 0) const
+    /* A thunk's way back: what back() leaves in the registers left in `a`, esp moved on as the ret
+     * moves it; the result returned. */
+    reg32 back(CPU& c, x86::Args& a, reg32 result, reg32 popped = 0) const
     {
-        if (result)
-            back(c, reg32(*result), popped);
+        a.eax = result;
+        a.ebx = ebx;
+        a.ecx = ecx;
+        a.edx = edx;
+        a.esi = esi;
+        a.edi = edi;
+        a.ebp = ebp;
+        c.esp = esp + 4 + popped;
+        return result;
+    }
+    /* back() for a thunk when the game did not stop; 0 when it did (cpu.terminate says so). */
+    reg32 finish(CPU& c, x86::Args& a, const Result& result, reg32 popped = 0) const
+    {
+        return result ? back(c, a, reg32(*result), popped) : 0;
     }
 };
 

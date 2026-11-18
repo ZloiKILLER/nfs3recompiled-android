@@ -1,43 +1,7 @@
 #include <cpu.h>
-//#include <intrin.h>
 #include <SDL3/SDL.h>
 #include <cstring>
 
-namespace x86
-{
-
-#ifdef WITH_MMX
-void CPU::rdtsc()
-{
-    // Emulate a 2GHz CPU
-    uint64_t counter = SDL_GetPerformanceCounter();
-    uint64_t freq = SDL_GetPerformanceFrequency();
-    edx_eax = (uint64_t)((double)counter * 2000000000.0 / (double)freq);
-}
-
-void CPU::cpuid()
-{
-    switch(eax)
-    {
-    case 0:
-        eax = 1;
-        ebx = 0x756e6547;
-        edx = 0x49656e69;
-        ecx = 0x6c65746e;
-        break;
-    case 1:
-        eax = 0x0510;
-        ebx = 0x0000;
-        ecx = 0x0000;
-        edx = 0x008001BF; // Pentium MMX
-        break;
-    default:
-        NFS2_ASSERT(false);     
-    }
-}
-#endif
-
-}
 
 
 extern "C" void convert80x64(const x86::IEEEf80Data *fp80, double *fp64)

@@ -138,8 +138,7 @@ public:
         int fogTable;
     };
 
-    /* What a check of the THRASH driver sees of the renderer
-     * (tools/thrash_checks): all it hands the GL thread, as it hands it.  None
+    /* What a watcher of the renderer sees: all it hands the GL thread, as it hands it.  None
      * in the game. */
     struct Watcher
     {

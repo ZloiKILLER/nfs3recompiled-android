@@ -1,4 +1,5 @@
 #include "native_frontend_netc.h"
+#include "native_frontend_neta.h"
 #include "native_ea_files.h"
 #include "native_ea_net.h"
 #include "native_watcom.h"
@@ -6,6 +7,7 @@
 #include "native_ea_memory.h"
 #include "native_ea_threads.h"
 #include "native_frontend.h"
+#include "native_frontend_pcall.h"
 #include "native_frontend_eab.h"
 #include "native_frontend_menz.h"
 #include "native_frontend_netb.h"
@@ -26,15 +28,159 @@
 #include <type_traits>
 #include <utility>
 
+/* The thunks defined below by qualified name, declared where they are defined. */
+namespace nfs3hp
+{
+namespace frontend {
+x86::reg32 netcGatherPulse(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcGatherPulseStart(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcGatherRequest(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcGatherJoin(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcGatherGameInfo(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcGatherNewGame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcGatherSetGameInfo(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcGatherCloseGame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcGatherReopenGame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcGatherLeave(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcGatherEnumPlayers(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcGatherKillPlayer(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcGatherOpenConnection(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcGatherReceive(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcLoadRasApi(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcFrameChecksum(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcFrameChecksumGood(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcFrameBuild(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcFrameSend(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcFrameSendControl(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcUnreliableShutdown(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcUnreliableReceiveFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcUnreliableReceive(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcUnreliableNotify(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcUnreliableOpen(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcUnreliableSend(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcUnreliableProcess(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcUnreliableClose(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcSequenceWiden(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcPacketChecksum(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcPacketChecksumGood(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcPacketAckNumber(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcPacketBuild(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcPacketSend(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcPacketSendControl(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcPacketSendNak(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcPacketGotAck(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcPacketGotNak(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcPacketShutdown(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcPacketReceiveFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcPacketReceive(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcPacketQueueKey(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcPacketCountDown(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcPacketResendDue(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcPacketNotify(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcPacketOpen(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcPacketSubmit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcPacketProcess(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcPacketClose(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcModemResponse(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcModemCommand(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcModemAttention(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcSerialCloseAll(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcSerialCommand(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcSerialStartIo(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcSerialFinishIo(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcSerialWaitEvents(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcSerialThread(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcSerialIsOpen(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcSerialDropInput(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcSerialDropOutput(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcSerialClose(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcSerialOpenHandle(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcSerialOpen(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcSerialWriteWhole(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcSerialWrite(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcSerialSet(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcSerialInCount(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcSerialOutRoom(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcSerialPeek(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcSerialRead(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 netcSerialWaitIn(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+}  // frontend
+}  // namespace nfs3hp
+
 namespace nfs3hp
 {
 namespace
 {
 
-/* A typed core called as C++ (fe::direct) whose function changes no register but eax (as
- * tools/frontend_checks/specs_from_exe.py reads it): the registers left as the call by address
+/* A typed core called as C++ (fe::direct) whose function changes no register but eax: the registers left as the call by address
  * leaves them -- `words` in eax, edx, ebx and ecx as that call loads them, the first `Taken` of
  * them the core's arguments -- and its result in eax, which the call by address leaves there. */
+/* One register's value, as the game's code holds it at a point of a function: a plain value, and whether
+ * the code has put one there. */
+struct Slot
+{
+    x86::reg32 value = 0;
+    bool set = false;
+    Slot& operator=(x86::reg32 v)
+    {
+        value = v;
+        set = true;
+        return *this;
+    }
+    operator x86::reg32() const { return value; }
+    Slot& operator|=(x86::reg32 v) { return *this = value | v; }
+    Slot& operator&=(x86::reg32 v) { return *this = value & v; }
+    Slot& operator+=(x86::reg32 v) { return *this = value + v; }
+    Slot& operator-=(x86::reg32 v) { return *this = value - v; }
+    Slot& operator++() { return *this = value + 1; }
+    Slot& operator--() { return *this = value - 1; }
+};
+
+/* What the game's code holds in eax, edx, ebx and ecx: the values its callees are handed beyond their
+ * arguments, and its results. */
+struct Held
+{
+    Slot eax, edx, ebx, ecx;
+};
+
+/* Guest::call with what the code holds in the registers its arguments leave out (those it has put
+ * something in) going with it; what the callee leaves in the registers is held after, eax the result. */
+inline x86::reg32 callHeld(fe::Guest& guest, Held& h, x86::reg32 function, fe::Arguments arguments = fe::Arguments())
+{
+    Slot* const held[4] = { &h.eax, &h.edx, &h.ebx, &h.ecx };
+    std::size_t count = arguments.registerCount;
+    for (std::size_t i = count; i < 4; ++i)
+        if (held[i]->set)
+            count = i + 1;
+    for (std::size_t i = arguments.registerCount; i < count; ++i)
+        arguments.registers[i] = held[i]->value;
+    for (std::size_t i = 0; i < count; ++i)
+        *held[i] = arguments.registers[i];
+    arguments.registerCount = count;
+    x86::Args left;
+    const x86::reg32 result = fe::pointerCall(guest, function, arguments, left);
+    // What the callee left in them: the code goes on with it, as with the callee's own value in eax.
+    h.eax = result;
+    h.edx = left.edx;
+    h.ebx = left.ebx;
+    h.ecx = left.ecx;
+    return result;
+}
+
+/* A typed core that can stop with the game: its result, or Terminated as Guest::call throws it. */
+inline x86::reg32 got(std::optional<x86::reg32> result)
+{
+    if (!result)
+        throw fe::Terminated();
+    return *result;
+}
+
+inline void completed(bool finished)
+{
+    if (!finished)
+        throw fe::Terminated();
+}
+
 template <x86::reg32 Address, auto Core, std::size_t... I>
 auto directOf(win32::WinApplication* app, x86::CPU& cpu, const x86::reg32* words, std::index_sequence<I...>)
 {
@@ -42,18 +188,18 @@ auto directOf(win32::WinApplication* app, x86::CPU& cpu, const x86::reg32* words
 }
 
 template <x86::reg32 Address, auto Core, std::size_t Taken, typename... Words>
-x86::reg32 directKept(win32::WinApplication* app, x86::CPU& cpu, Words... words)
+x86::reg32 directKept(win32::WinApplication* app, x86::CPU& cpu, Held& h, Words... words)
 {
     const x86::reg32 all[] = { x86::reg32(words)..., 0 };
-    x86::reg32* const into[] = { &cpu.eax, &cpu.edx, &cpu.ebx, &cpu.ecx };
+    Slot* const into[] = { &h.eax, &h.edx, &h.ebx, &h.ecx };
     for (std::size_t i = 0; i < sizeof...(Words) && i < 4; ++i)
         *into[i] = all[i];
     const auto result = directOf<Address, Core>(app, cpu, all, std::make_index_sequence<Taken>{});
     if constexpr (std::is_same_v<std::remove_cv_t<decltype(result)>, x86::reg32>)
-        cpu.eax = result;
+        h.eax = result;
     else
-        cpu.eax = *result;
-    return cpu.eax;
+        h.eax = *result;
+    return h.eax;
 }
 
 }  // namespace
@@ -68,14 +214,13 @@ x86::reg32 directKept(win32::WinApplication* app, x86::CPU& cpu, Words... words)
  * Everything stays in guest memory, where the rest of the library reads it,
  * and the calling convention is the game's: a transport's functions and a
  * connection's are reached through the tables and pointers they are kept in.
- * Windows' functions are the port's own, called as C++ (in the checks through
- * the imports' slots).  A register the original leaves changed is left the
+ * Windows' functions are the port's own, called as C++.  A register the original leaves changed is left the
  * same.
  *
  * Plan step 5: each function a typed core in frontend::netc (native_frontend_netc.h) -- its
  * arguments put in the registers the game's function takes them in, for the code that reads them
  * there, then the code as it was, in a frame of its own (fe::Frame: what it calls runs at the
- * stack addresses it did) -- and an adapter under the game's name for the calls by address.  A
+ * stack addresses it did) -- and a thunk under the game's name for the calls by address.  A
  * core of this file calls another as C++ (guest::direct) where nothing after it, nor the
  * function's end, meets a register the call by address would leave otherwise; the typed cores of
  * other files likewise (fe::direct); the rest of the game, the tables' and pointers' calls and
@@ -84,7 +229,7 @@ namespace nfs3hp
 {
 
 /* The port's trace of what is sent (native_vertices.cpp), before sub_51d810. */
-bool commSendTrace(win32::WinApplication* app, x86::CPU& cpu);
+bool commSendTrace(win32::WinApplication* app, x86::CPU& cpu, const x86::Args& registers);
 
 namespace
 {
@@ -169,8 +314,7 @@ void copyDwords(Guest& guest, reg32 to, reg32 from, reg32 count)
         guest.setDword(to + 4 * i, guest.dword(from + 4 * i));
 }
 
-/* A function of Windows', its words handed: the port's own, called as C++ (native_windows.h); in
- * the check through its import's slot.  Terminated when the game stopped in it, as Guest::call. */
+/* A function of Windows', its words handed: the port's own, called as C++ (native_windows.h).  Terminated when the game stopped in it, as Guest::call. */
 template <reg32 Slot, auto Function, typename... Words>
 reg32 callImport(Guest& guest, x86::CPU& cpu, Words... words)
 {
@@ -187,34 +331,34 @@ reg32 callImport(Guest& guest, x86::CPU& cpu, Words... words)
  * where nothing after it meets a register its function leaves changed (specs_from_exe.py's
  * clobbers; FRONTEND_STRICT=1 shows none): those calls stay by address. */
 template <reg32 Address, auto Core, typename... Words>
-reg32 loaded(win32::WinApplication* app, x86::CPU& cpu, Words... words)
+reg32 loaded(win32::WinApplication* app, x86::CPU& cpu, Held& h, Words... words)
 {
     const reg32 all[] = { reg32(words)..., 0 };
-    reg32* const into[] = { &cpu.edx, &cpu.ebx, &cpu.ecx };
+    Slot* const into[] = { &h.edx, &h.ebx, &h.ecx };
     for (std::size_t i = 1; i < sizeof...(Words) && i < 4; ++i)
         *into[i - 1] = all[i];
     const auto result = fe::direct<Address, Core>(app, cpu, reg32(words)...);
     if constexpr (std::is_same_v<std::remove_cv_t<decltype(result)>, reg32>)
-        cpu.eax = result;
+        h.eax = result;
     else
-        cpu.eax = *result;
-    return cpu.eax;
+        h.eax = *result;
+    return h.eax;
 }
 
 /* The library's trace of a connection's events, sub_512180. */
-void trace(Guest& guest, reg32 text, reg32 data, reg32 ebx, reg32 ecx, reg32 raw, reg32 id)
+reg32 trace(Guest& guest, Held& h, reg32 text, reg32 data, reg32 ebx, reg32 ecx, reg32 raw, reg32 id)
 {
-    guest.call(kTrace, args({ text, data, ebx, ecx }, { raw, id }));
+    return h.eax = callHeld(guest, h, kTrace, args({ text, data, ebx, ecx }, { raw, id }));
 }
 
 /* A connection's event with no data. */
-void traceEvent(Guest& guest, reg32 text, reg32 raw, reg32 id)
+reg32 traceEvent(Guest& guest, Held& h, reg32 text, reg32 raw, reg32 id)
 {
-    trace(guest, text, 0, 0, 0, raw, id);
+    return trace(guest, h, text, 0, 0, 0, raw, id);
 }
 
 /* A fatal message: where it is from, then the message. */
-void reportError(Guest& guest, reg32 file, reg32 function, reg32 line, reg32 message)
+void reportError(Guest& guest, Held& h, reg32 file, reg32 function, reg32 line, reg32 message)
 {
     guest.setDword(kErrorFile, file);
     guest.setDword(kErrorFunction, function);
@@ -222,7 +366,7 @@ void reportError(Guest& guest, reg32 file, reg32 function, reg32 line, reg32 mes
     fe::direct<kReportError, ea::error>(guest.app(), guest.cpu(), message, guest::Words({}));
 }
 
-void reportError(Guest& guest, reg32 file, reg32 function, reg32 line, reg32 message, reg32 argument)
+void reportError(Guest& guest, Held& h, reg32 file, reg32 function, reg32 line, reg32 message, reg32 argument)
 {
     guest.setDword(kErrorFile, file);
     guest.setDword(kErrorFunction, function);
@@ -241,14 +385,15 @@ void reportError(Guest& guest, reg32 file, reg32 function, reg32 line, reg32 mes
  * not answered in time.  Always 1. */
 x86::reg32 frontend::netc::gatherPulse(App* app, CPU& cpu, reg32 self)
 {
+    Held h;
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0x24);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = self;
+    h.eax = self;
     const reg32 frame = guest.frame();
     const reg32 slotPlace = frame, messagePlace = frame + 4;
     const reg32 info = guest.dword(self + conn::kInfo);
-    guest.leaveEdx(info);
+    h.edx = (info);
     if (guest.dword(info) != 0)
         return 1;
     if (guest.dword(self + conn::kQuiet) == 0 && guest.dword(self + conn::kHandle) != 0)
@@ -271,7 +416,7 @@ x86::reg32 frontend::netc::gatherPulse(App* app, CPU& cpu, reg32 self)
     {
         guest.setDword(self + conn::kPulse, guest.dword(kPulsePeriod));
         if (sign(guest.dword(kGatherTraceLevel)) >= 3)
-            trace(guest, 0x5503bc, messagePlace, 0, 0, 0, 0);
+            trace(guest, h, 0x5503bc, messagePlace, 0, 0, 0, 0);
         tell = true;
     }
     const reg32 slots = server + game::kSlots;
@@ -287,18 +432,18 @@ x86::reg32 frontend::netc::gatherPulse(App* app, CPU& cpu, reg32 self)
             const reg32 timer = slots + slot * game::kSlotSize + game::kSlotTimer;
             const reg32 count = guest.dword(timer);
             guest.setDword(timer, count - 1);
-            guest.leaveEdx(count);
+            h.edx = (count);
             if (count == 0)
             {
                 if (sign(guest.dword(kGatherTraceLevel)) >= 2)
-                    trace(guest, 0x5503cc, slotPlace, 0, 0, 1, 0);
+                    trace(guest, h, 0x5503cc, slotPlace, 0, 0, 1, 0);
                 const reg32 gone = reg32(1) << (guest.byte(slotPlace) & 31);
                 guest.setDword(server + game::kMembers, guest.dword(server + game::kMembers) & ~gone);
             }
             else if (tell)
             {
                 const reg32 table = guest.dword(self + conn::kTransport);
-                guest.call(guest.dword(table + transport::kSend),
+                callHeld(guest, h, guest.dword(table + transport::kSend),
                            args({ guest.dword(self + conn::kHandle), slot * game::kSlotSize + slots,
                                   guest.dword(messagePlace), 0 },
                                 { 0 }));
@@ -308,62 +453,64 @@ x86::reg32 frontend::netc::gatherPulse(App* app, CPU& cpu, reg32 self)
     }
 }
 
-void frontend::netcGatherPulse(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcGatherPulse(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_5140e0", 0, 0, nullptr, 0, std::uint8_t(kEbx | kEcx | kEsi | kEdi) };
-    const reg32 self = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::gatherPulse(app, cpu, self); });
+    const reg32 self = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::gatherPulse(app, cpu, self); });
 }
 
 /* sub_514260: every gathering's connection pulsed, by the queue of them. */
 x86::reg32 frontend::netc::gatherPulseStart(App* app, CPU& cpu)
 {
+    Held h;
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 8);
-    return loaded<0x50e8e0, frontend::netb::qiterate>(app, cpu, kPulseQueue, 0x5140e0, 1);
+    return loaded<0x50e8e0, frontend::netb::qiterate>(app, cpu, h, kPulseQueue, 0x5140e0, 1);
 }
 
-void frontend::netcGatherPulseStart(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcGatherPulseStart(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_514260", 0, 0, nullptr, 0, std::uint8_t(kEbx | kEdx) };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::gatherPulseStart(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::gatherPulseStart(app, cpu); });
 }
 
 /* sub_5143d0: a transport's address lookup waited for, the request's record
  * (0x50 bytes copied from the code's table) on the stack while it runs. */
 x86::reg32 frontend::netc::gatherRequest(App* app, CPU& cpu, reg32 self, reg32 start, reg32 wanted, reg32 last)
 {
+    Held h;
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0x94);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = self; cpu.edx = start; cpu.ebx = wanted; cpu.ecx = last;
+    h.eax = self; h.edx = start; h.ebx = wanted; h.ecx = last;
     const reg32 frame = guest.frame();
     const reg32 answer = frame + 0x50;
     copyDwords(guest, frame, 0x512dd0, 0x14);
     // The game's code hands it `wanted` and 0 in ebx and ecx too, which it does not take; there they stay.
-    guest.leaveEbx(wanted);
-    guest.leaveEcx(0);
-    loaded<0x512f60, frontend::netb::gameGuidText>(app, cpu, self + conn::kRequests, answer);
+    h.ebx = (wanted);
+    h.ecx = (0);
+    loaded<0x512f60, frontend::netb::gameGuidText>(app, cpu, h, self + conn::kRequests, answer);
     guest.setDword(frame + 0x10, self);
     guest.setDword(frame + 0x14, start);
     guest.setDword(frame, 0);
     guest.setDword(frame + 0xc, last);
     guest.setDword(self + conn::kRequest, frame);
     // And 0 in edx, which it does not take; there it stays.
-    guest.leaveEdx(0);
-    loaded<0x512fc0, frontend::netb::setResponseTimeout>(app, cpu, wanted);
-    guest.leaveEbx(0);
+    h.edx = (0);
+    loaded<0x512fc0, frontend::netb::setResponseTimeout>(app, cpu, h, wanted);
+    h.ebx = (0);
     for (bool again = true; again;)
     {
         const reg32 table = guest.dword(self + conn::kTransport);
-        const reg32 got = guest.call(guest.dword(table + transport::kGetAddress),
-                                     args({ guest.dword(self + conn::kHandle), answer, cpu.ebx, table }));
-        guest.leaveEdx(got);
+        const reg32 got = callHeld(guest, h, guest.dword(table + transport::kGetAddress),
+                                     args({ guest.dword(self + conn::kHandle), answer, h.ebx, table }));
+        h.edx = (got);
         for (;;)
         {
-            if (reg32(*fe::direct<0x4df930, ea::isThreadNow>(app, cpu, cpu.ebx)) != 0)
+            if (reg32(*fe::direct<0x4df930, ea::isThreadNow>(app, cpu, h.ebx)) != 0)
             {
-                if (sign(guest.call(kWaitSystemTasks, args({ 1 }))) < 0)
+                if (sign(callHeld(guest, h, kWaitSystemTasks, args({ 1 }))) < 0)
                 {
                     again = false;
                     break;
@@ -373,30 +520,30 @@ x86::reg32 frontend::netc::gatherRequest(App* app, CPU& cpu, reg32 self, reg32 s
             {
                 fe::direct<0x4df8e0, ea::sleepFor>(app, cpu, 1);
             }
-            if (loaded<0x512fd0, frontend::netb::responseTimedOut>(app, cpu) != 0 || cpu.ebx == guest.dword(frame + 0x14))
+            if (loaded<0x512fd0, frontend::netb::responseTimedOut>(app, cpu, h) != 0 || h.ebx == guest.dword(frame + 0x14))
             {
                 again = false;
                 break;
             }
-            if (guest.edx() == 0)
+            if (h.edx == 0)
                 break;
         }
     }
-    if (guest.edx() != 0)
+    if (h.edx != 0)
     {
         const reg32 table = guest.dword(self + conn::kTransport);
-        guest.leaveEcx(table);
-        guest.call(guest.dword(table + transport::kCancel), args({ guest.dword(self + conn::kHandle) }));
+        h.ecx = (table);
+        callHeld(guest, h, guest.dword(table + transport::kCancel), args({ guest.dword(self + conn::kHandle) }));
     }
     guest.setDword(self + conn::kRequest, 0);
-    return guest.edx();
+    return h.edx;
 }
 
-void frontend::netcGatherRequest(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcGatherRequest(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_5143d0", 0, 0, nullptr, 0, std::uint8_t(kEsi | kEdi) };
-    const reg32 self = cpu.eax, start = cpu.edx, wanted = cpu.ebx, last = cpu.ecx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::gatherRequest(app, cpu, self, start, wanted, last); });
+    const reg32 self = args.eax, start = args.edx, wanted = args.ebx, last = args.ecx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::gatherRequest(app, cpu, self, start, wanted, last); });
 }
 
 /* sub_5144b0: joining a player's game: leaves the one we are in unless it is
@@ -406,15 +553,14 @@ x86::reg32 frontend::netc::gatherJoin(App* app, CPU& cpu, reg32 self, reg32 play
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0x114);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = self; cpu.edx = player; cpu.ebx = name;
     const reg32 frame = guest.frame();
     const reg32 reply = frame + 0xac;
     copyDwords(guest, reply, 0x512e20, 0x14);
     if (guest.dword(self + conn::kInGame) != 0)
     {
-        if (guest.call(kCheckPlayer, args({ self, self + conn::kPlayer, player })) != 0)
+        if (got(fe::direct<0x4f5040, ea::netPlayerChecked>(app, cpu, self, self + conn::kPlayer, player)) != 0)
             return 1;
-        guest.call(kEndGame, args({ self }));
+        got(fe::direct<0x4f4f90, ea::netGameEnded>(app, cpu, self));
         guest.setDword(self + conn::kInGame, 0);
     }
     copyDwords(guest, frame + 0x28, self + conn::kOwnPlayer, 0x17);
@@ -424,15 +570,15 @@ x86::reg32 frontend::netc::gatherJoin(App* app, CPU& cpu, reg32 self, reg32 play
         fe::direct<kStrncpy, watcom::clib::strncpy>(guest.app(), guest.cpu(), frame + 0x18, name, 0x10);
     else
         guest.setByte(guest.dword(self + conn::kGame) + game::kName, 0);
-    guest.call(kRequest, args({ self, reply, kMessageAdd, frame }, { 0x88, guest.dword(kTicksPerSecond) * 2 }));
+    fe::direct<0x513190, frontend::netb::sendServerRequest>(app, cpu, self, reply, kMessageAdd, frame, 0x88, guest.dword(kTicksPerSecond) * 2);
     return guest.dword(frame + 0xb0);
 }
 
-void frontend::netcGatherJoin(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcGatherJoin(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_5144b0", 0, 0, nullptr, 0, std::uint8_t(kEcx | kEsi | kEdi) };
-    const reg32 self = cpu.eax, player = cpu.edx, name = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::gatherJoin(app, cpu, self, player, name); });
+    const reg32 self = args.eax, player = args.edx, name = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::gatherJoin(app, cpu, self, player, name); });
 }
 
 /* sub_5145b0: a game's information asked of its server, into `out`: 1 if the
@@ -442,7 +588,6 @@ x86::reg32 frontend::netc::gatherGameInfo(App* app, CPU& cpu, reg32 self, reg32 
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0x10c);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = self; cpu.edx = player; cpu.ebx = out;
     const reg32 frame = guest.frame();
     const reg32 reply = frame + 0xac;
     copyDwords(guest, reply, 0x512e70, 0x14);
@@ -451,49 +596,50 @@ x86::reg32 frontend::netc::gatherGameInfo(App* app, CPU& cpu, reg32 self, reg32 
         return 0;
     if (player != 0)
         copyDwords(guest, self + conn::kPlayer, player, conn::kPlayerDwords);
-    guest.call(kRequest, args({ self, reply, kMessageRequest, frame }, { 0xac, guest.dword(kTicksPerSecond) * 2 }));
+    fe::direct<0x513190, frontend::netb::sendServerRequest>(app, cpu, self, reply, kMessageRequest, frame, 0xac, guest.dword(kTicksPerSecond) * 2);
     copyDwords(guest, out, frame + 0xc8, conn::kGameDwords);
     return guest.dword(frame + 0xb0) != 0 ? 1 : 0;
 }
 
-void frontend::netcGatherGameInfo(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcGatherGameInfo(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_5145b0", 0, 0, nullptr, 0, std::uint8_t(kEcx | kEsi | kEdi) };
-    const reg32 self = cpu.eax, player = cpu.edx, out = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::gatherGameInfo(app, cpu, self, player, out); });
+    const reg32 self = args.eax, player = args.edx, out = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::gatherGameInfo(app, cpu, self, player, out); });
 }
 
 /* sub_514650: a new game served: its record made, the transport listening.  1 if so. */
 x86::reg32 frontend::netc::gatherNewGame(App* app, CPU& cpu, reg32 self, reg32 info, reg32 name, reg32 user)
 {
+    Held h;
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0x18);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = self; cpu.edx = info; cpu.ebx = name; cpu.ecx = user;
+    h.eax = self; h.edx = info; h.ebx = name; h.ecx = user;
     constexpr reg32 kFile = 0x5503dc, kFunction = 0x5503ec;
     const reg32 maxPlayers = info + 0x30;
     if (guest.dword(maxPlayers) == 0)
         guest.setDword(maxPlayers, 0x20);
     if (guest.dword(self + conn::kInGame) != 0)
     {
-        guest.call(kEndGame, args({ self }));
+        callHeld(guest, h, kEndGame, args({ self }));
         guest.setDword(self + conn::kInGame, 0);
     }
     if (guest.dword(maxPlayers) < 2)
-        reportError(guest, kFile, kFunction, 0x2c5, 0x5503f8);
+        reportError(guest, h, kFile, kFunction, 0x2c5, 0x5503f8);
     if (guest.dword(maxPlayers) > 0x20)
-        reportError(guest, kFile, kFunction, 0x2c7, 0x55042c, 0x20);
+        reportError(guest, h, kFile, kFunction, 0x2c7, 0x55042c, 0x20);
     const reg32 size = (guest.dword(maxPlayers) - 2) * game::kSlotSize + game::kBaseSize;
     guest.setDword(kErrorFile, kFile);
     guest.setDword(kErrorFunction, kFunction);
     guest.setDword(kErrorLine, 0x2cb);
-    const reg32 server = guest.call(kAllocate, args({ 0x550458, size, guest.dword(kMemoryType), kFile }));
+    const reg32 server = callHeld(guest, h, kAllocate, args({ 0x550458, size, guest.dword(kMemoryType), kFile }));
     guest.setDword(self + conn::kGame, server);
     if (server == 0)
         return 0;
     guest.setDword(server + game::kOwner, self);
     copyDwords(guest, guest.dword(self + conn::kGame) + game::kInfo, info, conn::kGameDwords);
-    guest.leaveEcx(0);
+    h.ecx = (0);
     guest.setDword(guest.dword(self + conn::kGame) + game::kClosed, 0);
     guest.setDword(guest.dword(self + conn::kGame) + game::kMembers, 0);
     guest.setDword(guest.dword(self + conn::kGame) + game::kUser, user);
@@ -504,10 +650,10 @@ x86::reg32 frontend::netc::gatherNewGame(App* app, CPU& cpu, reg32 self, reg32 i
         fe::direct<kStrncpy, watcom::clib::strncpy>(guest.app(), guest.cpu(), guest.dword(self + conn::kGame) + game::kName, name, 0x10);
     else
         guest.setByte(guest.dword(self + conn::kGame) + game::kName, 0);
-    loaded<0x512f60, frontend::netb::gameGuidText>(app, cpu, self + conn::kRequests, guest.dword(self + conn::kGame) + game::kAddress);
+    loaded<0x512f60, frontend::netb::gameGuidText>(app, cpu, h, self + conn::kRequests, guest.dword(self + conn::kGame) + game::kAddress);
     const reg32 table = guest.dword(self + conn::kTransport);
-    guest.leaveEbx(table);
-    if (guest.call(guest.dword(table + transport::kStartListen),
+    h.ebx = (table);
+    if (callHeld(guest, h, guest.dword(table + transport::kStartListen),
                    args({ guest.dword(self + conn::kHandle), guest.dword(self + conn::kGame) + game::kAddress })) != 0)
         return 1;
     fe::direct<0x4e1890, ea::purgeBlock>(app, cpu, guest.dword(self + conn::kGame));
@@ -515,86 +661,89 @@ x86::reg32 frontend::netc::gatherNewGame(App* app, CPU& cpu, reg32 self, reg32 i
     return 0;
 }
 
-void frontend::netcGatherNewGame(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcGatherNewGame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_514650", 0, 0, nullptr, 0, std::uint8_t(kEsi | kEdi) };
-    const reg32 self = cpu.eax, info = cpu.edx, name = cpu.ebx, user = cpu.ecx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::gatherNewGame(app, cpu, self, info, name, user); });
+    const reg32 self = args.eax, info = args.edx, name = args.ebx, user = args.ecx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::gatherNewGame(app, cpu, self, info, name, user); });
 }
 
 /* sub_514820: the served game's information changed.  1, or 0 with no game. */
 x86::reg32 frontend::netc::gatherSetGameInfo(App* app, CPU& cpu, reg32 self, reg32 info)
 {
+    Held h;
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 4);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = self; cpu.edx = info;
-    const reg32 server = guest.dword(guest.eax() + conn::kGame);
+    h.eax = self; h.edx = info;
+    const reg32 server = guest.dword(h.eax + conn::kGame);
     if (server == 0)
         return 0;
-    copyDwords(guest, server + game::kInfo, guest.edx(), conn::kGameDwords);
+    copyDwords(guest, server + game::kInfo, h.edx, conn::kGameDwords);
     return 1;
 }
 
-void frontend::netcGatherSetGameInfo(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcGatherSetGameInfo(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_514820", 0, 0, nullptr, 0, std::uint8_t(kEcx | kEsi | kEdi) };
-    const reg32 self = cpu.eax, info = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::gatherSetGameInfo(app, cpu, self, info); });
+    const reg32 self = args.eax, info = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::gatherSetGameInfo(app, cpu, self, info); });
 }
 
 /* sub_514850: the served game no longer listened for; with `discard` its record goes too. */
 x86::reg32 frontend::netc::gatherCloseGame(App* app, CPU& cpu, reg32 self, reg32 discard)
 {
+    Held h;
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 8);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = self; cpu.edx = discard;
+    h.eax = self; h.edx = discard;
     const reg32 server = guest.dword(self + conn::kGame);
-    guest.leaveEcx(self);
-    guest.leaveEbx(discard);
-    guest.leaveEdx(server);
+    h.ecx = (self);
+    h.ebx = (discard);
+    h.edx = (server);
     if (server == 0)
         return 0;
     if (guest.dword(server + game::kClosed) == 0)
     {
         const reg32 table = guest.dword(self + conn::kTransport);
-        guest.call(guest.dword(table + transport::kStopListen),
+        callHeld(guest, h, guest.dword(table + transport::kStopListen),
                    args({ guest.dword(self + conn::kHandle), server + game::kAddress }));
-        guest.setByte(guest.dword(cpu.ecx + conn::kGame) + game::kAddress, 0);
-        guest.setDword(guest.dword(cpu.ecx + conn::kGame) + game::kClosed, 1);
+        guest.setByte(guest.dword(h.ecx + conn::kGame) + game::kAddress, 0);
+        guest.setDword(guest.dword(h.ecx + conn::kGame) + game::kClosed, 1);
     }
-    if (cpu.ebx != 0)
+    if (h.ebx != 0)
     {
-        fe::direct<0x4e1890, ea::purgeBlock>(app, cpu, guest.dword(cpu.ecx + conn::kGame));
-        guest.setDword(cpu.ecx + conn::kGame, 0);
+        fe::direct<0x4e1890, ea::purgeBlock>(app, cpu, guest.dword(h.ecx + conn::kGame));
+        guest.setDword(h.ecx + conn::kGame, 0);
     }
     return 1;
 }
 
-void frontend::netcGatherCloseGame(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcGatherCloseGame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_514850", 0, 0, nullptr, 0, std::uint8_t(kEbx | kEcx | kEsi) };
-    const reg32 self = cpu.eax, discard = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::gatherCloseGame(app, cpu, self, discard); });
+    const reg32 self = args.eax, discard = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::gatherCloseGame(app, cpu, self, discard); });
 }
 
 /* sub_5148b0: a closed game listened for again, every slot's time given back. */
 x86::reg32 frontend::netc::gatherReopenGame(App* app, CPU& cpu, reg32 self)
 {
+    Held h;
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0x10);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = self;
+    h.eax = self;
     const reg32 server = guest.dword(self + conn::kGame);
     if (server == 0 || guest.dword(server + game::kClosed) == 0)
         return 0;
     guest.setDword(server + game::kClosed, 0);
-    loaded<0x512f60, frontend::netb::gameGuidText>(app, cpu, self + conn::kRequests, guest.dword(self + conn::kGame) + game::kAddress);
+    loaded<0x512f60, frontend::netb::gameGuidText>(app, cpu, h, self + conn::kRequests, guest.dword(self + conn::kGame) + game::kAddress);
     const reg32 table = guest.dword(self + conn::kTransport);
-    const reg32 listening = guest.call(guest.dword(table + transport::kStartListen),
+    const reg32 listening = callHeld(guest, h, guest.dword(table + transport::kStartListen),
                                        args({ guest.dword(self + conn::kHandle),
-                                              guest.dword(self + conn::kGame) + game::kAddress, cpu.ebx, table }));
+                                              guest.dword(self + conn::kGame) + game::kAddress, h.ebx, table }));
     if (listening == 0)
     {
         guest.setDword(guest.dword(self + conn::kGame) + game::kClosed, 0);
@@ -608,21 +757,22 @@ x86::reg32 frontend::netc::gatherReopenGame(App* app, CPU& cpu, reg32 self)
     return 1;
 }
 
-void frontend::netcGatherReopenGame(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcGatherReopenGame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_5148b0", 0, 0, nullptr, 0, std::uint8_t(kEcx | kEdx | kEsi | kEdi) };
-    const reg32 self = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::gatherReopenGame(app, cpu, self); });
+    const reg32 self = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::gatherReopenGame(app, cpu, self); });
 }
 
 /* sub_514970: leaving: the served game told goodbye and thrown away, or our
  * server told we go.  Always 1. */
 x86::reg32 frontend::netc::gatherLeave(App* app, CPU& cpu, reg32 self)
 {
+    Held h;
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0xb8);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = self;
+    h.eax = self;
     const reg32 frame = guest.frame();
     if (guest.dword(self + conn::kInGame) == 0)
         return 1;
@@ -636,9 +786,9 @@ x86::reg32 frontend::netc::gatherLeave(App* app, CPU& cpu, reg32 self)
     if (server == 0)
     {
         if (sign(guest.dword(kGatherTraceLevel)) >= 2)
-            trace(guest, 0x55046c, messagePlace, 0, 0, 0, 0);
+            trace(guest, h, 0x55046c, messagePlace, 0, 0, 0, 0);
         const reg32 table = guest.dword(self + conn::kTransport);
-        guest.call(guest.dword(table + transport::kSend),
+        callHeld(guest, h, guest.dword(table + transport::kSend),
                    args({ guest.dword(self + conn::kHandle), self + conn::kPlayer, guest.dword(messagePlace), bye },
                         { 0x18 }));
     }
@@ -647,11 +797,11 @@ x86::reg32 frontend::netc::gatherLeave(App* app, CPU& cpu, reg32 self)
         if (guest.dword(server + game::kClosed) == 0)
         {
             const reg32 table = guest.dword(self + conn::kTransport);
-            guest.call(guest.dword(table + transport::kStopListen),
+            callHeld(guest, h, guest.dword(table + transport::kStopListen),
                        args({ guest.dword(self + conn::kHandle), server + game::kAddress, server, table }));
             guest.setByte(guest.dword(self + conn::kGame) + game::kAddress, 0);
             if (sign(guest.dword(kGatherTraceLevel)) >= 2)
-                trace(guest, 0x550460, messagePlace, 0, 0, 0, 0);
+                trace(guest, h, 0x550460, messagePlace, 0, 0, 0, 0);
             for (reg32 slot = 0;; ++slot)
             {
                 const reg32 now = guest.dword(self + conn::kGame);
@@ -663,7 +813,7 @@ x86::reg32 frontend::netc::gatherLeave(App* app, CPU& cpu, reg32 self)
                     continue;
                 guest.setDword(now + game::kMembers, members & ~bit);
                 const reg32 sendTable = guest.dword(self + conn::kTransport);
-                guest.call(guest.dword(sendTable + transport::kSend),
+                callHeld(guest, h, guest.dword(sendTable + transport::kSend),
                            args({ guest.dword(self + conn::kHandle),
                                   guest.dword(self + conn::kGame) + game::kSlots + slot * game::kSlotSize,
                                   guest.dword(messagePlace), bye },
@@ -678,11 +828,11 @@ x86::reg32 frontend::netc::gatherLeave(App* app, CPU& cpu, reg32 self)
     return 1;
 }
 
-void frontend::netcGatherLeave(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcGatherLeave(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_514970", 0, 0, nullptr, 0, kAll };
-    const reg32 self = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::gatherLeave(app, cpu, self); });
+    const reg32 self = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::gatherLeave(app, cpu, self); });
 }
 
 /* sub_514af0: the players of a game, each handed to the caller's function:
@@ -690,10 +840,11 @@ void frontend::netcGatherLeave(win32::WinApplication* app, x86::CPU& cpu)
  * went by, or whether the last answer came. */
 x86::reg32 frontend::netc::gatherEnumPlayers(App* app, CPU& cpu, reg32 self, reg32 player, reg32 callback)
 {
+    Held h;
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0x120);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = self; cpu.edx = player; cpu.ebx = callback;
+    h.eax = self; h.edx = player; h.ebx = callback;
     const reg32 frame = guest.frame();
     const reg32 reply = frame + 0xac, replyWords = frame + 0xb0;
     reg32 wanted;
@@ -709,28 +860,28 @@ x86::reg32 frontend::netc::gatherEnumPlayers(App* app, CPU& cpu, reg32 self, reg
         wanted = player;
     }
     if (guest.dword(self + conn::kGame) != 0
-        && guest.call(kCheckPlayer, args({ self, self + conn::kPlayer, wanted })) != 0)
+        && callHeld(guest, h, kCheckPlayer, args({ self, self + conn::kPlayer, wanted })) != 0)
     {
         // Our own game: the server's player, then the members.
-        if (guest.call(callback, args({ self, self + conn::kOwnPlayer, 0, 1 })) == 0)
+        if (callHeld(guest, h, callback, args({ self, self + conn::kOwnPlayer, 0, 1 })) == 0)
             return 0;
         reg32 went = 1;
         for (reg32 slot = 0;; ++slot)
         {
             const reg32 server = guest.dword(self + conn::kGame);
-            guest.leaveEdx(guest.dword(server + game::kMaxPlayers) - 1);
+            h.edx = (guest.dword(server + game::kMaxPlayers) - 1);
             if (guest.dword(server + game::kMaxPlayers) - 1 <= slot)
                 return went;
             const reg32 bit = reg32(1) << (slot & 31);
             if ((guest.dword(server + game::kMembers) & bit) == 0)
                 continue;
-            if (guest.call(callback, args({ self, server + game::kSlots + slot * game::kSlotSize, slot + 1, 0 })) == 0)
+            if (callHeld(guest, h, callback, args({ self, server + game::kSlots + slot * game::kSlotSize, slot + 1, 0 })) == 0)
                 return went;
             ++went;
         }
     }
     copyDwords(guest, reply, 0x512ec0, 0x14);
-    guest.call(kRequest, args({ self, reply, kMessageRequest, frame }, { 0xac, guest.dword(kTicksPerSecond) * 2 }));
+    callHeld(guest, h, kRequest, args({ self, reply, kMessageRequest, frame }, { 0xac, guest.dword(kTicksPerSecond) * 2 }));
     if (guest.dword(replyWords) == 0)
         return 0;
     const reg32 members = guest.dword(frame + 0xb4);
@@ -738,74 +889,75 @@ x86::reg32 frontend::netc::gatherEnumPlayers(App* app, CPU& cpu, reg32 self, reg
     guest.setDword(replyWords, 1);
     guest.setDword(frame + 0x18, 0xffffffff);
     copyDwords(guest, frame + 4, self + conn::kPlayer, conn::kPlayerDwords);
-    guest.call(kRequest, args({ self, reply, kMessageGet, frame }, { 0x1c, guest.dword(kTicksPerSecond) * 2 }));
+    callHeld(guest, h, kRequest, args({ self, reply, kMessageGet, frame }, { 0x1c, guest.dword(kTicksPerSecond) * 2 }));
     reg32 answered = guest.dword(replyWords) != 0 ? 1 : 0;
-    guest.leaveEbx(0);
+    h.ebx = (0);
     if (members == 0)
         return answered;
     for (reg32 index = 0;;)
     {
-        guest.leaveEbx(index);
+        h.ebx = (index);
         if (sign(index) >= 0x1f || guest.dword(frame + 0xc4) == 0 || answered == 0)
             return answered;
         if (((reg32(1) << (index & 31)) & members) != 0)
         {
             guest.setDword(frame + 0x18, byteSwapped(index));
-            guest.call(kRequest, args({ self, reply, kMessageGet, frame }, { 0x1c, guest.dword(kTicksPerSecond) * 2 }));
+            callHeld(guest, h, kRequest, args({ self, reply, kMessageGet, frame }, { 0x1c, guest.dword(kTicksPerSecond) * 2 }));
             answered = guest.dword(replyWords) != 0 ? 1 : 0;
             index &= ~(reg32(1) << (index & 31));
-            guest.leaveEbx(index);
+            h.ebx = (index);
         }
         ++index;
-        guest.leaveEdx(index);
+        h.edx = (index);
     }
 }
 
-void frontend::netcGatherEnumPlayers(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcGatherEnumPlayers(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_514af0", 0, 0, nullptr, 0, std::uint8_t(kEcx | kEsi | kEdi) };
-    const reg32 self = cpu.eax, player = cpu.edx, callback = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::gatherEnumPlayers(app, cpu, self, player, callback); });
+    const reg32 self = args.eax, player = args.edx, callback = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::gatherEnumPlayers(app, cpu, self, player, callback); });
 }
 
 /* sub_514dc0: a player thrown out of our game, or an error if it is us or not our game.  0. */
 x86::reg32 frontend::netc::gatherKillPlayer(App* app, CPU& cpu, reg32 self, reg32 player)
 {
+    Held h;
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0x18);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = self; cpu.edx = player;
+    h.eax = self; h.edx = player;
     constexpr reg32 kFile = 0x5503dc, kFunction = 0x550478;
     const reg32 server = guest.dword(self + conn::kGame);
-    guest.leaveEdx(server);
+    h.edx = (server);
     if (server == 0)
     {
-        reportError(guest, kFile, kFunction, 0x39f, 0x5504b8);
+        reportError(guest, h, kFile, kFunction, 0x39f, 0x5504b8);
         return 0;
     }
-    const reg32 slot = loaded<0x5132a0, frontend::netb::findPlayerByAddress>(app, cpu, server, player);
+    const reg32 slot = loaded<0x5132a0, frontend::netb::findPlayerByAddress>(app, cpu, h, server, player);
     if (slot == 0)
     {
-        if (guest.call(kCheckPlayer, args({ self, player, self + conn::kOwnPlayer })) != 0)
-            reportError(guest, kFile, kFunction, 0x39b, 0x550488);
+        if (callHeld(guest, h, kCheckPlayer, args({ self, player, self + conn::kOwnPlayer })) != 0)
+            reportError(guest, h, kFile, kFunction, 0x39b, 0x550488);
         return 0;
     }
     const reg32 index = reg32(sign(slot - (guest.dword(self + conn::kGame) + game::kSlots)) / sign(game::kSlotSize));
     const reg32 table = guest.dword(self + conn::kTransport);
-    guest.call(guest.dword(table + transport::kSend),
+    callHeld(guest, h, guest.dword(table + transport::kSend),
                args({ guest.dword(self + conn::kHandle), slot, kMessageKick, 0 }, { 0 }));
     const reg32 keep = ~(reg32(1) << (index & 31));
     const reg32 now = guest.dword(self + conn::kGame);
     guest.setDword(now + game::kMembers, guest.dword(now + game::kMembers) & keep);
-    guest.leaveEdx(keep);
+    h.edx = (keep);
     return 0;
 }
 
-void frontend::netcGatherKillPlayer(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcGatherKillPlayer(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_514dc0", 0, 0, nullptr, 0, std::uint8_t(kEbx | kEcx | kEsi | kEdi) };
-    const reg32 self = cpu.eax, player = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::gatherKillPlayer(app, cpu, self, player); });
+    const reg32 self = args.eax, player = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::gatherKillPlayer(app, cpu, self, player); });
 }
 
 /* sub_514ec0: a packet connection opened over one of the two layers, its times
@@ -816,7 +968,6 @@ x86::reg32 frontend::netc::gatherOpenConnection(App* app, CPU& cpu, reg32 first,
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0x10);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = first; cpu.edx = connection; cpu.ebx = wanted; cpu.ecx = window;
     constexpr reg32 kUnreliableLayer = 0x56ac10, kPacketLayer = 0x56ac28;
     const reg32 ticks = guest.dword(kTicksPerSecond);
     const reg32 layer = window == 0xffffffff ? kUnreliableLayer : kPacketLayer;
@@ -831,14 +982,14 @@ x86::reg32 frontend::netc::gatherOpenConnection(App* app, CPU& cpu, reg32 first,
         guest.setWord(connection + 0x28, 0);
     }
     guest.setDword(kTicksPerSecond, ticks);
-    return guest.call(kOpenConnection, args({ connection, layer, kConnectionNames, wanted }, { window }));
+    return fe::direct<0x4f5130, frontend::neta::serviceCall>(app, cpu, connection, layer, kConnectionNames, wanted, window);
 }
 
-void frontend::netcGatherOpenConnection(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcGatherOpenConnection(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_514ec0", 0, 0, nullptr, 0, std::uint8_t(kEsi | kEdi) };
-    const reg32 first = cpu.eax, connection = cpu.edx, wanted = cpu.ebx, window = cpu.ecx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::gatherOpenConnection(app, cpu, first, connection, wanted, window); });
+    const reg32 first = args.eax, connection = args.edx, wanted = args.ebx, window = args.ecx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::gatherOpenConnection(app, cpu, first, connection, wanted, window); });
 }
 
 /* sub_514f70: what came for a request in progress handed to it, and the
@@ -846,40 +997,41 @@ void frontend::netcGatherOpenConnection(win32::WinApplication* app, x86::CPU& cp
 x86::reg32 frontend::netc::gatherReceive(App* app, CPU& cpu, reg32 self, reg32 from, reg32 kind, reg32 length,
                                          reg32 extraArgument, reg32 acceptedArgument)
 {
+    Held h;
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0x68);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = self; cpu.edx = from; cpu.ebx = kind; cpu.ecx = length;
+    h.eax = self; h.edx = from; h.ebx = kind; h.ecx = length;
     const reg32 frame = guest.frame();
     const reg32 kindPlace = frame + 0x50;
     const reg32 extra = extraArgument, acceptedPlace = acceptedArgument;  // its stack arguments
-    guest.setDword(kindPlace, cpu.ebx);
+    guest.setDword(kindPlace, h.ebx);
     copyDwords(guest, frame, 0x512f10, 0x14);
     guest.setDword(frame + 0x10, self);
     if (guest.dword(self + conn::kRequest) == 0)
         guest.setDword(self + conn::kRequest, frame);
     if (sign(guest.dword(kGatherTraceLevel)) >= 5)
-        trace(guest, 0x5504f8, kindPlace, length, extra, 0, 0);
-    guest.call(kAnswerRequest, args({ guest.dword(self + conn::kRequest), from, guest.dword(kindPlace), length }, { extra }));
+        trace(guest, h, 0x5504f8, kindPlace, length, extra, 0, 0);
+    callHeld(guest, h, kAnswerRequest, args({ guest.dword(self + conn::kRequest), from, guest.dword(kindPlace), length }, { extra }));
     if (guest.dword(self + conn::kRequest) == frame)
         guest.setDword(self + conn::kRequest, 0);
     if (guest.dword(self + conn::kQuiet) == 0)
     {
         const reg32 table = guest.dword(self + conn::kTransport);
-        guest.call(guest.dword(table + transport::kAck), args({ guest.dword(self + conn::kHandle), 0, kMessageData, 0 }));
+        callHeld(guest, h, guest.dword(table + transport::kAck), args({ guest.dword(self + conn::kHandle), 0, kMessageData, 0 }));
     }
     guest.setDword(acceptedPlace, guest.dword(kindPlace) != kMessageRefused ? 1 : 0);
-    guest.leaveEdx(acceptedPlace);
+    h.edx = (acceptedPlace);
     return guest.dword(kindPlace) == kMessageData ? 1 : 0;
 }
 
-void frontend::netcGatherReceive(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcGatherReceive(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_514f70", 8, 0, nullptr, 0, std::uint8_t(kEsi | kEdi) };
-    const reg32 self = cpu.eax, from = cpu.edx, kind = cpu.ebx, length = cpu.ecx;
+    const reg32 self = args.eax, from = args.edx, kind = args.ebx, length = args.ecx;
     const reg32 extraArgument = app->getMemory<reg32>(cpu.esp + 4);
     const reg32 acceptedArgument = app->getMemory<reg32>(cpu.esp + 8);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::gatherReceive(app, cpu, self, from, kind, length, extraArgument, acceptedArgument); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::gatherReceive(app, cpu, self, from, kind, length, extraArgument, acceptedArgument); });
 }
 
 /* sub_515050: rasapi32.dll and its two functions found, once.  1 if they are there. */
@@ -904,10 +1056,10 @@ x86::reg32 frontend::netc::loadRasApi(App* app, CPU& cpu)
     return guest.dword(kRasEnum) != 0 && projection != 0 ? 1 : 0;
 }
 
-void frontend::netcLoadRasApi(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcLoadRasApi(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_515050", 0, 0, nullptr, 0, kAll };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::loadRasApi(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::loadRasApi(app, cpu); });
 }
 
 /* ---------------------------------------------------------------------------
@@ -978,24 +1130,24 @@ std::int32_t traceLevel(const Guest& guest)
 }
 
 /* A frame's checksum worked out and put in its place, big end first. */
-reg32 stampChecksum(Guest& guest, x86::CPU& cpu, reg32 frame, reg32 place)
+reg32 stampChecksum(Guest& guest, x86::CPU& cpu, reg32 frame, reg32 length, reg32 place)
 {
+    Held h;
     guest.setByte(frame + place + 1, 0);
     guest.setByte(frame + place, 0);
-    const reg32 sum = loaded<0x4f4780, frontend::wata::blockChecksum>(guest.app(), cpu, frame, guest.edx());
+    const reg32 sum = loaded<0x4f4780, frontend::wata::blockChecksum>(guest.app(), cpu, h, frame, length);
     const reg32 high = reg32(sign(sum) >> 8);
-    guest.leaveEdx(sum);
     guest.setByte(frame + place + 1, std::uint8_t(sum));
     guest.setByte(frame + place, std::uint8_t(high));
     return high;
 }
 
 /* Whether a frame's checksum is what it says, by stamping it again. */
-reg32 checksumGood(Guest& guest, reg32 stamp, reg32 place)
+reg32 checksumGood(Guest& guest, reg32 stamp, reg32 frame, reg32 length, reg32 place)
 {
-    const reg32 frame = guest.eax();
+    Held h;
     const std::uint16_t saved = guest.word(frame + place);
-    guest.call(stamp, args({ frame, guest.edx() }));
+    callHeld(guest, h, stamp, args({ frame, length }));
     return saved == guest.word(frame + place) ? 1 : 0;
 }
 
@@ -1003,36 +1155,37 @@ reg32 checksumGood(Guest& guest, reg32 stamp, reg32 place)
 reg32 shutdownLayer(Guest& guest, reg32 self, reg32 idField, reg32 shutdownText, reg32 disconnectText, reg32 closedText,
                     reg32 duplicateText)
 {
+    Held h;
     if (traceLevel(guest) >= 2)
-        traceEvent(guest, shutdownText, 1, guest.byte(self + idField));
-    if (guest.call(kQueueRemove, args({ kActiveConnections, guest.dword(self + layer::kLink) })) == 0)
+        traceEvent(guest, h, shutdownText, 1, guest.byte(self + idField));
+    if (callHeld(guest, h, kQueueRemove, args({ kActiveConnections, guest.dword(self + layer::kLink) })) == 0)
     {
         if (traceLevel(guest) >= 1)
-            traceEvent(guest, duplicateText, 1, guest.byte(self + idField));
-        return guest.eax();
+            traceEvent(guest, h, duplicateText, 1, guest.byte(self + idField));
+        return h.eax;
     }
     const reg32 connection = guest.dword(self + layer::kLink);
     const std::int32_t level = traceLevel(guest);
-    guest.leaveEbx(reg32(level));
+    h.ebx = (reg32(level));
     if (level >= 1)
-        traceEvent(guest, disconnectText, 1, guest.byte(self + idField));
+        traceEvent(guest, h, disconnectText, 1, guest.byte(self + idField));
     guest.setDword(connection + link::kTimeout, 0);
     const reg32 ops = guest.dword(self + layer::kStream);
-    guest.call(guest.dword(ops + stream::kClose), args({ connection, ops }));
-    guest.call(guest.dword(connection + link::kDrop), args({ connection, connection }));
-    guest.call(kQueueAdd, args({ kClosedConnections, guest.edx() }));
+    callHeld(guest, h, guest.dword(ops + stream::kClose), args({ connection, ops }));
+    callHeld(guest, h, guest.dword(connection + link::kDrop), args({ connection, connection }));
+    callHeld(guest, h, kQueueAdd, args({ kClosedConnections, h.edx }));
     if (traceLevel(guest) >= 2)
-        traceEvent(guest, closedText, 1, guest.byte(self + idField));
-    return guest.eax();
+        traceEvent(guest, h, closedText, 1, guest.byte(self + idField));
+    return h.eax;
 }
 
 /* The stream read into the layer's buffer and its frames taken from there, what
  * is left moved down.  1 if any came whole; the frames count them on the frame. */
 template <reg32 FrameFunction, auto Core>
-reg32 receiveFrames(Guest& guest, x86::CPU& cpu, reg32 bufferField, reg32 sizeField, reg32 heldField)
+reg32 receiveFrames(Guest& guest, x86::CPU& cpu, reg32 self, reg32 bufferField, reg32 sizeField, reg32 heldField)
 {
+    Held h;
     const reg32 frame = guest.frame();
-    const reg32 self = guest.eax();
     guest.setDword(frame, 0);
     const reg32 connection = guest.dword(self + layer::kLink), ops = guest.dword(self + layer::kStream);
     guest.setDword(frame + 4, connection);
@@ -1042,7 +1195,7 @@ reg32 receiveFrames(Guest& guest, x86::CPU& cpu, reg32 bufferField, reg32 sizeFi
     const reg32 held = guest.dword(self + heldField), size = guest.dword(self + sizeField);
     if (size > held)
     {
-        const reg32 got = guest.call(guest.dword(ops + stream::kRead),
+        const reg32 got = callHeld(guest, h, guest.dword(ops + stream::kRead),
                                      args({ connection, guest.dword(self + bufferField) + held, size - held, held }));
         guest.setDword(self + heldField, guest.dword(self + heldField) + got);
     }
@@ -1052,7 +1205,7 @@ reg32 receiveFrames(Guest& guest, x86::CPU& cpu, reg32 bufferField, reg32 sizeFi
         reg32 done = 0;
         for (;;)
         {
-            const reg32 used = loaded<FrameFunction, Core>(guest.app(), cpu, self, frame,
+            const reg32 used = loaded<FrameFunction, Core>(guest.app(), cpu, h, self, frame,
                                                            guest.dword(self + bufferField) + done, left);
             if (guest.byte(ops + stream::kReliable) != 0 || used == 0)
                 break;
@@ -1064,7 +1217,7 @@ reg32 receiveFrames(Guest& guest, x86::CPU& cpu, reg32 bufferField, reg32 sizeFi
         if (guest.byte(ops + stream::kReliable) == 0 && done != 0)
         {
             const reg32 buffer = guest.dword(self + bufferField);
-            guest.call(kMoveMemory, args({ buffer + done, buffer, left }));
+            callHeld(guest, h, kMoveMemory, args({ buffer + done, buffer, left }));
             guest.setDword(self + heldField, left);
         }
     }
@@ -1079,15 +1232,14 @@ x86::reg32 frontend::netc::frameChecksum(App* app, CPU& cpu, reg32 frame, reg32 
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 4);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = frame; cpu.edx = length;
-    return stampChecksum(guest, cpu, guest.eax(), 2);
+    return stampChecksum(guest, cpu, frame, length, 2);
 }
 
-void frontend::netcFrameChecksum(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcFrameChecksum(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_51bc70", 0, 0, nullptr, 0, kEcx };
-    const reg32 frame = cpu.eax, length = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::frameChecksum(app, cpu, frame, length); });
+    const reg32 frame = args.eax, length = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::frameChecksum(app, cpu, frame, length); });
 }
 
 /* sub_51bca0: whether an unreliable frame's checksum holds. */
@@ -1096,106 +1248,109 @@ x86::reg32 frontend::netc::frameChecksumGood(App* app, CPU& cpu, reg32 frame, re
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 8);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = frame; cpu.edx = length;
-    return checksumGood(guest, kFrameChecksum, 2);
+    return checksumGood(guest, kFrameChecksum, frame, length, 2);
 }
 
-void frontend::netcFrameChecksumGood(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcFrameChecksumGood(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_51bca0", 0, 0, nullptr, 0, std::uint8_t(kEbx | kEcx) };
-    const reg32 frame = cpu.eax, length = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::frameChecksumGood(app, cpu, frame, length); });
+    const reg32 frame = args.eax, length = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::frameChecksumGood(app, cpu, frame, length); });
 }
 
 /* sub_51bcd0: an unreliable frame's start and data. */
 x86::reg32 frontend::netc::frameBuild(App* app, CPU& cpu, reg32 out, reg32 self, reg32 data, reg32 length)
 {
+    Held h;
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 4);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = out; cpu.edx = self; cpu.ebx = data; cpu.ecx = length;
+    h.eax = out; h.edx = self; h.ebx = data; h.ecx = length;
     guest.setByte(out, kFrameStart);
     guest.setByte(out + 1, std::uint8_t(length));
-    return guest.call(kMoveMemory, args({ data, out + 4, length }));
+    return callHeld(guest, h, kMoveMemory, args({ data, out + 4, length }));
 }
 
-void frontend::netcFrameBuild(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcFrameBuild(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_51bcd0", 0, 0, nullptr, 0, kEsi };
-    const reg32 out = cpu.eax, self = cpu.edx, data = cpu.ebx, length = cpu.ecx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::frameBuild(app, cpu, out, self, data, length); });
+    const reg32 out = args.eax, self = args.edx, data = args.ebx, length = args.ecx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::frameBuild(app, cpu, out, self, data, length); });
 }
 
 /* sub_51bcf0: an unreliable frame written if the stream has room.  1 if all of it went. */
 x86::reg32 frontend::netc::frameSend(App* app, CPU& cpu, reg32 out, reg32 self)
 {
+    Held h;
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0x14);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = out; cpu.edx = self;
+    h.eax = out; h.edx = self;
     const reg32 connection = guest.dword(self + layer::kLink), ops = guest.dword(self + layer::kStream);
     const reg32 size = guest.byte(out + 1) + reg32(4);
-    if (guest.call(guest.dword(ops + stream::kRoom), args({ connection, 0, self, size })) < size)
-        return guest.edx();
+    if (callHeld(guest, h, guest.dword(ops + stream::kRoom), args({ connection, 0, self, size })) < size)
+        return h.edx;
     guest::direct<0x51bc70, frameChecksum>(app, cpu, out, size);
-    const reg32 sent = guest.call(guest.dword(guest.dword(self + layer::kStream) + stream::kWrite),
+    const reg32 sent = callHeld(guest, h, guest.dword(guest.dword(self + layer::kStream) + stream::kWrite),
                                   args({ connection, out, size }));
     const reg32 whole = sent == size ? 1 : 0;
-    guest.leaveEdx(whole);
+    h.edx = (whole);
     return whole;
 }
 
-void frontend::netcFrameSend(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcFrameSend(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_51bcf0", 0, 0, nullptr, 0, std::uint8_t(kEbx | kEcx | kEsi | kEdi) };
-    const reg32 out = cpu.eax, self = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::frameSend(app, cpu, out, self); });
+    const reg32 out = args.eax, self = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::frameSend(app, cpu, out, self); });
 }
 
 /* sub_51bd50: a frame of no data, its length the `code`, written if the stream has room. */
 x86::reg32 frontend::netc::frameSendControl(App* app, CPU& cpu, reg32 self, reg32 code)
 {
+    Held h;
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0x14);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = self; cpu.edx = code;
+    h.eax = self; h.edx = code;
     const reg32 frame = guest.frame();
     const reg32 connection = guest.dword(self + layer::kLink), ops = guest.dword(self + layer::kStream);
-    if (guest.call(guest.dword(ops + stream::kRoom), args({ connection, 0, code, self })) < 4)
-        return guest.edx();
+    if (callHeld(guest, h, guest.dword(ops + stream::kRoom), args({ connection, 0, code, self })) < 4)
+        return h.edx;
     guest.setByte(frame + 1, std::uint8_t(code));
     guest.setByte(frame, kFrameStart);
     // The game's code hands it 4 in ebx too, which it does not read; the call after loads ebx again.
     guest::direct<0x51bc70, frameChecksum>(app, cpu, frame, 4);
     const reg32 now = guest.dword(self + layer::kStream);
-    const reg32 sent = guest.call(guest.dword(now + stream::kWrite), args({ connection, frame, 4, now }));
+    const reg32 sent = callHeld(guest, h, guest.dword(now + stream::kWrite), args({ connection, frame, 4, now }));
     const reg32 whole = sent == 4 ? 1 : 0;
-    guest.leaveEdx(whole);
+    h.edx = (whole);
     return whole;
 }
 
-void frontend::netcFrameSendControl(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcFrameSendControl(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_51bd50", 0, 0, nullptr, 0, std::uint8_t(kEbx | kEcx | kEsi | kEdi) };
-    const reg32 self = cpu.eax, code = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::frameSendControl(app, cpu, self, code); });
+    const reg32 self = args.eax, code = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::frameSendControl(app, cpu, self, code); });
 }
 
 /* sub_51bdc0: the unreliable layer's connection closed. */
 x86::reg32 frontend::netc::unreliableShutdown(App* app, CPU& cpu, reg32 self)
 {
+    Held h;
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0x14);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = self;
-    return shutdownLayer(guest, guest.eax(), plain::kId, 0x550cb4, 0x550cc4, 0x550cd0, 0x550cdc);
+    h.eax = self;
+    return shutdownLayer(guest, h.eax, plain::kId, 0x550cb4, 0x550cc4, 0x550cd0, 0x550cdc);
 }
 
-void frontend::netcUnreliableShutdown(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcUnreliableShutdown(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_51bdc0", 0, 0, nullptr, 0, kAll };
-    const reg32 self = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::unreliableShutdown(app, cpu, self); });
+    const reg32 self = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::unreliableShutdown(app, cpu, self); });
 }
 
 /* sub_51be90: the first frame found in what the stream gave: delivered, or
@@ -1203,73 +1358,74 @@ void frontend::netcUnreliableShutdown(win32::WinApplication* app, x86::CPU& cpu)
 x86::reg32 frontend::netc::unreliableReceiveFrame(App* app, CPU& cpu, reg32 self, reg32 counted, reg32 buffer,
                                                   reg32 length)
 {
+    Held h;
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0x10);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = self; cpu.edx = counted; cpu.ebx = buffer; cpu.ecx = length;
+    h.eax = self; h.edx = counted; h.ebx = buffer; h.ecx = length;
     const reg32 connection = guest.dword(self + layer::kLink);
     const std::uint8_t reliable = guest.byte(guest.dword(self + layer::kStream) + stream::kReliable);
-    guest.leaveEbx(length);
+    h.ebx = (length);
     reg32 used = 0;
     if (reliable == 0)
     {
         const reg32 end = length + buffer;
-        guest.leaveEdx(end);
+        h.edx = (end);
         for (reg32 at = buffer; at < end && guest.byte(at) != kFrameStart; ++at)
             ++used;
     }
     else
     {
-        guest.leaveEdx((guest.edx() & 0xffffff00) | reliable);
+        h.edx = ((h.edx & 0xffffff00) | reliable);
     }
     const reg32 frame = used + buffer;
     if (guest.byte(frame) != kFrameStart)
         return length;
     reg32 end = used + 4;
-    guest.leaveEcx(end);
+    h.ecx = (end);
     if (end > length)
         return used;
     const reg32 size = guest.byte(frame + 1);
-    guest.leaveEdx(size);
+    h.edx = (size);
     if (size > guest.dword(self + layer::kMaxSize))
         return used + (size == kFrameStart ? 1 : 2);
     end += size;
-    guest.leaveEcx(end);
+    h.ecx = (end);
     if (end > length)
         return used;
     const reg32 whole = end - used;
-    guest.leaveEcx(whole);
-    if (guest.call(kFrameGood, args({ frame, whole })) == 0)
+    h.ecx = (whole);
+    if (callHeld(guest, h, kFrameGood, args({ frame, whole })) == 0)
         return used + 2;
     if (guest.dword(connection + link::kTimeout) != 0)
     {
         guest.setDword(connection + link::kTimeout, guest.dword(kConnectionTimeout));
         guest.setByte(self + plain::kAlive, 1);
-        guest.leaveEdx(connection);
+        h.edx = (connection);
     }
     used += whole;
     const reg32 kind = guest.byte(frame + 1);
-    guest.leaveEdx((guest.edx() & 0xffff00ff) | (kind << 8));
+    h.edx = ((h.edx & 0xffff00ff) | (kind << 8));
     if (kind == kFrameClose)
     {
         if (traceLevel(guest) >= 2)
-            traceEvent(guest, 0x550cec, 1, guest.byte(self + plain::kId));
+            traceEvent(guest, h, 0x550cec, 1, guest.byte(self + plain::kId));
         guest::direct<0x51bdc0, unreliableShutdown>(app, cpu, self);
         return used;
     }
     if (kind == 0)
         return used;
     if (traceLevel(guest) >= 3)
-        trace(guest, 0x550cfc, 0, frame + 4, kind, 0, guest.byte(self + plain::kId));
-    guest.call(kDeliver, args({ connection, frame + 4, guest.byte(frame + 1) }));
+        trace(guest, h, 0x550cfc, 0, frame + 4, kind, 0, guest.byte(self + plain::kId));
+    callHeld(guest, h, kDeliver, args({ connection, frame + 4, guest.byte(frame + 1) }));
     return used;
 }
 
-void frontend::netcUnreliableReceiveFrame(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcUnreliableReceiveFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_51be90", 0, 0, nullptr, 0, std::uint8_t(kEsi | kEdi) };
-    const reg32 self = cpu.eax, counted = cpu.edx, buffer = cpu.ebx, length = cpu.ecx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::unreliableReceiveFrame(app, cpu, self, counted, buffer, length); });
+    const reg32 self = args.eax, counted = args.edx, buffer = args.ebx, length = args.ecx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::unreliableReceiveFrame(app, cpu, self, counted, buffer, length); });
 }
 
 /* sub_51bfd0: all that came for the unreliable layer. */
@@ -1278,50 +1434,50 @@ x86::reg32 frontend::netc::unreliableReceive(App* app, CPU& cpu, reg32 self)
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0x24);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = self;
-    return receiveFrames<0x51be90, unreliableReceiveFrame>(guest, cpu, plain::kBuffer, plain::kBufferSize, plain::kHeld);
+    return receiveFrames<0x51be90, unreliableReceiveFrame>(guest, cpu, self, plain::kBuffer, plain::kBufferSize, plain::kHeld);
 }
 
-void frontend::netcUnreliableReceive(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcUnreliableReceive(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_51bfd0", 0, 0, nullptr, 0, kAll };
-    const reg32 self = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::unreliableReceive(app, cpu, self); });
+    const reg32 self = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::unreliableReceive(app, cpu, self); });
 }
 
 /* sub_51c0a0: the stream says something came: read while there is. */
 x86::reg32 frontend::netc::unreliableNotify(App* app, CPU& cpu, reg32 connection)
 {
+    Held h;
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0x10);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = connection;
+    h.eax = connection;
     const reg32 self = guest.dword(connection + link::kLayer);
     const reg32 ops = guest.dword(self + layer::kStream);
-    guest.leaveEdx(guest.dword(kTraceLevel));
+    h.edx = (guest.dword(kTraceLevel));
     if (traceLevel(guest) >= 5)
     {
-        const reg32 ebx = cpu.ebx, ecx = cpu.ecx;
-        traceEvent(guest, 0x550d04, 0, guest.byte(self + plain::kId));
-        guest.leaveEbx(ebx);
-        guest.leaveEcx(ecx);
+        const reg32 ebx = h.ebx, ecx = h.ecx;
+        traceEvent(guest, h, 0x550d04, 0, guest.byte(self + plain::kId));
+        h.ebx = (ebx);
+        h.ecx = (ecx);
     }
     if (guest.dword(connection + link::kTimeout) == 0)
-        return guest.eax();
+        return h.eax;
     for (;;)
     {
-        if (guest.call(guest.dword(ops + stream::kAvailable), args({ connection })) == 0)
+        if (callHeld(guest, h, guest.dword(ops + stream::kAvailable), args({ connection })) == 0)
             return 0;
         if (guest::direct<0x51bfd0, unreliableReceive>(app, cpu, self) == 0)
             return 0;
     }
 }
 
-void frontend::netcUnreliableNotify(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcUnreliableNotify(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_51c0a0", 0, 0, nullptr, 0, std::uint8_t(kEdx | kEsi | kEdi) };
-    const reg32 connection = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::unreliableNotify(app, cpu, connection); });
+    const reg32 connection = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::unreliableNotify(app, cpu, connection); });
 }
 
 /* sub_51c100: a connection opened on the unreliable layer: the layer's record
@@ -1329,10 +1485,11 @@ void frontend::netcUnreliableNotify(win32::WinApplication* app, x86::CPU& cpu)
  * has failed.  1 if it stands; with no connection, the record's size. */
 x86::reg32 frontend::netc::unreliableOpen(App* app, CPU& cpu, reg32 connection, reg32 ops, reg32 asked)
 {
+    Held h;
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0x1c);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = connection; cpu.edx = ops; cpu.ebx = asked;
+    h.eax = connection; h.edx = ops; h.ebx = asked;
     constexpr reg32 kFile = 0x550d10, kFunction = 0x550d20;
     reg32 wanted = asked;
     if (sign(asked) < 6)
@@ -1342,39 +1499,39 @@ x86::reg32 frontend::netc::unreliableOpen(App* app, CPU& cpu, reg32 connection, 
     else if (sign(asked) <= 0xfa)
     {
         const reg32 limit = guest.word(ops + stream::kMaxFrame);
-        guest.leaveEbx((cpu.ebx & 0xffff0000) | limit);
+        h.ebx = ((h.ebx & 0xffff0000) | limit);
         if (limit != 0 && asked + 4 > limit)
-            reportError(guest, kFile, kFunction, 0x12a, 0x550d7c);
+            reportError(guest, h, kFile, kFunction, 0x12a, 0x550d7c);
     }
     else
     {
-        reportError(guest, kFile, kFunction, 0x128, 0x550d3c, 0xfa);
-        guest.leaveEbx(kFile);
+        reportError(guest, h, kFile, kFunction, 0x128, 0x550d3c, 0xfa);
+        h.ebx = (kFile);
     }
     if (connection != 0 && guest.dword(connection + link::kTimeout) != 0)
     {
-        reportError(guest, kFile, kFunction, 0x12d, 0x550dcc);
-        guest.leaveEbx(kFile);
+        reportError(guest, h, kFile, kFunction, 0x12d, 0x550dcc);
+        h.ebx = (kFile);
     }
     const reg32 least = guest.byte(ops + stream::kMinFrame);
     if (sign(least) > sign(wanted))
         wanted = least;
     const std::uint8_t reliable = guest.byte(ops + stream::kReliable);
     const reg32 bufferSize = reliable != 0 ? 0xfe : 0x1fc;
-    guest.leaveEcx(bufferSize);
-    guest.leaveEdx((ops & 0xffffff00) | reliable);
+    h.ecx = (bufferSize);
+    h.edx = ((ops & 0xffffff00) | reliable);
     const reg32 total = bufferSize + plain::kSize;
     if (connection == 0)
         return total;
     reg32 owned = 0;
     reg32 self = guest.dword(connection + link::kLayer);
-    guest.leaveEbx(self);
+    h.ebx = (self);
     if (self == 0)
     {
         guest.setDword(kErrorFile, kFile);
         guest.setDword(kErrorFunction, kFunction);
         guest.setDword(kErrorLine, 0x145);
-        self = guest.call(kAllocate, args({ 0x550e04, total, guest.dword(kMemoryType), bufferSize }));
+        self = callHeld(guest, h, kAllocate, args({ 0x550e04, total, guest.dword(kMemoryType), bufferSize }));
         owned = 1;
         if (self == 0)
             return 0;
@@ -1400,39 +1557,39 @@ x86::reg32 frontend::netc::unreliableOpen(App* app, CPU& cpu, reg32 connection, 
     guest.setDword(self + plain::kBufferSize, bufferSize);
     if (guest.dword(kConnectionTimeout) == 0)
     {
-        reportError(guest, kFile, kFunction, 0x16d, 0x550e0c);
-        guest.leaveEbx(kFunction);
+        reportError(guest, h, kFile, kFunction, 0x16d, 0x550e0c);
+        h.ebx = (kFunction);
     }
-    guest.leaveEcx(ops);
+    h.ecx = (ops);
     reg32 failed = 0;
-    if (guest.call(guest.dword(ops + stream::kOpen), args({ connection, kUnreliableNotify })) == 0)
+    if (callHeld(guest, h, guest.dword(ops + stream::kOpen), args({ connection, kUnreliableNotify })) == 0)
     {
         if (traceLevel(guest) >= 3)
-            traceEvent(guest, 0x550e60, 0, guest.byte(self + plain::kId));
+            traceEvent(guest, h, 0x550e60, 0, guest.byte(self + plain::kId));
     }
     else
     {
         guest.setDword(connection + link::kTimeout, kNeverTimesOut);
-        guest.call(kQueueAdd, args({ kActiveConnections, connection }));
+        callHeld(guest, h, kQueueAdd, args({ kActiveConnections, connection }));
         if (traceLevel(guest) >= 1)
-            traceEvent(guest, 0x550e34, 0, guest.byte(self + plain::kId));
+            traceEvent(guest, h, 0x550e34, 0, guest.byte(self + plain::kId));
         for (;;)
         {
             if (reg32(*fe::direct<0x4df930, ea::isThreadNow>(app, cpu, 0)) == 0)
             {
                 fe::direct<0x4df8e0, ea::sleepFor>(app, cpu, 1);
-                failed = guest.call(guest.dword(connection + link::kProcess), args({ connection })) != 0 ? 1 : 0;
+                failed = callHeld(guest, h, guest.dword(connection + link::kProcess), args({ connection })) != 0 ? 1 : 0;
             }
-            else if (sign(guest.call(kWaitSystemTasks, args({ 1 }))) < 0)
+            else if (sign(callHeld(guest, h, kWaitSystemTasks, args({ 1 }))) < 0)
             {
                 failed = 1;
             }
             else
             {
-                failed = guest.call(guest.dword(connection + link::kProcess), args({ connection })) != 0 ? 1 : 0;
+                failed = callHeld(guest, h, guest.dword(connection + link::kProcess), args({ connection })) != 0 ? 1 : 0;
             }
             if (failed != 0 && traceLevel(guest) >= 2)
-                traceEvent(guest, 0x550e40, 0, guest.byte(self + plain::kId));
+                traceEvent(guest, h, 0x550e40, 0, guest.byte(self + plain::kId));
             if (guest.dword(connection + link::kTimeout) != 0)
                 guest.setDword(connection + link::kTimeout, kNeverTimesOut);
             if (guest.dword(connection + link::kTimeout) == 0 || guest.byte(self + plain::kAlive) != 0 || failed != 0)
@@ -1441,11 +1598,11 @@ x86::reg32 frontend::netc::unreliableOpen(App* app, CPU& cpu, reg32 connection, 
         if (guest.dword(connection + link::kTimeout) == 0 || failed != 0)
         {
             const reg32 timeout = guest.dword(connection + link::kTimeout);
-            guest.leaveEbx(timeout);
+            h.ebx = (timeout);
             if (timeout == 0 && traceLevel(guest) >= 2)
-                traceEvent(guest, 0x550e50, 0, guest.byte(self + plain::kId));
+                traceEvent(guest, h, 0x550e50, 0, guest.byte(self + plain::kId));
             guest.setDword(connection + link::kTimeout, 0);
-            guest.call(guest.dword(ops + stream::kClose), args({ connection, ops }));
+            callHeld(guest, h, guest.dword(ops + stream::kClose), args({ connection, ops }));
         }
     }
     if (guest.dword(connection + link::kTimeout) != 0 && failed == 0)
@@ -1453,13 +1610,13 @@ x86::reg32 frontend::netc::unreliableOpen(App* app, CPU& cpu, reg32 connection, 
         guest.setDword(connection + link::kTimeout, guest.dword(kConnectionTimeout));
         guest.setDword(connection + link::kDrop, oldDrop);
         if (traceLevel(guest) >= 1)
-            traceEvent(guest, 0x550e70, 0, guest.byte(self + plain::kId));
+            traceEvent(guest, h, 0x550e70, 0, guest.byte(self + plain::kId));
         return 1;
     }
     if (traceLevel(guest) >= 1)
-        traceEvent(guest, 0x550e84, 0, guest.byte(self + plain::kId));
-    guest.call(kQueueRemove, args({ kActiveConnections, connection }));
-    guest.call(kQueueRemove, args({ kClosedConnections, connection, owned }));
+        traceEvent(guest, h, 0x550e84, 0, guest.byte(self + plain::kId));
+    callHeld(guest, h, kQueueRemove, args({ kActiveConnections, connection }));
+    callHeld(guest, h, kQueueRemove, args({ kClosedConnections, connection, owned }));
     if (owned != 0)
     {
         fe::direct<0x4e1890, ea::purgeBlock>(app, cpu, self);
@@ -1468,67 +1625,69 @@ x86::reg32 frontend::netc::unreliableOpen(App* app, CPU& cpu, reg32 connection, 
     return 0;
 }
 
-void frontend::netcUnreliableOpen(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcUnreliableOpen(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_51c100", 0, 0, nullptr, 0, std::uint8_t(kEsi | kEdi) };
-    const reg32 connection = cpu.eax, ops = cpu.edx, asked = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::unreliableOpen(app, cpu, connection, ops, asked); });
+    const reg32 connection = args.eax, ops = args.edx, asked = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::unreliableOpen(app, cpu, connection, ops, asked); });
 }
 
 /* sub_51c510: data sent on the unreliable layer, made a frame on the stack.
  * (The original's test for no buffer is of its stack pointer, never zero.) */
 x86::reg32 frontend::netc::unreliableSend(App* app, CPU& cpu, reg32 connection, reg32 data, reg32 length)
 {
+    Held h;
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0x110);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = connection; cpu.edx = data; cpu.ebx = length;
+    h.eax = connection; h.edx = data; h.ebx = length;
     const reg32 frame = guest.frame();
     if (connection == 0 || guest.dword(connection + link::kTimeout) == 0)
         return 0;
     const reg32 self = guest.dword(connection + link::kLayer);
     if (length > guest.dword(self + layer::kMaxSize))
     {
-        reportError(guest, 0x550d10, 0x550e98, 0x1b1, 0x550eb0);
-        guest.leaveEbx(0x550e98);
+        reportError(guest, h, 0x550d10, 0x550e98, 0x1b1, 0x550eb0);
+        h.ebx = (0x550e98);
     }
-    guest.call(kFrameBuild, args({ frame, self, data, length }));
-    guest.call(kFrameSend, args({ frame, self }));
+    callHeld(guest, h, kFrameBuild, args({ frame, self, data, length }));
+    callHeld(guest, h, kFrameSend, args({ frame, self }));
     return 1;
 }
 
-void frontend::netcUnreliableSend(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcUnreliableSend(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_51c510", 0, 0, nullptr, 0, std::uint8_t(kEcx | kEsi | kEdi) };
-    const reg32 connection = cpu.eax, data = cpu.edx, length = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::unreliableSend(app, cpu, connection, data, length); });
+    const reg32 connection = args.eax, data = args.edx, length = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::unreliableSend(app, cpu, connection, data, length); });
 }
 
 /* sub_51c5c0: the unreliable layer's turn: counts its timeout down, says it is
  * alive when it has been quiet, closes on timing out.  Always 1. */
 x86::reg32 frontend::netc::unreliableProcess(App* app, CPU& cpu, reg32 connection)
 {
+    Held h;
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0x14);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = connection;
+    h.eax = connection;
     const reg32 self = guest.dword(connection + link::kLayer);
-    guest.leaveEdx(guest.dword(kTraceLevel));
+    h.edx = (guest.dword(kTraceLevel));
     if (traceLevel(guest) >= 5)
-        traceEvent(guest, 0x550ef0, 0, guest.byte(self + plain::kId));
+        traceEvent(guest, h, 0x550ef0, 0, guest.byte(self + plain::kId));
     const reg32 left = guest.dword(connection + link::kTimeout) - 1;
     guest.setDword(connection + link::kTimeout, left);
-    guest.leaveEbx(left);
+    h.ebx = (left);
     if (left == 0)
     {
         if (traceLevel(guest) >= 3)
-            traceEvent(guest, 0x550efc, 0, guest.byte(self + plain::kId));
-        guest.setDword(connection + link::kTimeout, guest.call(guest.dword(connection + link::kTimedOut), args({ connection })));
+            traceEvent(guest, h, 0x550efc, 0, guest.byte(self + plain::kId));
+        guest.setDword(connection + link::kTimeout, callHeld(guest, h, guest.dword(connection + link::kTimedOut), args({ connection })));
     }
     if (guest.dword(connection + link::kTimeout) != 0)
     {
         const reg32 ops = guest.dword(self + layer::kStream);
-        if (guest.call(guest.dword(ops + stream::kReady), args({ connection, ops })) != 0)
+        if (callHeld(guest, h, guest.dword(ops + stream::kReady), args({ connection, ops })) != 0)
         {
             const reg32 idle = guest.dword(self + plain::kIdleLeft);
             guest.setDword(self + plain::kIdleLeft, idle - 1);
@@ -1538,43 +1697,44 @@ x86::reg32 frontend::netc::unreliableProcess(App* app, CPU& cpu, reg32 connectio
         }
     }
     if (traceLevel(guest) >= 2)
-        trace(guest, 0x550f08, connection + link::kTimeout, 0, 0, 1, guest.byte(self + plain::kId));
+        trace(guest, h, 0x550f08, connection + link::kTimeout, 0, 0, 1, guest.byte(self + plain::kId));
     guest::direct<0x51bdc0, unreliableShutdown>(app, cpu, self);
     return 1;
 }
 
-void frontend::netcUnreliableProcess(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcUnreliableProcess(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_51c5c0", 0, 0, nullptr, 0, kAll };
-    const reg32 connection = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::unreliableProcess(app, cpu, connection); });
+    const reg32 connection = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::unreliableProcess(app, cpu, connection); });
 }
 
 /* sub_51c690: the unreliable layer's connection closed by us: the other end told
  * if it can be, the record gone.  1 if it was there. */
 x86::reg32 frontend::netc::unreliableClose(App* app, CPU& cpu, reg32 connection)
 {
+    Held h;
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0x14);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = connection;
+    h.eax = connection;
     if (connection == 0)
         return 0;
     const reg32 self = guest.dword(connection + link::kLayer);
     if (self == 0)
         return 0;
     const reg32 ops = guest.dword(self + layer::kStream);
-    guest.leaveEcx(guest.dword(kTraceLevel));
+    h.ecx = (guest.dword(kTraceLevel));
     if (traceLevel(guest) >= 1)
     {
-        const reg32 ebx = cpu.ebx;
-        traceEvent(guest, 0x550f14, 0, guest.byte(self + plain::kId));
-        guest.leaveEbx(ebx);
+        const reg32 ebx = h.ebx;
+        traceEvent(guest, h, 0x550f14, 0, guest.byte(self + plain::kId));
+        h.ebx = (ebx);
     }
-    if (guest.call(kQueueRemove, args({ kActiveConnections, connection })) == 0)
+    if (callHeld(guest, h, kQueueRemove, args({ kActiveConnections, connection })) == 0)
     {
         if (guest.dword(connection + link::kTimeout) != 0)
-            guest.call(kMonoPrintf, args({ 0 }, { 0x550f24 }));
+            callHeld(guest, h, kMonoPrintf, args({ 0 }, { 0x550f24 }));
     }
     else
     {
@@ -1585,22 +1745,22 @@ x86::reg32 frontend::netc::unreliableClose(App* app, CPU& cpu, reg32 connection)
             for (;;)
             {
                 --tries;
-                guest.leaveEcx(tries);
+                h.ecx = (tries);
                 if (tries == 0xffffffff
-                    || guest.call(guest.dword(ops + stream::kReady), args({ connection })) == 0)
+                    || callHeld(guest, h, guest.dword(ops + stream::kReady), args({ connection })) == 0)
                     break;
                 // By address: the edx it leaves is handed to the stream's functions after it.
-                if (guest.call(kFrameControl, args({ self, kFrameClose })) != 0)
+                if (callHeld(guest, h, kFrameControl, args({ self, kFrameClose })) != 0)
                     tries = 0;
                 else
-                    loaded<0x4f06e0, frontend::wata::timerWait>(app, cpu, 1);
+                    loaded<0x4f06e0, frontend::wata::timerWait>(app, cpu, h, 1);
             }
-            loaded<0x4f06e0, frontend::wata::timerWait>(app, cpu, 3);
-            guest.call(guest.dword(ops + stream::kClose), args({ connection }));
+            loaded<0x4f06e0, frontend::wata::timerWait>(app, cpu, h, 3);
+            callHeld(guest, h, guest.dword(ops + stream::kClose), args({ connection }));
         }
         fe::direct<0x50de50, netb::qpush>(app, cpu, kClosedConnections, connection);
     }
-    if (guest.call(kQueueRemove, args({ kClosedConnections, connection })) == 0)
+    if (callHeld(guest, h, kQueueRemove, args({ kClosedConnections, connection })) == 0)
         return 0;
     reg32(*fe::direct<0x4eb360, ea::lockFreed>(app, cpu, guest.dword(self + plain::kLock)));
     if (guest.byte(self + layer::kOwned) != 0)
@@ -1611,11 +1771,11 @@ x86::reg32 frontend::netc::unreliableClose(App* app, CPU& cpu, reg32 connection)
     return 1;
 }
 
-void frontend::netcUnreliableClose(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcUnreliableClose(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_51c690", 0, 0, nullptr, 0, std::uint8_t(kEcx | kEdx | kEsi | kEdi) };
-    const reg32 connection = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::unreliableClose(app, cpu, connection); });
+    const reg32 connection = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::unreliableClose(app, cpu, connection); });
 }
 
 /* sub_51c7a0: a number of few bits widened, near what is expected, going on past it. */
@@ -1624,21 +1784,19 @@ x86::reg32 frontend::netc::sequenceWiden(App* app, CPU& cpu, reg32 expected, reg
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 4);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = expected; cpu.edx = low; cpu.ebx = mask;
     reg32 wide = (~mask & expected) | low;
     if (wide < expected)
     {
-        guest.leaveEbx(mask + 1);
         wide += mask + 1;
     }
     return wide;
 }
 
-void frontend::netcSequenceWiden(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcSequenceWiden(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_51c7a0", 0, 0, nullptr, 0, kEcx };
-    const reg32 expected = cpu.eax, low = cpu.edx, mask = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::sequenceWiden(app, cpu, expected, low, mask); });
+    const reg32 expected = args.eax, low = args.edx, mask = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::sequenceWiden(app, cpu, expected, low, mask); });
 }
 
 /* sub_51c7c0: a reliable frame's checksum stamped. */
@@ -1647,15 +1805,14 @@ x86::reg32 frontend::netc::packetChecksum(App* app, CPU& cpu, reg32 frame, reg32
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 4);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = frame; cpu.edx = length;
-    return stampChecksum(guest, cpu, guest.eax(), 4);
+    return stampChecksum(guest, cpu, frame, length, 4);
 }
 
-void frontend::netcPacketChecksum(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcPacketChecksum(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_51c7c0", 0, 0, nullptr, 0, kEcx };
-    const reg32 frame = cpu.eax, length = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::packetChecksum(app, cpu, frame, length); });
+    const reg32 frame = args.eax, length = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::packetChecksum(app, cpu, frame, length); });
 }
 
 /* sub_51c7f0: whether a reliable frame's checksum holds. */
@@ -1664,28 +1821,27 @@ x86::reg32 frontend::netc::packetChecksumGood(App* app, CPU& cpu, reg32 frame, r
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 8);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = frame; cpu.edx = length;
-    return checksumGood(guest, kPacketChecksum, 4);
+    return checksumGood(guest, kPacketChecksum, frame, length, 4);
 }
 
-void frontend::netcPacketChecksumGood(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcPacketChecksumGood(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_51c7f0", 0, 0, nullptr, 0, std::uint8_t(kEbx | kEcx) };
-    const reg32 frame = cpu.eax, length = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::packetChecksumGood(app, cpu, frame, length); });
+    const reg32 frame = args.eax, length = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::packetChecksumGood(app, cpu, frame, length); });
 }
 
 /* sub_51c820: the number to acknowledge in what is sent now, the idle time starting over. */
 x86::reg32 frontend::netc::packetAckNumber(App* app, CPU& cpu, reg32 self)
 {
+    Held h;
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0xc);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = self;
+    h.eax = self;
     const reg32 frame = guest.frame();
     // The game's code hands it `self` in edx too, which it does not take; there it stays.
-    guest.leaveEdx(self);
-    reg32 number = loaded<0x50e2d0, frontend::netb::qlowpriority>(app, cpu, self + rely::kReceiving);
+    reg32 number = loaded<0x50e2d0, frontend::netb::qlowpriority>(app, cpu, h, self + rely::kReceiving);
     if (number == 0xffffffff)
         number = guest.dword(self + rely::kNextFree);
     --number;
@@ -1694,28 +1850,29 @@ x86::reg32 frontend::netc::packetAckNumber(App* app, CPU& cpu, reg32 self)
     guest.setDword(self + rely::kIdleLeft, result);
     if (traceLevel(guest) >= 3)
     {
-        const reg32 ebx = cpu.ebx;
-        trace(guest, 0x550f68, frame, 0, 0, 0, guest.byte(self + rely::kId));
-        guest.leaveEbx(ebx);
-        result = guest.eax();
+        const reg32 ebx = h.ebx;
+        trace(guest, h, 0x550f68, frame, 0, 0, 0, guest.byte(self + rely::kId));
+        h.ebx = (ebx);
+        result = h.eax;
     }
     return (result & 0xffffff00) | (guest.byte(frame) & kSequenceMask);
 }
 
-void frontend::netcPacketAckNumber(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcPacketAckNumber(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_51c820", 0, 0, nullptr, 0, std::uint8_t(kEcx | kEdx) };
-    const reg32 self = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::packetAckNumber(app, cpu, self); });
+    const reg32 self = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::packetAckNumber(app, cpu, self); });
 }
 
 /* sub_51c890: a packet numbered and its frame's start and data made. */
 x86::reg32 frontend::netc::packetBuild(App* app, CPU& cpu, reg32 out, reg32 self, reg32 data, reg32 length)
 {
+    Held h;
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0x14);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = out; cpu.edx = self; cpu.ebx = data; cpu.ecx = length;
+    h.eax = out; h.edx = self; h.ebx = data; h.ecx = length;
     const reg32 queue = self + rely::kUnacked;
     const reg32 locked = fe::direct<0x50ea20, frontend::menz::fileLockEnter>(app, cpu, queue);
     const reg32 number = guest.dword(self + rely::kNextSend);
@@ -1726,42 +1883,43 @@ x86::reg32 frontend::netc::packetBuild(App* app, CPU& cpu, reg32 out, reg32 self
     guest.setByte(out + packet::kFrame, kFrameStart);
     guest.setByte(out + packet::kSequence, guest.byte(out + packet::kNumber) & kSequenceMask);
     guest.setByte(out + packet::kLength, std::uint8_t(length));
-    return guest.call(kMoveMemory, args({ data, out + packet::kData, length }));
+    return callHeld(guest, h, kMoveMemory, args({ data, out + packet::kData, length }));
 }
 
-void frontend::netcPacketBuild(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcPacketBuild(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_51c890", 0, 0, nullptr, 0, std::uint8_t(kEsi | kEdi) };
-    const reg32 out = cpu.eax, self = cpu.edx, data = cpu.ebx, length = cpu.ecx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::packetBuild(app, cpu, out, self, data, length); });
+    const reg32 out = args.eax, self = args.edx, data = args.ebx, length = args.ecx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::packetBuild(app, cpu, out, self, data, length); });
 }
 
 /* sub_51c8f0: a packet written if the stream has room, its resend time started.
  * 1 if it went. */
 x86::reg32 frontend::netc::packetSend(App* app, CPU& cpu, reg32 out, reg32 self)
 {
+    Held h;
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0x28);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = out; cpu.edx = self;
+    h.eax = out; h.edx = self;
     const reg32 sizePlace = guest.frame();
     const reg32 connection = guest.dword(self + layer::kLink);
-    const reg32 room = guest.call(guest.dword(guest.dword(self + layer::kStream) + stream::kRoom),
-                                  args({ connection, guest.dword(self + layer::kStream), cpu.ebx, self }));
+    const reg32 room = callHeld(guest, h, guest.dword(guest.dword(self + layer::kStream) + stream::kRoom),
+                                  args({ connection, guest.dword(self + layer::kStream), h.ebx, self }));
     const reg32 number = out + packet::kNumber;
     const reg32 needed = guest.byte(out + packet::kLength) + packet::kFrameHeader;
-    guest.leaveEdx(needed);
+    h.edx = (needed);
     bool went = false;
     if (room < needed)
     {
         if (sign(guest.dword(out + packet::kResend)) < 0)
         {
             if (traceLevel(guest) >= 3)
-                trace(guest, 0x550f90, number, 0, 0, 1, guest.byte(self + rely::kId));
+                trace(guest, h, 0x550f90, number, 0, 0, 1, guest.byte(self + rely::kId));
         }
         else if (traceLevel(guest) >= 3)
         {
-            trace(guest, 0x550f98, number, 0, 0, 1, guest.byte(self + rely::kId));
+            trace(guest, h, 0x550f98, number, 0, 0, 1, guest.byte(self + rely::kId));
         }
     }
     else
@@ -1772,20 +1930,20 @@ x86::reg32 frontend::netc::packetSend(App* app, CPU& cpu, reg32 out, reg32 self)
         guest.setByte(out + packet::kAck, std::uint8_t(ack));
         const reg32 frame = out + packet::kFrame;
         guest::direct<0x51c7c0, packetChecksum>(app, cpu, frame, guest.byte(out + packet::kLength) + packet::kFrameHeader);
-        const reg32 sent = guest.call(guest.dword(guest.dword(self + layer::kStream) + stream::kWrite),
+        const reg32 sent = callHeld(guest, h, guest.dword(guest.dword(self + layer::kStream) + stream::kWrite),
                                       args({ connection, frame, guest.dword(sizePlace) }));
         const reg32 expected = guest.dword(sizePlace);
-        guest.leaveEdx(expected);
+        h.edx = (expected);
         if (sent == expected)
         {
             if (traceLevel(guest) >= 3)
-                trace(guest, sign(guest.dword(out + packet::kResend)) >= 0 ? 0x550f78 : 0x550f70, number,
+                trace(guest, h, sign(guest.dword(out + packet::kResend)) >= 0 ? 0x550f78 : 0x550f70, number,
                       out + packet::kData, guest.byte(out + packet::kLength), 0, guest.byte(self + rely::kId));
             went = true;
         }
         else if (traceLevel(guest) >= 1)
         {
-            trace(guest, 0x550f80, sizePlace, frame, expected, 1, guest.byte(self + rely::kId));
+            trace(guest, h, 0x550f80, sizePlace, frame, expected, 1, guest.byte(self + rely::kId));
         }
     }
     if (!went)
@@ -1793,32 +1951,33 @@ x86::reg32 frontend::netc::packetSend(App* app, CPU& cpu, reg32 out, reg32 self)
         guest.setDword(out + packet::kResend, 1);
         return 0;
     }
-    guest.leaveEdx(connection);
+    h.edx = (connection);
     guest.setDword(out + packet::kResend, guest.word(connection + link::kResendTicks));
     return 1;
 }
 
-void frontend::netcPacketSend(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcPacketSend(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_51c8f0", 0, 0, nullptr, 0, std::uint8_t(kEbx | kEcx | kEsi | kEdi) };
-    const reg32 out = cpu.eax, self = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::packetSend(app, cpu, out, self); });
+    const reg32 out = args.eax, self = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::packetSend(app, cpu, out, self); });
 }
 
 /* sub_51ca50: a frame of no data, its number the `code`, written if the stream
  * has room; `control` holds it and its resend time.  1 if it went. */
 x86::reg32 frontend::netc::packetSendControl(App* app, CPU& cpu, reg32 control, reg32 self, reg32 code)
 {
+    Held h;
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0x14);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = control; cpu.edx = self; cpu.ebx = code;
+    h.eax = control; h.edx = self; h.ebx = code;
     const reg32 connection = guest.dword(self + layer::kLink);
-    guest.leaveEcx(control);
+    h.ecx = (control);
     guest.setDword(control + packet::kResend, 1);
     const reg32 ops = guest.dword(self + layer::kStream);
-    if (guest.call(guest.dword(ops + stream::kRoom), args({ connection, 0 })) < packet::kFrameHeader)
-        return guest.edx();
+    if (callHeld(guest, h, guest.dword(ops + stream::kRoom), args({ connection, 0 })) < packet::kFrameHeader)
+        return h.edx;
     const reg32 ack = guest::direct<0x51c820, packetAckNumber>(app, cpu, self) & 0xff;
     const reg32 frame = control + packet::kFrame;
     guest.setByte(frame, kFrameStart);
@@ -1826,140 +1985,144 @@ x86::reg32 frontend::netc::packetSendControl(App* app, CPU& cpu, reg32 control, 
     guest.setByte(control + packet::kAck, std::uint8_t(ack));
     guest.setByte(control + packet::kLength, 0);
     // The game's code hands it the length in ebx too, which it does not read; the write below reads it there.
-    guest.leaveEbx(packet::kFrameHeader);
+    h.ebx = (packet::kFrameHeader);
     guest::direct<0x51c7c0, packetChecksum>(app, cpu, frame, packet::kFrameHeader);
-    const reg32 sent = guest.call(guest.dword(guest.dword(self + layer::kStream) + stream::kWrite),
+    const reg32 sent = callHeld(guest, h, guest.dword(guest.dword(self + layer::kStream) + stream::kWrite),
                                   args({ connection, frame }));
     const reg32 whole = sent == packet::kFrameHeader ? 1 : 0;
-    guest.leaveEdx(whole);
+    h.edx = (whole);
     if (whole != 0 && code <= kSequenceMask)
         guest.setDword(control + packet::kResend, guest.word(connection + 0x2c));
     return whole;
 }
 
-void frontend::netcPacketSendControl(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcPacketSendControl(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_51ca50", 0, 0, nullptr, 0, std::uint8_t(kEcx | kEsi | kEdi) };
-    const reg32 control = cpu.eax, self = cpu.edx, code = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::packetSendControl(app, cpu, control, self, code); });
+    const reg32 control = args.eax, self = args.edx, code = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::packetSendControl(app, cpu, control, self, code); });
 }
 
 /* sub_51caf0: a packet that came out of order asked for again, when its time has
  * come.  1, or what asking gave. */
 x86::reg32 frontend::netc::packetSendNak(App* app, CPU& cpu, reg32 waiting, reg32 self)
 {
+    Held h;
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0xc);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = waiting; cpu.edx = self;
+    h.eax = waiting; h.edx = self;
     if (waiting == 0)
         return 1;
     const reg32 left = guest.dword(waiting + packet::kResend);
-    guest.leaveEdx(left - 1);
+    h.edx = (left - 1);
     guest.setDword(waiting + packet::kResend, left - 1);
     if (sign(left) > 0)
         return 1;
     if (traceLevel(guest) >= 3)
     {
-        const reg32 ecx = cpu.ecx;
-        trace(guest, 0x550fa0, waiting + packet::kNumber, 0, 0, 1, guest.byte(self + rely::kId));
-        guest.leaveEcx(ecx);
+        const reg32 ecx = h.ecx;
+        trace(guest, h, 0x550fa0, waiting + packet::kNumber, 0, 0, 1, guest.byte(self + rely::kId));
+        h.ecx = (ecx);
     }
-    return guest.call(kPacketControl, args({ guest.dword(self + rely::kFirstPacket), self,
+    return callHeld(guest, h, kPacketControl, args({ guest.dword(self + rely::kFirstPacket), self,
                                              guest.dword(waiting + packet::kNumber) & kSequenceMask }));
 }
 
-void frontend::netcPacketSendNak(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcPacketSendNak(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_51caf0", 0, 0, nullptr, 0, std::uint8_t(kEbx | kEcx | kEsi | kEdi) };
-    const reg32 waiting = cpu.eax, self = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::packetSendNak(app, cpu, waiting, self); });
+    const reg32 waiting = args.eax, self = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::packetSendNak(app, cpu, waiting, self); });
 }
 
 /* sub_51cb50: what the other end has now: what it acknowledged taken off those waiting. */
 x86::reg32 frontend::netc::packetGotAck(App* app, CPU& cpu, reg32 self, reg32 ack)
 {
+    Held h;
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0x14);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = self; cpu.edx = ack;
+    h.eax = self; h.edx = ack;
     const reg32 frame = guest.frame();
-    const reg32 acked = loaded<0x51c7a0, sequenceWiden>(app, cpu, guest.dword(self + rely::kAcked), guest.edx() & 0xff,
+    const reg32 acked = loaded<0x51c7a0, sequenceWiden>(app, cpu, h, guest.dword(self + rely::kAcked), h.edx & 0xff,
                                                          kSequenceMask);
     guest.setDword(frame, acked);
     if (acked < guest.dword(self + rely::kNextSend) && acked > guest.dword(self + rely::kAcked))
     {
         guest.setDword(self + rely::kAcked, acked);
         if (traceLevel(guest) >= 3)
-            trace(guest, 0x550fa8, frame, 0, 0, 0, guest.byte(self + rely::kId));
+            trace(guest, h, 0x550fa8, frame, 0, 0, 0, guest.byte(self + rely::kId));
     }
     else if (traceLevel(guest) >= 3)
     {
-        trace(guest, 0x550fb0, frame, 0, 0, 0, guest.byte(self + rely::kId));
+        trace(guest, h, 0x550fb0, frame, 0, 0, 0, guest.byte(self + rely::kId));
     }
     const reg32 unacked = self + rely::kUnacked;
     for (;;)
     {
-        const reg32 first = loaded<0x50e2d0, frontend::netb::qlowpriority>(app, cpu, unacked);
+        const reg32 first = loaded<0x50e2d0, frontend::netb::qlowpriority>(app, cpu, h, unacked);
         if (first > guest.dword(self + rely::kAcked))
             return first;
-        const reg32 done = loaded<0x50df60, frontend::netb::qpop>(app, cpu, unacked);
+        const reg32 done = loaded<0x50df60, frontend::netb::qpop>(app, cpu, h, unacked);
         if (done == 0)
             return 0;
-        guest.call(kQueueAdd, args({ self + rely::kFree, done }));
+        callHeld(guest, h, kQueueAdd, args({ self + rely::kFree, done }));
     }
 }
 
-void frontend::netcPacketGotAck(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcPacketGotAck(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_51cb50", 0, 0, nullptr, 0, std::uint8_t(kEbx | kEcx | kEsi | kEdi) };
-    const reg32 self = cpu.eax, ack = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::packetGotAck(app, cpu, self, ack); });
+    const reg32 self = args.eax, ack = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::packetGotAck(app, cpu, self, ack); });
 }
 
 /* sub_51cc00: the other end wants a packet again: its time to resend is now. */
 x86::reg32 frontend::netc::packetGotNak(App* app, CPU& cpu, reg32 self, reg32 sequence)
 {
+    Held h;
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0x14);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = self; cpu.edx = sequence;
+    h.eax = self; h.edx = sequence;
     const reg32 frame = guest.frame();
     const reg32 unacked = self + rely::kUnacked;
-    const reg32 first = loaded<0x50e2d0, frontend::netb::qlowpriority>(app, cpu, unacked);
-    const reg32 number = loaded<0x51c7a0, sequenceWiden>(app, cpu, first, guest.edx() & 0xff, kSequenceMask);
+    const reg32 first = loaded<0x50e2d0, frontend::netb::qlowpriority>(app, cpu, h, unacked);
+    const reg32 number = loaded<0x51c7a0, sequenceWiden>(app, cpu, h, first, h.edx & 0xff, kSequenceMask);
     guest.setDword(frame, number);
-    const reg32 found = guest.call(kQueueFindKey, args({ unacked, number }));
+    const reg32 found = callHeld(guest, h, kQueueFindKey, args({ unacked, number }));
     if (found == 0)
         return 0;
     if (traceLevel(guest) >= 3)
-        trace(guest, 0x550fb8, frame, 0, 0, 1, guest.byte(self + rely::kId));
+        trace(guest, h, 0x550fb8, frame, 0, 0, 1, guest.byte(self + rely::kId));
     guest.setDword(found + packet::kResend, 0);
-    return guest.eax();
+    return h.eax;
 }
 
-void frontend::netcPacketGotNak(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcPacketGotNak(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_51cc00", 0, 0, nullptr, 0, std::uint8_t(kEbx | kEcx | kEsi | kEdi) };
-    const reg32 self = cpu.eax, sequence = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::packetGotNak(app, cpu, self, sequence); });
+    const reg32 self = args.eax, sequence = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::packetGotNak(app, cpu, self, sequence); });
 }
 
 /* sub_51cc80: the reliable layer's connection closed. */
 x86::reg32 frontend::netc::packetShutdown(App* app, CPU& cpu, reg32 self)
 {
+    Held h;
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0x14);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = self;
-    return shutdownLayer(guest, guest.eax(), rely::kId, 0x550fc0, 0x550fd0, 0x550fdc, 0x550fe8);
+    h.eax = self;
+    return shutdownLayer(guest, h.eax, rely::kId, 0x550fc0, 0x550fd0, 0x550fdc, 0x550fe8);
 }
 
-void frontend::netcPacketShutdown(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcPacketShutdown(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_51cc80", 0, 0, nullptr, 0, kAll };
-    const reg32 self = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::packetShutdown(app, cpu, self); });
+    const reg32 self = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::packetShutdown(app, cpu, self); });
 }
 
 /* sub_51cd50: the first frame found in what the stream gave: its acknowledgement
@@ -1967,33 +2130,34 @@ void frontend::netcPacketShutdown(win32::WinApplication* app, x86::CPU& cpu)
  * What was used of the buffer; frames that were not whole counted as bad. */
 x86::reg32 frontend::netc::packetReceiveFrame(App* app, CPU& cpu, reg32 self, reg32 counted, reg32 buffer, reg32 length)
 {
+    Held h;
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0x1c);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = self; cpu.edx = counted; cpu.ebx = buffer; cpu.ecx = length;
+    h.eax = self; h.edx = counted; h.ebx = buffer; h.ecx = length;
     const reg32 connection = guest.dword(self + layer::kLink);
     const std::uint8_t reliable = guest.byte(guest.dword(self + layer::kStream) + stream::kReliable);
-    guest.leaveEbx(length);
+    h.ebx = (length);
     reg32 used = 0, whole = 0;
     if (reliable == 0)
     {
         const reg32 end = length + buffer;
-        guest.leaveEdx(end);
+        h.edx = (end);
         for (reg32 at = buffer; at < end && guest.byte(at) != kFrameStart; ++at)
             ++used;
     }
     else
     {
-        guest.leaveEdx((guest.edx() & 0xffffff00) | reliable);
+        h.edx = ((h.edx & 0xffffff00) | reliable);
     }
     const reg32 frame = used + buffer;
     if (guest.byte(frame) != kFrameStart)
         return length;
     const auto finished = [&]() -> reg32 {
-        guest.leaveEdx(whole);
+        h.edx = (whole);
         const reg32 bad = guest.dword(self + rely::kBad) + (used > whole ? 1 : 0);
         guest.setDword(self + rely::kBad, bad);
-        guest.leaveEcx(bad);
+        h.ecx = (bad);
         return used;
     };
     reg32 end = used + packet::kFrameHeader;
@@ -2009,7 +2173,7 @@ x86::reg32 frontend::netc::packetReceiveFrame(App* app, CPU& cpu, reg32 self, re
     if (end > length)
         return finished();
     const reg32 bytes = end - used;
-    guest.leaveEcx(bytes);
+    h.ecx = (bytes);
     if (guest::direct<0x51c7f0, packetChecksumGood>(app, cpu, frame, bytes) == 0)
     {
         used += 3;
@@ -2024,47 +2188,47 @@ x86::reg32 frontend::netc::packetReceiveFrame(App* app, CPU& cpu, reg32 self, re
         guest::direct<0x51cb50, packetGotAck>(app, cpu, self, ack);
     whole = bytes;
     const reg32 dataLength = guest.byte(frame + 1), sequence = guest.byte(frame + 2);
-    guest.leaveEbx((cpu.ebx & 0xffffff00) | dataLength);
+    h.ebx = ((h.ebx & 0xffffff00) | dataLength);
     if (dataLength != 0)
-        guest.leaveEbx((cpu.ebx & 0xffff00ff) | (sequence << 8));
+        h.ebx = ((h.ebx & 0xffff00ff) | (sequence << 8));
     if (dataLength != 0 && sequence <= kSequenceMask)
     {
-        const reg32 number = loaded<0x51c7a0, sequenceWiden>(app, cpu, guest.dword(self + rely::kNextDeliver), sequence,
+        const reg32 number = loaded<0x51c7a0, sequenceWiden>(app, cpu, h, guest.dword(self + rely::kNextDeliver), sequence,
                                                               kSequenceMask);
         // The game's code hands it the queue in ebx too, which it does not take; there it stays.
-        guest.leaveEbx(self + rely::kReceiving);
-        const reg32 slot = loaded<0x50e800, frontend::wina::queueTakeByPriority>(app, cpu, self + rely::kReceiving, number);
+        h.ebx = (self + rely::kReceiving);
+        const reg32 slot = loaded<0x50e800, frontend::wina::queueTakeByPriority>(app, cpu, h, self + rely::kReceiving, number);
         guest.setByte(self + rely::kAckSent, 0);
         if (slot != 0)
         {
-            guest.call(kMoveMemory, args({ frame, slot + packet::kFrame, bytes }));
-            loaded<0x50e0a0, frontend::netb::qinsert>(app, cpu, self + rely::kReceivedQueue, slot);
+            callHeld(guest, h, kMoveMemory, args({ frame, slot + packet::kFrame, bytes }));
+            loaded<0x50e0a0, frontend::netb::qinsert>(app, cpu, h, self + rely::kReceivedQueue, slot);
             guest.setDword(counted, guest.dword(counted) + 1);
             if (traceLevel(guest) >= 3)
-                trace(guest, 0x550ff8, slot + packet::kNumber, slot + packet::kData, guest.byte(slot + packet::kLength),
+                trace(guest, h, 0x550ff8, slot + packet::kNumber, slot + packet::kData, guest.byte(slot + packet::kLength),
                       0, guest.byte(self + rely::kId));
         }
     }
     else if (sequence <= kSequenceMask)
     {
-        guest.leaveEcx((cpu.ecx & 0xffffff00) | sequence);
+        h.ecx = ((h.ecx & 0xffffff00) | sequence);
         guest::direct<0x51cc00, packetGotNak>(app, cpu, self, sequence);
     }
     else if (sequence == kFrameClose)
     {
-        guest.leaveEcx((cpu.ecx & 0xffffff00) | sequence);
+        h.ecx = ((h.ecx & 0xffffff00) | sequence);
         if (traceLevel(guest) >= 2)
-            traceEvent(guest, 0x551000, 1, guest.byte(self + rely::kId));
+            traceEvent(guest, h, 0x551000, 1, guest.byte(self + rely::kId));
         guest::direct<0x51cc80, packetShutdown>(app, cpu, self);
     }
     return finished();
 }
 
-void frontend::netcPacketReceiveFrame(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcPacketReceiveFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_51cd50", 0, 0, nullptr, 0, std::uint8_t(kEsi | kEdi) };
-    const reg32 self = cpu.eax, counted = cpu.edx, buffer = cpu.ebx, length = cpu.ecx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::packetReceiveFrame(app, cpu, self, counted, buffer, length); });
+    const reg32 self = args.eax, counted = args.edx, buffer = args.ebx, length = args.ecx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::packetReceiveFrame(app, cpu, self, counted, buffer, length); });
 }
 
 /* sub_51cf30: all that came for the reliable layer. */
@@ -2073,31 +2237,31 @@ x86::reg32 frontend::netc::packetReceive(App* app, CPU& cpu, reg32 self)
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0x24);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = self;
-    return receiveFrames<0x51cd50, packetReceiveFrame>(guest, cpu, rely::kBuffer, rely::kBufferSize, rely::kHeld);
+    return receiveFrames<0x51cd50, packetReceiveFrame>(guest, cpu, self, rely::kBuffer, rely::kBufferSize, rely::kHeld);
 }
 
-void frontend::netcPacketReceive(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcPacketReceive(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_51cf30", 0, 0, nullptr, 0, kAll };
-    const reg32 self = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::packetReceive(app, cpu, self); });
+    const reg32 self = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::packetReceive(app, cpu, self); });
 }
 
 /* sub_51d000: what the reliable layer's queues keep packets in the order of. */
 x86::reg32 frontend::netc::packetQueueKey(App* app, CPU& cpu, reg32 packet)
 {
+    Held h;
     Guest guest(app, cpu);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = packet;
-    return guest.dword(guest.eax() + packet::kNumber);
+    h.eax = packet;
+    return guest.dword(h.eax + packet::kNumber);
 }
 
-void frontend::netcPacketQueueKey(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcPacketQueueKey(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_51d000", 0, 0, nullptr, 0, kAll };
-    const reg32 packet = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::packetQueueKey(app, cpu, packet); });
+    const reg32 packet = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::packetQueueKey(app, cpu, packet); });
 }
 
 /* sub_51d010: a packet's time to resend counted down.  1 when it is up. */
@@ -2105,20 +2269,18 @@ x86::reg32 frontend::netc::packetCountDown(App* app, CPU& cpu, reg32 waiting)
 {
     Guest guest(app, cpu);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = waiting;
     const reg32 left = guest.dword(waiting + packet::kResend);
-    guest.leaveEdx(left);
     if (sign(left) <= 0)
         return 1;
     guest.setDword(waiting + packet::kResend, left - 1);
     return sign(left - 1) <= 0 ? 1 : 0;
 }
 
-void frontend::netcPacketCountDown(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcPacketCountDown(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_51d010", 0, 0, nullptr, 0, kEcx };
-    const reg32 waiting = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::packetCountDown(app, cpu, waiting); });
+    const reg32 waiting = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::packetCountDown(app, cpu, waiting); });
 }
 
 /* sub_51d040: a packet sent again if its time is up, else on to the next.  The
@@ -2127,37 +2289,36 @@ x86::reg32 frontend::netc::packetResendDue(App* app, CPU& cpu, reg32 waiting, re
 {
     Guest guest(app, cpu);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = waiting; cpu.edx = self;
     // Called as C++, the jump a call: sub_51c8f0's frame 4 bytes lower than the game's.
     if (sign(guest.dword(waiting + packet::kResend)) <= 0)
         return guest::direct<0x51c8f0, packetSend>(app, cpu, waiting, self);
     return 1;
 }
 
-void frontend::netcPacketResendDue(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcPacketResendDue(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    if (sign(app->getMemory<reg32>(cpu.eax + packet::kResend)) <= 0)
+    if (sign(app->getMemory<reg32>(args.eax + packet::kResend)) <= 0)
     {
-        app->dynamic_call(kPacketSend, cpu);
-        return;
+        return netcPacketSend(app, cpu, args);  // the jump to it
     }
     static Site site = { "sub_51d040", 0, 0, nullptr, 0, kAll };
-    const reg32 waiting = cpu.eax, self = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::packetResendDue(app, cpu, waiting, self); });
+    const reg32 waiting = args.eax, self = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::packetResendDue(app, cpu, waiting, self); });
 }
 
 /* sub_51d050: the stream says something came: read while there is, what is next
  * in order delivered, and a resend asked of a gap. */
 x86::reg32 frontend::netc::packetNotify(App* app, CPU& cpu, reg32 connection)
 {
+    Held h;
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0x34);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = connection;
+    h.eax = connection;
     const reg32 self = guest.dword(connection + link::kLayer);
     const reg32 ops = guest.dword(self + layer::kStream);
     if (traceLevel(guest) >= 5)
-        traceEvent(guest, 0x551010, 0, guest.byte(self + rely::kId));
+        traceEvent(guest, h, 0x551010, 0, guest.byte(self + rely::kId));
     guest.setDword(self + rely::kBad, 0);
     if (guest.dword(connection + link::kTimeout) == 0)
         return connection;
@@ -2165,33 +2326,33 @@ x86::reg32 frontend::netc::packetNotify(App* app, CPU& cpu, reg32 connection)
     const reg32 receiving = self + rely::kReceiving;
     for (;;)
     {
-        reg32 more = guest.call(guest.dword(ops + stream::kAvailable), args({ connection, ops }));
+        reg32 more = callHeld(guest, h, guest.dword(ops + stream::kAvailable), args({ connection, ops }));
         if (more != 0)
             more = guest::direct<0x51cf30, packetReceive>(app, cpu, self);
-        reg32 next = loaded<0x50e800, frontend::wina::queueTakeByPriority>(app, cpu, received, guest.dword(self + rely::kNextDeliver));
+        reg32 next = loaded<0x50e800, frontend::wina::queueTakeByPriority>(app, cpu, h, received, guest.dword(self + rely::kNextDeliver));
         while (next != 0)
         {
             if (traceLevel(guest) >= 3)
-                trace(guest, 0x55101c, next + packet::kNumber, next + packet::kData, guest.byte(next + packet::kLength),
+                trace(guest, h, 0x55101c, next + packet::kNumber, next + packet::kData, guest.byte(next + packet::kLength),
                       0, guest.byte(self + rely::kId));
             // By address: the ebx and edx it leaves are handed to the calls after it.
-            if (guest.call(kDeliver, args({ connection, next + packet::kData, guest.byte(next + packet::kLength) })) == 0)
+            if (callHeld(guest, h, kDeliver, args({ connection, next + packet::kData, guest.byte(next + packet::kLength) })) == 0)
             {
                 if (traceLevel(guest) >= 3)
-                    trace(guest, 0x551024, next + packet::kNumber, 0, 0, 1, guest.byte(self + rely::kId));
-                loaded<0x50e0a0, frontend::netb::qinsert>(app, cpu, received, next);
+                    trace(guest, h, 0x551024, next + packet::kNumber, 0, 0, 1, guest.byte(self + rely::kId));
+                loaded<0x50e0a0, frontend::netb::qinsert>(app, cpu, h, received, next);
                 break;
             }
             const reg32 locked = fe::direct<0x50ea20, frontend::menz::fileLockEnter>(app, cpu, unacked);
             const reg32 number = guest.dword(self + rely::kNextFree);
-            guest.leaveEcx(number + 1);
+            h.ecx = (number + 1);
             guest.setDword(self + rely::kNextFree, number + 1);
             guest.setDword(next + packet::kNumber, number);
             guest.setDword(self + rely::kNextDeliver, guest.dword(self + rely::kNextDeliver) + 1);
             fe::direct<0x50ea40, frontend::menz::fileLockLeave>(app, cpu, unacked, locked);
             guest.setDword(next + packet::kResend, 0);
-            loaded<0x50e0a0, frontend::netb::qinsert>(app, cpu, receiving, next);
-            next = loaded<0x50e800, frontend::wina::queueTakeByPriority>(app, cpu, received, guest.dword(self + rely::kNextDeliver));
+            loaded<0x50e0a0, frontend::netb::qinsert>(app, cpu, h, receiving, next);
+            next = loaded<0x50e800, frontend::wina::queueTakeByPriority>(app, cpu, h, received, guest.dword(self + rely::kNextDeliver));
         }
         if (more == 0)
             break;
@@ -2199,7 +2360,7 @@ x86::reg32 frontend::netc::packetNotify(App* app, CPU& cpu, reg32 connection)
     reg32 gap = 0;
     if (guest.byte(self + rely::kAckSent) == 0)
     {
-        const reg32 first = loaded<0x50e2d0, frontend::netb::qlowpriority>(app, cpu, received);
+        const reg32 first = loaded<0x50e2d0, frontend::netb::qlowpriority>(app, cpu, h, received);
         if (first != 0xffffffff && first != guest.dword(self + rely::kNextDeliver))
             gap = 1;
         guest.setByte(self + rely::kAckSent, 1);
@@ -2207,18 +2368,18 @@ x86::reg32 frontend::netc::packetNotify(App* app, CPU& cpu, reg32 connection)
     if (guest.dword(self + rely::kBad) == 0 && gap == 0)
         return 0;
     if (traceLevel(guest) >= 4)
-        traceEvent(guest, guest.dword(self + rely::kBad) != 0 ? 0x55102c : 0x551034, 1, guest.byte(self + rely::kId));
-    const reg32 waiting = guest.call(kQueueFindIndex, args({ receiving, 0 }));
+        traceEvent(guest, h, guest.dword(self + rely::kBad) != 0 ? 0x55102c : 0x551034, 1, guest.byte(self + rely::kId));
+    const reg32 waiting = callHeld(guest, h, kQueueFindIndex, args({ receiving, 0 }));
     if (waiting == 0)
         return 0;
     return guest::direct<0x51caf0, packetSendNak>(app, cpu, waiting, self);
 }
 
-void frontend::netcPacketNotify(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcPacketNotify(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_51d050", 0, 0, nullptr, 0, kAll };
-    const reg32 connection = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::packetNotify(app, cpu, connection); });
+    const reg32 connection = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::packetNotify(app, cpu, connection); });
 }
 
 /* sub_51d270: a connection opened on the reliable layer: the record made unless
@@ -2226,13 +2387,14 @@ void frontend::netcPacketNotify(win32::WinApplication* app, x86::CPU& cpu)
  * it stands or has failed.  1 if it stands; with no connection, the record's size. */
 x86::reg32 frontend::netc::packetOpen(App* app, CPU& cpu, reg32 connection, reg32 ops, reg32 asked, reg32 windowBits)
 {
+    Held h;
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0x38);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = connection; cpu.edx = ops; cpu.ebx = asked; cpu.ecx = windowBits;
+    h.eax = connection; h.edx = ops; h.ebx = asked; h.ecx = windowBits;
     constexpr reg32 kFile = 0x55103c, kFunction = 0x55104c;
     reg32 wanted = asked;
-    guest.leaveEbx(0);
+    h.ebx = (0);
     if (sign(asked) < 6)
     {
         wanted = 6;
@@ -2240,25 +2402,25 @@ x86::reg32 frontend::netc::packetOpen(App* app, CPU& cpu, reg32 connection, reg3
     else if (sign(asked) <= 0xfa)
     {
         const reg32 limit = guest.word(ops + stream::kMaxFrame);
-        guest.leaveEbx(limit);
+        h.ebx = (limit);
         if (limit != 0 && asked + packet::kFrameHeader > limit)
         {
-            reportError(guest, kFile, kFunction, 0x207, 0x5510a4);
-            guest.leaveEbx(kFunction);
+            reportError(guest, h, kFile, kFunction, 0x207, 0x5510a4);
+            h.ebx = (kFunction);
         }
     }
     else
     {
-        reportError(guest, kFile, kFunction, 0x205, 0x551064, 0xfa);
+        reportError(guest, h, kFile, kFunction, 0x205, 0x551064, 0xfa);
     }
     if (connection != 0 && guest.dword(connection + link::kTimeout) != 0)
-        reportError(guest, kFile, kFunction, 0x20a, 0x5510f4);
+        reportError(guest, h, kFile, kFunction, 0x20a, 0x5510f4);
     if (sign(windowBits) < 2)
         windowBits = 2;
     else if (sign(windowBits) > 7)
         windowBits = 7;
-    guest.leaveEcx(windowBits);
-    guest.leaveEbx(wanted);
+    h.ecx = (windowBits);
+    h.ebx = (wanted);
     const reg32 least = guest.byte(ops + stream::kMinFrame);
     if (sign(least) > sign(wanted))
         wanted = least;
@@ -2266,7 +2428,7 @@ x86::reg32 frontend::netc::packetOpen(App* app, CPU& cpu, reg32 connection, reg3
     const reg32 bufferSize = guest.byte(ops + stream::kReliable) == 0 ? 0x200 : 0x100;
     const reg32 step = (wanted + 0x15) & 0xfffffffc;
     const reg32 total = step * (half + half - 1) + rely::kSize + bufferSize;
-    guest.leaveEdx(total);
+    h.edx = (total);
     if (connection == 0)
         return total;
     reg32 owned = 0;
@@ -2277,10 +2439,10 @@ x86::reg32 frontend::netc::packetOpen(App* app, CPU& cpu, reg32 connection, reg3
         guest.setDword(kErrorFunction, kFunction);
         guest.setDword(kErrorLine, 0x22b);
         owned = 1;
-        self = guest.call(kAllocate, args({ 0x55112c, total, guest.dword(kMemoryType), 1 }));
+        self = callHeld(guest, h, kAllocate, args({ 0x55112c, total, guest.dword(kMemoryType), 1 }));
         if (self == 0)
         {
-            guest.leaveEdx(0);
+            h.edx = (0);
             return 0;
         }
     }
@@ -2303,12 +2465,12 @@ x86::reg32 frontend::netc::packetOpen(App* app, CPU& cpu, reg32 connection, reg3
     guest.setDword(self + rely::kNextSend, 1);
     guest.setDword(self + rely::kAcked, 0);
     guest.setDword(self + rely::kLock, lock);
-    loaded<0x50dcd0, frontend::netb::qinit>(app, cpu, self + rely::kFree, 0, 0);
-    loaded<0x50dcd0, frontend::netb::qinit>(app, cpu, self + rely::kUnacked, kQueueKey, self);
+    loaded<0x50dcd0, frontend::netb::qinit>(app, cpu, h, self + rely::kFree, 0, 0);
+    loaded<0x50dcd0, frontend::netb::qinit>(app, cpu, h, self + rely::kUnacked, kQueueKey, self);
     guest.setDword(self + rely::kNextDeliver, 1);
     guest.setDword(self + rely::kNextFree, 1);
-    loaded<0x50dcd0, frontend::netb::qinit>(app, cpu, self + rely::kReceiving, kQueueKey, self);
-    loaded<0x50dcd0, frontend::netb::qinit>(app, cpu, self + rely::kReceivedQueue, kQueueKey, self);
+    loaded<0x50dcd0, frontend::netb::qinit>(app, cpu, h, self + rely::kReceiving, kQueueKey, self);
+    loaded<0x50dcd0, frontend::netb::qinit>(app, cpu, h, self + rely::kReceivedQueue, kQueueKey, self);
     for (reg32 i = half - 1; i != 0; --i)
     {
         const reg32 at = place;
@@ -2316,7 +2478,7 @@ x86::reg32 frontend::netc::packetOpen(App* app, CPU& cpu, reg32 connection, reg3
         guest.setDword(at + packet::kNumber, 0);
         guest.setDword(at + packet::kResend, 0);
         place += step;
-        loaded<0x50de50, frontend::netb::qpush>(app, cpu, self + rely::kFree, at);
+        loaded<0x50de50, frontend::netb::qpush>(app, cpu, h, self + rely::kFree, at);
     }
     for (reg32 i = half - 1; i != 0; --i)
     {
@@ -2324,11 +2486,11 @@ x86::reg32 frontend::netc::packetOpen(App* app, CPU& cpu, reg32 connection, reg3
         guest.setDword(at, 0);
         place += step;
         const reg32 number = guest.dword(self + rely::kNextFree);
-        guest.leaveEbx(number + 1);
+        h.ebx = (number + 1);
         guest.setDword(self + rely::kNextFree, number + 1);
         guest.setDword(at + packet::kNumber, number);
         guest.setDword(at + packet::kResend, 0);
-        loaded<0x50e0a0, frontend::netb::qinsert>(app, cpu, self + rely::kReceiving, at);
+        loaded<0x50e0a0, frontend::netb::qinsert>(app, cpu, h, self + rely::kReceiving, at);
     }
     guest.setDword(self + rely::kHeld, 0);
     guest.setDword(self + rely::kBuffer, place + step);
@@ -2336,162 +2498,164 @@ x86::reg32 frontend::netc::packetOpen(App* app, CPU& cpu, reg32 connection, reg3
     guest.setDword(self + rely::kBufferSize, bufferSize);
     if (guest.dword(kConnectionTimeout) == 0)
     {
-        reportError(guest, kFile, kFunction, 0x276, 0x551134);
-        guest.leaveEbx(kFunction);
+        reportError(guest, h, kFile, kFunction, 0x276, 0x551134);
+        h.ebx = (kFunction);
     }
-    guest.leaveEcx(ops);
+    h.ecx = (ops);
     reg32 failed = 0;
-    if (guest.call(guest.dword(ops + stream::kOpen), args({ connection, kPacketNotify })) == 0)
+    if (callHeld(guest, h, guest.dword(ops + stream::kOpen), args({ connection, kPacketNotify })) == 0)
     {
         if (traceLevel(guest) >= 3)
-            traceEvent(guest, 0x551188, 0, guest.byte(self + rely::kId));
+            traceEvent(guest, h, 0x551188, 0, guest.byte(self + rely::kId));
     }
     else
     {
         guest.setDword(connection + link::kTimeout, kNeverTimesOut);
-        guest.call(kQueueAdd, args({ kActiveConnections, connection }));
+        callHeld(guest, h, kQueueAdd, args({ kActiveConnections, connection }));
         if (traceLevel(guest) >= 1)
-            traceEvent(guest, 0x55115c, 0, guest.byte(self + rely::kId));
+            traceEvent(guest, h, 0x55115c, 0, guest.byte(self + rely::kId));
         for (;;)
         {
             if (reg32(*fe::direct<0x4df930, ea::isThreadNow>(app, cpu, 0)) == 0)
             {
                 fe::direct<0x4df8e0, ea::sleepFor>(app, cpu, 1);
-                failed = guest.call(guest.dword(connection + link::kProcess), args({ connection })) != 0 ? 1 : 0;
+                failed = callHeld(guest, h, guest.dword(connection + link::kProcess), args({ connection })) != 0 ? 1 : 0;
             }
-            else if (sign(guest.call(kWaitSystemTasks, args({ 1 }))) < 0)
+            else if (sign(callHeld(guest, h, kWaitSystemTasks, args({ 1 }))) < 0)
             {
                 failed = 1;
             }
             else
             {
-                failed = guest.call(guest.dword(connection + link::kProcess), args({ connection })) != 0 ? 1 : 0;
+                failed = callHeld(guest, h, guest.dword(connection + link::kProcess), args({ connection })) != 0 ? 1 : 0;
             }
-            guest.leaveEdx(failed);
+            h.edx = (failed);
             if (failed != 0 && traceLevel(guest) >= 2)
-                traceEvent(guest, 0x551168, 0, guest.byte(self + rely::kId));
+                traceEvent(guest, h, 0x551168, 0, guest.byte(self + rely::kId));
             if (guest.dword(connection + link::kTimeout) != 0)
                 guest.setDword(connection + link::kTimeout, kNeverTimesOut);
             if (guest.dword(connection + link::kTimeout) == 0)
                 break;
             const reg32 received = guest.dword(self + rely::kReceived);
-            guest.leaveEdx(received);
+            h.edx = (received);
             if (received != 0 || received != failed)
                 break;
         }
         if (guest.dword(connection + link::kTimeout) == 0 || failed != 0)
         {
             if (guest.dword(connection + link::kTimeout) == 0 && traceLevel(guest) >= 2)
-                traceEvent(guest, 0x551178, 0, guest.byte(self + rely::kId));
+                traceEvent(guest, h, 0x551178, 0, guest.byte(self + rely::kId));
             guest.setDword(connection + link::kTimeout, 0);
-            guest.call(guest.dword(ops + stream::kClose), args({ connection, ops }));
+            callHeld(guest, h, guest.dword(ops + stream::kClose), args({ connection, ops }));
         }
     }
     if (guest.dword(connection + link::kTimeout) != 0)
     {
-        guest.leaveEbx(failed);
+        h.ebx = (failed);
         if (failed == 0)
         {
             guest.setDword(connection + link::kTimeout, guest.dword(kConnectionTimeout));
             guest.setDword(connection + link::kDrop, oldDrop);
             if (traceLevel(guest) >= 1)
-                traceEvent(guest, 0x551198, 0, guest.byte(self + rely::kId));
-            guest.leaveEdx(1);
+                traceEvent(guest, h, 0x551198, 0, guest.byte(self + rely::kId));
+            h.edx = (1);
             return 1;
         }
     }
     if (traceLevel(guest) >= 1)
-        traceEvent(guest, 0x5511ac, 0, guest.byte(self + rely::kId));
-    guest.call(kQueueRemove, args({ kActiveConnections, connection }));
-    guest.call(kQueueRemove, args({ kClosedConnections, connection }));
+        traceEvent(guest, h, 0x5511ac, 0, guest.byte(self + rely::kId));
+    callHeld(guest, h, kQueueRemove, args({ kActiveConnections, connection }));
+    callHeld(guest, h, kQueueRemove, args({ kClosedConnections, connection }));
     if (owned != 0)
     {
         fe::direct<0x4e1890, ea::purgeBlock>(app, cpu, self);
         guest.setDword(connection + link::kLayer, 0);
     }
-    guest.leaveEdx(0);
+    h.edx = (0);
     return 0;
 }
 
-void frontend::netcPacketOpen(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcPacketOpen(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_51d270", 0, 0, nullptr, 0, std::uint8_t(kEsi | kEdi) };
-    const reg32 connection = cpu.eax, ops = cpu.edx, asked = cpu.ebx, windowBits = cpu.ecx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::packetOpen(app, cpu, connection, ops, asked, windowBits); });
+    const reg32 connection = args.eax, ops = args.edx, asked = args.ebx, windowBits = args.ecx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::packetOpen(app, cpu, connection, ops, asked, windowBits); });
 }
 
 /* sub_51d810: data sent on the reliable layer: a free packet taken, numbered, sent
  * and kept until acknowledged.  The port's trace of it first. */
 x86::reg32 frontend::netc::packetSubmit(App* app, CPU& cpu, reg32 connection, reg32 data, reg32 length)
 {
+    Held h;
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0x10);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = connection; cpu.edx = data; cpu.ebx = length;
+    h.eax = connection; h.edx = data; h.ebx = length;
     constexpr reg32 kFile = 0x55103c, kFunction = 0x5511c0;
     if (connection == 0 || guest.dword(connection + link::kTimeout) == 0)
         return 0;
     const reg32 self = guest.dword(connection + link::kLayer);
-    const reg32 free = loaded<0x50df60, frontend::netb::qpop>(app, cpu, self + rely::kFree);
+    const reg32 free = loaded<0x50df60, frontend::netb::qpop>(app, cpu, h, self + rely::kFree);
     if (length > guest.dword(self + layer::kMaxSize))
     {
-        reportError(guest, kFile, kFunction, 0x2ba, 0x5511d4);
-        guest.leaveEbx(kFunction);
+        reportError(guest, h, kFile, kFunction, 0x2ba, 0x5511d4);
+        h.ebx = (kFunction);
     }
     if (free == 0)
     {
         if (traceLevel(guest) >= 2)
-            trace(guest, 0x55125c, 0, data, length, 1, guest.byte(self + rely::kId));
+            trace(guest, h, 0x55125c, 0, data, length, 1, guest.byte(self + rely::kId));
         return 0;
     }
-    guest.call(kPacketBuild, args({ free, self, data, length }));
+    callHeld(guest, h, kPacketBuild, args({ free, self, data, length }));
     guest::direct<0x51c8f0, packetSend>(app, cpu, free, self);
-    guest.call(kQueueAddSorted, args({ self + rely::kUnacked, free }));
+    callHeld(guest, h, kQueueAddSorted, args({ self + rely::kUnacked, free }));
     if (guest.dword(self + rely::kNextSend) == 0)
     {
-        reportError(guest, kFile, kFunction, 0x2c6, 0x551208);
-        guest.leaveEbx(kFunction);
+        reportError(guest, h, kFile, kFunction, 0x2c6, 0x551208);
+        h.ebx = (kFunction);
     }
     return 1;
 }
 
-void frontend::netcPacketSubmit(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcPacketSubmit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
-    if (commSendTrace(app, cpu))
-        return;
+    if (commSendTrace(app, cpu, args))
+        return args.eax;
     static Site site = { "sub_51d810", 0, 0, nullptr, 0, std::uint8_t(kEcx | kEsi | kEdi) };
-    const reg32 connection = cpu.eax, data = cpu.edx, length = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::packetSubmit(app, cpu, connection, data, length); });
+    const reg32 connection = args.eax, data = args.edx, length = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::packetSubmit(app, cpu, connection, data, length); });
 }
 
 /* sub_51d8f0: the reliable layer's turn: counts its timeout down, resends what is
  * due, says it is alive when it has been quiet, closes on timing out.  Always 1. */
 x86::reg32 frontend::netc::packetProcess(App* app, CPU& cpu, reg32 connection)
 {
+    Held h;
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0x14);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = connection;
+    h.eax = connection;
     const reg32 self = guest.dword(connection + link::kLayer);
-    guest.leaveEdx(guest.dword(kTraceLevel));
+    h.edx = (guest.dword(kTraceLevel));
     if (traceLevel(guest) >= 5)
-        traceEvent(guest, 0x551268, 0, guest.byte(self + rely::kId));
+        traceEvent(guest, h, 0x551268, 0, guest.byte(self + rely::kId));
     const reg32 left = guest.dword(connection + link::kTimeout) - 1;
     guest.setDword(connection + link::kTimeout, left);
-    guest.leaveEbx(left);
+    h.ebx = (left);
     if (left == 0)
     {
         if (traceLevel(guest) >= 3)
-            traceEvent(guest, 0x551274, 0, guest.byte(self + rely::kId));
-        guest.setDword(connection + link::kTimeout, guest.call(guest.dword(connection + link::kTimedOut), args({ connection })));
+            traceEvent(guest, h, 0x551274, 0, guest.byte(self + rely::kId));
+        guest.setDword(connection + link::kTimeout, callHeld(guest, h, guest.dword(connection + link::kTimedOut), args({ connection })));
     }
     if (guest.dword(connection + link::kTimeout) != 0)
     {
         const reg32 ops = guest.dword(self + layer::kStream);
-        if (guest.call(guest.dword(ops + stream::kReady), args({ connection, ops })) != 0)
+        if (callHeld(guest, h, guest.dword(ops + stream::kReady), args({ connection, ops })) != 0)
         {
-            loaded<0x50e9b0, frontend::netb::qsafeiterate>(app, cpu, self + rely::kUnacked, kCountDown, self);
-            loaded<0x50e8e0, frontend::netb::qiterate>(app, cpu, self + rely::kUnacked, kResendDue, self);
+            loaded<0x50e9b0, frontend::netb::qsafeiterate>(app, cpu, h, self + rely::kUnacked, kCountDown, self);
+            loaded<0x50e8e0, frontend::netb::qiterate>(app, cpu, h, self + rely::kUnacked, kResendDue, self);
             const reg32 idle = guest.dword(self + rely::kIdleLeft);
             guest.setDword(self + rely::kIdleLeft, idle - 1);
             if (sign(idle) <= 0)
@@ -2500,39 +2664,40 @@ x86::reg32 frontend::netc::packetProcess(App* app, CPU& cpu, reg32 connection)
         }
     }
     if (traceLevel(guest) >= 2)
-        trace(guest, 0x551280, connection + link::kTimeout, 0, 0, 1, guest.byte(self + rely::kId));
+        trace(guest, h, 0x551280, connection + link::kTimeout, 0, 0, 1, guest.byte(self + rely::kId));
     guest::direct<0x51cc80, packetShutdown>(app, cpu, self);
     return 1;
 }
 
-void frontend::netcPacketProcess(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcPacketProcess(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_51d8f0", 0, 0, nullptr, 0, kAll };
-    const reg32 connection = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::packetProcess(app, cpu, connection); });
+    const reg32 connection = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::packetProcess(app, cpu, connection); });
 }
 
 /* sub_51d9e0: the reliable layer's connection closed by us: the other end told if
  * it can be, the record gone.  1 if it was there. */
 x86::reg32 frontend::netc::packetClose(App* app, CPU& cpu, reg32 connection)
 {
+    Held h;
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0x18);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = connection;
+    h.eax = connection;
     if (connection == 0)
         return 0;
     const reg32 self = guest.dword(connection + link::kLayer);
     if (self == 0)
         return 0;
     const reg32 ops = guest.dword(self + layer::kStream);
-    guest.leaveEcx(guest.dword(kTraceLevel));
+    h.ecx = (guest.dword(kTraceLevel));
     if (traceLevel(guest) >= 1)
-        traceEvent(guest, 0x55128c, 0, guest.byte(self + rely::kId));
-    if (guest.call(kQueueRemove, args({ kActiveConnections, connection })) == 0)
+        traceEvent(guest, h, 0x55128c, 0, guest.byte(self + rely::kId));
+    if (callHeld(guest, h, kQueueRemove, args({ kActiveConnections, connection })) == 0)
     {
         if (guest.dword(connection + link::kTimeout) != 0)
-            guest.call(kMonoPrintf, args({ 0 }, { 0x55129c }));
+            callHeld(guest, h, kMonoPrintf, args({ 0 }, { 0x55129c }));
     }
     else
     {
@@ -2543,27 +2708,27 @@ x86::reg32 frontend::netc::packetClose(App* app, CPU& cpu, reg32 connection)
             for (;;)
             {
                 --tries;
-                guest.leaveEcx(tries);
+                h.ecx = (tries);
                 if (tries == 0xffffffff
-                    || guest.call(guest.dword(ops + stream::kReady), args({ connection })) == 0)
+                    || callHeld(guest, h, guest.dword(ops + stream::kReady), args({ connection })) == 0)
                     break;
                 // By address: the ebx and edx it leaves are handed to the stream's functions after it.
-                if (guest.call(kPacketControl, args({ guest.dword(self + rely::kFirstPacket), self, kFrameClose })) != 0)
+                if (callHeld(guest, h, kPacketControl, args({ guest.dword(self + rely::kFirstPacket), self, kFrameClose })) != 0)
                     tries = 0;
                 else
-                    loaded<0x4f06e0, frontend::wata::timerWait>(app, cpu, 1);
+                    loaded<0x4f06e0, frontend::wata::timerWait>(app, cpu, h, 1);
             }
-            loaded<0x4f06e0, frontend::wata::timerWait>(app, cpu, 3);
-            guest.call(guest.dword(ops + stream::kClose), args({ connection }));
+            loaded<0x4f06e0, frontend::wata::timerWait>(app, cpu, h, 3);
+            callHeld(guest, h, guest.dword(ops + stream::kClose), args({ connection }));
         }
         fe::direct<0x50de50, netb::qpush>(app, cpu, kClosedConnections, connection);
     }
-    if (guest.call(kQueueRemove, args({ kClosedConnections, connection })) == 0)
+    if (callHeld(guest, h, kQueueRemove, args({ kClosedConnections, connection })) == 0)
         return 0;
-    directKept<0x50dde0, ea::queueLockFreed, 1>(guest.app(), guest.cpu(), self + rely::kFree);
-    directKept<0x50dde0, ea::queueLockFreed, 1>(guest.app(), guest.cpu(), self + rely::kUnacked);
-    directKept<0x50dde0, ea::queueLockFreed, 1>(guest.app(), guest.cpu(), self + rely::kReceiving);
-    directKept<0x50dde0, ea::queueLockFreed, 1>(guest.app(), guest.cpu(), self + rely::kReceivedQueue);
+    directKept<0x50dde0, ea::queueLockFreed, 1>(guest.app(), guest.cpu(), h, self + rely::kFree);
+    directKept<0x50dde0, ea::queueLockFreed, 1>(guest.app(), guest.cpu(), h, self + rely::kUnacked);
+    directKept<0x50dde0, ea::queueLockFreed, 1>(guest.app(), guest.cpu(), h, self + rely::kReceiving);
+    directKept<0x50dde0, ea::queueLockFreed, 1>(guest.app(), guest.cpu(), h, self + rely::kReceivedQueue);
     reg32(*fe::direct<0x4eb360, ea::lockFreed>(app, cpu, guest.dword(self + rely::kLock)));
     if (guest.byte(self + layer::kOwned) != 0)
     {
@@ -2573,11 +2738,11 @@ x86::reg32 frontend::netc::packetClose(App* app, CPU& cpu, reg32 connection)
     return 1;
 }
 
-void frontend::netcPacketClose(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcPacketClose(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_51d9e0", 0, 0, nullptr, 0, kAll };
-    const reg32 connection = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::packetClose(app, cpu, connection); });
+    const reg32 connection = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::packetClose(app, cpu, connection); });
 }
 
 /* ---------------------------------------------------------------------------
@@ -2642,18 +2807,19 @@ void ensureModemWait(Guest& guest)
 void modemLog(Guest& guest, reg32 text)
 {
     if (guest.dword(kModemLog) != 0)
-        guest.cpu().eax = *fe::direct<0x501050, ea::reportedAt>(guest.app(), guest.cpu(), kModemLog, 1u, text, guest::Words({}));
+        static_cast<void>(*fe::direct<0x501050, ea::reportedAt>(guest.app(), guest.cpu(), kModemLog, 1u, text, guest::Words({})));
 }
 
 /* Time let pass, as a thread or not.  False if the game's tasks say stop. */
 bool modemPause(Guest& guest, x86::CPU& cpu, reg32 ticks)
 {
+    Held h;
     if (reg32(*fe::direct<0x4df930, ea::isThreadNow>(guest.app(), cpu, 0)) == 0)
     {
         fe::direct<0x4df8e0, ea::sleepFor>(guest.app(), cpu, ticks);
         return true;
     }
-    return sign(guest.call(kWaitSystemTasks, args({ ticks }))) >= 0;
+    return sign(callHeld(guest, h, kWaitSystemTasks, args({ ticks }))) >= 0;
 }
 
 }  // namespace
@@ -2662,16 +2828,14 @@ bool modemPause(Guest& guest, x86::CPU& cpu, reg32 ticks)
  * words is in it or it ends in a number.  Its number; -1 for none, -3 when told to stop. */
 x86::reg32 frontend::netc::modemResponse(App* app, CPU& cpu, reg32 number, reg32 timeout)
 {
+    Held h;
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0x54);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = number; cpu.edx = timeout;
     const reg32 text = guest.frame();
-    guest.leaveEdx(0);
     if (guest.dword(kModemWait) == 0)
     {
         const reg32 ticks = guest.dword(kTicksPerSecond);
-        guest.leaveEdx(sign(ticks) < 0 ? 0xfffffffc : 0);
         ensureModemWait(guest);
     }
     guest.setDword(kModemResponseText, 0);
@@ -2681,10 +2845,9 @@ x86::reg32 frontend::netc::modemResponse(App* app, CPU& cpu, reg32 number, reg32
     {
         if (sign(guest.dword(kClockSeconds)) >= sign(deadline) || guest.dword(kModemAbort) != 0)
             break;
-        if (loaded<0x51bbd0, serialWaitIn>(app, cpu, number, 1, text + count, 1) != 0)
+        if (loaded<0x51bbd0, serialWaitIn>(app, cpu, h, number, 1, text + count, 1) != 0)
         {
             ++last;
-            guest.leaveEdx(last);
             const std::uint8_t got = guest.byte(text + count);
             ++count;
             bool digit = false;
@@ -2706,9 +2869,8 @@ x86::reg32 frontend::netc::modemResponse(App* app, CPU& cpu, reg32 number, reg32
                     guest.setDword(kModemConnected, guest.dword(kModemConnected) | (column > 0 ? 1 : 0));
                     if (guest.dword(kModemLog) != 0)
                     {
-                        guest.leaveEdx(guest.dword(entry));
-                        guest.cpu().eax = *fe::direct<0x501050, ea::reportedAt>(guest.app(), guest.cpu(), kModemLog, 1u, 0x550adcu,
-                                                                                guest::Words({ text, guest.dword(entry) }));
+                        static_cast<void>(*fe::direct<0x501050, ea::reportedAt>(guest.app(), guest.cpu(), kModemLog, 1u, 0x550adcu,
+                                                                                guest::Words({ text, guest.dword(entry) })));
                     }
                     if (!modemPause(guest, cpu, guest.dword(kModemWait)))
                     {
@@ -2717,7 +2879,7 @@ x86::reg32 frontend::netc::modemResponse(App* app, CPU& cpu, reg32 number, reg32
                     }
                     const reg32 word = guest.dword(entry);
                     guest.setDword(kModemResponseText, word);
-                    guest.leaveEdx(word);  // as the code loads it for it, which it keeps
+// as the code loads it for it, which it keeps
                     return fe::direct<0x4f0430, watcom::clib::atoi>(app, cpu, guest.dword(entry + 8));
                 }
             }
@@ -2725,10 +2887,9 @@ x86::reg32 frontend::netc::modemResponse(App* app, CPU& cpu, reg32 number, reg32
             {
                 const std::int32_t said = sign(fe::direct<kAtoi, watcom::clib::atoi>(guest.app(), guest.cpu(), firstDigit));
                 const std::int32_t code = said >= 10 ? 1 : said >= 0 ? said : -1;
-                guest.leaveEdx(reg32(code));
                 if (guest.dword(kModemLog) != 0 && code >= 0)
-                    guest.cpu().eax = *fe::direct<0x501050, ea::reportedAt>(guest.app(), guest.cpu(), kModemLog, 1u, 0x550adcu,
-                        guest::Words({ firstDigit, guest.dword(kModemTable + reg32(code) * kModemRowSize) }));
+                    static_cast<void>(*fe::direct<0x501050, ea::reportedAt>(guest.app(), guest.cpu(), kModemLog, 1u, 0x550adcu,
+                        guest::Words({ firstDigit, guest.dword(kModemTable + reg32(code) * kModemRowSize) })));
                 if (code >= 0)
                     guest.setDword(kModemResponseText, guest.dword(kModemTable + reg32(row) * kModemRowSize));
                 if (!modemPause(guest, cpu, guest.dword(kModemWait)))
@@ -2749,30 +2910,31 @@ x86::reg32 frontend::netc::modemResponse(App* app, CPU& cpu, reg32 number, reg32
     return guest.dword(kModemAbort) != 0 ? kModemFailed : 0xffffffff;
 }
 
-void frontend::netcModemResponse(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcModemResponse(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_51a470", 0, 0, nullptr, 0, std::uint8_t(kEbx | kEcx | kEsi | kEdi) };
-    const reg32 number = cpu.eax, timeout = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::modemResponse(app, cpu, number, timeout); });
+    const reg32 number = args.eax, timeout = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::modemResponse(app, cpu, number, timeout); });
 }
 
 /* sub_51a7b0: a command said to the modem, with or without its input thrown away
  * first, and its echo waited for.  1 if it came. */
 x86::reg32 frontend::netc::modemCommand(App* app, CPU& cpu, reg32 number, reg32 command, reg32 drop)
 {
+    Held h;
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0x14);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = number; cpu.edx = command; cpu.ebx = drop;
+    h.eax = number; h.edx = command; h.ebx = drop;
     const reg32 length = guest.length(command);
-    guest.leaveEdx(0);
+    h.edx = (0);
     guest.setDword(kModemEcho, 0);
     if (sign(length) > 0x31)
         return 0;
     if (drop != 0)
         guest::direct<0x51b1e0, serialDropOutput>(app, cpu, number);
     const auto stopped = [&]() -> reg32 {
-        guest.leaveEbx(1);
+        h.ebx = (1);
         guest.setDword(kModemAbort, 1);
         return 0;
     };
@@ -2781,58 +2943,59 @@ x86::reg32 frontend::netc::modemCommand(App* app, CPU& cpu, reg32 number, reg32 
     const bool thread = reg32(*fe::direct<0x4df930, ea::isThreadNow>(app, cpu, 0)) != 0;
     const std::int32_t ticks = sign(guest.dword(kTicksPerSecond));
     const reg32 tenth = reg32(ticks / 10);
-    guest.leaveEdx(reg32(ticks % 10));
+    h.edx = (reg32(ticks % 10));
     if (!thread)
     {
         fe::direct<0x4df8e0, ea::sleepFor>(app, cpu, tenth);
     }
-    else if (sign(guest.call(kWaitSystemTasks, args({ tenth }))) < 0)
+    else if (sign(callHeld(guest, h, kWaitSystemTasks, args({ tenth }))) < 0)
     {
         return stopped();
     }
     // The game's code hands it edx as it is and the command in ebx too, which it does not read; the call after
     // loads them again.
     guest::direct<0x51b1c0, serialDropInput>(app, cpu, number);
-    guest.call(kPortWrite, args({ number, length, command }));
-    guest.call(kPortWrite, args({ number, 1, 0x550b04 }));
+    fe::direct<0x51b5f0, frontend::netc::serialWrite>(app, cpu, number, length, command);
+    fe::direct<0x51b5f0, frontend::netc::serialWrite>(app, cpu, number, 1, 0x550b04);
     const reg32 start = guest.dword(kClockSeconds);
     const std::int32_t rate = sign(guest.dword(kTicksPerSecond));
     const reg32 deadline = start + reg32(rate / 5);
-    guest.leaveEdx(reg32(rate % 5));
+    h.edx = (reg32(rate % 5));
     reg32 got = 0;
     while (sign(guest.dword(kClockSeconds)) < sign(deadline) && guest.dword(kModemEcho) == 0 && guest.dword(kModemAbort) == 0)
     {
-        got += guest.call(kWaitIn, args({ number, 1, kModemEchoBuffer + got, 1 }));
+        got += fe::direct<0x51bbd0, frontend::netc::serialWaitIn>(app, cpu, number, 1, kModemEchoBuffer + got, 1);
         guest.setByte(got + kModemEchoBuffer, 0);
         guest.setDword(kModemEcho, fe::direct<kStrstr, watcom::clib::strstr>(guest.app(), guest.cpu(), kModemEchoBuffer, command));
     }
     if (guest.dword(kModemLog) != 0)
     {
         const reg32 echo = guest.dword(kModemEcho);
-        guest.leaveEbx(echo);
+        h.ebx = (echo);
         if (echo != 0)
-            guest.cpu().eax = *fe::direct<0x501050, ea::reportedAt>(guest.app(), guest.cpu(), kModemLog, 1u, 0x550b08u, guest::Words({ echo }));
+            static_cast<void>(*fe::direct<0x501050, ea::reportedAt>(guest.app(), guest.cpu(), kModemLog, 1u, 0x550b08u, guest::Words({ echo })));
         else
-            guest.cpu().eax = *fe::direct<0x501050, ea::reportedAt>(guest.app(), guest.cpu(), kModemLog, 1u, 0x550b1cu, guest::Words({}));
+            static_cast<void>(*fe::direct<0x501050, ea::reportedAt>(guest.app(), guest.cpu(), kModemLog, 1u, 0x550b1cu, guest::Words({})));
     }
     return guest.dword(kModemEcho) != 0 ? 1 : 0;
 }
 
-void frontend::netcModemCommand(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcModemCommand(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_51a7b0", 0, 0, nullptr, 0, std::uint8_t(kEcx | kEsi | kEdi) };
-    const reg32 number = cpu.eax, command = cpu.edx, drop = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::modemCommand(app, cpu, number, command, drop); });
+    const reg32 number = args.eax, command = args.edx, drop = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::modemCommand(app, cpu, number, command, drop); });
 }
 
 /* sub_51a930: the modem's attention got: the escape, its setup words, then AT and
  * what it answers.  1 if it did. */
 x86::reg32 frontend::netc::modemAttention(App* app, CPU& cpu, reg32 number)
 {
+    Held h;
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0x14);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = number;
+    h.eax = number;
     const auto stopped = [&]() -> reg32 {
         guest.setDword(kModemAbort, 1);
         return 0;
@@ -2848,7 +3011,7 @@ x86::reg32 frontend::netc::modemAttention(App* app, CPU& cpu, reg32 number)
         const bool thread = reg32(*fe::direct<0x4df930, ea::isThreadNow>(app, cpu, 0)) != 0;
         if (!thread)
             fe::direct<0x4df8e0, ea::sleepFor>(app, cpu, oneAndAHalf());
-        else if (sign(guest.call(kWaitSystemTasks, args({ oneAndAHalf() }))) < 0)
+        else if (sign(callHeld(guest, h, kWaitSystemTasks, args({ oneAndAHalf() }))) < 0)
             return stopped();
     }
     guest::direct<0x51b5f0, serialWrite>(app, cpu, number, 3, 0x550b58);
@@ -2858,7 +3021,7 @@ x86::reg32 frontend::netc::modemAttention(App* app, CPU& cpu, reg32 number)
         const bool thread = reg32(*fe::direct<0x4df930, ea::isThreadNow>(app, cpu, 0)) != 0;
         if (!thread)
             fe::direct<0x4df8e0, ea::sleepFor>(app, cpu, oneAndAHalf());
-        else if (sign(guest.call(kWaitSystemTasks, args({ oneAndAHalf() }))) < 0)
+        else if (sign(callHeld(guest, h, kWaitSystemTasks, args({ oneAndAHalf() }))) < 0)
             return stopped();
     }
     const reg32 attention = guest.dword(kModemAttentionText);
@@ -2881,29 +3044,30 @@ x86::reg32 frontend::netc::modemAttention(App* app, CPU& cpu, reg32 number)
     return 1;
 }
 
-void frontend::netcModemAttention(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcModemAttention(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_51a930", 0, 0, nullptr, 0, kAll };
-    const reg32 number = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::modemAttention(app, cpu, number); });
+    const reg32 number = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::modemAttention(app, cpu, number); });
 }
 
 /* sub_51ab40: at the game's end, every port still open closed. */
-x86::reg32 frontend::netc::serialCloseAll(App* app, CPU& cpu)
+x86::reg32 frontend::netc::serialCloseAll(App* app, CPU& cpu, reg32 handed)
 {
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 4);
-    reg32 left = guest.eax();  // what the calls leave in eax: the last one's
+    reg32 left = handed;  // what the calls leave in eax: the last one's
     // The game's code hands it the number past it in edx too, which it does not read.
     for (reg32 number = 0; number < 0x10 && guest.dword(kOpenPorts) != 0; ++number)
         left = guest::direct<0x51b200, serialClose>(app, cpu, number);
     return left;
 }
 
-void frontend::netcSerialCloseAll(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcSerialCloseAll(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_51ab40", 0, 0, nullptr, 0, kEdx };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::serialCloseAll(app, cpu); });
+    const reg32 handed = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::serialCloseAll(app, cpu, handed); });
 }
 
 /* sub_51ab70: a command left for a port's thread, which is woken. */
@@ -2912,7 +3076,6 @@ x86::reg32 frontend::netc::serialCommand(App* app, CPU& cpu, reg32 number, reg32
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0xc);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = number; cpu.edx = command;
     enterPorts(guest, cpu);
     const reg32 record = portRecord(guest, number);
     if (record != 0)
@@ -2923,11 +3086,11 @@ x86::reg32 frontend::netc::serialCommand(App* app, CPU& cpu, reg32 number, reg32
     return leavePorts(guest, cpu);
 }
 
-void frontend::netcSerialCommand(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcSerialCommand(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_51ab70", 0, 0, nullptr, 0, std::uint8_t(kEbx | kEcx | kEsi) };
-    const reg32 number = cpu.eax, command = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::serialCommand(app, cpu, number, command); });
+    const reg32 number = args.eax, command = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::serialCommand(app, cpu, number, command); });
 }
 
 /* sub_51abc0: the port's reads started until its ring is full, then its writes until none is left. */
@@ -2936,7 +3099,6 @@ x86::reg32 frontend::netc::serialStartIo(App* app, CPU& cpu, reg32 record)
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0x18);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = record;
     enterPorts(guest, cpu);
     while (guest.dword(record + serial::kReading) == 0)
     {
@@ -2986,23 +3148,24 @@ x86::reg32 frontend::netc::serialStartIo(App* app, CPU& cpu, reg32 record)
     return leavePorts(guest, cpu);
 }
 
-void frontend::netcSerialStartIo(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcSerialStartIo(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_51abc0", 0, 0, nullptr, 0, kAll };
-    const reg32 record = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::serialStartIo(app, cpu, record); });
+    const reg32 record = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::serialStartIo(app, cpu, record); });
 }
 
 /* sub_51ad70: the port's reads and writes under way looked at, those done taken in. */
 x86::reg32 frontend::netc::serialFinishIo(App* app, CPU& cpu, reg32 record)
 {
+    Held h;
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0x10);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = record;
+    h.eax = record;
     const reg32 got = guest.frame();
     enterPorts(guest, cpu);
-    if (guest.dword(record + serial::kReading) != 0 && guest.call(kPollEvent, args({ guest.dword(record + serial::kInEvent) })) != 0)
+    if (guest.dword(record + serial::kReading) != 0 && callHeld(guest, h, kPollEvent, args({ guest.dword(record + serial::kInEvent) })) != 0)
     {
         if (callImport<kOverlappedResult, &host::serialOverlappedResult>(guest, cpu, guest.dword(record + serial::kHandle), record + serial::kInOverlapped, got, 0) != 0)
         {
@@ -3016,7 +3179,7 @@ x86::reg32 frontend::netc::serialFinishIo(App* app, CPU& cpu, reg32 record)
             guest.setDword(record + serial::kReading, callImport<kGetLastError, &host::lastError>(guest, cpu) == kErrorIoPending ? 1 : 0);
         }
     }
-    if (guest.dword(record + serial::kWriting) != 0 && guest.call(kPollEvent, args({ guest.dword(record + serial::kOutEvent) })) != 0)
+    if (guest.dword(record + serial::kWriting) != 0 && callHeld(guest, h, kPollEvent, args({ guest.dword(record + serial::kOutEvent) })) != 0)
     {
         if (callImport<kOverlappedResult, &host::serialOverlappedResult>(guest, cpu, guest.dword(record + serial::kHandle), record + serial::kOutOverlapped, got, 0) != 0)
         {
@@ -3036,16 +3199,17 @@ x86::reg32 frontend::netc::serialFinishIo(App* app, CPU& cpu, reg32 record)
     return leavePorts(guest, cpu);
 }
 
-void frontend::netcSerialFinishIo(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcSerialFinishIo(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_51ad70", 0, 0, nullptr, 0, kAll };
-    const reg32 record = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::serialFinishIo(app, cpu, record); });
+    const reg32 record = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::serialFinishIo(app, cpu, record); });
 }
 
 /* sub_51aeb0: the thread's wait: for its command event and every port's work under way. */
 x86::reg32 frontend::netc::serialWaitEvents(App* app, CPU& cpu)
 {
+    Held h;
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0x90);
     const reg32 events = guest.frame();
@@ -3067,19 +3231,20 @@ x86::reg32 frontend::netc::serialWaitEvents(App* app, CPU& cpu)
             guest.setDword(events + count * 4 - 4, guest.dword(record + serial::kOutEvent));
         }
     }
-    return guest.call(kWaitForAny, args({ count, events }));
+    return callHeld(guest, h, kWaitForAny, args({ count, events }));
 }
 
-void frontend::netcSerialWaitEvents(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcSerialWaitEvents(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_51aeb0", 0, 0, nullptr, 0, kAll };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::serialWaitEvents(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::serialWaitEvents(app, cpu); });
 }
 
 /* sub_51af10: the ports' thread: waits, sees to what is done and to the commands
  * left for each port, starts what can be, while any port is open. */
 x86::reg32 frontend::netc::serialThread(App* app, CPU& cpu)
 {
+    Held h;
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0x14);
     guest.setDword(kPortsEvent, reg32(*fe::direct<0x4dfb00, ea::newAutoEvent>(app, cpu)));
@@ -3115,8 +3280,8 @@ x86::reg32 frontend::netc::serialThread(App* app, CPU& cpu)
                     callImport<kPurgeComm, &host::serialPurge>(guest, cpu, guest.dword(record + serial::kHandle), 0xf);
                     guest::direct<0x51ad70, serialFinishIo>(app, cpu, record);
                     callImport<kCloseHandle, &host::closeHandle>(guest, cpu, guest.dword(record + serial::kHandle));
-                    directKept<0x4dfc00, ea::eventClosed, 1>(guest.app(), guest.cpu(), guest.dword(record + serial::kInEvent));
-                    directKept<0x4dfc00, ea::eventClosed, 1>(guest.app(), guest.cpu(), guest.dword(record + serial::kOutEvent));
+                    directKept<0x4dfc00, ea::eventClosed, 1>(guest.app(), guest.cpu(), h, guest.dword(record + serial::kInEvent));
+                    directKept<0x4dfc00, ea::eventClosed, 1>(guest.app(), guest.cpu(), h, guest.dword(record + serial::kOutEvent));
                     guest.setDword(kPorts + number * 4, 0);
                 }
                 guest.setDword(record + serial::kCommand, 0);
@@ -3126,15 +3291,15 @@ x86::reg32 frontend::netc::serialThread(App* app, CPU& cpu)
                 guest::direct<0x51abc0, serialStartIo>(app, cpu, record);
         }
     }
-    const reg32 closed = directKept<0x4dfc00, ea::eventClosed, 1>(guest.app(), guest.cpu(), guest.dword(kPortsEvent));
+    const reg32 closed = directKept<0x4dfc00, ea::eventClosed, 1>(guest.app(), guest.cpu(), h, guest.dword(kPortsEvent));
     guest.setDword(kPortsEvent, 0);
     return closed;
 }
 
-void frontend::netcSerialThread(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcSerialThread(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_51af10", 0, 0, nullptr, 0, kAll };
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::serialThread(app, cpu); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::serialThread(app, cpu); });
 }
 
 /* sub_51b030: whether a port's number is one that is open. */
@@ -3142,16 +3307,15 @@ x86::reg32 frontend::netc::serialIsOpen(App* app, CPU& cpu, reg32 number)
 {
     Guest guest(app, cpu);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = number;
     const std::int32_t index = sign(number);
     return index >= 0 && index < 0x10 && portRecord(guest, reg32(index)) != 0 ? 1 : 0;
 }
 
-void frontend::netcSerialIsOpen(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcSerialIsOpen(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_51b030", 0, 0, nullptr, 0, kAll };
-    const reg32 number = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::serialIsOpen(app, cpu, number); });
+    const reg32 number = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::serialIsOpen(app, cpu, number); });
 }
 
 /* sub_51b1c0: what a port has received thrown away, by its thread. */
@@ -3160,17 +3324,16 @@ x86::reg32 frontend::netc::serialDropInput(App* app, CPU& cpu, reg32 number)
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 4);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = number;
     if (guest::direct<0x51b030, serialIsOpen>(app, cpu, number) == 0)
         return 0;
     return guest::direct<0x51ab70, serialCommand>(app, cpu, number, serial::kCommandDropInput);
 }
 
-void frontend::netcSerialDropInput(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcSerialDropInput(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_51b1c0", 0, 0, nullptr, 0, std::uint8_t(kEcx | kEdx) };
-    const reg32 number = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::serialDropInput(app, cpu, number); });
+    const reg32 number = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::serialDropInput(app, cpu, number); });
 }
 
 /* sub_51b1e0: what a port has yet to send thrown away, by its thread. */
@@ -3179,73 +3342,74 @@ x86::reg32 frontend::netc::serialDropOutput(App* app, CPU& cpu, reg32 number)
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 4);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = number;
     if (guest::direct<0x51b030, serialIsOpen>(app, cpu, number) == 0)
         return 0;
     return guest::direct<0x51ab70, serialCommand>(app, cpu, number, serial::kCommandDropOutput);
 }
 
-void frontend::netcSerialDropOutput(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcSerialDropOutput(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_51b1e0", 0, 0, nullptr, 0, std::uint8_t(kEcx | kEdx) };
-    const reg32 number = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::serialDropOutput(app, cpu, number); });
+    const reg32 number = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::serialDropOutput(app, cpu, number); });
 }
 
 /* sub_51b200: a port closed: its thread told and waited for, its record freed;
  * with the last of them the thread's lock goes too. */
 x86::reg32 frontend::netc::serialClose(App* app, CPU& cpu, reg32 number)
 {
+    Held h;
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0xc);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = number;
+    h.eax = number;
     ensurePortsLock(guest, cpu);
     enterPorts(guest, cpu);
     if (guest::direct<0x51b030, serialIsOpen>(app, cpu, number) != 0)
     {
         const reg32 record = portRecord(guest, number);
         guest::direct<0x51ab70, serialCommand>(app, cpu, number, serial::kCommandClose);
-        leavePorts(guest, cpu);
+        h.eax = leavePorts(guest, cpu);
         while (portRecord(guest, number) != 0)
             fe::direct<0x4df8e0, ea::sleepFor>(app, cpu, 1);
-        loaded<0x4e1890, ea::purgeBlock>(app, cpu, record);
+        loaded<0x4e1890, ea::purgeBlock>(app, cpu, h, record);
         guest.setDword(kOpenPorts, guest.dword(kOpenPorts) - 1);
     }
     else
     {
-        leavePorts(guest, cpu);
+        h.eax = leavePorts(guest, cpu);
     }
     if (guest.dword(kOpenPorts) != 0)
-        return guest.eax();
+        return h.eax;
     guest::direct<0x51ab70, serialCommand>(app, cpu, number, 0);
     const reg32 freed = reg32(*fe::direct<0x4eb360, ea::lockFreed>(app, cpu, guest.dword(kPortsLock)));
     guest.setDword(kPortsLock, 0);
     return freed;
 }
 
-void frontend::netcSerialClose(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcSerialClose(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_51b200", 0, 0, nullptr, 0, kAll };
-    const reg32 number = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::serialClose(app, cpu, number); });
+    const reg32 number = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::serialClose(app, cpu, number); });
 }
 
 /* sub_51b2f0: a port made of a handle already open, in the number asked or, for -1,
  * the last free; with the first of them the thread starts.  Its number, or -1. */
 x86::reg32 frontend::netc::serialOpenHandle(App* app, CPU& cpu, reg32 number, reg32 handle)
 {
+    Held h;
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0x28);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = number; cpu.edx = handle;
+    h.eax = number; h.edx = handle;
     const reg32 timeouts = guest.frame();
     callImport<kClearError, &host::setLastError>(guest, cpu, 0);
     if (number == 0xffffffff)
     {
         number = 0xf;
         const reg32 top = guest.dword(kPorts + 0x3c);
-        guest.leaveEdx(top);
+        h.edx = (top);
         if (top != 0)
         {
             reg32 at = 0x3c, seen;
@@ -3264,9 +3428,9 @@ x86::reg32 frontend::netc::serialOpenHandle(App* app, CPU& cpu, reg32 number, re
     guest.setDword(kOpenPorts, guest.dword(kOpenPorts) + 1);
     if (guest.dword(kOpenPorts) == 1)
     {
-        loaded<0x4f2a78, frontend::eab::atexitJump>(app, cpu, kCloseAllPorts);
+        loaded<0x4f2a78, frontend::eab::atexitJump>(app, cpu, h, kCloseAllPorts);
         ensurePortsLock(guest, cpu);
-        if (guest.call(kCreateThread, args({ kSerialThreadEntry, 0, 2, 0xffffffff }, { kThreadHandle })) == 0)
+        if (callHeld(guest, h, kCreateThread, args({ kSerialThreadEntry, 0, 2, 0xffffffff }, { kThreadHandle })) == 0)
         {
             reg32(*fe::direct<0x4eb360, ea::lockFreed>(app, cpu, guest.dword(kPortsLock)));
             guest.setDword(kPortsLock, 0);
@@ -3277,7 +3441,7 @@ x86::reg32 frontend::netc::serialOpenHandle(App* app, CPU& cpu, reg32 number, re
     guest.setDword(kErrorFile, kSourceFile);
     guest.setDword(kErrorFunction, 0x550ba8);
     guest.setDword(kErrorLine, 0x248);
-    const reg32 record = guest.call(kAllocate, args({ 0x550bbc, serial::kRecordSize, guest.dword(kMemoryType), 0x550ba8 }));
+    const reg32 record = got(fe::direct<0x4e1620, ea::reserved>(app, cpu, 0x550bbc, serial::kRecordSize, guest.dword(kMemoryType)));
     guest.setDword(record + serial::kReading, 0);
     guest.setDword(record + serial::kHandle, handle);
     guest.setDword(record + serial::kInEvent, callImport<kCreateEventApi, &host::createEvent>(guest, cpu, 0, 1, 0, 0));
@@ -3293,31 +3457,32 @@ x86::reg32 frontend::netc::serialOpenHandle(App* app, CPU& cpu, reg32 number, re
     callImport<kSetTimeouts, &host::serialSetTimeouts>(guest, cpu, handle, timeouts);
     guest.setDword(kPorts + number * 4, record);
     // edx as the call by address loads it, which sub_51ab70 keeps: the function leaves it.
-    guest.leaveEdx(1);
+    h.edx = (1);
     guest::direct<0x51ab70, serialCommand>(app, cpu, number, 1);
     return number;
 }
 
-void frontend::netcSerialOpenHandle(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcSerialOpenHandle(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_51b2f0", 0, 0, nullptr, 0, std::uint8_t(kEbx | kEcx | kEsi | kEdi) };
-    const reg32 number = cpu.eax, handle = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::serialOpenHandle(app, cpu, number, handle); });
+    const reg32 number = args.eax, handle = args.edx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::serialOpenHandle(app, cpu, number, handle); });
 }
 
 /* sub_51b480: a port opened by its number.  Its number, -1 if it would not; open already, nothing. */
 x86::reg32 frontend::netc::serialOpen(App* app, CPU& cpu, reg32 number)
 {
+    Held h;
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0x20);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = number;
+    h.eax = number;
     const reg32 name = guest.frame();
     if (sign(number) < 0 || sign(number) >= 0x10)
-        reportError(guest, kSourceFile, 0x550bc8, 0x269, 0x550bd4, number);
-    callImport<kClearError, &host::setLastError>(guest, cpu, 0);
+        reportError(guest, h, kSourceFile, 0x550bc8, 0x269, 0x550bd4, number);
+    h.eax = callImport<kClearError, &host::setLastError>(guest, cpu, 0);
     if (portRecord(guest, number) != 0)
-        return guest.eax();
+        return h.eax;
     fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), name, 0x550bf4, guest::Words{number + 1});
     const reg32 handle = callImport<kCreateFile, &host::createFile>(guest, cpu, name, 0xc0000000, 0, 0, 3, 0x40000080, 0);
     if (handle == 0xffffffff)
@@ -3325,35 +3490,34 @@ x86::reg32 frontend::netc::serialOpen(App* app, CPU& cpu, reg32 number)
     return guest::direct<0x51b2f0, serialOpenHandle>(app, cpu, number, handle);
 }
 
-void frontend::netcSerialOpen(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcSerialOpen(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_51b480", 0, 0, nullptr, 0, kAll };
-    const reg32 number = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::serialOpen(app, cpu, number); });
+    const reg32 number = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::serialOpen(app, cpu, number); });
 }
 
 /* sub_51b530: data written to a port, if all of it fits.  What went. */
 x86::reg32 frontend::netc::serialWriteWhole(App* app, CPU& cpu, reg32 number, reg32 length, reg32 data)
 {
+    Held h;
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0xc);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = number; cpu.edx = length; cpu.ebx = data;
     ensurePortsLock(guest, cpu);
     enterPorts(guest, cpu);
     reg32 went = 0;
     if (guest::direct<0x51b030, serialIsOpen>(app, cpu, number) != 0 && sign(guest::direct<0x51b900, serialOutRoom>(app, cpu, number)) >= sign(length))
-        went = loaded<0x51b5f0, serialWrite>(app, cpu, number, length, data);
-    guest.leaveEbx(went);
+        went = loaded<0x51b5f0, serialWrite>(app, cpu, h, number, length, data);
     leavePorts(guest, cpu);
     return went;
 }
 
-void frontend::netcSerialWriteWhole(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcSerialWriteWhole(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_51b530", 0, 0, nullptr, 0, std::uint8_t(kEcx | kEsi | kEdi) };
-    const reg32 number = cpu.eax, length = cpu.edx, data = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::serialWriteWhole(app, cpu, number, length, data); });
+    const reg32 number = args.eax, length = args.edx, data = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::serialWriteWhole(app, cpu, number, length, data); });
 }
 
 /* sub_51b5f0: as much data as there is room for put in a port's ring, its thread
@@ -3363,7 +3527,6 @@ x86::reg32 frontend::netc::serialWrite(App* app, CPU& cpu, reg32 number, reg32 l
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0x18);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = number; cpu.edx = length; cpu.ebx = data;
     reg32 first = 0, second = 0;
     ensurePortsLock(guest, cpu);
     enterPorts(guest, cpu);
@@ -3381,25 +3544,23 @@ x86::reg32 frontend::netc::serialWrite(App* app, CPU& cpu, reg32 number, reg32 l
             second = length - first;
         }
         if (first != 0)
-            guest.call(kMoveMemory, args({ data, portRecord(guest, number) + serial::kOutRing + at, first }));
-        guest.leaveEbx(second);
+            completed(fe::direct<0x4ea4f0, ea::moveMemory>(app, cpu, portRecord(guest, number) + serial::kOutRing + at, data, first));
         if (second != 0)
-            guest.call(kMoveMemory, args({ data + first, portRecord(guest, number) + serial::kOutRing, second }));
+            completed(fe::direct<0x4ea4f0, ea::moveMemory>(app, cpu, portRecord(guest, number) + serial::kOutRing, data + first, second));
         const reg32 now = portRecord(guest, number);
         guest.setDword(now + serial::kOutCount, guest.dword(now + serial::kOutCount) + second + first);
         // edx as the call by address loads it, which sub_51ab70 keeps: the function leaves it.
-    guest.leaveEdx(1);
     guest::direct<0x51ab70, serialCommand>(app, cpu, number, 1);
     }
     leavePorts(guest, cpu);
     return second + first;
 }
 
-void frontend::netcSerialWrite(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcSerialWrite(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_51b5f0", 0, 0, nullptr, 0, std::uint8_t(kEcx | kEsi | kEdi) };
-    const reg32 number = cpu.eax, length = cpu.edx, data = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::serialWrite(app, cpu, number, length, data); });
+    const reg32 number = args.eax, length = args.edx, data = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::serialWrite(app, cpu, number, length, data); });
 }
 
 /* sub_51b710: a port's speed, parity, stop bits and word's length.  The speed is
@@ -3407,19 +3568,17 @@ void frontend::netcSerialWrite(win32::WinApplication* app, x86::CPU& cpu)
 x86::reg32 frontend::netc::serialSet(App* app, CPU& cpu, reg32 number, reg32 speed, reg32 parity, reg32 stopBits,
                                      reg32 wordBits)
 {
+    Held h;
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0x28);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = number; cpu.edx = speed; cpu.ebx = parity; cpu.ecx = stopBits;
     const reg32 state = guest.frame();
-    guest.leaveEbx(stopBits);
     callImport<kClearError, &host::setLastError>(guest, cpu, 0);
     ensurePortsLock(guest, cpu);
     enterPorts(guest, cpu);
     if (guest::direct<0x51b030, serialIsOpen>(app, cpu, number) == 0)
     {
-        reportError(guest, kSourceFile, 0x550c00, 0x356, 0x550c0c);
-        guest.leaveEbx(0x550c00);
+        reportError(guest, h, kSourceFile, 0x550c00, 0x356, 0x550c0c);
     }
     else if (callImport<kGetCommState, &host::serialGetState>(guest, cpu, guest.dword(portRecord(guest, number) + serial::kHandle), state) != 0)
     {
@@ -3436,12 +3595,12 @@ x86::reg32 frontend::netc::serialSet(App* app, CPU& cpu, reg32 number, reg32 spe
     return leavePorts(guest, cpu);
 }
 
-void frontend::netcSerialSet(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcSerialSet(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_51b710", 4, 0, nullptr, 0, std::uint8_t(kEsi | kEdi) };
-    const reg32 number = cpu.eax, speed = cpu.edx, parity = cpu.ebx, stopBits = cpu.ecx;
+    const reg32 number = args.eax, speed = args.edx, parity = args.ebx, stopBits = args.ecx;
     const reg32 wordBits = app->getMemory<reg32>(cpu.esp + 4);
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::serialSet(app, cpu, number, speed, parity, stopBits, wordBits); });
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::serialSet(app, cpu, number, speed, parity, stopBits, wordBits); });
 }
 
 /* sub_51b8a0: how much a port has received. */
@@ -3450,7 +3609,6 @@ x86::reg32 frontend::netc::serialInCount(App* app, CPU& cpu, reg32 number)
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0xc);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = number;
     ensurePortsLock(guest, cpu);
     enterPorts(guest, cpu);
     reg32 count = 0;
@@ -3460,11 +3618,11 @@ x86::reg32 frontend::netc::serialInCount(App* app, CPU& cpu, reg32 number)
     return count;
 }
 
-void frontend::netcSerialInCount(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcSerialInCount(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_51b8a0", 0, 0, nullptr, 0, std::uint8_t(kEbx | kEcx | kEdx) };
-    const reg32 number = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::serialInCount(app, cpu, number); });
+    const reg32 number = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::serialInCount(app, cpu, number); });
 }
 
 /* sub_51b900: how much room a port has to send. */
@@ -3473,7 +3631,6 @@ x86::reg32 frontend::netc::serialOutRoom(App* app, CPU& cpu, reg32 number)
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0xc);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = number;
     ensurePortsLock(guest, cpu);
     enterPorts(guest, cpu);
     reg32 room = 0;
@@ -3483,11 +3640,11 @@ x86::reg32 frontend::netc::serialOutRoom(App* app, CPU& cpu, reg32 number)
     return room;
 }
 
-void frontend::netcSerialOutRoom(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcSerialOutRoom(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_51b900", 0, 0, nullptr, 0, std::uint8_t(kEbx | kEcx | kEdx) };
-    const reg32 number = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::serialOutRoom(app, cpu, number); });
+    const reg32 number = args.eax;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::serialOutRoom(app, cpu, number); });
 }
 
 /* sub_51b970: what a port has received copied out, left in the ring.  How much. */
@@ -3496,14 +3653,12 @@ x86::reg32 frontend::netc::serialPeek(App* app, CPU& cpu, reg32 number, reg32 le
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0x18);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = number; cpu.edx = length; cpu.ebx = out;
     reg32 first = 0, second = 0;
     ensurePortsLock(guest, cpu);
     enterPorts(guest, cpu);
     if (guest::direct<0x51b030, serialIsOpen>(app, cpu, number) != 0)
     {
         const reg32 available = guest.dword(portRecord(guest, number) + serial::kInCount);
-        guest.leaveEbx(available);
         if (sign(length) > sign(available))
             length = available;
         const reg32 record = portRecord(guest, number);
@@ -3517,33 +3672,32 @@ x86::reg32 frontend::netc::serialPeek(App* app, CPU& cpu, reg32 number, reg32 le
         if (first != 0)
         {
             const reg32 now = portRecord(guest, number);
-            guest.call(kMoveMemory, args({ guest.dword(now + serial::kInFirst) + now + serial::kInRing, out, first }));
+            completed(fe::direct<0x4ea4f0, ea::moveMemory>(app, cpu, out, guest.dword(now + serial::kInFirst) + now + serial::kInRing, first));
         }
         if (second != 0)
-            guest.call(kMoveMemory, args({ portRecord(guest, number) + serial::kInRing, out + first, second }));
+            completed(fe::direct<0x4ea4f0, ea::moveMemory>(app, cpu, out + first, portRecord(guest, number) + serial::kInRing, second));
     }
     leavePorts(guest, cpu);
     return second + first;
 }
 
-void frontend::netcSerialPeek(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcSerialPeek(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_51b970", 0, 0, nullptr, 0, std::uint8_t(kEcx | kEsi | kEdi) };
-    const reg32 number = cpu.eax, length = cpu.edx, out = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::serialPeek(app, cpu, number, length, out); });
+    const reg32 number = args.eax, length = args.edx, out = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::serialPeek(app, cpu, number, length, out); });
 }
 
 /* sub_51ba50: what a port has received taken out of the ring, its thread told.  How much. */
 x86::reg32 frontend::netc::serialRead(App* app, CPU& cpu, reg32 number, reg32 length, reg32 out)
 {
+    Held h;
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0xc);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = number; cpu.edx = length; cpu.ebx = out;
     ensurePortsLock(guest, cpu);
     enterPorts(guest, cpu);
-    const reg32 got = loaded<0x51b970, serialPeek>(app, cpu, number, length, out);
-    guest.leaveEbx(got);
+    const reg32 got = loaded<0x51b970, serialPeek>(app, cpu, h, number, length, out);
     if (got != 0)
     {
         const reg32 record = portRecord(guest, number);
@@ -3551,47 +3705,47 @@ x86::reg32 frontend::netc::serialRead(App* app, CPU& cpu, reg32 number, reg32 le
         const reg32 now = portRecord(guest, number);
         guest.setDword(now + serial::kInFirst, (got + guest.dword(now + serial::kInFirst)) & serial::kRingMask);
         // edx as the call by address loads it, which sub_51ab70 keeps: the function leaves it.
-    guest.leaveEdx(1);
     guest::direct<0x51ab70, serialCommand>(app, cpu, number, 1);
     }
     leavePorts(guest, cpu);
     return got;
 }
 
-void frontend::netcSerialRead(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcSerialRead(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_51ba50", 0, 0, nullptr, 0, std::uint8_t(kEcx | kEsi | kEdi) };
-    const reg32 number = cpu.eax, length = cpu.edx, out = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::serialRead(app, cpu, number, length, out); });
+    const reg32 number = args.eax, length = args.edx, out = args.ebx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::serialRead(app, cpu, number, length, out); });
 }
 
 /* sub_51bbd0: what is wanted from a port read once it is there or the time is up.  How much. */
 x86::reg32 frontend::netc::serialWaitIn(App* app, CPU& cpu, reg32 number, reg32 length, reg32 out, reg32 timeout)
 {
+    Held h;
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0xc);
     // The arguments where the game's code hands them: the code below reads them there.
-    cpu.eax = number; cpu.edx = length; cpu.ebx = out; cpu.ecx = timeout;
-    guest.leaveEbx(0);
+    h.eax = number; h.edx = length; h.ebx = out; h.ecx = timeout;
+    h.ebx = (0);
     if (sign(length) > sign(serial::kRingSize))
-        reportError(guest, kSourceFile, 0x550c58, 0x471, 0x550c68, serial::kRingSize);
+        reportError(guest, h, kSourceFile, 0x550c58, 0x471, 0x550c68, serial::kRingSize);
     if (guest::direct<0x51b030, serialIsOpen>(app, cpu, number) == 0)
         return 0;
     const reg32 deadline = guest.dword(kClockTicks) + timeout;
-    guest.leaveEcx(number * 4);
+    h.ecx = (number * 4);
     while (sign(length) > sign(guest.dword(portRecord(guest, number) + serial::kInCount))
            && sign(deadline) > sign(guest.dword(kClockTicks)))
         fe::direct<0x4df8e0, ea::sleepFor>(app, cpu, 0);
-    const reg32 got = guest.call(kPortRead, args({ number, length, out }));
-    guest.leaveEbx(got);
+    const reg32 got = callHeld(guest, h, kPortRead, args({ number, length, out }));
+    h.ebx = (got);
     return got;
 }
 
-void frontend::netcSerialWaitIn(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::netcSerialWaitIn(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
 {
     static Site site = { "sub_51bbd0", 0, 0, nullptr, 0, std::uint8_t(kEsi | kEdi) };
-    const reg32 number = cpu.eax, length = cpu.edx, out = cpu.ebx, timeout = cpu.ecx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return netc::serialWaitIn(app, cpu, number, length, out, timeout); });
+    const reg32 number = args.eax, length = args.edx, out = args.ebx, timeout = args.ecx;
+    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return netc::serialWaitIn(app, cpu, number, length, out, timeout); });
 }
 
 }  // namespace nfs3hp

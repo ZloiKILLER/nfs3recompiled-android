@@ -1,10 +1,13 @@
 #include "host_window.h"
+#include "native_guest.h"
 
 #include <lib/thread.h>
 #include <lib/window.h>
 #include <x86.h>
 
 #include <SDL3/SDL.h>
+
+#include <optional>
 
 /* The logic is the port's Windows' (src/lib/winapi/user32.cpp, gdi32.cpp) as the game ran it:
  * moved here, not changed.  Where that answered a constant (a stub of a function the port has no
@@ -219,20 +222,19 @@ std::int32_t dispatchMessage(App* app, x86::CPU& cpu, const Message* message)
                   unsigned(handler), unsigned(message->message), unsigned(message->wParam),
                   unsigned(message->lParam), unsigned(message->window));
 #endif
-    cpu.esp -= 20;
-    app->getMemory<x86::reg32>(cpu.esp + 16) = message->lParam;
-    app->getMemory<x86::reg32>(cpu.esp + 12) = message->wParam;
-    app->getMemory<x86::reg32>(cpu.esp + 8) = message->message;
-    app->getMemory<x86::reg32>(cpu.esp + 4) = message->window;
-    app->getMemory<x86::reg32>(cpu.esp + 0) = handler;
-    app->dynamic_call(handler, cpu);
+    // The return address's slot under the four words holds the handler (as the code left it).
+    app->getMemory<x86::reg32>(cpu.esp - 20) = handler;
+    x86::Args registers;
+    const std::optional<x86::reg32> result =
+        guest::pointerCall(app, cpu, handler, registers, {message->window, message->message, message->wParam, message->lParam});
+    const x86::reg32 eax = result ? *result : 0;
 #ifdef NFS_TRACE_MSG
     NFS_MSG_TRACE("DispatchMsgA  <- msg=0x%04x eax=0x%08x took=%ums frames_inside=%u",
-                  unsigned(message->message), unsigned(cpu.eax),
+                  unsigned(message->message), unsigned(eax),
                   unsigned(SDL_GetTicks() - dispatchStart),
                   win32::g_traceFrames - framesBefore);
 #endif
-    return x86::sreg32(cpu.eax);
+    return x86::sreg32(eax);
 }
 
 x86::reg32 postMessage(x86::reg32 window, x86::reg32 message, x86::reg32 wParam, x86::reg32 lParam)

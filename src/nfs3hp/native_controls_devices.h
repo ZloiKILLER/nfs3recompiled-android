@@ -4,7 +4,7 @@
 #include "native_guest.h"
 
 /* native_controls_devices.cpp's typed functions that other files call as C++ (guest::direct), and
- * how the game's code calls each by address (ByAddress, for the check's stand-ins).  Each may call
+ * how the game's code calls each by address.  Each may call
  * the game's other functions by address on `cpu`, and is false or nullopt when the game stopped in
  * one. */
 namespace nfs3hp
@@ -30,37 +30,13 @@ inline std::optional<x86::reg32> defaultSets(win32::WinApplication* app, x86::CP
     const std::optional<bool> atKeyboard = startingSets(app, cpu, mode);
     if (!atKeyboard)
         return std::nullopt;
-    if (*atKeyboard)
-        return cpu.eax;
-    return x86::reg32(mode == 1 ? 2 : 1);
+    return x86::reg32(mode == 1 ? 2 : 1);  // (at the keyboard's, the game leaves its copy's eax: read by none)
 }
 
 }  // namespace controls
 
 namespace guest
 {
-
-// The mode in eax; the sets' address back in eax.
-template <>
-struct ByAddress<controls::controlSets>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 mode)
-    {
-        return watcomEax(app, cpu, Address, {mode}).value_or(0);
-    }
-};
-
-// The mode in eax; eax back.
-template <>
-struct ByAddress<controls::defaultSets>
-{
-    template <x86::reg32 Address>
-    static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 mode)
-    {
-        return watcomEax(app, cpu, Address, {mode});
-    }
-};
 
 }  // namespace guest
 }  // namespace nfs3hp

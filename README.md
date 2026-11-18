@@ -3,11 +3,13 @@
 Need for Speed III: Hot Pursuit, the 1998 PC game, running natively on Android
 phones.
 
-It is not an emulator. The original Windows executable is recompiled into
-portable C++ — a static recompilation, built on
-[motor-dev/nfs-recompiled](https://github.com/motor-dev/nfs-recompiled) — and
-the Windows and DirectX calls it makes are reimplemented on SDL3 and OpenGL
-ES, and its 3dfx driver is rewritten to draw with OpenGL ES itself. This
+It is not an emulator. The game is C++ that runs on the phone's own processor,
+with no x86 emulated: it started as a static recompilation of the original
+Windows executable
+([motor-dev/nfs-recompiled](https://github.com/motor-dev/nfs-recompiled)) and
+was rewritten from there into the port's own code. What it asked of Windows
+and DirectX is answered on SDL3 and OpenGL ES, and its 3dfx driver is
+rewritten to draw with OpenGL ES itself. This
 project makes it a phone game: a launcher, touch controls, two
 gamepads with split screen, vibration, widescreen races and
 full-colour textures.

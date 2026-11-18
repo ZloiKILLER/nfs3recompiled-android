@@ -2,6 +2,7 @@
 #include "native_carstate.h"
 #include "native_ea_memory.h"
 #include "native_ea_support.h"
+#include "native_frontend_simd.h"
 #include "native_game.h"
 #include "native_guest.h"
 #include "native_raceload.h"
@@ -17,9 +18,7 @@
 
 /* The track's data and a place on it: its nodes, the road's quads around
  * them, and what the cars, the sound and the renderer ask of them.
- * disassemble_nfs3hp.py binds each address to the function of that name here
- * (TRACKDATA_NATIVES), and the generated code calls it by name.
- * tools/game_checks holds each against its generated code.
+ * The game's code calls each function here by name.
  *
  * The track's nodes: [0x5dd948] (the track's header [0x5dd938] + 8), [0x5dd940]
  * of them (the header's word at 6), 0x24 bytes each -- x, y, z in 16.16 at 0,
@@ -44,8 +43,8 @@
  * from 8, each placed on its nearest node, at +0x18, and sorted by it) and
  * simhts.dat ([0x552e54]) are loaded with the nodes.
  *
- * Each is a typed function under a name of its own, with an adapter under the game's name for
- * the callers still on registers and the dispatch (adapts): every register but eax as the caller
+ * Each is a typed function under a name of its own, with a thunk under the game's name for
+ * the callers still on registers and for the calls by address (asThunk): every register but eax as the caller
  * had it, eax what the core gives back, and a register the code leaves that is no argument of its
  * (ebx, edx, esi where they are) as that code leaves it.  The guest's
  * memory is read and written where the code does; a frame stays on the guest's stack, as deep as
@@ -96,9 +95,6 @@ constexpr reg32 kFixedThree = 0x536dec;
 // 0x4e01f0) and a car's node (0x4217e0).
 constexpr reg32 kSprintf = 0x4df690;
 constexpr reg32 kChop = 0x4dfd56, kFillZero = 0x4e070c;
-// By address: the height on a plane (0x4969c0), native_frontend_simd's, which tools/game_checks
-// does not build.
-constexpr reg32 kOnSurface = 0x4969c0;
 
 reg16 half(App* app, reg32 a) { return app->getMemory<reg16>(a); }
 void putHalf(App* app, reg32 a, reg16 v) { app->getMemory<reg16>(a) = v; }
@@ -183,7 +179,7 @@ void copyWords(App* app, reg32 from, reg32 to, reg32 n)
         put(app, to + 4 * k, at(app, from + 4 * k));
 }
 
-/* An adapter's run of its core: every register but eax as the caller had it after it (the code
+/* A thunk's run of its core: every register but eax as the caller had it after it (the code
  * pushes and pops what it uses; its other registers are its arguments, which no caller reads), eax
  * what the core gives -- a core that gives nothing, or answers only whether the game went on (a
  * bool), leaves eax as it is -- and the return address and `popped` bytes of the caller's words
@@ -199,12 +195,12 @@ struct IsOptional<std::optional<T>> : std::true_type
 };
 
 template <typename Core>
-bool adapts(CPU& cpu, Core&& core, reg32 popped = 0)
+bool asThunk(CPU& cpu, x86::Args& args, Core&& core, reg32 popped = 0)
 {
     using Result = std::decay_t<decltype(core())>;
+    const reg32 esp = cpu.esp;
     std::optional<reg32> left;
     {
-        const guest::KeptRegisters kept(cpu);
         if constexpr (std::is_void_v<Result>)
             core();
         else if constexpr (std::is_same_v<Result, bool>)
@@ -222,8 +218,9 @@ bool adapts(CPU& cpu, Core&& core, reg32 popped = 0)
         else
             left = reg32(core());
     }
+    cpu.esp = esp;
     if (left)
-        cpu.eax = *left;
+        args.eax = *left;
     cpu.esp += 4 + popped;
     return true;
 }
@@ -254,43 +251,43 @@ private:
 
 }  // namespace
 
-void loadCcmPoints(App* app, CPU& cpu);
-void freeCcmPoints(App* app, CPU& cpu);
-void loadSimHeights(App* app, CPU& cpu);
-void freeSimHeights(App* app, CPU& cpu);
-void openTrackNodes(App* app, CPU& cpu);
-void closeTrackNodes(App* app, CPU& cpu);
-void nearestNodeCoarse(App* app, CPU& cpu);
-void followNode(App* app, CPU& cpu);
-void nearestNode(App* app, CPU& cpu);
-void quadVertices(App* app, CPU& cpu);
-void quadStepForward(App* app, CPU& cpu);
-void quadStepBack(App* app, CPU& cpu);
-void quadToFixed(App* app, CPU& cpu);
-void quadSet(App* app, CPU& cpu);
-void nodeSection(App* app, CPU& cpu);
-void resetPosition(App* app, CPU& cpu);
-void findQuad(App* app, CPU& cpu);
-void findQuadNearby(App* app, CPU& cpu);
-void findQuadByLinks(App* app, CPU& cpu);
-void findQuadFallback(App* app, CPU& cpu);
-void locateOnRoad(App* app, CPU& cpu);
-void updatePosition(App* app, CPU& cpu);
-void findMatchingQuad(App* app, CPU& cpu);
-void quadEdgeFlags(App* app, CPU& cpu);
-void sectionItemCount(App* app, CPU& cpu);
-void sectionItem(App* app, CPU& cpu);
-void setLaneOffsets(App* app, CPU& cpu);
-void lanePosition(App* app, CPU& cpu);
-void positionFrame(App* app, CPU& cpu);
-void snapToTrack(App* app, CPU& cpu);
-void placeOnTrack(App* app, CPU& cpu);
-void positionColour(App* app, CPU& cpu);
-void positionSurface(App* app, CPU& cpu);
-void surfaceUnder(App* app, CPU& cpu);
-void inTunnel(App* app, CPU& cpu);
-void carFacingWay(App* app, CPU& cpu);
-void carSectionKind(App* app, CPU& cpu);
+x86::reg32 loadCcmPoints(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 freeCcmPoints(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 loadSimHeights(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 freeSimHeights(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 openTrackNodes(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 closeTrackNodes(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 nearestNodeCoarse(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 followNode(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 nearestNode(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 quadVertices(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 quadStepForward(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 quadStepBack(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 quadToFixed(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 quadSet(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 nodeSection(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 resetPosition(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 findQuad(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 findQuadNearby(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 findQuadByLinks(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 findQuadFallback(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 locateOnRoad(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 updatePosition(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 findMatchingQuad(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 quadEdgeFlags(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 sectionItemCount(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 sectionItem(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 setLaneOffsets(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 lanePosition(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 positionFrame(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 snapToTrack(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 placeOnTrack(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 positionColour(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 positionSurface(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 surfaceUnder(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 inTunnel(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 carFacingWay(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 carSectionKind(App* app, x86::CPU& cpu, x86::Args& args);
 
 namespace
 {
@@ -489,15 +486,17 @@ std::optional<reg32> loadCcm(App* app, CPU& cpu)
 }
 
 /* 0x41e180: loadCcm. */
-void loadCcmPoints(App* app, CPU& cpu)
+x86::reg32 loadCcmPoints(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&] { return loadCcm(app, cpu); });
+    asThunk(cpu, args, [&] { return loadCcm(app, cpu); });
+    return args.eax;
 }
 
 /* 0x41e2c0: the .ccm's block freed, if there is one, and forgotten (freeBlock). */
-void freeCcmPoints(App* app, CPU& cpu)
+x86::reg32 freeCcmPoints(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, eax = cpu.eax] { return freeBlock(app, cpu, kCcm, eax); });
+    asThunk(cpu, args, [&, eax = args.eax] { return freeBlock(app, cpu, kCcm, eax); });
+    return args.eax;
 }
 
 /* 0x41e2f0's: the track's simhts.dat (of [0x6fd4ac], under the data's path) loaded whole
@@ -517,15 +516,17 @@ std::optional<reg32> loadHeights(App* app, CPU& cpu)
 }
 
 /* 0x41e2f0: loadHeights; the block in eax, as the load leaves it. */
-void loadSimHeights(App* app, CPU& cpu)
+x86::reg32 loadSimHeights(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&] { return loadHeights(app, cpu); });
+    asThunk(cpu, args, [&] { return loadHeights(app, cpu); });
+    return args.eax;
 }
 
 /* 0x41e340: simhts.dat's block freed, if there is one, and forgotten (freeBlock). */
-void freeSimHeights(App* app, CPU& cpu)
+x86::reg32 freeSimHeights(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, eax = cpu.eax] { return freeBlock(app, cpu, kSimHeights, eax); });
+    asThunk(cpu, args, [&, eax = args.eax] { return freeBlock(app, cpu, kSimHeights, eax); });
+    return args.eax;
 }
 
 /* 0x41e370's: the track's header taken: its nodes from +8, their count the word at +6; the .ccm
@@ -548,13 +549,14 @@ bool openTrack(App* app, CPU& cpu, reg32 header)
 }
 
 /* 0x41e370: openTrack of the header eax; 1. */
-void openTrackNodes(App* app, CPU& cpu)
+x86::reg32 openTrackNodes(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, header = cpu.eax]() -> std::optional<reg32> {
+    asThunk(cpu, args, [&, header = args.eax]() -> std::optional<reg32> {
         if (!openTrack(app, cpu, header))
             return std::nullopt;
         return 1;
     });
+    return args.eax;
 }
 
 /* 0x41e3b0's: the .ccm and simhts.dat freed; eax as the last free leaves it (`eax`, the code's,
@@ -573,30 +575,34 @@ bool closeTrack(App* app, CPU& cpu)
 }
 
 /* 0x41e3b0: closeTrackEax. */
-void closeTrackNodes(App* app, CPU& cpu)
+x86::reg32 closeTrackNodes(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, eax = cpu.eax] { return closeTrackEax(app, cpu, eax); });
+    asThunk(cpu, args, [&, eax = args.eax] { return closeTrackEax(app, cpu, eax); });
+    return args.eax;
 }
 
 /* 0x41e3c0: nearestEighth of the point eax for the place edx. */
-void nearestNodeCoarse(App* app, CPU& cpu)
+x86::reg32 nearestNodeCoarse(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, point = cpu.eax, place = cpu.edx] { return nearestEighth(app, cpu, point, place); });
+    asThunk(cpu, args, [&, point = args.eax, place = args.edx] { return nearestEighth(app, cpu, point, place); });
+    return args.eax;
 }
 
 /* 0x41e420: followToNearest of the point eax for the place edx. */
-void followNode(App* app, CPU& cpu)
+x86::reg32 followNode(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, point = cpu.eax, place = cpu.edx] { return followToNearest(app, point, place); });
+    asThunk(cpu, args, [&, point = args.eax, place = args.edx] { return followToNearest(app, point, place); });
+    return args.eax;
 }
 
 /* 0x41e470: walkToNearest of the point eax for the place edx; eax the place. */
-void nearestNode(App* app, CPU& cpu)
+x86::reg32 nearestNode(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, point = cpu.eax, place = cpu.edx] {
+    asThunk(cpu, args, [&, point = args.eax, place = args.edx] {
         walkToNearest(app, point, place);
         return place;
     });
+    return args.eax;
 }
 
 /* The vertex of the place on the track's block that its strip's k-th word names. */
@@ -617,9 +623,10 @@ void takeQuadVertices(App* app, reg32 place)
 }
 
 /* 0x41e6a0: takeQuadVertices for the place eax. */
-void quadVertices(App* app, CPU& cpu)
+x86::reg32 quadVertices(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, place = cpu.eax] { takeQuadVertices(app, place); });
+    asThunk(cpu, args, [&, place = args.eax] { takeQuadVertices(app, place); });
+    return args.eax;
 }
 
 /* 0x41e720's: the quad a strip on across the road: the old +0x54 and +0x60 now +0x58 and +0x5c,
@@ -633,9 +640,10 @@ void stepQuadForward(App* app, reg32 place)
 }
 
 /* 0x41e720: stepQuadForward for the place eax. */
-void quadStepForward(App* app, CPU& cpu)
+x86::reg32 quadStepForward(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, place = cpu.eax] { stepQuadForward(app, place); });
+    asThunk(cpu, args, [&, place = args.eax] { stepQuadForward(app, place); });
+    return args.eax;
 }
 
 /* 0x41e770's: the quad a strip back: the old +0x58 and +0x5c now +0x54 and +0x60, the new strip's
@@ -649,9 +657,10 @@ void stepQuadBack(App* app, reg32 place)
 }
 
 /* 0x41e770: stepQuadBack for the place eax. */
-void quadStepBack(App* app, CPU& cpu)
+x86::reg32 quadStepBack(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, place = cpu.eax] { stepQuadBack(app, place); });
+    asThunk(cpu, args, [&, place = args.eax] { stepQuadBack(app, place); });
+    return args.eax;
 }
 
 /* 0x41e7c0's: the quad's four vertices (three floats each) in 16.16, to the place on the track's
@@ -671,9 +680,10 @@ reg32 fixQuad(App* app, reg32 place)
 }
 
 /* 0x41e7c0: fixQuad for the place eax; eax the last word. */
-void quadToFixed(App* app, CPU& cpu)
+x86::reg32 quadToFixed(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, place = cpu.eax] { return fixQuad(app, place); });
+    asThunk(cpu, args, [&, place = args.eax] { return fixQuad(app, place); });
+    return args.eax;
 }
 
 /* 0x41e8d0's: the quad's vertices taken and made 16.16; fixQuad's last word. */
@@ -684,9 +694,10 @@ reg32 setQuad(App* app, reg32 place)
 }
 
 /* 0x41e8d0: setQuad for the place eax. */
-void quadSet(App* app, CPU& cpu)
+x86::reg32 quadSet(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, place = cpu.eax] { return setQuad(app, place); });
+    asThunk(cpu, args, [&, place = args.eax] { return setQuad(app, place); });
+    return args.eax;
 }
 
 /* 0x41e8f0's: the place on the track's block, of its node, and its node's entry in it (8 bytes
@@ -701,9 +712,10 @@ reg32 takeNodeEntry(App* app, reg32 place)
 }
 
 /* 0x41e8f0: takeNodeEntry for the place eax. */
-void nodeSection(App* app, CPU& cpu)
+x86::reg32 nodeSection(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, place = cpu.eax] { return takeNodeEntry(app, place); });
+    asThunk(cpu, args, [&, place = args.eax] { return takeNodeEntry(app, place); });
+    return args.eax;
 }
 
 /* 0x41e940's: the place on the track at node `node`, nothing found on it; takeNodeEntry's
@@ -724,9 +736,10 @@ reg32 resetPlace(App* app, reg32 node, reg32 place)
 }
 
 /* 0x41e940: resetPlace at node eax for the place edx. */
-void resetPosition(App* app, CPU& cpu)
+x86::reg32 resetPosition(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, node = cpu.eax, place = cpu.edx] { return resetPlace(app, node, place); });
+    asThunk(cpu, args, [&, node = args.eax, place = args.edx] { return resetPlace(app, node, place); });
+    return args.eax;
 }
 
 
@@ -978,14 +991,15 @@ std::optional<Searched> searchQuad(App* app, CPU& cpu, reg32 point, reg32 place)
 }
 
 /* 0x41e990: searchQuad for the point eax about the place edx. */
-void findQuad(App* app, CPU& cpu)
+x86::reg32 findQuad(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, point = cpu.eax, place = cpu.edx]() -> std::optional<reg32> {
+    asThunk(cpu, args, [&, point = args.eax, place = args.edx]() -> std::optional<reg32> {
         const std::optional<Searched> searched = searchQuad(app, cpu, point, place);
         if (!searched)
             return std::nullopt;
         return searched->found;
     });
+    return args.eax;
 }
 
 /* 0x41f090's: the road's quad under the point (x and z, 16.16) looked for from the place on the
@@ -1029,9 +1043,10 @@ reg32 searchNearby(App* app, reg32 x, reg32 z, reg32 place)
 }
 
 /* 0x41f090: searchNearby for the point eax from the place edx. */
-void findQuadNearby(App* app, CPU& cpu)
+x86::reg32 findQuadNearby(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, point = cpu.eax, place = cpu.edx] { return searchNearby(app, at(app, point), at(app, point + 8), place); });
+    asThunk(cpu, args, [&, point = args.eax, place = args.edx] { return searchNearby(app, at(app, point), at(app, point + 8), place); });
+    return args.eax;
 }
 
 // A node's entry's links: the nodes' words at 4 and 6, -1 for none.
@@ -1123,14 +1138,15 @@ std::optional<Linked> searchLinks(App* app, CPU& cpu, reg32 point, reg32 place, 
 }
 
 /* 0x41f330: searchLinks for the point eax and the place edx, from node ebx. */
-void findQuadByLinks(App* app, CPU& cpu)
+x86::reg32 findQuadByLinks(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, point = cpu.eax, place = cpu.edx, node = cpu.ebx]() -> std::optional<reg32> {
+    asThunk(cpu, args, [&, point = args.eax, place = args.edx, node = args.ebx]() -> std::optional<reg32> {
         const std::optional<Linked> linked = searchLinks(app, cpu, point, place, node);
         if (!linked)
             return std::nullopt;
         return linked->found;
     });
+    return args.eax;
 }
 
 // How far from its node a point may be before its node is looked for afresh: 1.0 in 16.16.
@@ -1199,17 +1215,18 @@ std::optional<Fallback> fallbackQuad(App* app, CPU& cpu, reg32 point, reg32 plac
 
 /* 0x41f500: fallbackQuad for the point eax and the place edx; ebx as the code leaves it (no
  * argument of its by its code's reading). */
-void findQuadFallback(App* app, CPU& cpu)
+x86::reg32 findQuadFallback(App* app, x86::CPU& cpu, x86::Args& args)
 {
     std::optional<Fallback> left;
-    adapts(cpu, [&, point = cpu.eax, place = cpu.edx, ebx = cpu.ebx]() -> std::optional<reg32> {
+    asThunk(cpu, args, [&, point = args.eax, place = args.edx, ebx = args.ebx]() -> std::optional<reg32> {
         left = fallbackQuad(app, cpu, point, place, ebx);
         if (!left)
             return std::nullopt;
         return left->eax;
     });
     if (left)
-        cpu.ebx = left->ebx;
+        args.ebx = left->ebx;
+    return args.eax;
 }
 
 /* 0x41f650's: the place on the track found for the point: its nearest node followed
@@ -1236,9 +1253,10 @@ std::optional<reg32> locatePlace(App* app, CPU& cpu, reg32 point, reg32 place)
 }
 
 /* 0x41f650: locatePlace for the point eax and the place edx. */
-void locateOnRoad(App* app, CPU& cpu)
+x86::reg32 locateOnRoad(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, point = cpu.eax, place = cpu.edx] { return locatePlace(app, cpu, point, place); });
+    asThunk(cpu, args, [&, point = args.eax, place = args.edx] { return locatePlace(app, cpu, point, place); });
+    return args.eax;
 }
 
 namespace
@@ -1302,17 +1320,18 @@ std::optional<reg32> bringPlaceEax(App* app, CPU& cpu, reg32 point, reg32 place,
     return located;
 }
 
-bool bringPlace(App* app, CPU& cpu, reg32 point, reg32 place, reg32 followed)
+std::optional<reg32> bringPlace(App* app, CPU& cpu, reg32 point, reg32 place, reg32 followed)
 {
-    return bringPlaceEax(app, cpu, point, place, followed).has_value();
+    return bringPlaceEax(app, cpu, point, place, followed);
 }
 
 /* 0x41f6e0: bringPlaceEax for the point eax and the place edx, followed ebx. */
-void updatePosition(App* app, CPU& cpu)
+x86::reg32 updatePosition(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, point = cpu.eax, place = cpu.edx, followed = cpu.ebx] {
+    asThunk(cpu, args, [&, point = args.eax, place = args.edx, followed = args.ebx] {
         return bringPlaceEax(app, cpu, point, place, followed);
     });
+    return args.eax;
 }
 
 // findMatchingQuad's ways: a node on, a node back, the strip on, the strip back.
@@ -1422,9 +1441,10 @@ Matched matchQuad(App* app, reg32 way, reg32 from, reg32 to)
 }
 
 /* 0x41f870: matchQuad by eax from the place edx to ebx. */
-void findMatchingQuad(App* app, CPU& cpu)
+x86::reg32 findMatchingQuad(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, way = cpu.eax, from = cpu.edx, to = cpu.ebx] { return matchQuad(app, way, from, to).found; });
+    asThunk(cpu, args, [&, way = args.eax, from = args.edx, to = args.ebx] { return matchQuad(app, way, from, to).found; });
+    return args.eax;
 }
 
 // How far past a side the point may be: -1.5 in 16.16.
@@ -1466,11 +1486,12 @@ Edges edgesPast(App* app, reg32 point, reg32 other, reg32 place, reg32 height)
 
 /* 0x41fd60: edgesPast of the point eax by the place edx's quad, for the place ebx, the height to
  * [ecx]; the flags in eax. */
-void quadEdgeFlags(App* app, CPU& cpu)
+x86::reg32 quadEdgeFlags(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, point = cpu.eax, other = cpu.edx, place = cpu.ebx, height = cpu.ecx] {
+    asThunk(cpu, args, [&, point = args.eax, other = args.edx, place = args.ebx, height = args.ecx] {
         return edgesPast(app, point, other, place, height).flags;
     });
+    return args.eax;
 }
 
 /* 0x41ff10's: the items of the place on the track's block. */
@@ -1480,9 +1501,10 @@ reg32 itemCount(App* app, reg32 place)
 }
 
 /* 0x41ff10: itemCount for the place eax. */
-void sectionItemCount(App* app, CPU& cpu)
+x86::reg32 sectionItemCount(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, place = cpu.eax] { return itemCount(app, place); });
+    asThunk(cpu, args, [&, place = args.eax] { return itemCount(app, place); });
+    return args.eax;
 }
 
 // An item's size (a word at 0xc) and its kind (0x13's low nibble): halved, doubled.
@@ -1513,11 +1535,12 @@ ItemTaken takeItem(App* app, reg32 place, reg32 index, reg32 to, reg32 size)
 }
 
 /* 0x41ff20: takeItem edx of the place eax, to ebx and [ecx]. */
-void sectionItem(App* app, CPU& cpu)
+x86::reg32 sectionItem(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, place = cpu.eax, index = cpu.edx, to = cpu.ebx, size = cpu.ecx] {
+    asThunk(cpu, args, [&, place = args.eax, index = args.edx, to = args.ebx, size = args.ecx] {
         return takeItem(app, place, index, to, size).result;
     });
+    return args.eax;
 }
 
 /* 0x41ffa0's: the lanes' span and shift, for lanePosition. */
@@ -1528,9 +1551,10 @@ void setLanes(App* app, reg32 span, reg32 shift)
 }
 
 /* 0x41ffa0: setLanes, the span edx and the shift eax. */
-void setLaneOffsets(App* app, CPU& cpu)
+x86::reg32 setLaneOffsets(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, shift = cpu.eax, span = cpu.edx] { setLanes(app, span, shift); });
+    asThunk(cpu, args, [&, shift = args.eax, span = args.edx] { setLanes(app, span, shift); });
+    return args.eax;
 }
 
 /* What 0x41ffd0 leaves: the lane's node, and the shift's step along the node's side vector's y,
@@ -1591,9 +1615,10 @@ InLane lanePlace(App* app, reg32 place, reg32 out, reg32 right)
 }
 
 /* 0x41ffd0: lanePlace of the place eax to edx, right ebx; the node in eax. */
-void lanePosition(App* app, CPU& cpu)
+x86::reg32 lanePosition(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, place = cpu.eax, out = cpu.edx, right = cpu.ebx] { return lanePlace(app, place, out, right).node; });
+    asThunk(cpu, args, [&, place = args.eax, out = args.edx, right = args.ebx] { return lanePlace(app, place, out, right).node; });
+    return args.eax;
 }
 
 /* 0x420230's: the frame of the place on the track, to `axes` (nine words: the side, the up and the
@@ -1648,14 +1673,15 @@ reg32 takeFrame(App* app, reg32 place, reg32 axes, reg32 corner)
 
 /* 0x420230: takeFrame of the place eax to edx and esi; esi in eax, and esi past its frame's copy
  * of the corner (the frame's -0x18), as the code leaves it. */
-void positionFrame(App* app, CPU& cpu)
+x86::reg32 positionFrame(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const reg32 corner = cpu.esi, frameEnd = cpu.esp - 0x10 - 0x18;
-    if (adapts(cpu, [&, place = cpu.eax, axes = cpu.edx] {
+    const reg32 corner = args.esi, frameEnd = cpu.esp - 0x10 - 0x18;
+    if (asThunk(cpu, args, [&, place = args.eax, axes = args.edx] {
             takeFrame(app, place, axes, corner);
             return corner;
         }))
-        cpu.esi = frameEnd;
+        args.esi = frameEnd;
+    return args.eax;
 }
 
 namespace
@@ -1673,13 +1699,21 @@ bool fillZero(App* app, CPU& cpu, reg32 to, reg32 bytes)
  * kept; nullopt when the game stopped. */
 std::optional<reg32> surfaceHeight(App* app, CPU& cpu, reg32 axes, reg32 corner, reg32 point)
 {
-    const guest::KeptRegisters kept(cpu);
-    cpu.eax = axes;
-    if (!guest::call(app, cpu, kOnSurface,
-                     {at(app, corner), at(app, corner + 4), at(app, corner + 8), at(app, point), at(app, point + 4),
-                      at(app, point + 8)}))
+    // The six words pushed below esp (the first lowest), the return slot under them by the call.
+    const reg32 esp = cpu.esp;
+    reg32 slot = esp - 6 * 4;
+    cpu.esp = slot;
+    for (const reg32 word : {at(app, corner), at(app, corner + 4), at(app, corner + 8), at(app, point),
+                             at(app, point + 4), at(app, point + 8)})
+    {
+        put(app, slot, word);
+        slot += 4;
+    }
+    const reg32 height = guest::direct<0x4969c0, frontend::simd::trackPointOnPlane>(app, cpu, axes, esp - 6 * 4);
+    cpu.esp = esp;
+    if (cpu.terminate)
         return std::nullopt;
-    return cpu.eax;
+    return height;
 }
 
 }  // namespace
@@ -1724,17 +1758,18 @@ bool placeAt(App* app, CPU& cpu, reg32 point, reg32 followed, reg32 node, reg32 
 
 /* 0x420650: placeAtLeft for the point eax near node ebx, followed edx, to esi: eax `out`, esi past
  * the frame's place, as the code leaves them. */
-void placeOnTrack(App* app, CPU& cpu)
+x86::reg32 placeOnTrack(App* app, x86::CPU& cpu, x86::Args& args)
 {
     std::optional<Placed> left;
-    adapts(cpu, [&, point = cpu.eax, followed = cpu.edx, node = cpu.ebx, out = cpu.esi]() -> std::optional<reg32> {
+    asThunk(cpu, args, [&, point = args.eax, followed = args.edx, node = args.ebx, out = args.esi]() -> std::optional<reg32> {
         left = placeAtLeft(app, cpu, point, followed, node, out);
         if (!left)
             return std::nullopt;
         return out;
     });
     if (left)
-        cpu.esi = left->esi;
+        args.esi = left->esi;
+    return args.eax;
 }
 
 /* 0x4205a0's: the place (three floats) snapped to the road: made 16.16 (* 65536, fistp's
@@ -1770,20 +1805,21 @@ bool snapPlace(App* app, CPU& cpu, reg32 place, reg32 out, reg32 followed, reg32
 /* 0x4205a0: snapPlaceLeft of the place eax to esi, followed edx, near node ebx: eax `out`, and
  * ebx, edx and esi as the code leaves them (ebx and edx no arguments of its by its code's
  * reading). */
-void snapToTrack(App* app, CPU& cpu)
+x86::reg32 snapToTrack(App* app, x86::CPU& cpu, x86::Args& args)
 {
     std::optional<Placed> left;
-    adapts(cpu, [&, place = cpu.eax, out = cpu.esi, followed = cpu.edx, node = cpu.ebx]() -> std::optional<reg32> {
+    asThunk(cpu, args, [&, place = args.eax, out = args.esi, followed = args.edx, node = args.ebx]() -> std::optional<reg32> {
         left = snapPlaceLeft(app, cpu, place, out, followed, node);
         if (!left)
             return std::nullopt;
         return out;
     });
     if (!left)
-        return;
-    cpu.ebx = left->ebx;
-    cpu.edx = left->edx;
-    cpu.esi = left->esi;
+        return args.eax;
+    args.ebx = left->ebx;
+    args.edx = left->edx;
+    args.esi = left->esi;
+    return args.eax;
 }
 
 // The light where there is no quad: grey, opaque.
@@ -1809,9 +1845,10 @@ reg32 placeColour(App* app, reg32 place, reg32 followed)
 }
 
 /* 0x4206f0: placeColour of the place eax, followed edx. */
-void positionColour(App* app, CPU& cpu)
+x86::reg32 positionColour(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, place = cpu.eax, followed = cpu.edx] { return placeColour(app, place, followed); });
+    asThunk(cpu, args, [&, place = args.eax, followed = args.edx] { return placeColour(app, place, followed); });
+    return args.eax;
 }
 
 // What the surface is taken as without a polygon.
@@ -1831,9 +1868,10 @@ reg32 placeSurface(App* app, reg32 place, reg32 followed)
 }
 
 /* 0x4207e0: placeSurface of the place eax, followed edx. */
-void positionSurface(App* app, CPU& cpu)
+x86::reg32 positionSurface(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, place = cpu.eax, followed = cpu.edx] { return placeSurface(app, place, followed); });
+    asThunk(cpu, args, [&, place = args.eax, followed = args.edx] { return placeSurface(app, place, followed); });
+    return args.eax;
 }
 
 // The special grounds groundUnder finds.
@@ -1925,9 +1963,10 @@ reg32 groundUnder(App* app, sreg32 node, sreg32 lane)
 }
 
 /* 0x420840: groundUnder at node eax across lane edx. */
-void surfaceUnder(App* app, CPU& cpu)
+x86::reg32 surfaceUnder(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, node = s(cpu.eax), lane = s(cpu.edx)] { return groundUnder(app, node, lane); });
+    asThunk(cpu, args, [&, node = s(args.eax), lane = s(args.edx)] { return groundUnder(app, node, lane); });
+    return args.eax;
 }
 
 namespace
@@ -1996,10 +2035,11 @@ std::optional<reg32> placeInTunnel(App* app, CPU& cpu, reg32 place, reg32 node)
 }
 
 /* 0x420bf0 (stdcall, four words: the place's x, y and z, 16.16, its node): placeInTunnel. */
-void inTunnel(App* app, CPU& cpu)
+x86::reg32 inTunnel(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(
-        cpu, [&, place = cpu.esp + 4, node = word(app, cpu, 4)] { return placeInTunnel(app, cpu, place, node); }, 0x10);
+    asThunk(
+        cpu, args, [&, place = cpu.esp + 4, node = word(app, cpu, 4)] { return placeInTunnel(app, cpu, place, node); }, 0x10);
+    return args.eax;
 }
 
 // A car's index, its place and heading (floats), and how far round the node to look.
@@ -2058,9 +2098,10 @@ std::optional<reg32> carInTunnel(App* app, CPU& cpu, reg32 car)
 }
 
 /* 0x420d60: carInTunnel of the car eax. */
-void carFacingWay(App* app, CPU& cpu)
+x86::reg32 carFacingWay(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, car = cpu.eax] { return carInTunnel(app, cpu, car); });
+    asThunk(cpu, args, [&, car = args.eax] { return carInTunnel(app, cpu, car); });
+    return args.eax;
 }
 
 // A car's node (a dword) and whether it goes the track's way backwards.
@@ -2084,9 +2125,26 @@ reg32 carTrackKind(App* app, reg32 car)
 }
 
 /* 0x4211c0: carTrackKind of the car eax. */
-void carSectionKind(App* app, CPU& cpu)
+x86::reg32 carSectionKind(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    adapts(cpu, [&, place = cpu.eax] { return carTrackKind(app, place); });
+    asThunk(cpu, args, [&, place = args.eax] { return carTrackKind(app, place); });
+    return args.eax;
+}
+
+/* The typed cores the game's other code calls (native_trackdata.h), under the game's addresses. */
+reg32 laneNodePlaced(App* app, reg32 place, reg32 out, reg32 right)
+{
+    return lanePlace(app, place, out, right).node;
+}
+
+std::optional<reg32> carAgainstTrack(App* app, CPU& cpu, reg32 car)
+{
+    return carInTunnel(app, cpu, car);
+}
+
+reg32 trackKindUnderCar(App* app, reg32 car)
+{
+    return carTrackKind(app, car);
 }
 
 }  // namespace trackdata

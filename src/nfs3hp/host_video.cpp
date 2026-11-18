@@ -482,11 +482,10 @@ reg32 drawEnumDisplayModes(App* app, CPU& cpu, Object* self, reg32 flags, Surfac
     }
     for (const reg32 mode : { s_mode16At800, s_mode8At800, s_mode16At640, s_mode8At640 })
     {
-        cpu.esp -= 12;
-        app->getMemory<reg32>(cpu.esp + 0) = callback;
-        app->getMemory<reg32>(cpu.esp + 4) = mode;
-        app->getMemory<reg32>(cpu.esp + 8) = context;
-        app->dynamic_call(callback, cpu);
+        // The call's return address's slot holds the callback (as the code left it); stdcall (mode, context).
+        app->getMemory<reg32>(cpu.esp - 12) = callback;
+        x86::Args registers;
+        guest::pointerCall(app, cpu, callback, registers, {mode, context});
     }
     return 0;
 }

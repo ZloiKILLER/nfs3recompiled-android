@@ -4,8 +4,10 @@
 #include "native_frontend_simb.h"
 #include "native_frontend_simc.h"
 #include "native_frontend_simd.h"
+#include "native_game.h"
 #include "native_guest.h"
 #include "native_handling.h"
+#include "native_trackdata.h"
 #include "native_vertices.h"
 
 #include <algorithm>
@@ -92,67 +94,26 @@ struct Flags
     reg32 status() const { return un ? 0x4500u : lt ? 0x100u : eq ? 0x4000u : 0u; }
 };
 
-/* A call from such a function: the arguments already on the guest's stack at `esp`, the registers in and out. */
-bool rawCall(App* app, CPU& cpu, reg32 target, reg32 esp, int words, reg32& eax, reg32& edx, reg32& ebx, reg32& ecx)
-{
-    (void)words;
-    cpu.eax = eax;
-    cpu.edx = edx;
-    cpu.ebx = ebx;
-    cpu.ecx = ecx;
-    cpu.esp = esp - 4;
-    app->getMemory<reg32>(esp - 4) = 0;
-    app->dynamic_call(target, cpu);
-    if (cpu.terminate)
-        return false;
-    cpu.esp = esp;
-    eax = cpu.eax;
-    edx = cpu.edx;
-    ebx = cpu.ebx;
-    ecx = cpu.ecx;
-    return true;
-}
-
 /* A call from such a function to a typed core of another file's (its header's), as C++
- * (guest::direct, feCore): first the registers, ebp and esp as rawCall hands them -- the arguments
- * on the guest's stack where the code pushed them, the return address's slot 0 -- the core's own
- * arguments its parameters.  The code's registers are left as they were: only the calls whose
- * callee leaves every register the code goes on with as it was (but eax where the core gives it
- * back) are made so. */
-void handOver(App* app, CPU& cpu, reg32 esp, reg32 eax, reg32 edx, reg32 ebx, reg32 ecx, reg32 ebp)
+ * (guest::direct, feCore): esp as the code has it -- the arguments on the guest's stack where the
+ * code pushed them, the return address's slot 0 -- the core's own arguments its parameters (the
+ * registers the code holds are its locals, not handed over). */
+void handOver(App* app, CPU& cpu, reg32 esp, reg32, reg32, reg32, reg32, reg32)
 {
-    cpu.eax = eax;
-    cpu.edx = edx;
-    cpu.ebx = ebx;
-    cpu.ecx = ecx;
-    cpu.ebp = ebp;
     cpu.esp = esp;
     app->getMemory<reg32>(esp - 4) = 0;
 }
 
 /* A native_frontend_* file's typed core called as C++ (guest::direct): nothing (false) when the
- * game stopped in it (its calls into the game throw fe::Terminated).  tools/game_checks does not
- * build those files: there it goes by address, through its ByAddress, as the game's code calls it,
- * every register but eax kept.  A reg32 result is the eax the function leaves: eax set to it (in the
- * game too); after any other, eax spoilt there, so that code still reading what the callee left in
- * eax differs there. */
+ * game stopped in it (its calls into the game throw fe::Terminated). */
 template <reg32 Address, auto Core, typename... Args>
 auto feCore(App* app, CPU& cpu, Args... args)
 {
     const auto run = [&] {
-#ifdef NFS_GAME_CHECKS
-        const guest::KeptRegisters kept(cpu);
-        return guest::ByAddress<Core>::template call<Address>(app, cpu, args...);
-#else
         return guest::direct<Address, Core>(app, cpu, args...);
-#endif
     };
     using Result = decltype(run());
-    const auto spoil = [&] {
-#ifdef NFS_GAME_CHECKS
-        cpu.eax = 0x5b0115edu;
-#endif
-    };
+    const auto spoil = [&] {};
     if constexpr (std::is_void_v<Result>)
     {
         try
@@ -171,10 +132,8 @@ auto feCore(App* app, CPU& cpu, Args... args)
         try
         {
             const Result result = run();
-            if constexpr (std::is_same_v<Result, x86::reg32>)
-                cpu.eax = result;  // a menu core's result: the eax it leaves, as the call by address does
-            else
-                spoil();
+            if constexpr (!std::is_same_v<Result, x86::reg32>)
+                spoil();  // a reg32 result is the eax the caller takes from it
             return cpu.terminate ? std::optional<Result>() : std::optional<Result>(result);
         }
         catch (const fe::Terminated&)
@@ -188,42 +147,26 @@ auto feCore(App* app, CPU& cpu, Args... args)
  * callee's core run, and what it leaves on the x87's stack taken into the caller's own (X87).  eax
  * back as the callee's result; the other registers are as they went in. */
 template <typename Core>
-bool ownCall(Core core, App* app, CPU& cpu, reg32 esp, reg32& eax, reg32 edx, reg32 ebx, reg32 ecx, reg32 ebp, X87& x)
+bool ownCall(Core core, App* app, CPU& cpu, const Entry& caller, reg32 esp, reg32& eax, reg32 edx, reg32 ebx, reg32 ecx, reg32 ebp, X87& x)
 {
-    cpu.eax = eax;
-    cpu.edx = edx;
-    cpu.ebx = ebx;
-    cpu.ecx = ecx;
-    cpu.ebp = ebp;
     cpu.esp = esp - 4;
     app->getMemory<reg32>(esp - 4) = 0;
-    const Entry e(cpu);
+    Entry e(caller);
+    e.esp = esp - 4;
+    e.eax = eax;
+    e.edx = edx;
+    e.ebx = ebx;
+    e.ecx = ecx;
+    e.ebp = ebp;
     reg32 result, popped = 0;
     X87 left;
     if (!core(app, cpu, e, result, popped, &left))
         return false;
-    e.back(cpu, result, popped);
     cpu.esp = esp;
     eax = result;
     for (int i = 0; i < left.n; ++i)
         x.push(left.v[i]);
     return true;
-}
-
-/* What a callee left on the x87's stack (a float returned) taken into the function's own. */
-void pullX87(CPU& cpu, int before, X87& x)
-{
-    const int k = cpu.fpu.count - before;
-    if (k <= 0)
-        return;
-    double v[8];
-    for (int i = 0; i < k && i < 8; ++i)
-    {
-        v[i] = double(cpu.fpu.st(0));
-        cpu.fpu.pop();
-    }
-    for (int i = std::min(k, 8) - 1; i >= 0; --i)
-        x.push(v[i]);
 }
 
 bool core49fe70(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped_, X87* xout)
@@ -274,7 +217,7 @@ bool core49fe70(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped
     { const reg32 a_ = edx, b_ = 12u; edx = a_ + b_; fl.add(a_, b_); }  // 49fec9 add edx, 0xc
     { const reg32 a_ = ebx, b_ = eax; ebx = a_ - b_; fl.sub(a_, b_); }  // 49fecc sub ebx, eax
     eax = (ebp - 0xcu);  // 49fece lea eax, [ebp - 0xc]
-    { cpu.ebp = ebp; if (!rawCall(app, cpu, 0x41f6e0, esp, 0, eax, edx, ebx, ecx)) return false; }  // 49fed1 call 0x41f6e0
+    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); const std::optional<reg32> r_ = guest::direct<0x41f6e0, trackdata::bringPlace>(app, cpu, eax, edx, ebx); if (!r_) return false; eax = *r_; }  // 49fed1 call 0x41f6e0
     esp += 0u;  // 49fed1 call 0x41f6e0
     esp = ebp;  // 49fed6 mov esp, ebp
     ebp = rd32(esp); esp += 4;  // 49fed8 pop ebp
@@ -331,7 +274,7 @@ bool core4a00d0(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped
     ecx = rd32((eax + 0x148u));  // 4a0113 mov ecx, dword ptr [eax + 0x148]
     esp -= 4; wr32(esp, ecx);  // 4a0119 push ecx
     { const reg32 a_ = eax, b_ = 292u; eax = a_ + b_; fl.add(a_, b_); }  // 4a011a add eax, 0x124
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4968a0, esp, 6, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 4a011f call 0x4968a0
+    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); const auto w_ = [&](reg32 i) { return app->getMemory<float>(esp + 4u * i); }; const float r_ = guest::direct<0x4968a0, vertices::groundHeightAt>(app, cpu, eax, w_(0), w_(1), w_(2), w_(3), w_(4), w_(5)); if (cpu.terminate) return false; x.push(double(r_)); eax = esp - 32u; }  // 4a011f call 0x4968a0
     esp += 24u;  // 4a011f call 0x4968a0
     SF((ebp - 4u), x.st(0));  // 4a0124 fstp dword ptr [ebp - 4]
     x.pop();  // 4a0124 fstp dword ptr [ebp - 4]
@@ -675,7 +618,7 @@ bool core4a0d20(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped
     ecx = eax;  // 4a0d28 mov ecx, eax
     ebx = edx;  // 4a0d2a mov ebx, edx
     edx = 484u;  // 4a0d2c mov edx, 0x1e4
-    { cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4e070c, esp, 0, eax, edx, ebx, ecx)) return false; }  // 4a0d31 call 0x4e070c
+    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); eax = guest::direct<0x4e070c, ea::clearBytes>(app, cpu, eax, edx); if (cpu.terminate) return false; }  // 4a0d31 call 0x4e070c
     esp += 0u;  // 4a0d31 call 0x4e070c
     x.push(F(ebp + 0x14u));  // 4a0d36 fld dword ptr [ebp + 0x14]
     eax = rd32((ebp + 0x14u));  // 4a0d39 mov eax, dword ptr [ebp + 0x14]
@@ -1075,7 +1018,7 @@ L_4a1158:
     ecx = (esi + 0x1d8u);  // 4a11e9 lea ecx, [esi + 0x1d8]
     SF((esi + 0x1e0u), x.st(0));  // 4a11ef fstp dword ptr [esi + 0x1e0]
     x.pop();  // 4a11ef fstp dword ptr [esi + 0x1e0]
-    { cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4dffb0, esp, 0, eax, edx, ebx, ecx)) return false; }  // 4a11f5 call 0x4dffb0
+    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); const int32_t n_ = int32_t(eax); const reg32 in_ = edx; guest::direct<0x4dffb0, vertices::offsetVectorList<true>>(app, cpu, n_, edx, ebx, ecx); if (cpu.terminate) return false; eax = n_ > 0 ? in_ + reg32(n_) * 12u : in_; }  // 4a11f5 call 0x4dffb0
     esp += 0u;  // 4a11f5 call 0x4dffb0
     esp = ebp;  // 4a11fa mov esp, ebp
     ebp = rd32(esp); esp += 4;  // 4a11fc pop ebp
@@ -1218,7 +1161,7 @@ bool core4a2630(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped
     goto L_4a266e;  // 4a264b jmp 0x4a266e
 L_4a264d:
     eax = edx;  // 4a264d mov eax, edx
-    if (!ownCall(core4a00d0, app, cpu, esp, eax, edx, ebx, ecx, ebp, x)) return false;  // 4a264f call 0x4a00d0
+    if (!ownCall(core4a00d0, app, cpu, e, esp, eax, edx, ebx, ecx, ebp, x)) return false;  // 4a264f call 0x4a00d0
     esp += 0u;  // 4a264f call 0x4a00d0
     x.push(F(edx + 0x118u));  // 4a2654 fld dword ptr [edx + 0x118]
     x.fxch(1);  // 4a265a fxch st(1)
@@ -1272,7 +1215,7 @@ bool core4a2830(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped
     fl.sub(rd8((ecx + 0x88u)), 0u);  // 4a285a cmp byte ptr [ecx + 0x88], 0
     if (fl.e()) goto L_4a286f;  // 4a2861 je 0x4a286f
     eax = ecx;  // 4a2863 mov eax, ecx
-    if (!ownCall(core4a2630, app, cpu, esp, eax, edx, ebx, ecx, ebp, x)) return false;  // 4a2865 call 0x4a2630
+    if (!ownCall(core4a2630, app, cpu, e, esp, eax, edx, ebx, ecx, ebp, x)) return false;  // 4a2865 call 0x4a2630
     esp += 0u;  // 4a2865 call 0x4a2630
     goto L_4a2bad;  // 4a286a jmp 0x4a2bad
 L_4a286f:
@@ -1280,7 +1223,7 @@ L_4a286f:
     { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); const std::optional<reg32> r_ = feCore<0x4a2260, frontend::simb::downforceAndDrag>(app, cpu, eax); if (!r_) return false; eax = *r_; }  // 4a2871 call 0x4a2260
     esp += 0u;  // 4a2871 call 0x4a2260
     eax = ecx;  // 4a2876 mov eax, ecx
-    if (!ownCall(core4a00d0, app, cpu, esp, eax, edx, ebx, ecx, ebp, x)) return false;  // 4a2878 call 0x4a00d0
+    if (!ownCall(core4a00d0, app, cpu, e, esp, eax, edx, ebx, ecx, ebp, x)) return false;  // 4a2878 call 0x4a00d0
     esp += 0u;  // 4a2878 call 0x4a00d0
     eax = ecx;  // 4a287d mov eax, ecx
     SF((ecx + 0x158u), x.st(0));  // 4a287f fstp dword ptr [ecx + 0x158]
@@ -1289,7 +1232,7 @@ L_4a286f:
     esp += 0u;  // 4a2885 call 0x4a21a0
     eax = ecx;  // 4a288a mov eax, ecx
     edi = (ebp - 0x5cu);  // 4a288c lea edi, [ebp - 0x5c]
-    if (!ownCall(core4a0440, app, cpu, esp, eax, edx, ebx, ecx, ebp, x)) return false;  // 4a288f call 0x4a0440
+    if (!ownCall(core4a0440, app, cpu, e, esp, eax, edx, ebx, ecx, ebp, x)) return false;  // 4a288f call 0x4a0440
     esp += 0u;  // 4a288f call 0x4a0440
     esi = (ecx + 0x130u);  // 4a2894 lea esi, [ecx + 0x130]
     SF((ecx + 0x15cu), x.st(0));  // 4a289a fstp dword ptr [ecx + 0x15c]
@@ -1564,7 +1507,7 @@ L_4a2b6a:
     edx = rd32((ebp - 0x5cu));  // 4a2b72 mov edx, dword ptr [ebp - 0x5c]
     esp -= 4; wr32(esp, edx);  // 4a2b75 push edx
     eax = ecx;  // 4a2b76 mov eax, ecx
-    { cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4a1610, esp, -3, eax, edx, ebx, ecx)) return false; }  // 4a2b78 call 0x4a1610
+    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); const std::optional<reg32> r_ = feCore<0x4a1610, frontend::simb::predictContact>(app, cpu, eax, esp); if (!r_) return false; eax = *r_; }  // 4a2b78 call 0x4a1610
     esp += -12u;  // 4a2b78 call 0x4a1610
     esp = ebp;  // 4a2b7d mov esp, ebp
     ebp = rd32(esp); esp += 4;  // 4a2b7f pop ebp
@@ -1584,7 +1527,7 @@ L_4a2b97:
     { const reg32 r_ = edx + 1u; edx = r_; fl.arith(r_); }  // 4a2b9e inc edx
     eax = ecx;  // 4a2b9f mov eax, ecx
     wr16((ecx + 0x164u), (edx & 0xffffu));  // 4a2ba1 mov word ptr [ecx + 0x164], dx
-    if (!ownCall(core4a20c0, app, cpu, esp, eax, edx, ebx, ecx, ebp, x)) return false;  // 4a2ba8 call 0x4a20c0
+    if (!ownCall(core4a20c0, app, cpu, e, esp, eax, edx, ebx, ecx, ebp, x)) return false;  // 4a2ba8 call 0x4a20c0
     esp += -24u;  // 4a2ba8 call 0x4a20c0
 L_4a2bad:
     esp = ebp;  // 4a2bad mov esp, ebp
@@ -1712,7 +1655,7 @@ bool core4a2e20(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped
     eax = (ecx + 0xc0u);  // 4a2ea1 lea eax, [ecx + 0xc0]
     edx = (ebp - 0x2cu);  // 4a2ea7 lea edx, [ebp - 0x2c]
     ebx = eax;  // 4a2eaa mov ebx, eax
-    { cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4e0280, esp, 0, eax, edx, ebx, ecx)) return false; }  // 4a2eac call 0x4e0280
+    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); guest::direct<0x4e0280, vertices::multiplyMatrix>(app, cpu, eax, edx, ebx); if (cpu.terminate) return false; eax = esp - 0x3cu; }  // 4a2eac (eax equals ebx here: the callee leaves its frame's copy) call 0x4e0280
     esp += 0u;  // 4a2eac call 0x4e0280
     x.push(F(ecx + 0x94u));  // 4a2eb1 fld dword ptr [ecx + 0x94]
     fl.fcmp(x.st(0), D(0x53c8f4u));  // 4a2eb7 fcomp qword ptr [0x53c8f4]
@@ -1735,7 +1678,7 @@ L_4a2ed4:
     wr8((ecx + 0x8cu), (eax & 0xffu));  // 4a2ef1 mov byte ptr [ecx + 0x8c], al
 L_4a2ef7:
     eax = ecx;  // 4a2ef7 mov eax, ecx
-    { cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4a2690, esp, 0, eax, edx, ebx, ecx)) return false; }  // 4a2ef9 call 0x4a2690
+    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); const std::optional<reg32> r_ = feCore<0x4a2690, frontend::simb::settle>(app, cpu, eax); if (!r_) return false; eax = *r_; }  // 4a2ef9 call 0x4a2690
     esp += 0u;  // 4a2ef9 call 0x4a2690
 L_4a2efe:
     esp = ebp;  // 4a2efe mov esp, ebp
@@ -1752,178 +1695,312 @@ L_4a2efe:
 
 }  // namespace
 
-/* ---- The adapters ---- */
+/* ---- The typed functions (port_conv.h) ---- */
 
-void fn49fe70(App* app, CPU& cpu)
+bool scaleHandling(App* app, CPU& cpu, reg32 car, reg32 number, reg32 words)
 {
-    const Entry e(cpu);
+    Entry e(cpu, x86::Args{});
+    e.eax = car;
+    e.edx = number;
+    e.esp = words - 4;
+    reg32 result, popped = 0;
+    X87 x;
+    return core4a0d20(app, cpu, e, result, popped, &x);
+}
+
+/* ---- The thunks ---- */
+
+x86::reg32 fn49fe70(App* app, CPU& cpu, x86::Args& args)
+{
+    const Entry e(cpu, args);
     reg32 result, popped = 0;
     X87 x;
     if (core49fe70(app, cpu, e, result, popped, &x))
     {
-        e.back(cpu, result, popped);
-        for (int i = 0; i < x.n; ++i)
-            cpu.fpu.push(x86::Float(x.v[i]));  // the float the function returns
+        e.back(cpu, args, result, popped);
+        if (x.n > 0)
+        {
+            args.floatSet = true;
+            args.floatResult = x.v[x.n - 1];  // the float the function returns
+        }
+        return result;
     }
+    return args.eax;
 }
 
-void fn4a00d0(App* app, CPU& cpu)
+x86::reg32 fn4a00d0(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     reg32 result, popped = 0;
     X87 x;
     if (core4a00d0(app, cpu, e, result, popped, &x))
     {
-        e.back(cpu, result, popped);
-        for (int i = 0; i < x.n; ++i)
-            cpu.fpu.push(x86::Float(x.v[i]));  // the float the function returns
+        e.back(cpu, args, result, popped);
+        if (x.n > 0)
+        {
+            args.floatSet = true;
+            args.floatResult = x.v[x.n - 1];  // the float the function returns
+        }
+        return result;
     }
+    return args.eax;
 }
 
-void fn4a0440(App* app, CPU& cpu)
+x86::reg32 fn4a0440(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     reg32 result, popped = 0;
     X87 x;
     if (core4a0440(app, cpu, e, result, popped, &x))
     {
-        e.back(cpu, result, popped);
-        for (int i = 0; i < x.n; ++i)
-            cpu.fpu.push(x86::Float(x.v[i]));  // the float the function returns
+        e.back(cpu, args, result, popped);
+        if (x.n > 0)
+        {
+            args.floatSet = true;
+            args.floatResult = x.v[x.n - 1];  // the float the function returns
+        }
+        return result;
     }
+    return args.eax;
 }
 
-void fn4a0980(App* app, CPU& cpu)
+x86::reg32 fn4a0980(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     reg32 result, popped = 0;
     X87 x;
     if (core4a0980(app, cpu, e, result, popped, &x))
     {
-        e.back(cpu, result, popped);
-        for (int i = 0; i < x.n; ++i)
-            cpu.fpu.push(x86::Float(x.v[i]));  // the float the function returns
+        e.back(cpu, args, result, popped);
+        if (x.n > 0)
+        {
+            args.floatSet = true;
+            args.floatResult = x.v[x.n - 1];  // the float the function returns
+        }
+        return result;
     }
+    return args.eax;
 }
 
-void fn4a0a10(App* app, CPU& cpu)
+x86::reg32 fn4a0a10(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     reg32 result, popped = 0;
     X87 x;
     if (core4a0a10(app, cpu, e, result, popped, &x))
     {
-        e.back(cpu, result, popped);
-        for (int i = 0; i < x.n; ++i)
-            cpu.fpu.push(x86::Float(x.v[i]));  // the float the function returns
+        e.back(cpu, args, result, popped);
+        if (x.n > 0)
+        {
+            args.floatSet = true;
+            args.floatResult = x.v[x.n - 1];  // the float the function returns
+        }
+        return result;
     }
+    return args.eax;
 }
 
-void fn4a0d20(App* app, CPU& cpu)
+x86::reg32 fn4a0d20(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     reg32 result, popped = 0;
     X87 x;
     if (core4a0d20(app, cpu, e, result, popped, &x))
     {
-        e.back(cpu, result, popped);
-        for (int i = 0; i < x.n; ++i)
-            cpu.fpu.push(x86::Float(x.v[i]));  // the float the function returns
+        e.back(cpu, args, result, popped);
+        if (x.n > 0)
+        {
+            args.floatSet = true;
+            args.floatResult = x.v[x.n - 1];  // the float the function returns
+        }
+        return result;
     }
+    return args.eax;
 }
 
-void fn4a0f30(App* app, CPU& cpu)
+x86::reg32 fn4a0f30(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     reg32 result, popped = 0;
     X87 x;
     if (core4a0f30(app, cpu, e, result, popped, &x))
     {
-        e.back(cpu, result, popped);
-        for (int i = 0; i < x.n; ++i)
-            cpu.fpu.push(x86::Float(x.v[i]));  // the float the function returns
+        e.back(cpu, args, result, popped);
+        if (x.n > 0)
+        {
+            args.floatSet = true;
+            args.floatResult = x.v[x.n - 1];  // the float the function returns
+        }
+        return result;
     }
+    return args.eax;
 }
 
-void fn4a1090(App* app, CPU& cpu)
+x86::reg32 fn4a1090(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     reg32 result, popped = 0;
     X87 x;
     if (core4a1090(app, cpu, e, result, popped, &x))
     {
-        e.back(cpu, result, popped);
-        for (int i = 0; i < x.n; ++i)
-            cpu.fpu.push(x86::Float(x.v[i]));  // the float the function returns
+        e.back(cpu, args, result, popped);
+        if (x.n > 0)
+        {
+            args.floatSet = true;
+            args.floatResult = x.v[x.n - 1];  // the float the function returns
+        }
+        return result;
     }
+    return args.eax;
 }
 
-void fn4a20c0(App* app, CPU& cpu)
+x86::reg32 fn4a20c0(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     reg32 result, popped = 0;
     X87 x;
     if (core4a20c0(app, cpu, e, result, popped, &x))
     {
-        e.back(cpu, result, popped);
-        for (int i = 0; i < x.n; ++i)
-            cpu.fpu.push(x86::Float(x.v[i]));  // the float the function returns
+        e.back(cpu, args, result, popped);
+        if (x.n > 0)
+        {
+            args.floatSet = true;
+            args.floatResult = x.v[x.n - 1];  // the float the function returns
+        }
+        return result;
     }
+    return args.eax;
 }
 
-void fn4a2630(App* app, CPU& cpu)
+x86::reg32 fn4a2630(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     reg32 result, popped = 0;
     X87 x;
     if (core4a2630(app, cpu, e, result, popped, &x))
     {
-        e.back(cpu, result, popped);
-        for (int i = 0; i < x.n; ++i)
-            cpu.fpu.push(x86::Float(x.v[i]));  // the float the function returns
+        e.back(cpu, args, result, popped);
+        if (x.n > 0)
+        {
+            args.floatSet = true;
+            args.floatResult = x.v[x.n - 1];  // the float the function returns
+        }
+        return result;
     }
+    return args.eax;
 }
 
-void fn4a2830(App* app, CPU& cpu)
+x86::reg32 fn4a2830(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     reg32 result, popped = 0;
     X87 x;
     if (core4a2830(app, cpu, e, result, popped, &x))
     {
-        e.back(cpu, result, popped);
-        for (int i = 0; i < x.n; ++i)
-            cpu.fpu.push(x86::Float(x.v[i]));  // the float the function returns
+        e.back(cpu, args, result, popped);
+        if (x.n > 0)
+        {
+            args.floatSet = true;
+            args.floatResult = x.v[x.n - 1];  // the float the function returns
+        }
+        return result;
     }
+    return args.eax;
 }
 
-void fn4a2c60(App* app, CPU& cpu)
+x86::reg32 fn4a2c60(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     reg32 result, popped = 0;
     X87 x;
     if (core4a2c60(app, cpu, e, result, popped, &x))
     {
-        e.back(cpu, result, popped);
-        for (int i = 0; i < x.n; ++i)
-            cpu.fpu.push(x86::Float(x.v[i]));  // the float the function returns
+        e.back(cpu, args, result, popped);
+        if (x.n > 0)
+        {
+            args.floatSet = true;
+            args.floatResult = x.v[x.n - 1];  // the float the function returns
+        }
+        return result;
     }
+    return args.eax;
 }
 
-void fn4a2e20(App* app, CPU& cpu)
+x86::reg32 fn4a2e20(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     reg32 result, popped = 0;
     X87 x;
     if (core4a2e20(app, cpu, e, result, popped, &x))
     {
-        e.back(cpu, result, popped);
-        for (int i = 0; i < x.n; ++i)
-            cpu.fpu.push(x86::Float(x.v[i]));  // the float the function returns
+        e.back(cpu, args, result, popped);
+        if (x.n > 0)
+        {
+            args.floatSet = true;
+            args.floatResult = x.v[x.n - 1];  // the float the function returns
+        }
+        return result;
     }
+    return args.eax;
 }
 
-// @@ADAPTERS@@
+/* ---- The typed functions (port_conv.h): the call as the code makes it -- the register arguments, the
+ * stack words under the return address's slot, which is the one the direct call reserved -- and what
+ * the function leaves: eax and the float on top of its x87's stack. ---- */
+
+namespace
+{
+
+using ConvCore = bool (*)(App*, CPU&, const Entry&, reg32&, reg32&, X87*);
+
+std::optional<Left> runConv(ConvCore core, App* app, CPU& cpu, reg32 eax, reg32 edx,
+                            std::initializer_list<reg32> stack = {})
+{
+    const reg32 slot = cpu.esp;
+    const reg32 entry = slot - 4 * reg32(stack.size());
+    reg32 at = entry + 4;
+    for (const reg32 word : stack)
+    {
+        app->getMemory<reg32>(at) = word;
+        at += 4;
+    }
+    app->getMemory<reg32>(entry) = 0;
+    cpu.esp = entry;
+    Entry e(cpu, x86::Args{});
+    e.eax = eax;
+    e.edx = edx;
+    reg32 result, popped = 0;
+    X87 left;
+    const bool ran = core(app, cpu, e, result, popped, &left);
+    cpu.esp = slot;
+    if (!ran)
+        return std::nullopt;
+    return Left{result, left.n > 0 ? left.v[left.n - 1] : 0.0};
+}
+
+}  // namespace
+
+std::optional<Left> carNodeNow(App* app, CPU& cpu, reg32 car) { return runConv(core49fe70, app, cpu, car, 0); }
+std::optional<Left> carHeightOverRoad(App* app, CPU& cpu, reg32 car) { return runConv(core4a00d0, app, cpu, car, 0); }
+std::optional<Left> carLowestPoint(App* app, CPU& cpu, reg32 car) { return runConv(core4a0440, app, cpu, car, 0); }
+std::optional<Left> frameFromRoad(App* app, CPU& cpu, reg32 car, reg32 facesBack)
+{
+    return runConv(core4a0980, app, cpu, car, facesBack);
+}
+std::optional<Left> lastFrameFromRoad(App* app, CPU& cpu, reg32 car, reg32 facesBack)
+{
+    return runConv(core4a0a10, app, cpu, car, facesBack);
+}
+std::optional<Left> followFrame(App* app, CPU& cpu, reg32 car, reg32 up, reg32 upright)
+{
+    return runConv(core4a0f30, app, cpu, car, up, {upright});
+}
+std::optional<Left> easeFrame(App* app, CPU& cpu, reg32 car) { return runConv(core4a1090, app, cpu, car, 0); }
+std::optional<Left> clampSpin(App* app, CPU& cpu, reg32 car) { return runConv(core4a20c0, app, cpu, car, 0); }
+std::optional<Left> spinStep(App* app, CPU& cpu, reg32 car, reg32 steps)
+{
+    return runConv(core4a2e20, app, cpu, car, steps);
+}
 
 }  // namespace conv
 }  // namespace port

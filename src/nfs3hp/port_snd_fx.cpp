@@ -1,4 +1,5 @@
 #include "port_snd_mixer.h"
+#include "port_snd_calls.h"
 
 #include <cstddef>
 #include <cstring>
@@ -368,85 +369,91 @@ Result startMixer(App* app, CPU& cpu, reg32 esp, reg32 format, reg32 ended)
     for (int32_t i = 0; i < kChannelCount; ++i)
         kChannels(app, i).playing = 0;
     const reg32 accumulator = kAccumulator(app);
-    if (!callGame(app, cpu, esp - 2 * 4, kClearFunction(app), {reg32(kChannelCount) * kChannels.stride, 0, 0, accumulator},
+    if (!pointerGame(app, cpu, esp - 2 * 4, kClearFunction(app), {reg32(kChannelCount) * kChannels.stride, 0, 0, accumulator},
                   {accumulator, 0x200}))
         return {};
-    // The effect's start takes no argument; eax and edx are what the clearing left in them.
-    if (const reg32 start = kFxFunctions(app, 0); start != 0 && !callGame(app, cpu, esp - 2 * 4, start, {cpu.eax, cpu.edx}))
-        return {};
+    // The effect's start takes no argument; eax and edx are what the clearing left in them: the registers
+    // as they are.
+    if (const reg32 start = kFxFunctions(app, 0); start != 0)
+    {
+        cpu.esp = esp - 2 * 4;
+        if (!guest::pointerCall(app, cpu, start, {}).has_value())
+            return {};
+    }
     return 0;
 }
 
-/* The game's entries: each its adapter -- the game's registers and stack in,
+/* The game's entries: each its thunk -- the game's registers and stack in,
  * the result in eax out -- around what it does. */
 
-void reverbLength(App* app, CPU& cpu)
+x86::reg32 reverbLength(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, reg32(reverbLineLength(int32_t(e.eax), app->getMemory<float>(e.esp + 4))), 4);
+    const Entry e(cpu, args);
+    return e.back(cpu, args, reg32(reverbLineLength(int32_t(e.eax), app->getMemory<float>(e.esp + 4))), 4);
 }
 
-void reverbInit(App* app, CPU& cpu)
+x86::reg32 reverbInit(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
+    const Entry e(cpu, args);
     startReverb(app, int32_t(e.eax));
-    e.back(cpu, 0);
+    return e.back(cpu, args, 0);
 }
 
-void iSNDwinsetfx(App* app, CPU& cpu)
+x86::reg32 iSNDwinsetfx(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, applyBusEffect(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, applyBusEffect(app, cpu, e.esp, e.eax));
 }
 
-void setBusFx(App* app, CPU& cpu)
+x86::reg32 setBusFx(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, setBusType(app, cpu, e.esp, e.edx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, setBusType(app, cpu, e.esp, e.edx));
 }
 
-void busLevelSet(App*, CPU& cpu)
+x86::reg32 busLevelSet(App*, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, 0);
+    const Entry e(cpu, args);
+    return e.back(cpu, args, 0);
 }
 
-void SNDfxlevel(App* app, CPU& cpu)
+x86::reg32 SNDfxlevel(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, setBusSend(app, cpu, e.esp, e.eax, int32_t(e.edx), int32_t(e.ebx)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, setBusSend(app, cpu, e.esp, e.eax, int32_t(e.edx), int32_t(e.ebx)));
 }
 
-void SNDfxinitbus(App* app, CPU& cpu)
+x86::reg32 SNDfxinitbus(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu,
+    const Entry e(cpu, args);
+    return e.finish(cpu, args,
              initEffectBus(app, cpu, e.esp, int32_t(e.eax), e.ebx, int32_t(e.ecx), int32_t(e.arg(app, 0)), int32_t(e.edx)),
              4);
+    return args.eax;
 }
 
-void SNDfxmasterlevel(App* app, CPU& cpu)
+x86::reg32 SNDfxmasterlevel(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, setBusMaster(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx)));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, setBusMaster(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx)));
 }
 
-void iSNDmixreinit(App* app, CPU& cpu)
+x86::reg32 iSNDmixreinit(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, setMixerOutput(app, cpu, e.esp, e.eax));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, setMixerOutput(app, cpu, e.esp, e.eax));
 }
 
-void mixFunctions(App* app, CPU& cpu)
+x86::reg32 mixFunctions(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.back(cpu, pickMixerFunctions(app));
+    const Entry e(cpu, args);
+    return e.back(cpu, args, pickMixerFunctions(app));
 }
 
-void iSNDmixinit(App* app, CPU& cpu)
+x86::reg32 iSNDmixinit(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry e(cpu);
-    e.finish(cpu, startMixer(app, cpu, e.esp, e.eax, e.edx));
+    const Entry e(cpu, args);
+    return e.finish(cpu, args, startMixer(app, cpu, e.esp, e.eax, e.edx));
 }
 
 }  // namespace port

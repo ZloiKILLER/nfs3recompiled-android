@@ -5,6 +5,7 @@
 #include "native_frontend_draw.h"
 #include "native_frontend_eab.h"
 #include "native_frontend_loada.h"
+#include "native_frontend_loopa.h"
 #include "native_frontend_loopb.h"
 #include "native_frontend_renda.h"
 #include "native_frontend_rende.h"
@@ -27,9 +28,6 @@
 /* The game's data: the race's data files -- the track's paths, its textures,
  * horizon, sky and weather, the opponents' speed tables, the cameras, the
  * ghost -- and the file cache the front end keeps its own data in.
- * disassemble_nfs3hp.py binds each address to the function of that name here
- * (LOAD_TRACK_NATIVES), and the generated code calls it by name.
- * tools/game_checks holds each against its generated code.
  *
  * The file cache (0x418d00 to 0x4195f0, which the front end's fedata.%s goes
  * through, not the race's): a cache ("BFL", 12 bytes) is the magic 'FGIB' --
@@ -57,8 +55,8 @@
  * splashes').  The ghost: 0x20f4 bytes at 0x6ba5c4 and 18 bytes for each of
  * its [0x6bc6b4] records after them, read and written as one.
  *
- * Each is a typed function under a name of its own, with an adapter under the game's name for
- * the callers still on registers and the dispatch: it leaves the registers as the game's code
+ * Each is a typed function under a name of its own, with a thunk under the game's name for
+ * the callers still on registers and the calls through a pointer: it leaves the registers as the game's code
  * does -- those it pushes and pops as they were, the others as its code leaves them, which for
  * some is what the last call left there.  The other typed files' functions their headers
  * declare are called as C++ (guest::direct); every other function of the game's is called by
@@ -145,14 +143,14 @@ constexpr reg32 kDropShapes = 0x8ca200, kSplashShapes = 0x8ca288, kWeatherCount 
 // native_ea_memory.h, native_ea_support.h, native_load_saves.h, native_raceload.h,
 // native_ea_files.h, native_vertices.h, native_watcom.h, native_frontend_draw.h, and through
 // feCore native_frontend_eab.h, _loada.h, _loopb.h, _rende.h, _wata.h, _renda.h, _simd.h.)
-constexpr reg32 kSaveGhostFile = 0x4777d0, kFwrite = 0x4eebd0;
+constexpr reg32 kSaveGhostFile = 0x4777d0;
 constexpr reg32 kChop = 0x4dfd56;
 
-/* The registers as an adapter is handed them, to put back those the game's code pushes and pops. */
+/* The registers as a thunk is handed them, to put back those the game's code pushes and pops. */
 struct Entry
 {
-    explicit Entry(const CPU& cpu)
-        : ebx(cpu.ebx), ecx(cpu.ecx), edx(cpu.edx), esi(cpu.esi), edi(cpu.edi), ebp(cpu.ebp)
+    explicit Entry(const x86::Args& args)
+        : ebx(args.ebx), ecx(args.ecx), edx(args.edx), esi(args.esi), edi(args.edi), ebp(args.ebp)
     {
     }
     reg32 ebx, ecx, edx, esi, edi, ebp;
@@ -176,61 +174,29 @@ private:
     const reg32 base;
 };
 
-/* A function of the game's called by address: its arguments in the registers set before,
- * `words` on the stack below esp, esp back after it.  Its eax, or nullopt when the game
- * stopped in it. */
-std::optional<reg32> callGame(App* app, CPU& cpu, reg32 target, std::initializer_list<reg32> words = {})
-{
-    if (!guest::call(app, cpu, target, words))
-        return std::nullopt;
-    return cpu.eax;
-}
-
 /* A native_frontend_* file's typed core called as C++ (guest::direct): nothing (false) when the
- * game stopped in it (its calls into the game throw fe::Terminated).  tools/game_checks does not
- * build those files: there it goes by address, through its ByAddress, as the game's code calls it,
- * every register but eax kept.  A reg32 result is the eax the function leaves: eax set to it (in the
- * game too); after any other, eax spoilt there, so that code still reading what the callee left in
- * eax differs there. */
+ * game stopped in it (its calls into the game throw fe::Terminated). */
 template <reg32 Address, auto Core, typename... Args>
 auto feCore(App* app, CPU& cpu, Args... args)
 {
-    const auto run = [&] {
-#ifdef NFS_GAME_CHECKS
-        const guest::KeptRegisters kept(cpu);
-        return guest::ByAddress<Core>::template call<Address>(app, cpu, args...);
-#else
-        return guest::direct<Address, Core>(app, cpu, args...);
-#endif
-    };
-    using Result = decltype(run());
-    const auto spoil = [&] {
-#ifdef NFS_GAME_CHECKS
-        cpu.eax = 0x5b0115edu;
-#endif
-    };
+    using Result = decltype(guest::direct<Address, Core>(app, cpu, args...));
     if constexpr (std::is_void_v<Result>)
     {
         try
         {
-            run();
+            guest::direct<Address, Core>(app, cpu, args...);
         }
         catch (const fe::Terminated&)
         {
             return false;
         }
-        spoil();
         return !cpu.terminate;
     }
     else
     {
         try
         {
-            const Result result = run();
-            if constexpr (std::is_same_v<Result, x86::reg32>)
-                cpu.eax = result;  // a menu core's result: the eax it leaves, as the call by address does
-            else
-                spoil();
+            const Result result = guest::direct<Address, Core>(app, cpu, args...);
             return cpu.terminate ? std::optional<Result>() : std::optional<Result>(result);
         }
         catch (const fe::Terminated&)
@@ -244,9 +210,7 @@ auto feCore(App* app, CPU& cpu, Args... args)
 std::optional<reg32> allocate(App* app, CPU& cpu, reg32 name, reg32 bytes, reg32 flags)
 {
     // edx and ebx as the code hands them, which the allocator keeps: the code's own after it (an
-    // adapter leaves them so).
-    cpu.edx = bytes;
-    cpu.ebx = flags;
+    // thunk leaves them so).
     return guest::direct<0x4e1620, ea::reserved>(app, cpu, name, bytes, flags);
 }
 
@@ -260,9 +224,7 @@ bool release(App* app, CPU& cpu, reg32 block)
  * which memset keeps.  False when the game stopped. */
 bool fill(App* app, CPU& cpu, reg32 to, reg32 value, reg32 bytes)
 {
-    cpu.edx = value;
-    cpu.ebx = bytes;
-    cpu.eax = guest::direct<0x4e0640, watcom::clib::memset>(app, cpu, to, value, bytes);  // as memset leaves it
+    guest::direct<0x4e0640, watcom::clib::memset>(app, cpu, to, value, bytes);
     return !cpu.terminate;
 }
 
@@ -270,7 +232,6 @@ bool fill(App* app, CPU& cpu, reg32 to, reg32 value, reg32 bytes)
  * loads it, which stricmp keeps. */
 std::optional<reg32> compareNames(App* app, CPU& cpu, reg32 name, reg32 other)
 {
-    cpu.edx = other;
     const reg32 differs = guest::direct<0x4e9ec0, watcom::clib::stricmp>(app, cpu, name, other);
     if (cpu.terminate)
         return std::nullopt;
@@ -299,7 +260,6 @@ std::optional<bool> fileExists(App* app, CPU& cpu, reg32 name)
 /* The file named `name` loaded into a block of its own (`flags` the allocator's): the block or 0. */
 std::optional<reg32> loadFile(App* app, CPU& cpu, reg32 name, reg32 flags)
 {
-    cpu.edx = flags;  // as the code hands it, which the loading keeps: the code's own after it
     return guest::direct<0x4e0ec0, ea::loadWhole>(app, cpu, name, flags);
 }
 
@@ -307,10 +267,7 @@ std::optional<reg32> loadFile(App* app, CPU& cpu, reg32 name, reg32 flags)
  * leave in eax as the last call.  Nothing when the game stopped. */
 std::optional<reg32> loadingStop(App* app, CPU& cpu)
 {
-    const std::optional<reg32> stop = feCore<0x4a33d0, frontend::loada::stopCheck>(app, cpu);
-    if (stop)
-        cpu.eax = *stop;
-    return stop;
+    return feCore<0x4a33d0, frontend::loada::stopCheck>(app, cpu);
 }
 
 /* The same, false when the game stopped. */
@@ -358,36 +315,36 @@ reg32 nameLength(App* app, reg32 name)
 
 }  // namespace
 
-void loadOpponentSpeeds(App* app, CPU& cpu);
-void clearTrackCameras(App* app, CPU& cpu);
-void loadTrackCameras(App* app, CPU& cpu);
-void swapBigEndian(App* app, CPU& cpu);
-void newFileNode(App* app, CPU& cpu);
-void freeFileNode(App* app, CPU& cpu);
-void findFileNode(App* app, CPU& cpu);
-void insertFileNode(App* app, CPU& cpu);
-void newEmptyFileNode(App* app, CPU& cpu);
-void freeFileNodes(App* app, CPU& cpu);
-void countFileNodes(App* app, CPU& cpu);
-void findCachedFile(App* app, CPU& cpu);
-void addCachedFile(App* app, CPU& cpu);
-void newFileCache(App* app, CPU& cpu);
-void freeFileCache(App* app, CPU& cpu);
-void bigHeaderSize(App* app, CPU& cpu);
-void cachedDataSize(App* app, CPU& cpu);
-void writeBigFile(App* app, CPU& cpu);
-void packFileCache(App* app, CPU& cpu);
-void readBigFile(App* app, CPU& cpu);
-void openFileCache(App* app, CPU& cpu);
-void trackFilePath(App* app, CPU& cpu);
-void trackFolderPath(App* app, CPU& cpu);
-void loadTrackTextures(App* app, CPU& cpu);
-void saveGhost(App* app, CPU& cpu);
-void writeGhost(App* app, CPU& cpu);
-void readGhost(App* app, CPU& cpu);
-void loadHorizon(App* app, CPU& cpu);
-void loadSky(App* app, CPU& cpu);
-void loadWeatherShapes(App* app, CPU& cpu);
+x86::reg32 loadOpponentSpeeds(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 clearTrackCameras(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 loadTrackCameras(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 swapBigEndian(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 newFileNode(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 freeFileNode(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 findFileNode(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 insertFileNode(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 newEmptyFileNode(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 freeFileNodes(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 countFileNodes(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 findCachedFile(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 addCachedFile(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 newFileCache(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 freeFileCache(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 bigHeaderSize(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 cachedDataSize(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 writeBigFile(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 packFileCache(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 readBigFile(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 openFileCache(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 trackFilePath(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 trackFolderPath(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 loadTrackTextures(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 saveGhost(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 writeGhost(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 readGhost(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 loadHorizon(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 loadSky(App* app, CPU& cpu, x86::Args& args);
+x86::reg32 loadWeatherShapes(App* app, CPU& cpu, x86::Args& args);
 
 namespace
 {
@@ -869,7 +826,6 @@ std::optional<BigRead> readBig(App* app, CPU& cpu, reg32 cache, reg32 data)
         return BigRead{0, 0};
     if (turned(at(app, data)) != kBigMagic)
         return BigRead{0, 0};
-    cpu.eax = data;
     const std::optional<reg32> files = feCore<0x4ea440, frontend::eab::bigFileCount>(app, cpu, data);
     if (!files)
         return std::nullopt;
@@ -878,11 +834,7 @@ std::optional<BigRead> readBig(App* app, CPU& cpu, reg32 cache, reg32 data)
     reg32 left = 0;
     for (reg32 file = 0; sreg32(file) < sreg32(*files); ++file)
     {
-        cpu.eax = data;
-        cpu.edx = file;
-        cpu.ebx = name;
-        cpu.ecx = offset;
-        if (!feCore<0x4ea4a0, frontend::eab::bigFileName>(app, cpu, data, file, name))
+            if (!feCore<0x4ea4a0, frontend::eab::bigFileName>(app, cpu, data, file, name))
             return std::nullopt;
         const std::optional<reg32> found = guest::direct<0x4ea290, locatedEntry>(app, cpu, data, name, file, offset, size);
         if (!found)
@@ -934,282 +886,303 @@ std::optional<reg32> openCache(App* app, CPU& cpu, reg32 data)
 }
 
 /* 0x40e000: loadSpeeds; eax the second half's index, or 0. */
-void loadOpponentSpeeds(App* app, CPU& cpu)
+x86::reg32 loadOpponentSpeeds(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry entry(cpu);
+    const Entry entry(args);
     const std::optional<reg32> half = loadSpeeds(app, cpu);
     if (!half)
-        return;
-    cpu.eax = *half;
-    cpu.ebx = entry.ebx;
-    cpu.ecx = entry.ecx;
-    cpu.edx = entry.edx;
-    cpu.esi = entry.esi;
+        return args.eax;
+    args.eax = *half;
+    args.ebx = entry.ebx;
+    args.ecx = entry.ecx;
+    args.edx = entry.edx;
+    args.esi = entry.esi;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x40f230: clearCameras; eax the last view's index times 3, as the code leaves it. */
-void clearTrackCameras(App* app, CPU& cpu)
+x86::reg32 clearTrackCameras(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry entry(cpu);
+    const Entry entry(args);
     if (!clearCameras(app, cpu))
-        return;
-    cpu.eax = (kCameraViewCount - 1) * 3;
-    cpu.ebx = entry.ebx;
-    cpu.ecx = entry.ecx;
-    cpu.edx = entry.edx;
-    cpu.esi = entry.esi;
+        return args.eax;
+    args.eax = (kCameraViewCount - 1) * 3;
+    args.ebx = entry.ebx;
+    args.ecx = entry.ecx;
+    args.edx = entry.edx;
+    args.esi = entry.esi;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x40f280: loadCameras for the path eax; eax how many. */
-void loadTrackCameras(App* app, CPU& cpu)
+x86::reg32 loadTrackCameras(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry entry(cpu);
-    const std::optional<reg32> loaded = loadCameras(app, cpu, cpu.eax);
+    const Entry entry(args);
+    const std::optional<reg32> loaded = loadCameras(app, cpu, args.eax);
     if (!loaded)
-        return;
-    cpu.eax = *loaded;
-    cpu.ebx = entry.ebx;
-    cpu.ecx = entry.ecx;
-    cpu.edx = entry.edx;
-    cpu.esi = entry.esi;
+        return args.eax;
+    args.eax = *loaded;
+    args.ebx = entry.ebx;
+    args.ecx = entry.ecx;
+    args.edx = entry.edx;
+    args.esi = entry.esi;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x418d00: swapInPlace of the dword at eax; eax it now. */
-void swapBigEndian(App* app, CPU& cpu)
+x86::reg32 swapBigEndian(App* app, CPU& cpu, x86::Args& args)
 {
-    cpu.eax = swapInPlace(app, cpu.eax);
+    args.eax = swapInPlace(app, args.eax);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x418d40: newNode; eax the node. */
-void newFileNode(App* app, CPU& cpu)
+x86::reg32 newFileNode(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry entry(cpu);
+    const Entry entry(args);
     const std::optional<reg32> node = newNode(app, cpu);
     if (!node)
-        return;
-    cpu.eax = *node;
-    cpu.ebx = entry.ebx;
-    cpu.ecx = entry.ecx;
-    cpu.edx = entry.edx;
+        return args.eax;
+    args.eax = *node;
+    args.ebx = entry.ebx;
+    args.ecx = entry.ecx;
+    args.edx = entry.edx;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x418d70: freeNode of the node eax; eax as the last free leaves it. */
-void freeFileNode(App* app, CPU& cpu)
+x86::reg32 freeFileNode(App* app, CPU& cpu, x86::Args& args)
 {
-    if (!freeNode(app, cpu, cpu.eax))
-        return;
+    if (!freeNode(app, cpu, args.eax))
+        return args.eax;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x418dd0: findNode of the name eax after the node edx; eax the node, edx as stricmp leaves it. */
-void findFileNode(App* app, CPU& cpu)
+x86::reg32 findFileNode(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry entry(cpu);
-    const std::optional<reg32> node = findNode(app, cpu, cpu.eax, cpu.edx);
+    const Entry entry(args);
+    const std::optional<reg32> node = findNode(app, cpu, args.eax, args.edx);
     if (!node)
-        return;
-    cpu.eax = *node;
-    cpu.ebx = entry.ebx;
-    cpu.ecx = entry.ecx;
+        return args.eax;
+    args.eax = *node;
+    args.ebx = entry.ebx;
+    args.ecx = entry.ecx;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x418e90: insertNode of the name eax, edx bytes at ebx, after the node ecx; eax, ebx and edx
  * the node. */
-void insertFileNode(App* app, CPU& cpu)
+x86::reg32 insertFileNode(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry entry(cpu);
-    const std::optional<reg32> node = insertNode(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx);
+    const Entry entry(args);
+    const std::optional<reg32> node = insertNode(app, cpu, args.eax, args.edx, args.ebx, args.ecx);
     if (!node)
-        return;
-    cpu.eax = *node;
-    cpu.ebx = *node;
-    cpu.ecx = entry.ecx;
-    cpu.edx = *node;
+        return args.eax;
+    args.eax = *node;
+    args.ebx = *node;
+    args.ecx = entry.ecx;
+    args.edx = *node;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x418f00: newEmptyNode; eax the node. */
-void newEmptyFileNode(App* app, CPU& cpu)
+x86::reg32 newEmptyFileNode(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry entry(cpu);
+    const Entry entry(args);
     const std::optional<reg32> node = newEmptyNode(app, cpu);
     if (!node)
-        return;
-    cpu.eax = *node;
-    cpu.ebx = entry.ebx;
-    cpu.ecx = entry.ecx;
-    cpu.edx = entry.edx;
+        return args.eax;
+    args.eax = *node;
+    args.ebx = entry.ebx;
+    args.ecx = entry.ecx;
+    args.edx = entry.edx;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x418f40: freeNodes from the node eax; eax as the last free leaves it. */
-void freeFileNodes(App* app, CPU& cpu)
+x86::reg32 freeFileNodes(App* app, CPU& cpu, x86::Args& args)
 {
-    if (!freeNodes(app, cpu, cpu.eax))
-        return;
+    if (!freeNodes(app, cpu, args.eax))
+        return args.eax;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x418f70: countFiles of the cache eax. */
-void countFileNodes(App* app, CPU& cpu)
+x86::reg32 countFileNodes(App* app, CPU& cpu, x86::Args& args)
 {
-    cpu.eax = countFiles(app, cpu.eax);
+    args.eax = countFiles(app, args.eax);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x418fe0: findCached of the name edx in the cache eax; edx, which no caller reads, as stricmp
  * leaves it. */
-void findCachedFile(App* app, CPU& cpu)
+x86::reg32 findCachedFile(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry entry(cpu);
-    const reg32 cache = cpu.eax;
-    const std::optional<reg32> node = findCached(app, cpu, cache, cpu.edx);
+    const Entry entry(args);
+    const reg32 cache = args.eax;
+    const std::optional<reg32> node = findCached(app, cpu, cache, args.edx);
     if (!node)
-        return;
-    cpu.eax = *node;
-    cpu.ebx = entry.ebx;
-    cpu.ecx = entry.ecx;
+        return args.eax;
+    args.eax = *node;
+    args.ebx = entry.ebx;
+    args.ecx = entry.ecx;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x419000: addFile of the name edx, ebx bytes at ecx, to the cache eax; eax 1 when it was
  * added, and ebx, ecx and edx as the code leaves them. */
-void addCachedFile(App* app, CPU& cpu)
+x86::reg32 addCachedFile(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry entry(cpu);
-    const reg32 cache = cpu.eax;
-    const std::optional<AddedFile> added = addFile(app, cpu, cache, cpu.edx, cpu.ebx, cpu.ecx);
+    const Entry entry(args);
+    const reg32 cache = args.eax;
+    const std::optional<AddedFile> added = addFile(app, cpu, cache, args.edx, args.ebx, args.ecx);
     if (!added)
-        return;
-    cpu.eax = 0;
+        return args.eax;
+    args.eax = 0;
     if (added->listed && added->copy == 0)
     {
         // edx as the allocation left it.
-        cpu.ebx = 0;
-        cpu.ecx = entry.ecx;
+        args.ebx = 0;
+        args.ecx = entry.ecx;
     }
     else if (added->listed)
     {
-        cpu.eax = added->node != 0 ? 1 : 0;
-        cpu.ebx = added->node;
-        cpu.ecx = added->node != 0 ? cache : added->after;
-        cpu.edx = added->node;
+        args.eax = added->node != 0 ? 1 : 0;
+        args.ebx = added->node;
+        args.ecx = added->node != 0 ? cache : added->after;
+        args.edx = added->node;
     }
-    cpu.esi = entry.esi;
-    cpu.edi = entry.edi;
+    args.esi = entry.esi;
+    args.edi = entry.edi;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x419080: newCache; eax the cache. */
-void newFileCache(App* app, CPU& cpu)
+x86::reg32 newFileCache(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry entry(cpu);
+    const Entry entry(args);
     const std::optional<reg32> cache = newCache(app, cpu);
     if (!cache)
-        return;
-    cpu.eax = *cache;
-    cpu.ebx = entry.ebx;
-    cpu.ecx = entry.ecx;
-    cpu.edx = entry.edx;
+        return args.eax;
+    args.eax = *cache;
+    args.ebx = entry.ebx;
+    args.ecx = entry.ecx;
+    args.edx = entry.edx;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4190e0: freeCache of the cache eax; eax as the last free leaves it. */
-void freeFileCache(App* app, CPU& cpu)
+x86::reg32 freeFileCache(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry entry(cpu);
-    if (!freeCache(app, cpu, cpu.eax))
-        return;
-    cpu.ecx = entry.ecx;
-    cpu.edx = entry.edx;
+    const Entry entry(args);
+    if (!freeCache(app, cpu, args.eax))
+        return args.eax;
+    args.ecx = entry.ecx;
+    args.edx = entry.edx;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x419120: headerSize of the cache eax. */
-void bigHeaderSize(App* app, CPU& cpu)
+x86::reg32 bigHeaderSize(App* app, CPU& cpu, x86::Args& args)
 {
-    cpu.eax = headerSize(app, cpu.eax);
+    args.eax = headerSize(app, args.eax);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4191b0: dataSize of the cache eax. */
-void cachedDataSize(App* app, CPU& cpu)
+x86::reg32 cachedDataSize(App* app, CPU& cpu, x86::Args& args)
 {
-    cpu.eax = dataSize(app, cpu.eax);
+    args.eax = dataSize(app, args.eax);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4191e0: writeBig of the cache edx into the ebx bytes at eax; eax 1 written, ebx and edx
  * where it stopped. */
-void writeBigFile(App* app, CPU& cpu)
+x86::reg32 writeBigFile(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry entry(cpu);
-    const std::optional<BigWritten> written = writeBig(app, cpu, cpu.eax, cpu.edx, cpu.ebx);
+    const Entry entry(args);
+    const std::optional<BigWritten> written = writeBig(app, cpu, args.eax, args.edx, args.ebx);
     if (!written)
-        return;
-    cpu.eax = written->written;
-    cpu.ebx = written->entry;
-    cpu.ecx = entry.ecx;
-    cpu.edx = written->file;
-    cpu.esi = entry.esi;
-    cpu.edi = entry.edi;
+        return args.eax;
+    args.eax = written->written;
+    args.ebx = written->entry;
+    args.ecx = entry.ecx;
+    args.edx = written->file;
+    args.esi = entry.esi;
+    args.edi = entry.edi;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x419460: packCache of the cache eax, its size to [edx]; eax the buffer, edx as the code
  * leaves it. */
-void packFileCache(App* app, CPU& cpu)
+x86::reg32 packFileCache(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry entry(cpu);
-    const std::optional<Packed> packed = packCache(app, cpu, cpu.eax, cpu.edx);
+    const Entry entry(args);
+    const std::optional<Packed> packed = packCache(app, cpu, args.eax, args.edx);
     if (!packed)
-        return;
-    cpu.eax = packed->buffer;
-    cpu.ebx = entry.ebx;
-    cpu.ecx = entry.ecx;
-    cpu.edx = packed->left;
-    cpu.esi = entry.esi;
-    cpu.edi = entry.edi;
+        return args.eax;
+    args.eax = packed->buffer;
+    args.ebx = entry.ebx;
+    args.ecx = entry.ecx;
+    args.edx = packed->left;
+    args.esi = entry.esi;
+    args.edi = entry.edi;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x419510: readBig of the archive at edx into the cache eax; eax 1 read, edx as the code
  * leaves it. */
-void readBigFile(App* app, CPU& cpu)
+x86::reg32 readBigFile(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry entry(cpu);
-    const std::optional<BigRead> read = readBig(app, cpu, cpu.eax, cpu.edx);
+    const Entry entry(args);
+    const std::optional<BigRead> read = readBig(app, cpu, args.eax, args.edx);
     if (!read)
-        return;
-    cpu.eax = read->read;
-    cpu.ebx = entry.ebx;
-    cpu.ecx = entry.ecx;
-    cpu.edx = read->left;
-    cpu.esi = entry.esi;
-    cpu.edi = entry.edi;
+        return args.eax;
+    args.eax = read->read;
+    args.ebx = entry.ebx;
+    args.ecx = entry.ecx;
+    args.edx = read->left;
+    args.esi = entry.esi;
+    args.edi = entry.edi;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4195f0: openCache of the archive at eax; eax the cache. */
-void openFileCache(App* app, CPU& cpu)
+x86::reg32 openFileCache(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry entry(cpu);
-    const std::optional<reg32> cache = openCache(app, cpu, cpu.eax);
+    const Entry entry(args);
+    const std::optional<reg32> cache = openCache(app, cpu, args.eax);
     if (!cache)
-        return;
-    cpu.eax = *cache;
-    cpu.ebx = entry.ebx;
-    cpu.ecx = entry.ecx;
-    cpu.edx = entry.edx;
-    cpu.esi = entry.esi;
-    cpu.edi = entry.edi;
+        return args.eax;
+    args.eax = *cache;
+    args.ebx = entry.ebx;
+    args.ecx = entry.ecx;
+    args.edx = entry.edx;
+    args.esi = entry.esi;
+    args.edi = entry.edi;
     cpu.esp += 4;
+    return args.eax;
 }
 
 
@@ -1261,8 +1234,7 @@ bool loadTextures(App* app, CPU& cpu)
             return false;
         path = *shared;
     }
-    cpu.edx = 0;  // the loading's flags, which it takes in edx
-    const reg32 shapes = guest::direct<0x4956f0, frontend::draw::loadQfs>(app, cpu, path);
+    const reg32 shapes = guest::direct<0x4956f0, frontend::draw::loadQfsFlags>(app, cpu, path, 0u);
     if (cpu.terminate)
         return false;
     put(app, kTrackShapes, shapes);
@@ -1275,8 +1247,7 @@ bool saveRacedGhost(App* app, CPU& cpu)
 {
     if (gameSettings(app).replayMode != 0 || gameSettings(app).lastTickRaced == 0)
         return true;
-    cpu.eax = kGhostName;
-    return callGame(app, cpu, kSaveGhostFile).has_value();
+    return feCore<0x4777d0, frontend::loopa::saveGhost>(app, cpu, kGhostName).has_value();
 }
 
 }  // namespace
@@ -1287,17 +1258,12 @@ bool writeGhostTo(App* app, CPU& cpu, reg32 stream, reg32 offset)
 {
     if (stream == 0)
         return true;
-    cpu.eax = stream;
-    cpu.edx = offset;
-    cpu.ebx = 0;  // SEEK_SET
-    cpu.ecx = stream;  // fwrite's, which fseek keeps
     guest::direct<0x4e9088, watcom::clib::fseek>(app, cpu, stream, offset, 0);
     if (cpu.terminate)
         return false;
-    cpu.eax = kGhost;
-    cpu.edx = at(app, kGhostCount) * kGhostRecordBytes + kGhostBytes;
-    cpu.ebx = 1;
-    return callGame(app, cpu, kFwrite).has_value();
+    guest::direct<0x4eebd0, watcom::clib::fwrite>(app, cpu, kGhost, at(app, kGhostCount) * kGhostRecordBytes + kGhostBytes, 1u,
+                                                  stream);
+    return !cpu.terminate;
 }
 
 /* The ghost read from the game's file handle (0x4e2de0), if there is one: its record, then as
@@ -1315,69 +1281,75 @@ bool readGhostFrom(App* app, CPU& cpu, reg32 handle)
 }
 
 /* 0x41d8a0: trackFile of the end eax; eax the path. */
-void trackFilePath(App* app, CPU& cpu)
+x86::reg32 trackFilePath(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry entry(cpu);
-    const std::optional<reg32> path = trackFile(app, cpu, cpu.eax);
+    const Entry entry(args);
+    const std::optional<reg32> path = trackFile(app, cpu, args.eax);
     if (!path)
-        return;
-    cpu.eax = *path;
-    cpu.edx = entry.edx;
+        return args.eax;
+    args.eax = *path;
+    args.edx = entry.edx;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x41d8d0: trackFolderFile of the name eax; eax the path. */
-void trackFolderPath(App* app, CPU& cpu)
+x86::reg32 trackFolderPath(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry entry(cpu);
-    const std::optional<reg32> path = trackFolderFile(app, cpu, cpu.eax);
+    const Entry entry(args);
+    const std::optional<reg32> path = trackFolderFile(app, cpu, args.eax);
     if (!path)
-        return;
-    cpu.eax = *path;
-    cpu.edx = entry.edx;
+        return args.eax;
+    args.eax = *path;
+    args.edx = entry.edx;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x41dbc0: loadTextures; eax as the last call leaves it (the shapes, or the loading bar's). */
-void loadTrackTextures(App* app, CPU& cpu)
+x86::reg32 loadTrackTextures(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry entry(cpu);
+    const Entry entry(args);
     if (!loadTextures(app, cpu))
-        return;
-    cpu.ecx = entry.ecx;
-    cpu.edx = entry.edx;
+        return args.eax;
+    args.ecx = entry.ecx;
+    args.edx = entry.edx;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x477a90: saveRacedGhost; the registers as the saving leaves them. */
-void saveGhost(App* app, CPU& cpu)
+x86::reg32 saveGhost(App* app, CPU& cpu, x86::Args& args)
 {
     if (!saveRacedGhost(app, cpu))
-        return;
+        return args.eax;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x477ac0: writeGhostTo the stream eax at edx; eax and edx as fwrite leaves them. */
-void writeGhost(App* app, CPU& cpu)
+x86::reg32 writeGhost(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry entry(cpu);
-    if (!writeGhostTo(app, cpu, cpu.eax, cpu.edx))
-        return;
-    cpu.ebx = entry.ebx;
-    cpu.ecx = entry.ecx;
+    const Entry entry(args);
+    if (!writeGhostTo(app, cpu, args.eax, args.edx))
+        return args.eax;
+    args.ebx = entry.ebx;
+    args.ecx = entry.ecx;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x477b00: readGhostFrom the handle eax; eax as the reading leaves it. */
-void readGhost(App* app, CPU& cpu)
+x86::reg32 readGhost(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry entry(cpu);
-    if (!readGhostFrom(app, cpu, cpu.eax))
-        return;
-    cpu.ebx = entry.ebx;
-    cpu.ecx = entry.ecx;
-    cpu.edx = entry.edx;
+    const Entry entry(args);
+    if (!readGhostFrom(app, cpu, args.eax))
+        return args.eax;
+    args.ebx = entry.ebx;
+    args.ecx = entry.ecx;
+    args.edx = entry.edx;
     cpu.esp += 4;
+    return args.eax;
 }
 
 namespace
@@ -1485,20 +1457,10 @@ bool loadSkyShapes(App* app, CPU& cpu, reg32 track)
                                    {0x53b384, 0x53b38c, 0x53b394},   // weather
                                    {0x53b39c, 0x53b3a4, 0x53b3ac}};  // day
     const reg32* shapes = names[(gameSettings(app).night != 0 ? 0 : 2) + (gameSettings(app).weather != 0 ? 0 : 1)];
-    cpu.eax = *file;
-    cpu.edx = shapes[0];
-    cpu.ebx = 0x40;
-    cpu.ecx = kCloudPalette;
     if (!feCore<0x4d4080, frontend::rende::loadShapeTexture>(app, cpu, *file, shapes[0], 0x40u, kCloudPalette, 7u))
         return false;
-    cpu.eax = *file;
-    cpu.edx = shapes[1];
-    cpu.ebx = 0x80;
-    cpu.ecx = kSunPalette;
     if (!feCore<0x4d4080, frontend::rende::loadShapeTexture>(app, cpu, *file, shapes[1], 0x80u, kSunPalette, sunColours))
         return false;
-    cpu.eax = *file;
-    cpu.edx = shapes[2];
     if (!feCore<0x47a970, frontend::wata::skyLoad>(app, cpu, *file, shapes[2]))
         return false;
     put(app, kSunShapes, kSunPalette);
@@ -1760,7 +1722,6 @@ std::optional<reg32> readHorizon(App* app, CPU& cpu, reg32 track)
             colour[i] += step[i];
     }
     put(app, kBandCopy, at(app, kBands + 4));
-    cpu.eax = at(app, kBands + 4);  // as the code has it at the tick
     const std::optional<reg32> ticked = loadingStop(app, cpu);
     if (!ticked)
         return std::nullopt;
@@ -1803,11 +1764,7 @@ bool loadWeather(App* app, CPU& cpu)
         {
             if (!format(app, cpu, {shape, kind.first, count}))
                 return false;
-            cpu.eax = *file;
-            cpu.edx = shape;
-            cpu.ebx = 0x20;
-            cpu.ecx = kind.second;
-            if (!feCore<0x4d4080, frontend::rende::loadShapeTexture>(app, cpu, *file, shape, 0x20u, kind.second, 0u))
+                    if (!feCore<0x4d4080, frontend::rende::loadShapeTexture>(app, cpu, *file, shape, 0x20u, kind.second, 0u))
                 return false;
         }
     const reg32 block = at(app, kept);
@@ -1817,56 +1774,80 @@ bool loadWeather(App* app, CPU& cpu)
 }  // namespace
 
 /* 0x478340: readHorizon for the track eax; eax as its code leaves it. */
-void loadHorizon(App* app, CPU& cpu)
+x86::reg32 loadHorizon(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry entry(cpu);
-    const std::optional<reg32> left = readHorizon(app, cpu, cpu.eax);
+    const Entry entry(args);
+    const std::optional<reg32> left = readHorizon(app, cpu, args.eax);
     if (!left)
-        return;
-    cpu.eax = *left;
-    cpu.ebx = entry.ebx;
-    cpu.ecx = entry.ecx;
-    cpu.edx = entry.edx;
-    cpu.esi = entry.esi;
-    cpu.edi = entry.edi;
+        return args.eax;
+    args.eax = *left;
+    args.ebx = entry.ebx;
+    args.ecx = entry.ecx;
+    args.edx = entry.edx;
+    args.esi = entry.esi;
+    args.edi = entry.edi;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x47ac30: loadSkyShapes for the track eax; eax as the last call leaves it. */
-void loadSky(App* app, CPU& cpu)
+x86::reg32 loadSky(App* app, CPU& cpu, x86::Args& args)
 {
-    const Entry entry(cpu);
-    if (!loadSkyShapes(app, cpu, cpu.eax))
-        return;
-    cpu.ebx = entry.ebx;
-    cpu.ecx = entry.ecx;
-    cpu.edx = entry.edx;
-    cpu.esi = entry.esi;
-    cpu.edi = entry.edi;
+    const Entry entry(args);
+    if (!loadSkyShapes(app, cpu, args.eax))
+        return args.eax;
+    args.ebx = entry.ebx;
+    args.ecx = entry.ecx;
+    args.edx = entry.edx;
+    args.esi = entry.esi;
+    args.edi = entry.edi;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4dcd20: loadWeather; eax as the last call leaves it.  The registers the code pushes are
  * kept on the guest's stack where it keeps them, and taken back from there: a shape's name of
  * 0x40 bytes or more runs over the file's block into them. */
-void loadWeatherShapes(App* app, CPU& cpu)
+x86::reg32 loadWeatherShapes(App* app, CPU& cpu, x86::Args& args)
 {
     const reg32 pushed = cpu.esp;
-    put(app, pushed - 4, cpu.ebx);
-    put(app, pushed - 8, cpu.ecx);
-    put(app, pushed - 0xc, cpu.edx);
-    put(app, pushed - 0x10, cpu.esi);
-    put(app, pushed - 0x14, cpu.edi);
-    put(app, pushed - 0x18, cpu.ebp);
+    put(app, pushed - 4, args.ebx);
+    put(app, pushed - 8, args.ecx);
+    put(app, pushed - 0xc, args.edx);
+    put(app, pushed - 0x10, args.esi);
+    put(app, pushed - 0x14, args.edi);
+    put(app, pushed - 0x18, args.ebp);
     if (!loadWeather(app, cpu))
-        return;
-    cpu.ebx = at(app, pushed - 4);
-    cpu.ecx = at(app, pushed - 8);
-    cpu.edx = at(app, pushed - 0xc);
-    cpu.esi = at(app, pushed - 0x10);
-    cpu.edi = at(app, pushed - 0x14);
-    cpu.ebp = at(app, pushed - 0x18);
+        return args.eax;
+    args.ebx = at(app, pushed - 4);
+    args.ecx = at(app, pushed - 8);
+    args.edx = at(app, pushed - 0xc);
+    args.esi = at(app, pushed - 0x10);
+    args.edi = at(app, pushed - 0x14);
+    args.ebp = at(app, pushed - 0x18);
     cpu.esp += 4;
+    return args.eax;
+}
+
+/* The typed cores of the thunks above, for callers that call them as C++ (native_load_track.h). */
+bool trackTexturesLoaded(App* app, CPU& cpu)
+{
+    return loadTextures(app, cpu);
+}
+
+bool ghostSaved(App* app, CPU& cpu)
+{
+    return saveRacedGhost(app, cpu);
+}
+
+std::optional<reg32> horizonRead(App* app, CPU& cpu, reg32 track)
+{
+    return readHorizon(app, cpu, track);
+}
+
+bool weatherLoaded(App* app, CPU& cpu)
+{
+    return loadWeather(app, cpu);
 }
 
 }  // namespace load

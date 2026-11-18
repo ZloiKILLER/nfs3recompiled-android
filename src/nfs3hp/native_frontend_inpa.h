@@ -6,9 +6,8 @@
 
 /* native_frontend_inpa.cpp's typed functions (the race's main loop and what hangs off it: a frame's
  * keys, a network race's hold, the set-up, the controls' queues and their locks), which other files
- * call as C++ (guest::direct), and how the game's code calls each by address (ByAddress, for the
- * checks' stand-ins).  Each calls the game's other functions by address on `cpu` and throws
- * fe::Terminated when the game stopped in one, as Guest::call does; its result is what the game's
+ * call as C++ (guest::direct), and how the game's code calls each by address.  Each calls the game's other functions by address on `cpu` and throws
+ * fe::Terminated when the game stopped in one, as a call by address does; its result is what the game's
  * function leaves in eax. */
 namespace nfs3hp
 {
@@ -53,137 +52,6 @@ reg32 queueLockFree(App* app, CPU& cpu);
 
 namespace guest
 {
-
-template <>
-struct ByAddress<frontend::inpa::raceDebugKeys>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({}));
-    }
-};
-
-template <>
-struct ByAddress<frontend::inpa::pauseMenuStep>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({}));
-    }
-};
-
-template <>
-struct ByAddress<frontend::inpa::runRaceLoop>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({}));
-    }
-};
-
-template <>
-struct ByAddress<frontend::inpa::networkLockMake>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({}));
-    }
-};
-
-template <>
-struct ByAddress<frontend::inpa::holdClear>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({}));
-    }
-};
-
-template <>
-struct ByAddress<frontend::inpa::networkLockFree>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({}));
-    }
-};
-
-// Whether it may be asked for in eax.
-template <>
-struct ByAddress<frontend::inpa::networkHold>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 mayAsk)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({ mayAsk }));
-    }
-};
-
-template <>
-struct ByAddress<frontend::inpa::raceSetUp>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({}));
-    }
-};
-
-template <>
-struct ByAddress<frontend::inpa::inputLocksMake>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({}));
-    }
-};
-
-template <>
-struct ByAddress<frontend::inpa::inputReset>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({}));
-    }
-};
-
-template <>
-struct ByAddress<frontend::inpa::inputLocksFree>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({}));
-    }
-};
-
-template <>
-struct ByAddress<frontend::inpa::queueLockMake>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({}));
-    }
-};
-
-template <>
-struct ByAddress<frontend::inpa::queueLockFree>
-{
-    template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu)
-    {
-        return fe::callByAddress(app, cpu, Address, fe::args({}));
-    }
-};
 
 }  // namespace guest
 }  // namespace nfs3hp

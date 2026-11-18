@@ -5,13 +5,22 @@
 #include "native_ea_memory.h"
 #include "native_ea_support.h"
 #include "native_ea_threads.h"
+#include "native_frontend_loada.h"
+#include "native_frontend_rendd.h"
+#include "native_frontend_rende.h"
+#include "native_frontend_simc.h"
+#include "native_graphics.h"
 #include "native_guest.h"
+#include "native_load_track.h"
 #include "native_track.h"
 #include "native_trackdata.h"
 #include "native_vertices.h"
 #include "native_windows.h"
+#include "port_snd.h"
+#include "port_sound_effects.h"
 #include "port_thrash.h"
 #include "host_system.h"
+#include "native_render.h"
 
 #include <cstdint>
 #include <cstring>
@@ -23,9 +32,6 @@
  * its colours tinted, its blocks and objects drawn in each view with the
  * headlights' light on them, its ambient sounds, the files that go with it
  * (the .col file, the textures' .qfs) and the views' bookkeeping.
- * disassemble_nfs3hp.py binds each address to the function of that name here
- * (TRACK_NATIVES), and the generated code calls it by name.
- * tools/game_checks holds each against its generated code.
  *
  * The track's blocks: 0x5c0 bytes each from 0x571370, [0x5dd83c] the last
  * one's number -- +0x58 and +0x74 its vertices' count and colours, +0x5c its
@@ -50,8 +56,8 @@
  * ([0x5dd078], moved on as it goes) into blocks taken from the arena: 0x310000
  * bytes at [0x552dfc], [0x552e00] of them used.
  *
- * Each is a typed function under a name of its own, with an adapter under
- * the game's name for the callers still on registers and the dispatch: it
+ * Each is a typed function under a name of its own, with a thunk under
+ * the game's name for the callers still on registers and the calls through a pointer: it
  * leaves eax, the registers it was handed no argument in, the x87's stack and
  * its control word as the game's code does (a core hands back what the code
  * leaves where a caller can see it).  The other typed files' functions are
@@ -65,19 +71,19 @@
  * guest's stack as deep as the code's where a callee is
  * handed their places; the x87's operations are fp's, in the game's order, a
  * float kept where the game stores one; the safepoint at each loop's head
- * the generated code has.  A core calls this file's cores as C++, the
+ * as in the game's code.  A core calls this file's cores as C++, the
  * return address's slot (and the stack's words) emulated where its frame is
  * handed on.
  *
  * The port's changes these functions carry: the alpha intensity's scaling on
- * this driver too (tools/apply_alpha_intensity.py, projectedTriangle) and the
- * rear-view mirror drawn as the main view (tools/apply_mirror_detail.py,
+ * this driver too (the port's alpha intensity change, projectedTriangle) and the
+ * rear-view mirror drawn as the main view (the port's mirror detail change,
  * modelByDistance, headlightsOnPoints, drawTrackBlocks), through
- * nfs3hp::mirrorAsMain as the generated code had them. */
+ * nfs3hp::mirrorAsMain as the game's code had them. */
 namespace nfs3hp
 {
 
-x86::reg32 mirrorAsMain(x86::reg32 kind);  // nfs3hp_main.cpp (tools/apply_mirror_detail.py)
+x86::reg32 mirrorAsMain(x86::reg32 kind);  // nfs3hp_main.cpp (the port's mirror detail change)
 
 namespace track
 {
@@ -140,10 +146,9 @@ constexpr reg32 kOpen = 0x536c30, kNoName = 0x536c60, kNoName2 = 0x536d10;
 constexpr reg32 kHeadlightsBox = 0x41a880, kHeadlightsPoint = 0x41a8a4;  // data among the code
 // What is called by address.
 constexpr reg32 kGetModuleHandleA = 0x53454c, kShellExecuteA = 0x534480;
-constexpr reg32 kMemmove = 0x4ea4f0;
 constexpr reg32 kTopUp = 0x4a33d0;
 
-/* A loop's safepoint, as the generated code has one at each loop's head: the
+/* A loop's safepoint, as the game's code has one at each loop's head: the
  * guest's context handed over when another thread (the sound's timer, its
  * mixer) has waited for it.  The only thing a core without callees takes the
  * CPU for. */
@@ -257,9 +262,9 @@ constexpr reg32 kSaveEbx = 1, kSaveEcx = 2, kSaveEdx = 4, kSaveEsi = 8, kSaveEdi
 class Kept
 {
 public:
-    Kept(CPU& cpu, reg32 saved)
-        : cpu_(cpu), saved_(saved), ebx_(cpu.ebx), ecx_(cpu.ecx), edx_(cpu.edx), esi_(cpu.esi), edi_(cpu.edi),
-          ebp_(cpu.ebp)
+    Kept(x86::Args& entry, reg32 saved)
+        : cpu_(entry), saved_(saved), ebx_(entry.ebx), ecx_(entry.ecx), edx_(entry.edx), esi_(entry.esi),
+          edi_(entry.edi), ebp_(entry.ebp)
     {
     }
     ~Kept()
@@ -278,37 +283,40 @@ public:
     }
 
 private:
-    CPU& cpu_;
+    x86::Args& cpu_;
     const reg32 saved_, ebx_, ecx_, edx_, esi_, edi_, ebp_;
 };
 
-/* A call by address as the code makes it, the registers it is handed set:
- * `words` pushed below esp (the first the lowest), the return address's slot,
- * esp back after it.  eax back; nullopt when the game stopped. */
-std::optional<reg32> call(App* app, CPU& cpu, reg32 target, std::initializer_list<reg32> words = {})
-{
-    if (!guest::call(app, cpu, target, words))
-        return std::nullopt;
-    return cpu.eax;
-}
-
-/* A call by address as the code makes it: `registers` into eax, edx, ebx and
- * ecx in turn, `words` pushed (the first the lowest) and taken off after it;
- * every register but eax as it was before after it (guest::KeptRegisters).
- * eax back; nullopt when the game stopped. */
+/* A call by address (a callee with no typed core) as the code makes it:
+ * `registers` into eax, edx, ebx and ecx in turn, `words` pushed (the first
+ * the lowest) and taken off after it; every register but eax as it was before
+ * after it.  eax back; nullopt when the game stopped. */
 std::optional<reg32> callWith(App* app, CPU& cpu, reg32 target, std::initializer_list<reg32> registers,
                               std::initializer_list<reg32> words = {})
 {
-    const guest::KeptRegisters kept(cpu);
-    reg32* const into[] = {&cpu.eax, &cpu.edx, &cpu.ebx, &cpu.ecx};
-    unsigned i = 0;
-    for (const reg32 value : registers)
-        *into[i++] = value;
-    return call(app, cpu, target, words);
+    return guest::pointerCall(app, cpu, target, registers, words);
+}
+
+/* Render_GetTm's room (0x4bbde0): `bytes` of the drawing's arena, their place to [place]; 1, 0 when it has
+ * run out.  nullopt when the game stopped. */
+std::optional<reg32> arenaRoom(App* app, CPU& cpu, reg32 place, reg32 bytes)
+{
+    const reg32 room = guest::direct<0x4bbde0, frontend::rendd::arenaTake>(app, cpu, place, bytes);
+    if (cpu.terminate)
+        return std::nullopt;
+    return room;
+}
+
+/* Render_GetTm's next (0x4bbe40): where the arena is now, to [place]; 1, 0 when it has run out. */
+std::optional<reg32> arenaNext(App* app, CPU& cpu, reg32 place)
+{
+    const reg32 room = guest::direct<0x4bbe40, frontend::rendd::arenaHere>(app, cpu, place);
+    if (cpu.terminate)
+        return std::nullopt;
+    return room;
 }
 
 // Other files' functions the track's call by address (Watcom's, unless said).
-constexpr reg32 kViewDistances = 0x41d620;    // render::viewDistances: the view's distances for camera eax
 constexpr reg32 kLoadFrd = 0x419c20;          // loader::frd: the .frd read into the track's blocks
 constexpr reg32 kClearCameras = 0x40f230;     // load::clearTrackCameras
 
@@ -316,27 +324,22 @@ constexpr reg32 kClearCameras = 0x40f230;     // load::clearTrackCameras
  * False when the game stopped. */
 bool topUp(App* app, CPU& cpu)
 {
-    return guest::call(app, cpu, kTopUp);
+    guest::direct<0x4a33d0, frontend::loada::stopCheck>(app, cpu);
+    return !cpu.terminate;
 }
 
 /* `bytes` bytes of the game's heap (0x4e1620), `name` the string it is
  * known by, no flags; their address (in eax too). */
 std::optional<reg32> allocate(App* app, CPU& cpu, reg32 name, reg32 bytes)
 {
-    const std::optional<reg32> block = guest::direct<0x4e1620, ea::reserved>(app, cpu, name, bytes, 0);
-    if (block)
-        cpu.eax = *block;
-    return block;
+    return guest::direct<0x4e1620, ea::reserved>(app, cpu, name, bytes, 0);
 }
 
 /* The heap's block at `block` given back (0x4e1890); what that gives back,
  * in eax too. */
 std::optional<reg32> freeBlock(App* app, CPU& cpu, reg32 block)
 {
-    const std::optional<reg32> freed = guest::direct<0x4e1890, ea::purgeBlock>(app, cpu, block);
-    if (freed)
-        cpu.eax = *freed;
-    return freed;
+    return guest::direct<0x4e1890, ea::purgeBlock>(app, cpu, block);
 }
 
 /* The game's memmove (0x4ea4f0): `bytes` from `from` to `to`.  By address:
@@ -345,80 +348,80 @@ std::optional<reg32> freeBlock(App* app, CPU& cpu, reg32 block)
  * stopped. */
 std::optional<reg32> memmove(App* app, CPU& cpu, reg32 to, reg32 from, reg32 bytes)
 {
-    cpu.eax = from;
-    cpu.edx = to;
-    cpu.ebx = bytes;
-    return call(app, cpu, kMemmove);
+    if (!guest::direct<0x4ea4f0, ea::moveMemory>(app, cpu, to, from, bytes))
+        return std::nullopt;
+    // The eax the game's memmove leaves: `from` where the copy runs backwards, else past the bytes copied to.
+    return to > from && to < from + bytes ? from : to + bytes;
 }
 
 }  // namespace
 
-void shellOpen(App* app, CPU& cpu);
-void tintColours(App* app, CPU& cpu);
-void tintObjectList(App* app, CPU& cpu);
-void tintTrack(App* app, CPU& cpu);
-void greyColours(App* app, CPU& cpu);
-void greyObjectList(App* app, CPU& cpu);
-void greyTrack(App* app, CPU& cpu);
-void readObjectList(App* app, CPU& cpu);
-void readLights(App* app, CPU& cpu);
-void newArena(App* app, CPU& cpu);
-void freeArena(App* app, CPU& cpu);
-void arenaTake(App* app, CPU& cpu);
-void frdRead(App* app, CPU& cpu);
-void loadGeometry(App* app, CPU& cpu);
-void projectedTriangle(App* app, CPU& cpu);
-void shadeVertex(App* app, CPU& cpu);
-void setShadeDistances(App* app, CPU& cpu);
-void viewObjectVertices(App* app, CPU& cpu);
-void viewTurnedObjectVertices(App* app, CPU& cpu);
-void modelByDistance(App* app, CPU& cpu);
-void viewOnBlock(App* app, CPU& cpu);
-void lightObjectPolygons(App* app, CPU& cpu);
-void bracketList(App* app, CPU& cpu);
-void ambientSounds(App* app, CPU& cpu);
-void ambientWanted(App* app, CPU& cpu);
-void pointBehindView(App* app, CPU& cpu);
-void litBoxOutside(App* app, CPU& cpu);
-void flushBuckets(App* app, CPU& cpu);
-void headlightsOnObjects(App* app, CPU& cpu);
-void headlightsOnBlock(App* app, CPU& cpu);
-void blockLights(App* app, CPU& cpu);
-void drawObjectList(App* app, CPU& cpu);
-void drawTrack(App* app, CPU& cpu);
-void ambientSource(App* app, CPU& cpu);
-void selectView(App* app, CPU& cpu);
-void objectAnimation(App* app, CPU& cpu);
-void turnFromAngles(App* app, CPU& cpu);
-void turnFromPitchYaw(App* app, CPU& cpu);
-void setViewDistance(App* app, CPU& cpu);
-void nextViewDistance(App* app, CPU& cpu);
-void modelsUnlimited(App* app, CPU& cpu);
-void freeAt(App* app, CPU& cpu);
-void unloadTrack(App* app, CPU& cpu);
-void newPool(App* app, CPU& cpu);
-void newObjectPool(App* app, CPU& cpu);
-void freeTrackKinds(App* app, CPU& cpu);
-void loadTextures(App* app, CPU& cpu);
-void takeTextures(App* app, CPU& cpu);
-void loadCollisions(App* app, CPU& cpu);
-void freeCollisions(App* app, CPU& cpu);
-void clearObjectStates(App* app, CPU& cpu);
-void resetTrackViews(App* app, CPU& cpu);
-void resetViewsOuter(App* app, CPU& cpu);
-void resetViews(App* app, CPU& cpu);
-void blockInView(App* app, CPU& cpu);
+x86::reg32 shellOpen(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 tintColours(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 tintObjectList(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 tintTrack(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 greyColours(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 greyObjectList(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 greyTrack(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 readObjectList(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 readLights(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 newArena(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 freeArena(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 arenaTake(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 frdRead(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 loadGeometry(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 projectedTriangle(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 shadeVertex(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 setShadeDistances(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 viewObjectVertices(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 viewTurnedObjectVertices(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 modelByDistance(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 viewOnBlock(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 lightObjectPolygons(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 bracketList(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 ambientSounds(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 ambientWanted(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 pointBehindView(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 litBoxOutside(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 flushBuckets(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 headlightsOnObjects(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 headlightsOnBlock(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 blockLights(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 drawObjectList(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 drawTrack(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 ambientSource(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 selectView(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 objectAnimation(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 turnFromAngles(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 turnFromPitchYaw(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 setViewDistance(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 nextViewDistance(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 modelsUnlimited(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 freeAt(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 unloadTrack(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 newPool(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 newObjectPool(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 freeTrackKinds(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 loadTextures(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 takeTextures(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 loadCollisions(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 freeCollisions(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 clearObjectStates(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 resetTrackViews(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 resetViewsOuter(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 resetViews(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 blockInView(App* app, x86::CPU& cpu, x86::Args& args);
 
 // The typed cores a core calls before they are defined.
 std::optional<reg32> readFrd(App* app, CPU& cpu, reg32 to, reg32 bytes);
 std::optional<reg32> takeFromArena(App* app, reg32 bytes);
-bool freeTheArena(App* app, CPU& cpu);
+std::optional<reg32> freeTheArena(App* app, CPU& cpu, reg32 eax);
 bool startViewsOver(App* app, CPU& cpu);
-bool freeCollisionFile(App* app, CPU& cpu);
+std::optional<reg32> freeCollisionFile(App* app, CPU& cpu, reg32 eax);
 reg32 chooseView(App* app, reg32 index);
 reg32 scaledColour(reg32 colour, reg32 factor);
-bool turnOfAngles(App* app, CPU& cpu, reg32 first, reg32 second, reg32 third, reg32 into);
-bool turnOfPitchYaw(App* app, CPU& cpu, reg32 pitch, reg32 yaw, reg32 into);
+std::optional<reg32> turnOfAngles(App* app, CPU& cpu, reg32 first, reg32 second, reg32 third, reg32 into);
+std::optional<reg32> turnOfPitchYaw(App* app, CPU& cpu, reg32 pitch, reg32 yaw, reg32 into);
 std::optional<bool> blockDrawn(App* app, CPU& cpu, reg32 camera, reg32 index);
 
 /* 0x418cc0's: the file or address at `file` opened -- ShellExecuteA's
@@ -435,13 +438,14 @@ bool openWithShell(App* app, CPU& cpu, reg32 file)
 }
 
 /* 0x418cc0: openWithShell of eax; 1. */
-void shellOpen(App* app, CPU& cpu)
+x86::reg32 shellOpen(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu, kSaveEcx | kSaveEdx);
-    if (!openWithShell(app, cpu, cpu.eax))
-        return;
-    cpu.eax = 1;
+    const Kept kept(args, kSaveEcx | kSaveEdx);
+    if (!openWithShell(app, cpu, args.eax))
+        return args.eax;
+    args.eax = 1;
     cpu.esp += 4;
+    return args.eax;
 }
 
 // A colour's alpha (ARGB); the tint's percents of red, green and blue (kTint, +4, +8).
@@ -478,12 +482,13 @@ void tintColourRun(App* app, const CPU& cpu, reg32 count, reg32 colours)
 }
 
 /* 0x419660: tintColourRun of eax colours at edx; eax the colours done. */
-void tintColours(App* app, CPU& cpu)
+x86::reg32 tintColours(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const reg32 count = cpu.eax;
-    tintColourRun(app, cpu, count, cpu.edx);
-    cpu.eax = coloursDone(count);
+    const reg32 count = args.eax;
+    tintColourRun(app, cpu, count, args.edx);
+    args.eax = coloursDone(count);
     cpu.esp += 4;
+    return args.eax;
 }
 
 // An object list: its count, then its objects, 0x34 bytes each: +0x18 its extra data's size, +0x1c the
@@ -515,10 +520,11 @@ reg32 tintObjects(App* app, const CPU& cpu, reg32 list)
 }
 
 /* 0x419720: tintObjects of eax. */
-void tintObjectList(App* app, CPU& cpu)
+x86::reg32 tintObjectList(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    cpu.eax = tintObjects(app, cpu, cpu.eax);
+    args.eax = tintObjects(app, cpu, args.eax);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x419750's: the whole track's colours tinted: the track's objects, then
@@ -544,10 +550,11 @@ reg32 tintTrackColours(App* app, const CPU& cpu)
 }
 
 /* 0x419750: tintTrackColours. */
-void tintTrack(App* app, CPU& cpu)
+x86::reg32 tintTrack(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    cpu.eax = tintTrackColours(app, cpu);
+    args.eax = tintTrackColours(app, cpu);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4197c0's: the `count` colours at `colours` made grey -- the mean of
@@ -576,10 +583,11 @@ reg32 greyLeft(reg32 count, const std::optional<reg32>& last)
 }
 
 /* 0x4197c0: greyColourRun of eax colours at edx; eax greyLeft. */
-void greyColours(App* app, CPU& cpu)
+x86::reg32 greyColours(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    cpu.eax = greyLeft(cpu.eax, greyColourRun(app, cpu, cpu.eax, cpu.edx));
+    args.eax = greyLeft(args.eax, greyColourRun(app, cpu, args.eax, args.edx));
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x419840's: the colours of each object of the list at `list` made grey.
@@ -600,10 +608,11 @@ reg32 greyObjects(App* app, const CPU& cpu, reg32 list)
 }
 
 /* 0x419840: greyObjects of eax. */
-void greyObjectList(App* app, CPU& cpu)
+x86::reg32 greyObjectList(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    cpu.eax = greyObjects(app, cpu, cpu.eax);
+    args.eax = greyObjects(app, cpu, args.eax);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x419870's: the whole track's colours made grey, as tintTrackColours goes.
@@ -626,10 +635,11 @@ reg32 greyTrackColours(App* app, const CPU& cpu)
 }
 
 /* 0x419870: greyTrackColours. */
-void greyTrack(App* app, CPU& cpu)
+x86::reg32 greyTrack(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    cpu.eax = greyTrackColours(app, cpu);
+    args.eax = greyTrackColours(app, cpu);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4198e0's: a list of objects read from the .frd into `list` -- its count,
@@ -696,14 +706,15 @@ std::optional<reg32> readObjects(App* app, CPU& cpu, reg32 list)
 }
 
 /* 0x4198e0: readObjects into eax. */
-void readObjectList(App* app, CPU& cpu)
+x86::reg32 readObjectList(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEdx | kSaveEsi | kSaveEdi);
-    const std::optional<reg32> left = readObjects(app, cpu, cpu.eax);
+    const Kept kept(args, kSaveEbx | kSaveEcx | kSaveEdx | kSaveEsi | kSaveEdi);
+    const std::optional<reg32> left = readObjects(app, cpu, args.eax);
     if (!left)
-        return;
-    cpu.eax = *left;
+        return args.eax;
+    args.eax = *left;
     cpu.esp += 4;
+    return args.eax;
 }
 
 // A light or sound source of the .frd: 0x2f bytes, +4 its kind's record, +0x2b's high word its kind,
@@ -741,14 +752,15 @@ std::optional<reg32> readTrackLights(App* app, CPU& cpu)
 }
 
 /* 0x419ab0: readTrackLights. */
-void readLights(App* app, CPU& cpu)
+x86::reg32 readLights(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEdx);
+    const Kept kept(args, kSaveEbx | kSaveEcx | kSaveEdx);
     const std::optional<reg32> left = readTrackLights(app, cpu);
     if (!left)
-        return;
-    cpu.eax = *left;
+        return args.eax;
+    args.eax = *left;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x419b60's: the arena allocated (0x310000 bytes, unnamed) and none of it
@@ -764,35 +776,43 @@ std::optional<reg32> startArena(App* app, CPU& cpu)
 }
 
 /* 0x419b60: startArena. */
-void newArena(App* app, CPU& cpu)
+x86::reg32 newArena(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu, kSaveEbx | kSaveEdx);
-    if (!startArena(app, cpu))
-        return;
+    const Kept kept(args, kSaveEbx | kSaveEdx);
+    const std::optional<reg32> arena = startArena(app, cpu);
+    if (!arena)
+        return args.eax;
+    args.eax = *arena;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x419b90's: the arena freed, if there is one, and forgotten.  eax as the
- * free leaves it; false when the game stopped. */
-bool freeTheArena(App* app, CPU& cpu)
+ * free leaves it (`eax` as it was where there is no arena); nullopt when the
+ * game stopped. */
+std::optional<reg32> freeTheArena(App* app, CPU& cpu, reg32 eax)
 {
     const reg32 arena = at(app, kArena);
     if (arena == 0)
-        return true;
-    if (!freeBlock(app, cpu, arena))
-        return false;
+        return eax;
+    const std::optional<reg32> freed = freeBlock(app, cpu, arena);
+    if (!freed)
+        return std::nullopt;
     put(app, kArena, 0);
     put(app, kArenaUsed, 0);
-    return true;
+    return freed;
 }
 
 /* 0x419b90: freeTheArena. */
-void freeArena(App* app, CPU& cpu)
+x86::reg32 freeArena(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu, kSaveEcx | kSaveEdx);
-    if (!freeTheArena(app, cpu))
-        return;
+    const Kept kept(args, kSaveEcx | kSaveEdx);
+    const std::optional<reg32> freed = freeTheArena(app, cpu, args.eax);
+    if (!freed)
+        return args.eax;
+    args.eax = *freed;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x419bc0's: `bytes` of the arena, the use moved past them; nullopt where
@@ -812,13 +832,14 @@ std::optional<reg32> takeFromArena(App* app, reg32 bytes)
 
 /* 0x419bc0: takeFromArena of eax bytes: eax what is taken, or 0; edx it too
  * where there is room, as the code leaves it. */
-void arenaTake(App* app, CPU& cpu)
+x86::reg32 arenaTake(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const std::optional<reg32> taken = takeFromArena(app, cpu.eax);
-    cpu.eax = taken.value_or(0);
+    const std::optional<reg32> taken = takeFromArena(app, args.eax);
+    args.eax = taken.value_or(0);
     if (taken)
-        cpu.edx = *taken;
+        args.edx = *taken;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x419bf0's: `bytes` of the .frd moved to `to` (the game's memmove), the
@@ -833,14 +854,15 @@ std::optional<reg32> readFrd(App* app, CPU& cpu, reg32 to, reg32 bytes)
 }
 
 /* 0x419bf0: readFrd of edx bytes to eax. */
-void frdRead(App* app, CPU& cpu)
+x86::reg32 frdRead(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEsi);
-    const std::optional<reg32> moved = readFrd(app, cpu, cpu.eax, cpu.edx);
+    const Kept kept(args, kSaveEbx | kSaveEcx | kSaveEsi);
+    const std::optional<reg32> moved = readFrd(app, cpu, args.eax, args.edx);
     if (!moved)
-        return;
-    cpu.eax = *moved;
+        return args.eax;
+    args.eax = *moved;
     cpu.esp += 4;
+    return args.eax;
 }
 
 // The driver's bit (kDriverBits) of a grey track.
@@ -852,7 +874,8 @@ constexpr reg8 kDriverGrey = 2;
  * stopped. */
 std::optional<reg32> loadTrackGeometry(App* app, CPU& cpu)
 {
-    if (!guest::call(app, cpu, kLoadFrd))
+    guest::pointerCall(app, cpu, 0x419c20, {});  // loader::frd (native_loading.cpp): a thunk without a core
+    if (cpu.terminate)
         return std::nullopt;
     reg32 left = tintTrackColours(app, cpu);
     if ((byte(app, kDriverBits) & kDriverGrey) != 0)
@@ -861,13 +884,14 @@ std::optional<reg32> loadTrackGeometry(App* app, CPU& cpu)
 }
 
 /* 0x41a100: loadTrackGeometry. */
-void loadGeometry(App* app, CPU& cpu)
+x86::reg32 loadGeometry(App* app, x86::CPU& cpu, x86::Args& args)
 {
     const std::optional<reg32> left = loadTrackGeometry(app, cpu);
     if (!left)
-        return;
-    cpu.eax = *left;
+        return args.eax;
+    args.eax = *left;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* What the code's colour scaling leaves in ebx: the even channels scaled
@@ -903,7 +927,7 @@ struct TriangleLeft
  * the screen on one side, nor where none is bright enough (the colours'
  * alpha below 8).
  *
- * The port's change (tools/apply_alpha_intensity.py): the scaling on this
+ * The port's change (the port's alpha intensity change): the scaling on this
  * driver too, not only where [0x7a3a58] says Direct3D (bit 0x40). */
 TriangleLeft headlightTriangle(App* app, reg32 records, reg32 corners)
 {
@@ -955,13 +979,14 @@ TriangleLeft headlightTriangle(App* app, reg32 records, reg32 corners)
 
 /* 0x41a120 (stdcall, 0x54 bytes): headlightTriangle into [eax] of the
  * stack's three corners. */
-void projectedTriangle(App* app, CPU& cpu)
+x86::reg32 projectedTriangle(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const TriangleLeft left = headlightTriangle(app, cpu.eax, cpu.esp + 4);
-    cpu.eax = left.drawn;
-    cpu.ebx = left.scaled;
-    cpu.edx = left.pointing;
+    const TriangleLeft left = headlightTriangle(app, args.eax, cpu.esp + 4);
+    args.eax = left.drawn;
+    args.ebx = left.scaled;
+    args.edx = left.pointing;
     cpu.esp += 4 + 0x54;
+    return args.eax;
 }
 
 /* A float's size as the code takes it, by its bits: only a value under 0
@@ -1025,12 +1050,13 @@ reg32 shadeTrackVertex(App* app, reg32 xBits, reg32 yBits, float depth, reg32 co
 
 /* 0x41a3e0 (stdcall, 5 words): shadeTrackVertex of x, y, the depth, the
  * colour and where to of the stack's words. */
-void shadeVertex(App* app, CPU& cpu)
+x86::reg32 shadeVertex(App* app, x86::CPU& cpu, x86::Args& args)
 {
     const reg32 words = cpu.esp;
-    cpu.eax = shadeTrackVertex(app, at(app, words + 4), at(app, words + 8), app->getMemory<float>(words + 0xc),
+    args.eax = shadeTrackVertex(app, at(app, words + 4), at(app, words + 8), app->getMemory<float>(words + 0xc),
                                at(app, words + 0x10), at(app, words + 0x14));
     cpu.esp += 4 + 0x14;
+    return args.eax;
 }
 
 // A camera: its kind (+0, 1 the mirror's pass), its place (+8), its view box (+0x38), its matrix (+0x44);
@@ -1061,14 +1087,13 @@ reg32 shadeDistances(App* app, reg32 camera, float scale)
 
 /* 0x41a800 (stdcall, 2 words): shadeDistances for the camera eax by
  * [esp+4]. */
-void setShadeDistances(App* app, CPU& cpu)
+x86::reg32 setShadeDistances(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    cpu.eax = shadeDistances(app, cpu.eax, app->getMemory<float>(cpu.esp + 4));
+    args.eax = shadeDistances(app, args.eax, app->getMemory<float>(cpu.esp + 4));
     cpu.esp += 4 + 8;
+    return args.eax;
 }
 
-constexpr reg32 kObjectVerticesList = 0x4dbef0;  // vertices::objectVerticesList
-constexpr reg32 kMultiplyMatrices = 0x4e0280;    // vertices::multiplyMatrices: eax by edx into ebx
 
 /* An object's vertices to the screen (vertices::objectVerticesList): turned
  * by the matrix at `matrix`, moved by the vector at `move`, `count` of them
@@ -1077,7 +1102,9 @@ constexpr reg32 kMultiplyMatrices = 0x4e0280;    // vertices::multiplyMatrices: 
 bool objectVerticesList(App* app, CPU& cpu, reg32 matrix, reg32 move, reg32 count, reg32 vertices, reg32 colours,
                         reg32 records)
 {
-    return callWith(app, cpu, kObjectVerticesList, {matrix, move, count, vertices}, {colours, records}).has_value();
+    const GuestFrame words(cpu, 2 * 4, 0);
+    guest::direct<0x4dbef0, vertices::objectVerticesListCore>(app, cpu, matrix, move, count, vertices, colours, records);
+    return !cpu.terminate;
 }
 
 /* The place at `point` less the camera's, turned by its matrix: the view's
@@ -1106,12 +1133,13 @@ bool viewVertices(App* app, CPU& cpu, reg32 camera, reg32 point, reg32 count, re
 /* 0x41a8d0 (stdcall, 2 words): viewVertices for the camera eax, the point
  * ebx, edx vertices at ecx, the colours and records the stack's words; the
  * registers as objectVerticesList leaves them. */
-void viewObjectVertices(App* app, CPU& cpu)
+x86::reg32 viewObjectVertices(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu, kSaveEsi | kSaveEdi);
-    if (!viewVertices(app, cpu, cpu.eax, cpu.ebx, cpu.edx, cpu.ecx, at(app, cpu.esp + 4), at(app, cpu.esp + 8)))
-        return;
+    const Kept kept(args, kSaveEsi | kSaveEdi);
+    if (!viewVertices(app, cpu, args.eax, args.ebx, args.edx, args.ecx, at(app, cpu.esp + 4), at(app, cpu.esp + 8)))
+        return args.eax;
     cpu.esp += 4 + 8;
+    return args.eax;
 }
 
 /* 0x41a9b0's: viewVertices for an object turned by its own matrix at
@@ -1132,13 +1160,14 @@ bool viewTurnedVertices(App* app, CPU& cpu, reg32 camera, reg32 turn, reg32 poin
 /* 0x41a9b0 (stdcall, 3 words): viewTurnedVertices for the camera eax, the
  * matrix edx, the point ecx, ebx vertices at the stack's first word, the
  * colours and records its next two. */
-void viewTurnedObjectVertices(App* app, CPU& cpu)
+x86::reg32 viewTurnedObjectVertices(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu, kSaveEsi | kSaveEdi);
-    if (!viewTurnedVertices(app, cpu, cpu.eax, cpu.edx, cpu.ecx, cpu.ebx, at(app, cpu.esp + 4), at(app, cpu.esp + 8),
+    const Kept kept(args, kSaveEsi | kSaveEdi);
+    if (!viewTurnedVertices(app, cpu, args.eax, args.edx, args.ecx, args.ebx, at(app, cpu.esp + 4), at(app, cpu.esp + 8),
                             at(app, cpu.esp + 0xc)))
-        return;
+        return args.eax;
     cpu.esp += 4 + 0xc;
+    return args.eax;
 }
 
 // The view's distances the track's model gets coarser at: the middle one's (+0x40) and the coarsest's (+0x44).
@@ -1148,7 +1177,7 @@ constexpr reg32 kViewMiddleFrom = 0x40, kViewCoarsestFrom = 0x44;
  * one) to draw at the square `squared` of a distance for the camera at
  * `camera`: past the view's coarsest distance, 0; past its middle one, 1;
  * else 2 -- x87 compares, a NaN counting as past.  The mirror's pass always
- * 0 -- the port's change (tools/apply_mirror_detail.py): asked through
+ * 0 -- the port's change (the port's mirror detail change): asked through
  * nfs3hp::mirrorAsMain, which answers as the main view would with the mirror
  * drawn in full. */
 reg32 modelAt(App* app, reg32 camera, float squared)
@@ -1166,10 +1195,11 @@ reg32 modelAt(App* app, reg32 camera, float squared)
 }
 
 /* 0x41aa60 (stdcall, 1 word): modelAt for the camera eax at [esp+4]. */
-void modelByDistance(App* app, CPU& cpu)
+x86::reg32 modelByDistance(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    cpu.eax = modelAt(app, cpu.eax, app->getMemory<float>(cpu.esp + 4));
+    args.eax = modelAt(app, args.eax, app->getMemory<float>(cpu.esp + 4));
     cpu.esp += 4 + 4;
+    return args.eax;
 }
 
 // A view's groups of 8 blocks: +0xc the one its block is in, +0x10 the same of +4 once moved there; +0x14
@@ -1191,7 +1221,7 @@ std::optional<reg32> cameraNode(App* app, CPU& cpu, reg32 node)
  * code leaves it in edx; nullopt when the game stopped. */
 std::optional<reg32> viewOnCameraBlock(App* app, CPU& cpu, reg32 camera, reg32 index)
 {
-    if (!guest::call(app, cpu, kViewDistances))
+    if (!guest::direct<0x41d620, render::viewDistancesSet>(app, cpu))
         return std::nullopt;
     chooseView(app, index);
     const std::optional<reg32> block = cameraNode(app, cpu, at(app, camera + kCameraNode));
@@ -1213,15 +1243,16 @@ std::optional<reg32> viewOnCameraBlock(App* app, CPU& cpu, reg32 camera, reg32 i
 
 /* 0x41aaf0: viewOnCameraBlock for the camera eax and view edx; eax the view
  * drawn, edx its group. */
-void viewOnBlock(App* app, CPU& cpu)
+x86::reg32 viewOnBlock(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu, kSaveEcx);
-    const std::optional<reg32> group = viewOnCameraBlock(app, cpu, cpu.eax, cpu.edx);
+    const Kept kept(args, kSaveEcx);
+    const std::optional<reg32> group = viewOnCameraBlock(app, cpu, args.eax, args.edx);
     if (!group)
-        return;
-    cpu.eax = at(app, kView);
-    cpu.edx = *group;
+        return args.eax;
+    args.eax = at(app, kView);
+    args.edx = *group;
     cpu.esp += 4;
+    return args.eax;
 }
 
 // A block's polygon groups by list: the count at +4 * list, the polygons at +0x2c + 4 * list; a polygon
@@ -1281,16 +1312,27 @@ reg32 lightPolygons(App* app, const CPU& cpu, reg32 block, reg32 list, reg32 cor
 
 /* 0x41ab40 (stdcall, 1 word): lightPolygons of block ebx's group ecx, the
  * corners at [esp+4]. */
-void lightObjectPolygons(App* app, CPU& cpu)
+x86::reg32 lightObjectPolygons(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    cpu.eax = lightPolygons(app, cpu, cpu.ebx, cpu.ecx, at(app, cpu.esp + 4));
+    args.eax = lightPolygons(app, cpu, args.ebx, args.ecx, at(app, cpu.esp + 4));
     cpu.esp += 4 + 4;
+    return args.eax;
 }
 
-constexpr reg32 kStateReset = 0x4bbf20;   // the drawing's state reset
-constexpr reg32 kRoom = 0x4bbde0;         // Render_GetTm's room: edx bytes, their place to [eax]; 0 none
-constexpr reg32 kListOfOne = 0x4bbe90;    // the record eax a list of its own, its pair (first, last) to [esi]
-constexpr reg32 kListsJoined = 0x4bbec0;  // the two lists of the stack's pairs joined, the pair to [esi] (stdcall)
+/* The drawing's state reset (0x4bbf20).  False when the game stopped. */
+bool stateReset(App* app, CPU& cpu)
+{
+    guest::direct<0x4bbf20, frontend::rendd::openListStart>(app, cpu);
+    return !cpu.terminate;
+}
+
+/* An empty list's pair (first, last) made at `pair` (0x4bbe70).  False when the game stopped. */
+bool listEmptied(App* app, CPU& cpu, reg32 pair)
+{
+    guest::direct<0x4bbe70, frontend::rendd::emptyList>(app, cpu, pair);
+    return !cpu.terminate;
+}
+
 // A state record of the drawing's: 0x10 bytes, +0 0, +4 its kind (a word, 5), +8 0xd, +0xc the last's 1.
 constexpr reg32 kStateRecordSize = 0x10;
 
@@ -1298,7 +1340,7 @@ constexpr reg32 kStateRecordSize = 0x10;
  * for one: kind 5, 0xd, `last`.  False when the game stopped. */
 bool stateRecord(App* app, CPU& cpu, reg32 record, reg32 last)
 {
-    const std::optional<reg32> room = callWith(app, cpu, kRoom, {record, kStateRecordSize});
+    const std::optional<reg32> room = arenaRoom(app, cpu, record, kStateRecordSize);
     if (!room)
         return false;
     if (*room != 0)
@@ -1313,23 +1355,26 @@ bool stateRecord(App* app, CPU& cpu, reg32 record, reg32 last)
 
 /* The state record at [record] made a list of its own into `pair`, and the
  * lists `first` then `second` (pairs of first and last) joined into the
- * list's pair at `list`.  False when the game stopped. */
-bool joinRecord(App* app, CPU& cpu, reg32 record, reg32 pair, reg32 list, bool recordFirst, reg32 joined)
+ * list's pair at `list`.  The join's eax (the list it made); nullopt when
+ * the game stopped. */
+std::optional<reg32> joinRecord(App* app, CPU& cpu, reg32 record, reg32 pair, reg32 list, bool recordFirst,
+                                reg32 joined)
 {
     const reg32 listFirst = at(app, list), listLast = at(app, list + 4);
-    cpu.eax = at(app, record);
-    cpu.esi = pair;
-    if (!guest::call(app, cpu, kListOfOne))
-        return false;
-    cpu.esi = joined;
+    guest::direct<0x4bbe90, frontend::rendd::listOfOne>(app, cpu, at(app, record), pair);
+    if (cpu.terminate)
+        return std::nullopt;
     const reg32 pairFirst = at(app, pair), pairLast = at(app, pair + 4);
-    if (!guest::call(app, cpu, kListsJoined,
-                     recordFirst ? std::initializer_list<reg32>{pairFirst, pairLast, listFirst, listLast}
-                                 : std::initializer_list<reg32>{listFirst, listLast, pairFirst, pairLast}))
-        return false;
+    const reg32 made = recordFirst
+                           ? guest::direct<0x4bbec0, frontend::rendd::joinLists>(app, cpu, joined, pairFirst, pairLast,
+                                                                                  listFirst, listLast)
+                           : guest::direct<0x4bbec0, frontend::rendd::joinLists>(app, cpu, joined, listFirst, listLast,
+                                                                                  pairFirst, pairLast);
+    if (cpu.terminate)
+        return std::nullopt;
     put(app, list, at(app, joined));
     put(app, list + 4, at(app, joined + 4));
-    return true;
+    return made;
 }
 
 /* 0x41b8c0's: the list at `list` (its first and last record), if not
@@ -1338,30 +1383,39 @@ bool joinRecord(App* app, CPU& cpu, reg32 record, reg32 pair, reg32 list, bool r
  * state reset, each record made a list of its own and the lists joined.  The
  * frame as deep as the code's (its places are handed on).  False when the
  * game stopped. */
-bool bracketOrdered(App* app, CPU& cpu, reg32 list)
+std::optional<reg32> bracketOrdered(App* app, CPU& cpu, reg32 list, reg32 eax)
 {
     if (at(app, list) == 0)
-        return true;
+        return eax;
     const GuestFrame frame(cpu, 0x18, 0x24);
     const reg32 record = frame - 4;
-    return guest::call(app, cpu, kStateReset) && stateRecord(app, cpu, record, 0)
-           && joinRecord(app, cpu, record, frame - 0x14, list, true, frame - 0x24)
-           && stateRecord(app, cpu, record, 1) && joinRecord(app, cpu, record, frame - 0xc, list, false, frame - 0x1c);
+    if (!stateReset(app, cpu) || !stateRecord(app, cpu, record, 0)
+        || !joinRecord(app, cpu, record, frame - 0x14, list, true, frame - 0x24) || !stateRecord(app, cpu, record, 1))
+        return std::nullopt;
+    return joinRecord(app, cpu, record, frame - 0xc, list, false, frame - 0x1c);
+}
+
+/* The header's core (native_render's caller wants only whether the game went on). */
+bool bracketOrdered(App* app, CPU& cpu, reg32 list)
+{
+    return bracketOrdered(app, cpu, list, list).has_value();
 }
 
 /* 0x41b8c0: bracketOrdered of eax; eax as the last join leaves it. */
-void bracketList(App* app, CPU& cpu)
+x86::reg32 bracketList(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEdx | kSaveEsi | kSaveEdi);
-    if (!bracketOrdered(app, cpu, cpu.eax))
-        return;
+    const Kept kept(args, kSaveEbx | kSaveEcx | kSaveEdx | kSaveEsi | kSaveEdi);
+    const std::optional<reg32> last = bracketOrdered(app, cpu, args.eax, args.eax);
+    if (!last)
+        return args.eax;
+    args.eax = *last;
     cpu.esp += 4;
+    return args.eax;
 }
 
 // A block's neighbours drawn with it (+0xb4: 300, a word read every 4 bytes, -1 none) and its sound
 // sources (+0x5b0 their count, +0x5b4 them).
 constexpr reg32 kBlockNeighbours = 0xb4, kNeighbourCount = 300, kBlockSourceCount = 0x5b0, kBlockSources = 0x5b4;
-constexpr reg32 kSlotStopped = 0x416f60;  // the sound slot eax stopped (port_sound_effects.cpp)
 constexpr reg32 kAmbientSlot = 0x12, kAmbientSlotSecond = 0x20;
 // The second player's camera (+4 not 0).
 constexpr reg32 kCameraPlayer = 4;
@@ -1407,19 +1461,21 @@ std::optional<reg32> ambientAround(App* app, CPU& cpu, reg32 camera)
     }
     if (heard != 0)
         return left;
-    cpu.eax = at(app, camera + kCameraPlayer) == 0 ? kAmbientSlot : kAmbientSlotSecond;
-    return call(app, cpu, kSlotStopped);
+    const port::Result stopped = guest::direct<0x416f60, port::slotStopped>(
+        app, cpu, cpu.esp - 4, i32(at(app, camera + kCameraPlayer) == 0 ? kAmbientSlot : kAmbientSlotSecond));
+    return cpu.terminate || !stopped ? std::optional<reg32>() : std::optional<reg32>(reg32(*stopped));
 }
 
 /* 0x41bb50: ambientAround the camera eax. */
-void ambientSounds(App* app, CPU& cpu)
+x86::reg32 ambientSounds(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEdx | kSaveEsi | kSaveEdi);
-    const std::optional<reg32> left = ambientAround(app, cpu, cpu.eax);
+    const Kept kept(args, kSaveEbx | kSaveEcx | kSaveEdx | kSaveEsi | kSaveEdi);
+    const std::optional<reg32> left = ambientAround(app, cpu, args.eax);
     if (!left)
-        return;
-    cpu.eax = *left;
+        return args.eax;
+    args.eax = *left;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x41bc20's: whether the track's ambient sounds play: not in a split-screen
@@ -1431,10 +1487,11 @@ bool ambientPlays(App* app)
 }
 
 /* 0x41bc20: ambientPlays, 1 or 0. */
-void ambientWanted(App* app, CPU& cpu)
+x86::reg32 ambientWanted(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    cpu.eax = ambientPlays(app) ? 1 : 0;
+    args.eax = ambientPlays(app) ? 1 : 0;
     cpu.esp += 4;
+    return args.eax;
 }
 
 // A light of the track's: its place (+0x4c) and its reach (+0x6c).
@@ -1457,14 +1514,15 @@ std::optional<bool> lightBehind(App* app, CPU& cpu, reg32 light, reg32 camera)
 }
 
 /* 0x41bc50: lightBehind for the light eax and the camera edx, 1 behind. */
-void pointBehindView(App* app, CPU& cpu)
+x86::reg32 pointBehindView(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEsi);
-    const std::optional<bool> behind = lightBehind(app, cpu, cpu.eax, cpu.edx);
+    const Kept kept(args, kSaveEbx | kSaveEcx | kSaveEsi);
+    const std::optional<bool> behind = lightBehind(app, cpu, args.eax, args.edx);
     if (!behind)
-        return;
-    cpu.eax = *behind ? 1 : 0;
+        return args.eax;
+    args.eax = *behind ? 1 : 0;
     cpu.esp += 4;
+    return args.eax;
 }
 
 // carstate::zoomOfView (0x4227e0): the light's spread, as the x87's stack has it.
@@ -1556,21 +1614,16 @@ std::optional<bool> boxOutOfCone(App* app, CPU& cpu, reg32 light, reg32 box, reg
 
 /* 0x41bc90: boxOutOfCone for the light eax, the box edx, the matrix ebx and
  * the move ecx; 1 out of the cone. */
-void litBoxOutside(App* app, CPU& cpu)
+x86::reg32 litBoxOutside(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const std::optional<bool> outside = boxOutOfCone(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx);
+    const std::optional<bool> outside = boxOutOfCone(app, cpu, args.eax, args.edx, args.ebx, args.ecx);
     if (!outside)
-        return;
-    cpu.eax = *outside ? 1 : 0;
+        return args.eax;
+    args.eax = *outside ? 1 : 0;
     cpu.esp += 4;
+    return args.eax;
 }
 
-constexpr reg32 kListEmptied = 0x4bbe70;  // an empty list's pair to [esi]
-constexpr reg32 kSortInto = 0x4c7790;     // the list from eax sorted into the frame's bucket [esp+4] (stdcall)
-constexpr reg32 kAddOrdered = 0x4c7940;   // the list of the pair [esp+4], [esp+8] added to [esp+0xc] (stdcall)
-constexpr reg32 kGather = 0x4c79a0;       // the buckets at edi gathered (eax 0) into the pair at esi
-constexpr reg32 kGatherFrame = 0x4c7750;  // the frame's buckets gathered (eax 0) into the pair at esi
-constexpr reg32 kDrawView = 0x4bc060;     // the view eax drawn, the pair at edx (stdcall, [esp+4] 0)
 constexpr reg32 kTrackLists = 6;
 // The buckets (8 bytes each, a list's pair): the four opaque ones sorted into the frame's, the ordered
 // one at +0x28 bracketed, it and +0x20 added to the ordered bucket.
@@ -1587,8 +1640,7 @@ void copyPair(App* app, reg32 from, reg32 to)
  * False when the game stopped. */
 bool emptyPairTo(App* app, CPU& cpu, reg32 pair, reg32 to)
 {
-    cpu.esi = pair;
-    if (!guest::call(app, cpu, kListEmptied))
+    if (!listEmptied(app, cpu, pair))
         return false;
     copyPair(app, pair, to);
     return true;
@@ -1601,13 +1653,12 @@ bool emptyPairTo(App* app, CPU& cpu, reg32 pair, reg32 to)
  * gathered, the buckets emptied and the view drawn.  The frame as deep as
  * the code's (its pairs are handed on), each callee handed the registers the
  * code hands it.  False when the game stopped. */
-bool drawBuckets(App* app, CPU& cpu, reg32 view, reg32 tails, reg32 heads, reg32 buckets)
+std::optional<reg32> drawBuckets(App* app, CPU& cpu, reg32 view, reg32 tails, reg32 heads, reg32 buckets)
 {
     const GuestFrame frame(cpu, 0xc, 0x4c);
     const reg32 gathered = frame - 0x4c, empty = frame - 0x34;
-    cpu.esi = gathered;
-    if (!guest::call(app, cpu, kListEmptied))
-        return false;
+    if (!listEmptied(app, cpu, gathered))
+        return std::nullopt;
     for (reg32 list = 0; list < kTrackLists; ++list)
     {
         const reg32 head = at(app, heads + list * 4), to = buckets + list * 8;
@@ -1615,7 +1666,7 @@ bool drawBuckets(App* app, CPU& cpu, reg32 view, reg32 tails, reg32 heads, reg32
         {
             safepoint(app, cpu);
             if (!emptyPairTo(app, cpu, empty, to))
-                return false;
+                return std::nullopt;
         }
         else
         {
@@ -1631,50 +1682,59 @@ bool drawBuckets(App* app, CPU& cpu, reg32 view, reg32 tails, reg32 heads, reg32
     static const reg32 kOpaque[][2] = {{0, kBucketOpaque}, {8, kBucketA}, {0x18, kBucketB}, {0x10, kBucketC}};
     for (const auto& bucket : kOpaque)
     {
-        cpu.eax = at(app, buckets + bucket[0]);
-        if (!guest::call(app, cpu, kSortInto, {at(app, bucket[1])}))
-            return false;
+        {
+            const GuestFrame words(cpu, 4, 0);
+            guest::direct<0x4c7790, vertices::depthBucketsCore>(app, cpu, at(app, buckets + bucket[0]),
+                                                               at(app, bucket[1]));
+        }
+        if (cpu.terminate)
+            return std::nullopt;
     }
     {
-        // bracketList's, as its code keeps the registers.
-        const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEdx | kSaveEsi | kSaveEdi);
+        // bracketList's.
         const GuestFrame slot(cpu, 4, 0);
-        if (!bracketOrdered(app, cpu, buckets + kBucketsOrdered))
-            return false;
+        if (!bracketOrdered(app, cpu, buckets + kBucketsOrdered, 0))
+            return std::nullopt;
     }
-    if (!guest::call(app, cpu, kAddOrdered,
-                     {at(app, buckets + kBucketsOrdered), at(app, buckets + kBucketsOrdered + 4), at(app, kBucketOrdered)})
-        || !guest::call(app, cpu, kAddOrdered,
-                        {at(app, buckets + kBucketsSecond), at(app, buckets + kBucketsSecond + 4), at(app, kBucketOrdered)}))
-        return false;
-    cpu.esi = gathered;
-    cpu.eax = 0;
-    cpu.edi = buckets;
-    if (!guest::call(app, cpu, kGather))
-        return false;
-    cpu.eax = 0;
-    cpu.esi = frame - 0x44;
-    if (!guest::call(app, cpu, kGatherFrame) || !emptyPairTo(app, cpu, frame - 0x44, buckets))
-        return false;
+    guest::direct<0x4c7940, frontend::rende::drawListAdd>(app, cpu, at(app, buckets + kBucketsOrdered),
+                                                         at(app, buckets + kBucketsOrdered + 4), at(app, kBucketOrdered));
+    if (cpu.terminate)
+        return std::nullopt;
+    guest::direct<0x4c7940, frontend::rende::drawListAdd>(app, cpu, at(app, buckets + kBucketsSecond),
+                                                         at(app, buckets + kBucketsSecond + 4), at(app, kBucketOrdered));
+    if (cpu.terminate)
+        return std::nullopt;
+    guest::direct<0x4c79a0, vertices::gatherBucketsCore>(app, cpu, 0, gathered);
+    if (cpu.terminate)
+        return std::nullopt;
+    guest::direct<0x4c7750, frontend::rende::clearBuckets>(app, cpu, 0);
+    if (cpu.terminate || !emptyPairTo(app, cpu, frame - 0x44, buckets))
+        return std::nullopt;
     // The other buckets emptied: their frame's empty list copied in.
     static const reg32 kEmptied[][2] = {{0x3c, 8}, {0x14, 0x18}, {0x2c, 0x10}, {0x24, 0x20}};
     for (const auto& bucket : kEmptied)
         if (!emptyPairTo(app, cpu, frame - bucket[0], buckets + bucket[1]))
-            return false;
+            return std::nullopt;
     if (!emptyPairTo(app, cpu, frame - 0x1c, buckets + kBucketsOrdered))
-        return false;
+        return std::nullopt;
     // The view drawn, the gathered list's pair in edx.
-    return callWith(app, cpu, kDrawView, {view, gathered}, {0}).has_value();
+    const reg32 drawn = guest::direct<0x4bc060, frontend::rendd::drawListAt>(app, cpu, view, gathered, 0);
+    if (cpu.terminate)
+        return std::nullopt;
+    return drawn;
 }
 
 /* 0x41c1a0: drawBuckets of the view eax, the lists' tails edx and heads ebx,
  * into the buckets at ecx; the registers as the drawing leaves them. */
-void flushBuckets(App* app, CPU& cpu)
+x86::reg32 flushBuckets(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu, kSaveEsi | kSaveEdi);
-    if (!drawBuckets(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx))
-        return;
+    const Kept kept(args, kSaveEsi | kSaveEdi);
+    const std::optional<reg32> drawn = drawBuckets(app, cpu, args.eax, args.edx, args.ebx, args.ecx);
+    if (!drawn)
+        return args.eax;
+    args.eax = *drawn;
     cpu.esp += 4;
+    return args.eax;
 }
 
 // A car's flags (+0x200: 0x40 hidden, 0x20 its first light on), wrecked (+0x88), its lights on (+0x89),
@@ -1695,9 +1755,6 @@ constexpr reg8 kMovesWhenHit = 2, kFalls = 3, kStateTurning = 0xfe;
 // The lists of a view's polygons, six of them (a word each, heads and tails apart): the sixth the ordered
 // one, the headlights' polygons'.
 constexpr reg32 kOrderedList = 5 * 4;
-constexpr reg32 kBoxOutside = 0x41bf30;     // vertices::boxOutside: the box at edx out of the camera eax's view
-constexpr reg32 kTrackVertices = 0x41a550;  // vertices::trackVertices: edx vertices lit by the light eax (stdcall)
-constexpr reg32 kLitGroup = 0x41ae90;       // a block's polygon group drawn lit (stdcall, 3 words)
 
 /* lightBehind (pointBehindView's) from a core: its return address's slot, as
  * the code's frame is handed on.  nullopt when the game stopped. */
@@ -1719,10 +1776,11 @@ std::optional<bool> boxUnlit(App* app, CPU& cpu, reg32 camera, reg32 box, reg32 
  * and place.  nullopt when the game stopped. */
 std::optional<bool> boxOutsideLight(App* app, CPU& cpu, reg32 camera, reg32 box, reg32 light)
 {
-    const std::optional<reg32> outside = callWith(app, cpu, kBoxOutside, {camera, box, light + kLightTurn, light + kLightAt});
-    if (!outside)
+    const reg32 outside = guest::direct<0x41bf30, vertices::boxOutsideCore>(app, cpu, camera, box, light + kLightTurn,
+                                                                           light + kLightAt);
+    if (cpu.terminate)
         return std::nullopt;
-    return *outside != 0;
+    return outside != 0;
 }
 
 /* vertices::trackVertices (0x41a550): `count` vertices at `vertices` lit by
@@ -1730,7 +1788,9 @@ std::optional<bool> boxOutsideLight(App* app, CPU& cpu, reg32 camera, reg32 box,
  * records at `screen`.  False when the game stopped. */
 bool lightVertices(App* app, CPU& cpu, reg32 light, reg32 count, reg32 vertices, reg32 records, reg32 screen)
 {
-    return callWith(app, cpu, kTrackVertices, {light, count, vertices, records}, {screen}).has_value();
+    const GuestFrame words(cpu, 4, 0);
+    guest::direct<0x41a550, vertices::trackVerticesCore>(app, cpu, light, count, vertices, records, screen);
+    return !cpu.terminate;
 }
 
 /* An object's points headlightsOnObjects lights: `count` of them at `points`
@@ -1775,7 +1835,7 @@ bool lightPoints(App* app, CPU& cpu, const LitPoints& points, reg32 light, reg32
  * (lightPoints).  A matrix or a point of 0 is the game's own (the code's data
  * at 0x41a880 and 0x41a8a4, copied into the frame).  None in the mirror's
  * pass, nor outside a split-screen race -- the port's change
- * (tools/apply_mirror_detail.py): the mirror's asked through
+ * (the port's mirror detail change): the mirror's asked through
  * nfs3hp::mirrorAsMain, as the main view would have it.  The frame as deep as
  * the code's (its places are handed on).  The cars gone through, or the
  * camera where no headlights shine, as the code leaves it in eax; nullopt
@@ -1853,15 +1913,16 @@ std::optional<reg32> headlightsOnPoints(App* app, CPU& cpu, LitPoints points, re
 /* 0x41c310 (stdcall, 3 words): headlightsOnPoints of the eax points at ecx,
  * their screen's records [esp+4], by the matrix edx and the point ebx, for
  * the camera [esp+8] and the block [esp+0xc]. */
-void headlightsOnObjects(App* app, CPU& cpu)
+x86::reg32 headlightsOnObjects(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu, kSaveEsi | kSaveEdi);
-    const LitPoints points = {cpu.eax, cpu.edx, cpu.ebx, cpu.ecx, at(app, cpu.esp + 4)};
+    const Kept kept(args, kSaveEsi | kSaveEdi);
+    const LitPoints points = {args.eax, args.edx, args.ebx, args.ecx, at(app, cpu.esp + 4)};
     const std::optional<reg32> cars = headlightsOnPoints(app, cpu, points, at(app, cpu.esp + 8), at(app, cpu.esp + 0xc));
     if (!cars)
-        return;
-    cpu.eax = *cars;
+        return args.eax;
+    args.eax = *cars;
     cpu.esp += 4 + 0xc;
+    return args.eax;
 }
 
 /* A block's polygon group drawn lit (0x41ae90): group `group` of block
@@ -1871,7 +1932,12 @@ void headlightsOnObjects(App* app, CPU& cpu)
 std::optional<reg32> drawLitGroup(App* app, CPU& cpu, reg32 camera, reg32 light, reg32 index, reg32 group, reg32 lit,
                                   reg32 tails, reg32 heads)
 {
-    return callWith(app, cpu, kLitGroup, {camera, light, index, group}, {lit, tails + kOrderedList, heads + kOrderedList});
+    const GuestFrame words(cpu, 3 * 4, 0);
+    const reg32 drawn = guest::direct<0x41ae90, vertices::trackPolygonsCore>(app, cpu, camera, index, group, lit,
+                                                                            tails + kOrderedList, heads + kOrderedList);
+    if (cpu.terminate)
+        return std::nullopt;
+    return drawn;
 }
 
 /* 0x41c670's: the headlights' light on block `index`'s road (`block` its
@@ -1896,7 +1962,7 @@ std::optional<reg32> headlightsOnRoad(App* app, CPU& cpu, reg32 camera, reg32 co
     reg32 drawn = 0;
     if (kind == kMirrorPass || gameSettings(app).night == 0)
         return drawn;
-    if (!callWith(app, cpu, kRoom, {litAt, count * kLitCornerSize}))
+    if (!arenaRoom(app, cpu, litAt, count * kLitCornerSize))
         return std::nullopt;
     const reg32 lit = at(app, litAt);
     if (lit == 0)
@@ -1978,16 +2044,17 @@ std::optional<reg32> headlightsOnRoad(App* app, CPU& cpu, reg32 camera, reg32 co
 /* 0x41c670 (stdcall, 4 words): headlightsOnRoad for the camera eax, edx lit
  * records, block ebx and its screen's records ecx, the lists' tails [esp+4]
  * and heads [esp+8], the block [esp+0xc] and the model [esp+0x10]. */
-void headlightsOnBlock(App* app, CPU& cpu)
+x86::reg32 headlightsOnBlock(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu, kSaveEsi | kSaveEdi);
+    const Kept kept(args, kSaveEsi | kSaveEdi);
     const std::optional<reg32> drawn =
-        headlightsOnRoad(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx, at(app, cpu.esp + 4), at(app, cpu.esp + 8),
+        headlightsOnRoad(app, cpu, args.eax, args.edx, args.ebx, args.ecx, at(app, cpu.esp + 4), at(app, cpu.esp + 8),
                          at(app, cpu.esp + 0xc), at(app, cpu.esp + 0x10));
     if (!drawn)
-        return;
-    cpu.eax = *drawn;
+        return args.eax;
+    args.eax = *drawn;
     cpu.esp += 4 + 0x10;
+    return args.eax;
 }
 
 // A block's lights: their count (+0x5b8) and records (+0x5bc), 0x10 bytes each -- three words and a half-word.
@@ -2017,14 +2084,15 @@ std::optional<reg32> glowBlockLights(App* app, CPU& cpu, reg32 camera, reg32 ind
 }
 
 /* 0x41c9f0: glowBlockLights for the camera eax and block edx. */
-void blockLights(App* app, CPU& cpu)
+x86::reg32 blockLights(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEsi | kSaveEdi);
-    const std::optional<reg32> left = glowBlockLights(app, cpu, cpu.eax, cpu.edx);
+    const Kept kept(args, kSaveEbx | kSaveEcx | kSaveEsi | kSaveEdi);
+    const std::optional<reg32> left = glowBlockLights(app, cpu, args.eax, args.edx);
     if (!left)
-        return;
-    cpu.eax = *left;
+        return args.eax;
+    args.eax = *left;
     cpu.esp += 4;
+    return args.eax;
 }
 
 // An object's kind (+0: 4 animated, 3 a car's, else fixed), its number among its block's animated ones
@@ -2035,8 +2103,6 @@ constexpr reg32 kAnimatedKind = 4, kCarKind = 3;
 constexpr reg32 kRecordSize = 0x20;
 constexpr reg32 kBlockListsEnd = 0x536cc8;  // a float: the world's end handed with a block's lists (-1)
 constexpr reg32 kPoseTime = 0x7d3684;       // what an animated car's pose is taken at
-constexpr reg32 kRoomNext = 0x4bbe40;       // Render_GetTm's next: edx bytes at [eax], their place to [eax]
-constexpr reg32 kObjectRecords = 0x41b640;      // vertices::objectRecords (stdcall, 1 word): the polygons' records
 
 /* A byte sign-extended, as movsx does. */
 reg32 signedByte(reg8 value)
@@ -2075,7 +2141,8 @@ std::optional<reg32> drawObjects(App* app, CPU& cpu, reg32 camera, reg32 tail, r
     reg32 object = at(app, list + kListObjects);
     const auto field = [&](reg32 offset) { return at(app, object + offset); };
     // Render_GetTm's room or next (`target`): `bytes` at [place].
-    const auto room = [&](reg32 target, reg32 place, reg32 bytes) { return callWith(app, cpu, target, {place, bytes}); };
+    const auto room = [&](reg32 where, reg32 bytes) { return arenaRoom(app, cpu, where, bytes); };
+    const auto roomNext = [&](reg32 where) { return arenaNext(app, cpu, where); };
     // The object's vertices into view, turned by the matrix `matrix` and moved to the point `point`.
     const auto turnedIntoView = [&](reg32 matrix, reg32 point) {
         const GuestFrame slot(cpu, 4 + 0xc, 0);
@@ -2096,7 +2163,7 @@ std::optional<reg32> drawObjects(App* app, CPU& cpu, reg32 camera, reg32 tail, r
         const reg32 kind = field(kObjectKind);
         if (kind == kAnimatedKind)
         {
-            if (!room(kRoom, vertices, field(kObjectVertexCount) << 5))
+            if (!room(vertices, field(kObjectVertexCount) << 5))
                 return std::nullopt;
             const reg32 animated = at(app, block + kBlockAnimated) + field(kObjectNumber) * kAnimatedSize;
             const reg32 state = kObjectStates + half(app, animated + kAnimatedState) * kObjectStateSize;
@@ -2167,7 +2234,7 @@ std::optional<reg32> drawObjects(App* app, CPU& cpu, reg32 camera, reg32 tail, r
             if (!guest::direct<0x40f4b0, aiplan::poseAt>(app, cpu, field(kObjectCarAt), 1, i32(at(app, kPoseTime)), place,
                                                          turn))
                 return std::nullopt;
-            if (!room(kRoom, vertices, field(kObjectVertexCount) << 5) || !turnedIntoView(turn, place)
+            if (!room(vertices, field(kObjectVertexCount) << 5) || !turnedIntoView(turn, place)
                 || !lit(turn, place))
                 return std::nullopt;
             // An x87 compare: ZF for equal or unordered -- the car's block looked up only for a list drawn to
@@ -2190,7 +2257,7 @@ std::optional<reg32> drawObjects(App* app, CPU& cpu, reg32 camera, reg32 tail, r
         }
         else
         {
-            if (!room(kRoom, vertices, field(kObjectVertexCount) << 5))
+            if (!room(vertices, field(kObjectVertexCount) << 5))
                 return std::nullopt;
             guest::direct<0x41a970, vertices::colouredVerticesOf>(app, cpu, camera, field(kObjectVertexCount),
                                                                   field(kObjectVertices), field(kObjectColours),
@@ -2201,7 +2268,7 @@ std::optional<reg32> drawObjects(App* app, CPU& cpu, reg32 camera, reg32 tail, r
                 return std::nullopt;
         }
         // Its polygons as records, appended to the list.
-        const std::optional<reg32> roomFor = room(kRoomNext, records, field(kObjectPolygonCount) << 5);
+        const std::optional<reg32> roomFor = roomNext(records);
         if (!roomFor)
             return std::nullopt;
         if (*roomFor == 0)
@@ -2209,18 +2276,22 @@ std::optional<reg32> drawObjects(App* app, CPU& cpu, reg32 camera, reg32 tail, r
             object += kObjectSize;
             continue;
         }
-        const std::optional<reg32> made =
-            callWith(app, cpu, kObjectRecords, {camera, field(kObjectPolygonCount), field(kObjectPolygons), at(app, records)},
-                     {at(app, vertices)});
-        if (!made)
-            return std::nullopt;
-        if (*made != 0)
+        reg32 made;
         {
-            if (!room(kRoom, records, *made << 5))
+            const GuestFrame words(cpu, 4, 0);
+            made = guest::direct<0x41b640, vertices::objectRecordsCore>(app, cpu, sreg32(field(kObjectPolygonCount)),
+                                                                       field(kObjectPolygons), at(app, records),
+                                                                       at(app, vertices));
+        }
+        if (cpu.terminate)
+            return std::nullopt;
+        if (made != 0)
+        {
+            if (!room(records, made << 5))
                 return std::nullopt;
             const reg32 last = at(app, lastAt);
             put(app, last == 0 ? head : last, at(app, records));
-            if (!room(kRoomNext, lastAt, kRecordSize))
+            if (!roomNext(lastAt))
                 return std::nullopt;
             put(app, lastAt, at(app, lastAt) - kRecordSize);
         }
@@ -2235,18 +2306,18 @@ std::optional<reg32> drawObjects(App* app, CPU& cpu, reg32 camera, reg32 tail, r
  * [esp+8] of block ecx drawn to the world's end [esp+4] (a float, -1 for a
  * block's), into the list of the tail's slot edx and the head's ebx, cars
  * where [esp+0xc]. */
-void drawObjectList(App* app, CPU& cpu)
+x86::reg32 drawObjectList(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu, kSaveEsi | kSaveEdi);
-    const std::optional<reg32> drawn = drawObjects(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx, at(app, cpu.esp + 4),
+    const Kept kept(args, kSaveEsi | kSaveEdi);
+    const std::optional<reg32> drawn = drawObjects(app, cpu, args.eax, args.edx, args.ebx, args.ecx, at(app, cpu.esp + 4),
                                                    at(app, cpu.esp + 8), at(app, cpu.esp + 0xc));
     if (!drawn)
-        return;
-    cpu.eax = *drawn;
+        return args.eax;
+    args.eax = *drawn;
     cpu.esp += 4 + 0xc;
+    return args.eax;
 }
 
-constexpr reg32 kTrackRecords = 0x41b300;      // vertices::trackRecords (stdcall, 2 words): a block's group's records
 constexpr reg32 kPassLayerNothing = 0x431c20;  // collide::passLayerNothing: eax for the layer edx
 // A block's models' vertex counts (+0x5c, a word each), its lists of objects (+0x564, 8 bytes each); a
 // model's record (12 bytes): the block's word of it, the model, the most polygons before a flush.
@@ -2278,7 +2349,10 @@ bool drawTrackBlocks(App* app, CPU& cpu, reg32 camera, reg32 list, reg32 buckets
     const reg32 heads = frame - 0x70, tails = frame - 0x58, empty = frame - 0x40, vertices = frame - 0x38;
     // A block's group of polygons into the lists `k` bytes in.
     const auto groupInto = [&](reg32 index, reg32 group, reg32 screen, reg32 k) {
-        return callWith(app, cpu, kTrackRecords, {camera, index, group, screen}, {tails + k, heads + k});
+        const GuestFrame words(cpu, 2 * 4, 0);
+        const reg32 made = guest::direct<0x41b300, vertices::trackRecordsCore>(app, cpu, screen, index, group, tails + k,
+                                                                              heads + k);
+        return cpu.terminate ? std::optional<reg32>() : std::optional<reg32>(made);
     };
     // A list of objects into the lists `k` bytes in; the polygons drawn.
     const auto objectsInto = [&](reg32 index, reg32 worldEnd, reg32 objects, reg32 cars, reg32 k) {
@@ -2312,11 +2386,11 @@ bool drawTrackBlocks(App* app, CPU& cpu, reg32 camera, reg32 list, reg32 buckets
         if (!(reach >= Float(distance)))
             continue;
         // In view.
-        const std::optional<reg32> outside =
-            callWith(app, cpu, kBoxOutside, {camera, block + kBlockBox, camera + kCameraMatrix, camera + kCameraBox});
-        if (!outside)
+        const reg32 outside = guest::direct<0x41bf30, vertices::boxOutsideCore>(
+            app, cpu, camera, block + kBlockBox, camera + kCameraMatrix, camera + kCameraBox);
+        if (cpu.terminate)
             return false;
-        if (*outside != 0)
+        if (outside != 0)
             continue;
         // Its model: by its own distance where the list has none.
         reg32 level = reg32(sreg32(at(app, slotAt)) >> 16);
@@ -2334,7 +2408,7 @@ bool drawTrackBlocks(App* app, CPU& cpu, reg32 camera, reg32 list, reg32 buckets
         modelAt(app, camera, float(fp::add(fp::mul(nz, nz), fp::mul(nx, nx))));  // asked for, not taken
         // Its vertices into view.
         const reg32 count = at(app, block + kBlockModelVertices + at(app, record) * 4);
-        if (!callWith(app, cpu, kRoom, {vertices, count << 5}))
+        if (!arenaRoom(app, cpu, vertices, count << 5))
             return false;
         const reg32 screen = at(app, vertices);
         if (screen == 0)
@@ -2431,26 +2505,22 @@ bool drawTrackBlocks(App* app, CPU& cpu, reg32 camera, reg32 list, reg32 buckets
     guest::direct<0x431c20, collide::layerNothing>(app, cpu, 0, 1);
     if (cpu.terminate)
         return false;
-    // The second by address: what it leaves is what drawTrack leaves.
-    cpu.eax = 0;
-    cpu.edx = 2;
-    return guest::call(app, cpu, kPassLayerNothing);
+    guest::direct<0x431c20, collide::layerNothing>(app, cpu, 0, 2);
+    return !cpu.terminate;
 }
 
 /* 0x41cdc0: drawTrackBlocks for the camera eax, the list edx, the buckets
  * ebx. */
-void drawTrack(App* app, CPU& cpu)
+x86::reg32 drawTrack(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu, kSaveEcx | kSaveEsi | kSaveEdi);
-    if (!drawTrackBlocks(app, cpu, cpu.eax, cpu.edx, cpu.ebx))
-        return;
+    const Kept kept(args, kSaveEcx | kSaveEsi | kSaveEdi);
+    if (!drawTrackBlocks(app, cpu, args.eax, args.edx, args.ebx))
+        return args.eax;
+    args.eax = 0;  // what the last (empty) layer function leaves: the 0 it was handed
     cpu.esp += 4;
+    return args.eax;
 }
 
-constexpr reg32 kSourceDistance = 0x412620;  // the distance from the place eax to the source edx; across, side to [ebx]
-constexpr reg32 kSidePan = 0x4185e0;         // the pan of across eax and side edx (port_sound_effects.cpp)
-constexpr reg32 kEffectInSlot = 0x416fc0;    // slot eax plays sound edx (stdcall: volume, pan, pitch)
-constexpr reg32 kRandom = 0x4e0d88;          // a random number
 // A sound source: its sound (+0xc, a word) and its kind (+0xe: 1 played at a random half-second).
 constexpr reg32 kSourceSound = 0xc, kSourceKind = 0xe;
 constexpr reg16 kSourceRandom = 1;
@@ -2476,8 +2546,9 @@ std::optional<reg32> hearSource(App* app, CPU& cpu, reg32 camera, reg32 source, 
 {
     const GuestFrame frame(cpu, 0x10, 8);
     const reg32 across = frame - 8, side = frame - 4;
-    const std::optional<reg32> distance = callWith(app, cpu, kSourceDistance, {camera + kCameraPlace, source, across});
-    if (!distance)
+    const port::Result distance = guest::direct<0x412620, port::placeAcrossOf>(app, cpu, cpu.esp - 4,
+                                                                                camera + kCameraPlace, source, across);
+    if (cpu.terminate || !distance)
         return std::nullopt;
     const reg32 far = reg32(i32(*distance) >> 0xc), squared = reg32(i32(far * far) >> 0xa);
     reg32 volume = kLoudest;
@@ -2486,10 +2557,8 @@ std::optional<reg32> hearSource(App* app, CPU& cpu, reg32 camera, reg32 source, 
         const i32 loudness = i32(0x10000) / i32(squared);
         volume = loudness >= i32(kLoudest) ? kLoudest : reg32(loudness);
     }
-    const std::optional<reg32> pan =
-        callWith(app, cpu, kSidePan, {shiftedTowardZero(at(app, across), 0xa) + kPanMiddle, at(app, side)});
-    if (!pan)
-        return std::nullopt;
+    const reg32 pan = guest::direct<0x4185e0, port::panFromSideOf>(
+        app, cpu, i32(shiftedTowardZero(at(app, across), 0xa) + kPanMiddle), i32(at(app, side)));
     const reg16 kind = half(app, source + kSourceKind);
     reg32 slot = kAmbientSlot;
     if (kind == kSourceRandom)
@@ -2502,27 +2571,31 @@ std::optional<reg32> hearSource(App* app, CPU& cpu, reg32 camera, reg32 source, 
     else if (heard != 0)
         return heard;
     const reg32 pitch = at(app, at(app, kView) + kViewStart) - kPitchBelow;
-    if (!callWith(app, cpu, kEffectInSlot, {slot, half(app, source + kSourceSound), kPanMiddle, kEffectRate},
-                  {volume, *pan, pitch}))
+    {
+        const GuestFrame words(cpu, 3 * 4, 0);
+        guest::direct<0x416fc0, port::slotEffectPlayed>(app, cpu, cpu.esp - 4, i32(slot),
+                                                       i32(half(app, source + kSourceSound)), kEffectRate, kPanMiddle,
+                                                       volume, pan, pitch);
+    }
+    if (cpu.terminate)
         return std::nullopt;
     if (slot == kAmbientSlot)
         return 1;
-    const std::optional<reg32> drawn = call(app, cpu, kRandom);
-    if (!drawn)
-        return std::nullopt;
-    put(app, kAmbientLast, *drawn & 7);
+    const reg32 drawn = guest::direct<0x4e0d88, port::nextRandom>(app, cpu);
+    put(app, kAmbientLast, drawn & 7);
     return heard;
 }
 
 /* 0x41d210: hearSource for the camera eax, the source edx, heard ebx. */
-void ambientSource(App* app, CPU& cpu)
+x86::reg32 ambientSource(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu, kSaveEcx | kSaveEsi | kSaveEdi);
-    const std::optional<reg32> heard = hearSource(app, cpu, cpu.eax, cpu.edx, cpu.ebx);
+    const Kept kept(args, kSaveEcx | kSaveEsi | kSaveEdi);
+    const std::optional<reg32> heard = hearSource(app, cpu, args.eax, args.edx, args.ebx);
     if (!heard)
-        return;
-    cpu.eax = *heard;
+        return args.eax;
+    args.eax = *heard;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* The heard of the sources at `sources` (hearSource), for ambientAround. */
@@ -2544,13 +2617,13 @@ reg32 chooseView(App* app, reg32 index)
 }
 
 /* 0x41d310: chooseView of eax. */
-void selectView(App* app, CPU& cpu)
+x86::reg32 selectView(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    cpu.eax = chooseView(app, cpu.eax);
+    args.eax = chooseView(app, args.eax);
     cpu.esp += 4;
+    return args.eax;
 }
 
-constexpr reg32 kAngleOf = 0x4ea570;           // the angle of the vector x eax, z edx (16-bit turns)
 constexpr reg32 kSpeedToAngle = 0x536ccc;      // a double: a speed to the angle's units
 // A car: its block (+0xc), its speed's x and z (+0xa4, +0xac), its flags (+0x200; 2 the threshold 0).
 constexpr reg32 kCarBlock = 0xc, kCarSpeedX = 0xa4, kCarSpeedZ = 0xac;
@@ -2600,10 +2673,10 @@ std::optional<reg32> setObjectMoving(App* app, CPU& cpu, reg32 car, reg32 index)
     }
     const reg32 z = reg32(sreg32(reg32(fp::toInteger<sreg32>(fp::mul(f32(app, car + kCarSpeedZ), f64(app, kSpeedToAngle))))) >> 8);
     const reg32 x = reg32(sreg32(reg32(fp::toInteger<sreg32>(fp::mul(f32(app, car + kCarSpeedX), f64(app, kSpeedToAngle))))) >> 8);
-    const std::optional<reg32> angle = callWith(app, cpu, kAngleOf, {x, z});
-    if (!angle)
+    const reg32 angle = guest::direct<0x4ea570, frontend::simc::angle>(app, cpu, x, z);
+    if (cpu.terminate)
         return std::nullopt;
-    const reg8 turn = reg8(sreg32(*angle) >> 8);
+    const reg8 turn = reg8(sreg32(angle) >> 8);
     putByte(app, state + 1, turn);
     const reg32 number = half(app, object + kAnimatedState);
     guest::direct<0x40f430, aiplan::setAnimation>(app, cpu, reg32(sreg32(at(app, number * 3 + kObjectStates - 3)) >> 0x18),
@@ -2615,14 +2688,15 @@ std::optional<reg32> setObjectMoving(App* app, CPU& cpu, reg32 car, reg32 index)
 }
 
 /* 0x41d350: setObjectMoving of the car eax's object edx. */
-void objectAnimation(App* app, CPU& cpu)
+x86::reg32 objectAnimation(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEsi | kSaveEdi);
-    const std::optional<reg32> moved = setObjectMoving(app, cpu, cpu.eax, cpu.edx);
+    const Kept kept(args, kSaveEbx | kSaveEcx | kSaveEsi | kSaveEdi);
+    const std::optional<reg32> moved = setObjectMoving(app, cpu, args.eax, args.edx);
     if (!moved)
-        return;
-    cpu.eax = *moved;
+        return args.eax;
+    args.eax = *moved;
     cpu.esp += 4;
+    return args.eax;
 }
 
 constexpr reg32 kAnglesScale = 0x536cd4, kPitchYawScale = 0x536cdc;  // doubles: a 16-bit turn's radians
@@ -2643,7 +2717,7 @@ bool turnAboutY(App* app, CPU& cpu, reg32 matrix, reg32 angleBits)
  * itself (unscaled, as the code has it) into the frame, the two multiplied
  * and the result by the second's into `into`.  The frames as deep as the
  * code's.  False when the game stopped. */
-bool turnOfAngles(App* app, CPU& cpu, reg32 first, reg32 second, reg32 third, reg32 into)
+std::optional<reg32> turnOfAngles(App* app, CPU& cpu, reg32 first, reg32 second, reg32 third, reg32 into)
 {
     const GuestFrame frame(cpu, 4, 0x84);
     const reg32 e = frame - 0x82;
@@ -2655,30 +2729,36 @@ bool turnOfAngles(App* app, CPU& cpu, reg32 first, reg32 second, reg32 third, re
     const Float pitchShare = fp::mul(firstScaled, -fp::mul(k, Float(sreg32(third))));
     const float angle = float(fp::add(pitchShare, yawShare));
     if (!turnAboutY(app, cpu, yawTurn, bitsOf(angle)))
-        return false;
+        return std::nullopt;
     if (!turnAboutY(app, cpu, secondTurn, bitsOf(float(Float(sreg32(second))))))
-        return false;
+        return std::nullopt;
     guest::direct<0x4e0280, vertices::multiplyMatrix>(app, cpu, yawTurn, into, product);
     if (cpu.terminate)
-        return false;
-    // The last by address: the eax it leaves is turnFromAngles'.
-    return callWith(app, cpu, kMultiplyMatrices, {product, secondTurn, into}).has_value();
+        return std::nullopt;
+    // The last leaves the eax turnFromAngles' leaves.
+    const reg32 left = guest::direct<0x4e0280, vertices::multiplyMatrixEax>(app, cpu, product, secondTurn, into);
+    if (cpu.terminate)
+        return std::nullopt;
+    return left;
 }
 
 /* 0x41d510: turnOfAngles of eax, ebx and edx into ecx; eax as the last
  * multiply leaves it. */
-void turnFromAngles(App* app, CPU& cpu)
+x86::reg32 turnFromAngles(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    if (!turnOfAngles(app, cpu, cpu.eax, cpu.ebx, cpu.edx, cpu.ecx))
-        return;
+    const std::optional<reg32> left = turnOfAngles(app, cpu, args.eax, args.ebx, args.edx, args.ecx);
+    if (!left)
+        return args.eax;
+    args.eax = *left;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x41d5a0's: the turn matrix at `into` of a pitch and a yaw (16-bit turns,
  * scaled by 0x536cdc): a turn about x by a quarter into `into`, about y by
  * the pitch turned back and by the yaw (into the frame, as deep as the
  * code's), all multiplied into `into`.  False when the game stopped. */
-bool turnOfPitchYaw(App* app, CPU& cpu, reg32 pitch, reg32 yaw, reg32 into)
+std::optional<reg32> turnOfPitchYaw(App* app, CPU& cpu, reg32 pitch, reg32 yaw, reg32 into)
 {
     constexpr reg32 kQuarter = 0x3e800000;  // 0.25 as a float
     const GuestFrame frame(cpu, 8, 0x7c);
@@ -2690,24 +2770,30 @@ bool turnOfPitchYaw(App* app, CPU& cpu, reg32 pitch, reg32 yaw, reg32 into)
         const GuestFrame pushed(cpu, 0, 4);
         put(app, pushed - 4, kQuarter);
         if (!guest::direct<0x4dfd80, ea::rotateAboutX>(app, cpu, into, pushed - 4))
-            return false;
+            return std::nullopt;
     }
     if (!turnAboutY(app, cpu, pitchTurn, bitsOf(float(-Float(pitchAngle))))
         || !turnAboutY(app, cpu, yawTurn, bitsOf(yawAngle)))
-        return false;
+        return std::nullopt;
     guest::direct<0x4e0280, vertices::multiplyMatrix>(app, cpu, pitchTurn, into, product);
     if (cpu.terminate)
-        return false;
-    // The last by address: the eax it leaves is turnFromPitchYaw's.
-    return callWith(app, cpu, kMultiplyMatrices, {product, yawTurn, into}).has_value();
+        return std::nullopt;
+    // The last leaves the eax turnFromPitchYaw's leaves.
+    const reg32 left = guest::direct<0x4e0280, vertices::multiplyMatrixEax>(app, cpu, product, yawTurn, into);
+    if (cpu.terminate)
+        return std::nullopt;
+    return left;
 }
 
 /* 0x41d5a0: turnOfPitchYaw of eax and edx into ebx. */
-void turnFromPitchYaw(App* app, CPU& cpu)
+x86::reg32 turnFromPitchYaw(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    if (!turnOfPitchYaw(app, cpu, cpu.eax, cpu.edx, cpu.ebx))
-        return;
+    const std::optional<reg32> left = turnOfPitchYaw(app, cpu, args.eax, args.edx, args.ebx);
+    if (!left)
+        return args.eax;
+    args.eax = *left;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x41d610's: View Distance set (0 Full .. 3 Close). */
@@ -2717,10 +2803,11 @@ void chooseViewDistance(App* app, reg32 distance)
 }
 
 /* 0x41d610: chooseViewDistance of eax. */
-void setViewDistance(App* app, CPU& cpu)
+x86::reg32 setViewDistance(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    chooseViewDistance(app, cpu.eax);
+    chooseViewDistance(app, args.eax);
     cpu.esp += 4;
+    return args.eax;
 }
 
 constexpr reg32 kViewDistanceCount = 4;
@@ -2728,24 +2815,26 @@ constexpr reg32 kViewDistanceCount = 4;
 /* 0x41d870's: View Distance the next of its four (the pause menu's item) --
  * the next stored, then it wrapped round -- and the views' distances worked
  * out again, handed the division's quotient in eax as the code leaves it
- * (eax comes back as it went on some of its paths).  False when the game
- * stopped. */
-bool viewDistanceOnward(App* app, CPU& cpu)
+ * (eax comes back as it went on some of its paths).  That eax; nullopt when
+ * the game stopped. */
+std::optional<reg32> viewDistanceOnward(App* app, CPU& cpu)
 {
     const reg32 next = gameSettings(app).viewDistance + 1;
     gameSettings(app).viewDistance = next;
     gameSettings(app).viewDistance = reg32(i32(next) % i32(kViewDistanceCount));
-    cpu.eax = reg32(i32(next) / i32(kViewDistanceCount));
-    return guest::call(app, cpu, kViewDistances);
+    return guest::direct<0x41d620, render::viewDistancesSet>(app, cpu);
 }
 
 /* 0x41d870: viewDistanceOnward; eax as the views' distances leave it. */
-void nextViewDistance(App* app, CPU& cpu)
+x86::reg32 nextViewDistance(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu, kSaveEcx | kSaveEdx);
-    if (!viewDistanceOnward(app, cpu))
-        return;
+    const Kept kept(args, kSaveEcx | kSaveEdx);
+    const std::optional<reg32> left = viewDistanceOnward(app, cpu);
+    if (!left)
+        return args.eax;
+    args.eax = *left;
     cpu.esp += 4;
+    return args.eax;
 }
 
 // The models by distance (kModels): 3 records of 12 bytes, +8 the most polygons drawn of one (-1 no limit).
@@ -2779,11 +2868,12 @@ std::optional<reg32> unlimitedModels(App* app, const CPU& cpu)
 }
 
 /* 0x41d900: unlimitedModels; eax the last block cleared, else as it was. */
-void modelsUnlimited(App* app, CPU& cpu)
+x86::reg32 modelsUnlimited(App* app, x86::CPU& cpu, x86::Args& args)
 {
     if (const std::optional<reg32> last = unlimitedModels(app, cpu))
-        cpu.eax = *last;
+        args.eax = *last;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x41da40's: the heap's block at [slot] freed, if there is one, and [slot]
@@ -2802,14 +2892,15 @@ std::optional<reg32> freeAtSlot(App* app, CPU& cpu, reg32 slot)
 }
 
 /* 0x41da40: freeAtSlot of eax. */
-void freeAt(App* app, CPU& cpu)
+x86::reg32 freeAt(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu, kSaveEcx | kSaveEdx);
-    const std::optional<reg32> left = freeAtSlot(app, cpu, cpu.eax);
+    const Kept kept(args, kSaveEcx | kSaveEdx);
+    const std::optional<reg32> left = freeAtSlot(app, cpu, args.eax);
     if (!left)
-        return;
-    cpu.eax = *left;
+        return args.eax;
+    args.eax = *left;
     cpu.esp += 4;
+    return args.eax;
 }
 
 // Set by render (0x1234) as the track is drawn, 0 once it is let go of.
@@ -2822,25 +2913,26 @@ constexpr reg32 kTrackMark = 0x5dd834;
 std::optional<reg32> letGoOfTrack(App* app, CPU& cpu)
 {
     put(app, kTrackMark, 0);
-    if (!freeTheArena(app, cpu))
+    if (!freeTheArena(app, cpu, 0))
         return std::nullopt;
     if (at(app, kTexturesFile) != 0 && !freeAtSlot(app, cpu, kTexturesFile))
         return std::nullopt;
     if (!guest::direct<0x41e3b0, trackdata::closeTrack>(app, cpu) || !startViewsOver(app, cpu)
-        || !freeCollisionFile(app, cpu) || !guest::direct<0x40f330, aiplan::freePaths>(app, cpu))
+        || !freeCollisionFile(app, cpu, 0) || !guest::direct<0x40f330, aiplan::freePaths>(app, cpu))
         return std::nullopt;
     return freeAtSlot(app, cpu, kTrackKinds);
 }
 
 /* 0x41da60: letGoOfTrack. */
-void unloadTrack(App* app, CPU& cpu)
+x86::reg32 unloadTrack(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu, kSaveEdx);
+    const Kept kept(args, kSaveEdx);
     const std::optional<reg32> left = letGoOfTrack(app, cpu);
     if (!left)
-        return;
-    cpu.eax = *left;
+        return args.eax;
+    args.eax = *left;
     cpu.esp += 4;
+    return args.eax;
 }
 
 // A pool's record: +0 the record taken (-1 none), +0xc, +0x10 its records, +0x18; 36 bytes a record.
@@ -2863,12 +2955,15 @@ std::optional<reg32> startPool(App* app, CPU& cpu, reg32 pool, reg32 count)
 }
 
 /* 0x41daa0: startPool of eax, edx records. */
-void newPool(App* app, CPU& cpu)
+x86::reg32 newPool(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu, kSaveEbx | kSaveEcx);
-    if (!startPool(app, cpu, cpu.eax, cpu.edx))
-        return;
+    const Kept kept(args, kSaveEbx | kSaveEcx);
+    const std::optional<reg32> records = startPool(app, cpu, args.eax, args.edx);
+    if (!records)
+        return args.eax;
+    args.eax = *records;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x41dae0's: startPool of the objects' pool, kObjectPoolRecords records.  Its records' address,
@@ -2879,28 +2974,31 @@ std::optional<reg32> startObjectPool(App* app, CPU& cpu)
 }
 
 /* 0x41dae0: startObjectPool. */
-void newObjectPool(App* app, CPU& cpu)
+x86::reg32 newObjectPool(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEdx);
-    if (!startObjectPool(app, cpu))
-        return;
+    const Kept kept(args, kSaveEbx | kSaveEcx | kSaveEdx);
+    const std::optional<reg32> records = startObjectPool(app, cpu);
+    if (!records)
+        return args.eax;
+    args.eax = *records;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x41db00: freeAtSlot of the track's kinds' records. */
-void freeTrackKinds(App* app, CPU& cpu)
+x86::reg32 freeTrackKinds(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu, kSaveEcx | kSaveEdx);
+    const Kept kept(args, kSaveEcx | kSaveEdx);
     const std::optional<reg32> left = freeAtSlot(app, cpu, kTrackKinds);
     if (!left)
-        return;
-    cpu.eax = *left;
+        return args.eax;
+    args.eax = *left;
     cpu.esp += 4;
+    return args.eax;
 }
 
 constexpr reg32 kQfsTextures = 0x4ea654;      // the textures' count of the .qfs at eax
 constexpr reg32 kQfsTexture = 0x4ea658;       // texture edx of the .qfs at eax, 0 none
-constexpr reg32 kTakeGreyTexture = 0x4d41a0;  // a grey driver's: texture eax into the record at edx
 constexpr reg32 kTakeTexture = 0x4d4080;      // texture edx into the record at ecx, ebx a side at most, [esp+4] 3
 // The loading bar at the float [esp+4] per cent (stdcall; graphics::loadingProgress): by address, the
 // registers it leaves being what loadTextures leaves where the loading stopped.
@@ -2910,12 +3008,23 @@ constexpr reg32 kTexturesShare = 0x536d1c;    // a float: the loading bar's shar
 constexpr reg32 kTextureRecordSize = 0x2c;
 constexpr float kTexturesFrom = 43.0f, kTexturesStep = 15.0f;  // the loading bar's per cent, and a step
 
+/* Entry `index` of the .qfs at `file`, 0 past its end; nullopt when the game stopped. */
+std::optional<reg32> packEntry(App* app, CPU& cpu, reg32 file, reg32 index)
+{
+    const reg32 entry = guest::direct<0x4ea658, frontend::simc::packEntry>(app, cpu, file, index);
+    if (cpu.terminate)
+        return std::nullopt;
+    return entry;
+}
+
 /* The textures' count of the .qfs at `file`; nullopt when the game
  * stopped. */
 std::optional<reg32> qfsTextures(App* app, CPU& cpu, reg32 file)
 {
-    cpu.eax = file;
-    return call(app, cpu, kQfsTextures);
+    const reg32 count = guest::direct<0x4ea654, frontend::simc::packCount>(app, cpu, file);
+    if (cpu.terminate)
+        return std::nullopt;
+    return count;
 }
 
 /* What loadTextures leaves in eax, ebx and ecx, which its code does not
@@ -2953,35 +3062,34 @@ std::optional<TexturesLeft> takeQfsTextures(App* app, CPU& cpu, reg32 file, reg3
             return left;
         if (!topUp(app, cpu))
             return std::nullopt;
-        cpu.eax = file;
-        cpu.edx = index;
-        const std::optional<reg32> texture = call(app, cpu, kQfsTexture);
+        const std::optional<reg32> texture = packEntry(app, cpu, file, index);
         if (!texture)
             return std::nullopt;
         if (*texture == 0)
             continue;
         if ((byte(app, kDriverBits) & kDriverGrey) != 0)
         {
-            cpu.eax = *texture;
-            cpu.edx = record;
-            if (!guest::call(app, cpu, kTakeGreyTexture))
+            if (!guest::direct<0x4d41a0, render::paletteTextured>(app, cpu, *texture, record))
                 return std::nullopt;
         }
         else
         {
             constexpr reg32 kTakeKind = 3;
             // port: each texture at its own size up to 512, not 128 (port_thrash.h)
-            cpu.eax = 0;
-            cpu.edx = *texture;
-            cpu.ebx = port::driver::kMaxTextureSide;
-            cpu.ecx = record;
             left.sized = true;
-            if (!guest::call(app, cpu, kTakeTexture, {kTakeKind}))
+            guest::direct<0x4d4080, frontend::rende::loadShapeTexture>(app, cpu, 0, *texture,
+                                                                      port::driver::kMaxTextureSide, record, kTakeKind);
+            if (cpu.terminate)
                 return std::nullopt;
         }
         progress = float(fp::add(Float(progress), Float(step)));
-        if (!guest::call(app, cpu, kLoadingBar, {bitsOf(progress)}))
-            return std::nullopt;
+        {
+            // The per cent in the word the code pushes, the bar handed its address.
+            const GuestFrame pushed(cpu, 0, 4);
+            put(app, pushed - 4, bitsOf(progress));
+            if (!guest::direct<0x495230, graphics::loadingProgress>(app, cpu, pushed - 4))
+                return std::nullopt;
+        }
         left.stop = at(app, kLoadStopped);
         record += kTextureRecordSize;
         if (left.stop != 0)
@@ -2995,18 +3103,19 @@ std::optional<TexturesLeft> takeQfsTextures(App* app, CPU& cpu, reg32 file, reg3
 /* 0x41db10: takeQfsTextures of the file eax into the records at edx; eax,
  * ebx and ecx as the code leaves them (eax the loading bar's, where the
  * loading stopped). */
-void loadTextures(App* app, CPU& cpu)
+x86::reg32 loadTextures(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu, kSaveEsi | kSaveEdi);
-    const std::optional<TexturesLeft> left = takeQfsTextures(app, cpu, cpu.eax, cpu.edx);
+    const Kept kept(args, kSaveEsi | kSaveEdi);
+    const std::optional<TexturesLeft> left = takeQfsTextures(app, cpu, args.eax, args.edx);
     if (!left)
-        return;
+        return args.eax;
     if (!left->sized)
-        cpu.ebx = 0;
-    cpu.ecx = left->stop;
+        args.ebx = 0;
+    args.ecx = left->stop;
     if (!left->stopped)
-        cpu.eax = left->count;
+        args.eax = left->count;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x41dc60's: the opened textures taken by the driver (takeQfsTextures, into
@@ -3031,17 +3140,20 @@ std::optional<reg32> takeTrackTextures(App* app, CPU& cpu)
             return std::nullopt;
         put(app, kTexturesFile, 0);
     }
-    cpu.eax = at(app, kTrackKinds);
-    return call(app, cpu, kHandOnRecords);
+    const reg32 left = guest::direct<0x478b70, frontend::loada::horizonSetPieces>(app, cpu, at(app, kTrackKinds));
+    if (cpu.terminate)
+        return std::nullopt;
+    return left;
 }
 
 /* 0x41dc60: takeTrackTextures. */
-void takeTextures(App* app, CPU& cpu)
+x86::reg32 takeTextures(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEdx);
+    const Kept kept(args, kSaveEbx | kSaveEcx | kSaveEdx);
     if (!takeTrackTextures(app, cpu))
-        return;
+        return args.eax;
     cpu.esp += 4;
+    return args.eax;
 }
 
 // The .col file closed (collide::closeColl, Watcom's, the file at eax).
@@ -3126,42 +3238,46 @@ std::optional<reg32> loadCollisionFile(App* app, CPU& cpu, reg32 name)
                 return std::nullopt;
         }
     }
-    // The closing by address: what it leaves in eax is what loadCollisions leaves.
-    cpu.eax = *file;
-    return call(app, cpu, kColClose);
+    // The closing's eax is what loadCollisions leaves.
+    return guest::direct<0x4313b0, collide::closeColl>(app, cpu, *file);
 }
 
 /* 0x41dcc0: loadCollisionFile of eax. */
-void loadCollisions(App* app, CPU& cpu)
+x86::reg32 loadCollisions(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEdx | kSaveEsi | kSaveEdi);
-    const std::optional<reg32> left = loadCollisionFile(app, cpu, cpu.eax);
+    const Kept kept(args, kSaveEbx | kSaveEcx | kSaveEdx | kSaveEsi | kSaveEdi);
+    const std::optional<reg32> left = loadCollisionFile(app, cpu, args.eax);
     if (!left)
-        return;
-    cpu.eax = *left;
+        return args.eax;
+    args.eax = *left;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x41de10's: the .col file's memory freed, if there is some, and [0x552e18]
- * 0 (freeAtSlot has done it already).  eax as the free leaves it; false when
- * the game stopped. */
-bool freeCollisionFile(App* app, CPU& cpu)
+ * 0 (freeAtSlot has done it already).  eax as the free leaves it (`eax` as it
+ * was where there is none); nullopt when the game stopped. */
+std::optional<reg32> freeCollisionFile(App* app, CPU& cpu, reg32 eax)
 {
     if (at(app, kColFile) == 0)
-        return true;
-    if (!freeAtSlot(app, cpu, kColFile))
-        return false;
+        return eax;
+    const std::optional<reg32> freed = freeAtSlot(app, cpu, kColFile);
+    if (!freed)
+        return std::nullopt;
     put(app, kColFile, 0);
-    return true;
+    return freed;
 }
 
 /* 0x41de10: freeCollisionFile. */
-void freeCollisions(App* app, CPU& cpu)
+x86::reg32 freeCollisions(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu, kSaveEcx | kSaveEdx);
-    if (!freeCollisionFile(app, cpu))
-        return;
+    const Kept kept(args, kSaveEcx | kSaveEdx);
+    const std::optional<reg32> freed = freeCollisionFile(app, cpu, args.eax);
+    if (!freed)
+        return args.eax;
+    args.eax = *freed;
     cpu.esp += 4;
+    return args.eax;
 }
 
 // The objects' animation states (kObjectStates): 0x200 of 3 bytes, still as 0xff, 0, 0.
@@ -3185,32 +3301,39 @@ bool stillObjects(App* app, CPU& cpu)
 }
 
 /* 0x41de40: stillObjects; eax the last state's offset, as the code leaves it. */
-void clearObjectStates(App* app, CPU& cpu)
+x86::reg32 clearObjectStates(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu, kSaveEbx | kSaveEdx);
+    const Kept kept(args, kSaveEbx | kSaveEdx);
     if (!stillObjects(app, cpu))
-        return;
-    cpu.eax = (kObjectStateCount - 1) * kObjectStateSize;
+        return args.eax;
+    args.eax = (kObjectStateCount - 1) * kObjectStateSize;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x41de80's: the views as a race starts: the objects still, the first view
  * the one drawn and the cameras cleared (eax 0, as chooseView leaves it).
  * False when the game stopped. */
-bool startTrackViews(App* app, CPU& cpu)
+std::optional<reg32> startTrackViews(App* app, CPU& cpu)
 {
     if (!stillObjects(app, cpu))
-        return false;
-    cpu.eax = chooseView(app, 0);
-    return guest::call(app, cpu, kClearCameras);
+        return std::nullopt;
+    chooseView(app, 0);
+    guest::direct<0x40f230, load::clearCameras>(app, cpu);
+    if (cpu.terminate)
+        return std::nullopt;
+    return 255 * 3;  // the last of the cameras' 256 views times 3, as clearTrackCameras leaves it
 }
 
 /* 0x41de80: startTrackViews; eax as the cameras' clearing leaves it. */
-void resetTrackViews(App* app, CPU& cpu)
+x86::reg32 resetTrackViews(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    if (!startTrackViews(app, cpu))
-        return;
+    const std::optional<reg32> left = startTrackViews(app, cpu);
+    if (!left)
+        return args.eax;
+    args.eax = *left;
     cpu.esp += 4;
+    return args.eax;
 }
 
 // The views (kViews): +0 -1 as they start over (kNoBlock); the serial they start at.
@@ -3234,23 +3357,25 @@ bool startViewsOver(App* app, CPU& cpu)
 
 /* 0x41dea0: startViewsOver (0x41deb0's own); eax the last view's offset in
  * dwords, as the code leaves it. */
-void resetViewsOuter(App* app, CPU& cpu)
+x86::reg32 resetViewsOuter(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEdx);
+    const Kept kept(args, kSaveEbx | kSaveEcx | kSaveEdx);
     if (!startViewsOver(app, cpu))
-        return;
-    cpu.eax = (kViewCount - 1) * (kViewSize / 4);
+        return args.eax;
+    args.eax = (kViewCount - 1) * (kViewSize / 4);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x41deb0: startViewsOver; eax as resetViewsOuter leaves it. */
-void resetViews(App* app, CPU& cpu)
+x86::reg32 resetViews(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEdx);
+    const Kept kept(args, kSaveEbx | kSaveEcx | kSaveEdx);
     if (!startViewsOver(app, cpu))
-        return;
-    cpu.eax = (kViewCount - 1) * (kViewSize / 4);
+        return args.eax;
+    args.eax = (kViewCount - 1) * (kViewSize / 4);
     cpu.esp += 4;
+    return args.eax;
 }
 
 
@@ -3261,11 +3386,11 @@ void resetViews(App* app, CPU& cpu)
 std::optional<bool> blockDrawn(App* app, CPU& cpu, reg32 camera, reg32 index)
 {
     const reg32 block = kBlocks + blockOffset(index);
-    const std::optional<reg32> outside =
-        callWith(app, cpu, kBoxOutside, {camera, block + kBlockBox, camera + kCameraMatrix, camera + kCameraBox});
-    if (!outside)
+    const reg32 outside = guest::direct<0x41bf30, vertices::boxOutsideCore>(
+        app, cpu, camera, block + kBlockBox, camera + kCameraMatrix, camera + kCameraBox);
+    if (cpu.terminate)
         return std::nullopt;
-    if (*outside != 0)
+    if (outside != 0)
         return false;
     const reg32 centre = block + kBlockCentre;
     const Float dz = fp::sub(f32(app, camera + kCameraPlace + 8), f32(app, centre + 8));
@@ -3276,14 +3401,15 @@ std::optional<bool> blockDrawn(App* app, CPU& cpu, reg32 camera, reg32 index)
 }
 
 /* 0x41e070: blockDrawn for the camera eax and block edx, 1 where it is. */
-void blockInView(App* app, CPU& cpu)
+x86::reg32 blockInView(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEsi | kSaveEdi);
-    const std::optional<bool> drawn = blockDrawn(app, cpu, cpu.eax, cpu.edx);
+    const Kept kept(args, kSaveEbx | kSaveEcx | kSaveEsi | kSaveEdi);
+    const std::optional<bool> drawn = blockDrawn(app, cpu, args.eax, args.edx);
     if (!drawn)
-        return;
-    cpu.eax = *drawn ? 1 : 0;
+        return args.eax;
+    args.eax = *drawn ? 1 : 0;
     cpu.esp += 4;
+    return args.eax;
 }
 
 }  // namespace track

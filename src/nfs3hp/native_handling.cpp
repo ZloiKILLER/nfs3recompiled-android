@@ -21,9 +21,6 @@
  * drive's state cleared (matchRevsToSpeed, resetDriveState), a car at rest
  * settled (settleAtRest), and an axle's tyres' forces (axleForces and what it
  * calls: tyreGrip, tyreSlide, the setup's and the steering's shares).
- * disassemble_nfs3hp.py binds each address to the function of that name here
- * (HANDLING_NATIVES), and the generated code calls it by name.
- * tools/game_checks holds each against its generated code.
  *
  * The car's record, as these functions use it: +0x15c and +0x10c how fast it goes and how it is on the
  * road, +0x160 the road's state (0 dry; 1 and 2 as the code tells them),
@@ -43,7 +40,7 @@
  * +0x24 its forces across and along, +0x28 the front's, +0x2c its slip.
  *
  * Each is a typed core (no registers, the guest's stack only for what a callee is handed) and an
- * adapter under the game's name, for the dispatch and for callers still on registers.  The floats
+ * thunk under the game's name, for the calls through a pointer and for callers still on registers.  The floats
  * are the game's to the bit: fp:: in the code's order and argument order, a float(...) where the
  * code stores one.  The vectors' functions (native_vertices.h's) are called as C++ (guest::direct)
  * but settleCar's last; every other function of the game's by address -- the rest of the
@@ -75,25 +72,11 @@ constexpr reg32 kDefaultSetup = 0x55d024;
 // atan2 and the square root of a stack float, a 2D turn by an angle; n
 // vectors added (settleCar's last call, see there).  A vector's dot product
 // and n vectors scaled, less others, added are vertices' (guest::direct).
-constexpr reg32 kChop = 0x4dfd56, kExp = 0x4f8116;
-constexpr reg32 kAdd = 0x4dffb0;
+constexpr reg32 kChop = 0x4dfd56;
 
 reg16 half(App* app, reg32 a) { return app->getMemory<reg16>(a); }
 x86::Float f32(App* app, reg32 a) { return x86::Float(app->getMemory<float>(a)); }
 x86::Float f64(App* app, reg32 a) { return x86::Float(app->getMemory<double>(a)); }
-
-void push(App* app, CPU& cpu, reg32 value)
-{
-    cpu.esp -= 4;
-    put(app, cpu.esp, value);
-}
-
-bool byAddress(App* app, CPU& cpu, reg32 target)
-{
-    cpu.esp -= 4;
-    app->dynamic_call(target, cpu);
-    return !cpu.terminate;
-}
 
 auto floatAt(App* app, reg32 a) { return app->getMemory<float>(a); }
 
@@ -118,41 +101,16 @@ bool linkOrSeries(App* app)
     return i32(gameSettings(app).playMode) > 1 || gameSettings(app).raceType == 1 || gameSettings(app).raceType == 2;
 }
 
-/* A call by address with its words on the guest's stack, the first nearest; esp back as it was. */
-bool stackCall(App* app, CPU& cpu, reg32 target, std::initializer_list<reg32> words = {})
-{
-    const reg32 sp = cpu.esp;
-    for (auto word = std::rbegin(words); word != std::rend(words); ++word)
-        push(app, cpu, *word);
-    const bool running = byAddress(app, cpu, target);
-    if (running)
-        cpu.esp = sp;
-    return running;
-}
-
 /* A native_frontend_* file's typed core called as C++ (guest::direct): nothing (false) when the
- * game stopped in it (its calls into the game throw fe::Terminated).  tools/game_checks does not
- * build those files: there it goes by address, through its ByAddress, as the game's code calls it,
- * every register but eax kept.  A reg32 result is the eax the function leaves: eax set to it (in the
- * game too); after any other, eax spoilt there, so that code still reading what the callee left in
- * eax differs there. */
+ * game stopped in it (its calls into the game throw fe::Terminated). */
 template <reg32 Address, auto Core, typename... Args>
 auto feCore(App* app, CPU& cpu, Args... args)
 {
     const auto run = [&] {
-#ifdef NFS_GAME_CHECKS
-        const guest::KeptRegisters kept(cpu);
-        return guest::ByAddress<Core>::template call<Address>(app, cpu, args...);
-#else
         return guest::direct<Address, Core>(app, cpu, args...);
-#endif
     };
     using Result = decltype(run());
-    const auto spoil = [&] {
-#ifdef NFS_GAME_CHECKS
-        cpu.eax = 0x5b0115edu;
-#endif
-    };
+    const auto spoil = [&] {};
     if constexpr (std::is_void_v<Result>)
     {
         try
@@ -172,7 +130,7 @@ auto feCore(App* app, CPU& cpu, Args... args)
         {
             const Result result = run();
             if constexpr (std::is_same_v<Result, x86::reg32>)
-                cpu.eax = result;  // a menu core's result: the eax it leaves, as the call by address does
+                (void)result;  // a menu core's result: the eax it leaves is no longer set (no caller reads it)
             else
                 spoil();
             return cpu.terminate ? std::optional<Result>() : std::optional<Result>(result);
@@ -184,24 +142,16 @@ auto feCore(App* app, CPU& cpu, Args... args)
     }
 }
 
-/* What the callee left on the x87, taken off. */
-x86::Float popResult(CPU& cpu)
-{
-    const x86::Float value = cpu.fpu.st(0);
-    cpu.fpu.pop();
-    return value;
-}
-
 /* Watcom's exp, of a double on the stack, onto the x87. */
 std::optional<x86::Float> watcomExp(App* app, CPU& cpu, x86::Float power)
 {
     const reg32 sp = cpu.esp;
-    cpu.esp -= 8;
-    app->getMemory<double>(cpu.esp) = double(power);
-    if (!byAddress(app, cpu, kExp))
-        return std::nullopt;
+    cpu.esp -= 8;  // (the double the code pushes: the core is handed it)
+    const double result = guest::direct<0x4f8116, watcom::clib::exponent>(app, cpu, double(power));
     cpu.esp = sp;
-    return popResult(cpu);
+    if (cpu.terminate)
+        return std::nullopt;
+    return x86::Float(result);
 }
 
 /* Watcom's chop of the value, then fistp; never nullopt (the optional is the callers' stop
@@ -212,25 +162,12 @@ std::optional<i32> chop(App* app, CPU& cpu, x86::Float value)
     return fp::toInteger<i32>(x86::Float(whole));
 }
 
-/* The registers on entry to an adapter, for those the function keeps. */
+/* The stack pointer on entry to a thunk: what its code leaves of the registers is the Args'. */
 struct Saved
 {
-    reg32 eax, ebx, ecx, edx, esi, edi, ebp, esp;
-    explicit Saved(const CPU& cpu)
-        : eax(cpu.eax), ebx(cpu.ebx), ecx(cpu.ecx), edx(cpu.edx), esi(cpu.esi), edi(cpu.edi), ebp(cpu.ebp), esp(cpu.esp)
-    {
-    }
-    void restore(CPU& cpu) const
-    {
-        cpu.eax = eax;
-        cpu.ebx = ebx;
-        cpu.ecx = ecx;
-        cpu.edx = edx;
-        cpu.esi = esi;
-        cpu.edi = edi;
-        cpu.ebp = ebp;
-        cpu.esp = esp;
-    }
+    reg32 esp;
+    explicit Saved(const CPU& entry) : esp(entry.esp) {}
+    void restore(CPU& back) const { back.esp = esp; }
 };
 
 // The car's record.
@@ -291,18 +228,18 @@ float slipPull(App* app, reg32 car, reg32 scale, reg32 top)
 
 }  // namespace
 
-void logisticCurve(App* app, CPU& cpu);
-void steeringGrip(App* app, CPU& cpu);
-void setupSlipLimit(App* app, CPU& cpu);
-void setupGripLoss(App* app, CPU& cpu);
-void tyreGrip(App* app, CPU& cpu);
-void tyreSlide(App* app, CPU& cpu);
-void axleForces(App* app, CPU& cpu);
-void applyTuning(App* app, CPU& cpu);
-void automaticGear(App* app, CPU& cpu);
-void matchRevsToSpeed(App* app, CPU& cpu);
-void resetDriveState(App* app, CPU& cpu);
-void settleAtRest(App* app, CPU& cpu);
+x86::reg32 logisticCurve(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 steeringGrip(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 setupSlipLimit(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 setupGripLoss(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 tyreGrip(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 tyreSlide(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 axleForces(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 applyTuning(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 automaticGear(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 matchRevsToSpeed(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 resetDriveState(App* app, x86::CPU& cpu, x86::Args& args);
+x86::reg32 settleAtRest(App* app, x86::CPU& cpu, x86::Args& args);
 
 /* 0x4ac994: a logistic curve, 1 - c / (1 + exp((x + a) * b)), with Watcom's exp by address. */
 std::optional<float> logistic(App* app, CPU& cpu, float x)
@@ -313,16 +250,18 @@ std::optional<float> logistic(App* app, CPU& cpu, float x)
     return float(fp::sub(1.0, fp::div(f64(app, kLogisticSize), fp::add(*power, 1.0))));
 }
 
-/* The adapter (stdcall: x, ret 4): onto the x87's stack, every register kept. */
-void logisticCurve(App* app, CPU& cpu)
+/* The thunk (stdcall: x, ret 4): onto the x87's stack, every register kept. */
+x86::reg32 logisticCurve(App* app, x86::CPU& cpu, x86::Args& args)
 {
     const Saved saved(cpu);
     const auto value = logistic(app, cpu, floatAt(app, cpu.esp + 4));
     if (!value)
-        return;
+        return args.eax;
     saved.restore(cpu);
-    cpu.fpu.push(x86::Float(*value));
+    args.floatSet = true;
+    args.floatResult = double(x86::Float(*value));
     cpu.esp += 8;
+    return args.eax;
 }
 
 /* 0x4ac9dd: the steering's share of the front's grip: 1 while the wheel has not been turned,
@@ -339,17 +278,19 @@ std::optional<float> steeringShare(App* app, CPU& cpu, reg32 car)
     return float(fp::mul(*curve, f32(app, kSteeringShareScale)));
 }
 
-/* The adapter: onto the x87's stack, its bits in eax, the other registers kept. */
-void steeringGrip(App* app, CPU& cpu)
+/* The thunk: onto the x87's stack, its bits in eax, the other registers kept. */
+x86::reg32 steeringGrip(App* app, x86::CPU& cpu, x86::Args& args)
 {
     const Saved saved(cpu);
-    const auto share = steeringShare(app, cpu, cpu.eax);
+    const auto share = steeringShare(app, cpu, args.eax);
     if (!share)
-        return;
+        return args.eax;
     saved.restore(cpu);
-    cpu.eax = bitsOf(*share);
-    cpu.fpu.push(x86::Float(*share));
+    args.eax = bitsOf(*share);
+    args.floatSet = true;
+    args.floatResult = double(x86::Float(*share));
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4ac027: how far the slip may go, by the setup's slider: 12 - 4 * it, chopped.  Over a link
@@ -362,16 +303,17 @@ std::optional<i32> slipLimit(App* app, CPU& cpu, reg32 slider)
     return chop(app, cpu, limit);
 }
 
-/* The adapter: slider at eax, the limit to eax. */
-void setupSlipLimit(App* app, CPU& cpu)
+/* The thunk: slider at eax, the limit to eax. */
+x86::reg32 setupSlipLimit(App* app, x86::CPU& cpu, x86::Args& args)
 {
     const Saved saved(cpu);
-    const auto limit = slipLimit(app, cpu, cpu.eax);
+    const auto limit = slipLimit(app, cpu, args.eax);
     if (!limit)
-        return;
+        return args.eax;
     saved.restore(cpu);
-    cpu.eax = reg32(*limit);
+    args.eax = reg32(*limit);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* One of the grip's curves: 1 / max(top - (slider + shift) * scale, floor). The addresses are
@@ -412,13 +354,15 @@ float gripLoss(App* app, reg32 car, reg32 slider)
     return gripCurve(app, slider, { 0x53dda4, 0x53dda8, 0x53ddac, 0x53ddb0, 16.0f });
 }
 
-/* The adapter: car eax, slider edx; onto the x87's stack, its bits in eax. */
-void setupGripLoss(App* app, CPU& cpu)
+/* The thunk: car eax, slider edx; onto the x87's stack, its bits in eax. */
+x86::reg32 setupGripLoss(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    const float loss = gripLoss(app, cpu.eax, cpu.edx);
-    cpu.eax = bitsOf(loss);
-    cpu.fpu.push(x86::Float(loss));
+    const float loss = gripLoss(app, args.eax, args.edx);
+    args.eax = bitsOf(loss);
+    args.floatSet = true;
+    args.floatResult = double(x86::Float(loss));
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* The axle's slip held to slipLimit.  False when the game stopped. */
@@ -486,17 +430,18 @@ bool gripAxle(App* app, CPU& cpu, reg32 car, reg32 axle)
     return true;
 }
 
-/* The adapter: car eax, axle edx; eax and edx as the game's code leaves them. */
-void tyreGrip(App* app, CPU& cpu)
+/* The thunk: car eax, axle edx; eax and edx as the game's code leaves them. */
+x86::reg32 tyreGrip(App* app, x86::CPU& cpu, x86::Args& args)
 {
     const Saved saved(cpu);
-    const reg32 car = cpu.eax;
-    if (!gripAxle(app, cpu, car, cpu.edx))
-        return;
+    const reg32 car = args.eax;
+    if (!gripAxle(app, cpu, car, args.edx))
+        return args.eax;
     saved.restore(cpu);
-    cpu.eax = car;
-    cpu.edx = slipSlider(app, car);
+    args.eax = car;
+    args.edx = slipSlider(app, car);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4ac3af: the axle's tyres past their grip: the forces' larger (with a quarter of the other)
@@ -578,16 +523,17 @@ bool slideAxle(App* app, CPU& cpu, reg32 car, reg32 axle)
     return holdSlip(app, cpu, car, axle);
 }
 
-/* The adapter: car eax, axle edx; the slip's bits left in eax, the axle in edx. */
-void tyreSlide(App* app, CPU& cpu)
+/* The thunk: car eax, axle edx; the slip's bits left in eax, the axle in edx. */
+x86::reg32 tyreSlide(App* app, x86::CPU& cpu, x86::Args& args)
 {
     const Saved saved(cpu);
-    const reg32 axle = cpu.edx;
-    if (!slideAxle(app, cpu, cpu.eax, axle))
-        return;
+    const reg32 axle = args.edx;
+    if (!slideAxle(app, cpu, args.eax, axle))
+        return args.eax;
     saved.restore(cpu);
-    cpu.eax = at(app, axle + kAxleSlip);
+    args.eax = at(app, axle + kAxleSlip);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* The 2D turn of the words at x and y by the axle's wheels' angle (rendc's, 0x496bf0). */
@@ -738,25 +684,25 @@ AxleEnd axleTyres(App* app, CPU& cpu, reg32 car, reg32 axle)
 
     if (!slideAxle(app, cpu, car, axle))
         return AxleEnd::Stopped;
-    cpu.edx = axle;  // the adapter leaves it as the turn does, as the code's frame has it
     if (wheelsTurned && !turnByWheels(app, cpu, axle, axle + kAxleForceAcross, axle + kAxleForceAlong))
         return AxleEnd::Stopped;
     floatAt(app, car + (front ? kCarFrontSlip : kCarBackSlip)) = float(f32(app, axle + kAxleSlip));
     return AxleEnd::Slid;
 }
 
-/* The adapter: car eax, axle edx; eax the car, edx as gripping or sliding leaves it. */
-void axleForces(App* app, CPU& cpu)
+/* The thunk: car eax, axle edx; eax the car, edx as gripping or sliding leaves it. */
+x86::reg32 axleForces(App* app, x86::CPU& cpu, x86::Args& args)
 {
     const Saved saved(cpu);
-    const reg32 car = cpu.eax;
-    const AxleEnd end = axleTyres(app, cpu, car, cpu.edx);
+    const reg32 car = args.eax;
+    const AxleEnd end = axleTyres(app, cpu, car, args.edx);
     if (end == AxleEnd::Stopped)
-        return;
-    const reg32 slidEdx = cpu.edx;
+        return args.eax;
+    const reg32 slidEdx = args.edx;
     saved.restore(cpu);
-    cpu.edx = end == AxleEnd::Gripped ? slipSlider(app, car) : slidEdx;
+    args.edx = end == AxleEnd::Gripped ? slipSlider(app, car) : slidEdx;
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* fcomp's "not equal" on every value: unordered sets the flag too, so a NaN does not differ. */
@@ -940,14 +886,15 @@ bool tuneHandling(App* app, CPU& cpu, reg32 car)
     return true;
 }
 
-/* The adapter: car eax, left in eax; the other registers kept. */
-void applyTuning(App* app, CPU& cpu)
+/* The thunk: car eax, left in eax; the other registers kept. */
+x86::reg32 applyTuning(App* app, x86::CPU& cpu, x86::Args& args)
 {
     const Saved saved(cpu);
-    if (!tuneHandling(app, cpu, cpu.eax))
-        return;
+    if (!tuneHandling(app, cpu, args.eax))
+        return args.eax;
     saved.restore(cpu);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4a8bb9: the automatic gearbox's choice: 0 in reverse or neutral or for no change, 2 for a
@@ -1005,11 +952,12 @@ reg32 gearChoice(App* app, reg32 car)
     return 0;
 }
 
-/* The adapter: car eax, the choice to eax. */
-void automaticGear(App* app, CPU& cpu)
+/* The thunk: car eax, the choice to eax. */
+x86::reg32 automaticGear(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    cpu.eax = gearChoice(app, cpu.eax);
+    args.eax = gearChoice(app, args.eax);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* A dot product (vertices', 0x4e01f0), as the x87 leaves it stored to a float. */
@@ -1041,14 +989,15 @@ bool matchToSpeed(App* app, CPU& cpu, reg32 car)
     return true;
 }
 
-/* The adapter: car eax, left in eax; the other registers kept. */
-void matchRevsToSpeed(App* app, CPU& cpu)
+/* The thunk: car eax, left in eax; the other registers kept. */
+x86::reg32 matchRevsToSpeed(App* app, x86::CPU& cpu, x86::Args& args)
 {
     const Saved saved(cpu);
-    if (!matchToSpeed(app, cpu, cpu.eax))
-        return;
+    if (!matchToSpeed(app, cpu, args.eax))
+        return args.eax;
     saved.restore(cpu);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* 0x4aa79f: the car's drive put back: +0x506 and the gear 2, +0x507 0 (the code has this for a
@@ -1064,11 +1013,12 @@ void resetDrive(App* app, reg32 car)
         put(app, car + cleared, 0);
 }
 
-/* The adapter: car eax, left there. */
-void resetDriveState(App* app, CPU& cpu)
+/* The thunk: car eax, left there. */
+x86::reg32 resetDriveState(App* app, x86::CPU& cpu, x86::Args& args)
 {
-    resetDrive(app, cpu.eax);
+    resetDrive(app, args.eax);
     cpu.esp += 4;
+    return args.eax;
 }
 
 /* One vector scaled (vertices', 0x4e0050) into the result. */
@@ -1092,55 +1042,48 @@ bool vectorWith(App* app, CPU& cpu, reg32 vector, reg32 other)
 /* The other added by address (n in eax, the vector edx, the other ebx, the result ecx): settleCar's
  * last call, whose eax -- the vector past its end -- is what settleCar leaves, which its callers
  * on registers see; vertices' core gives nothing back. */
-bool addByAddress(App* app, CPU& cpu, reg32 vector, reg32 other)
+bool addByAddress(App* app, CPU& cpu, reg32 vector, reg32 other, reg32& eax)
 {
-    cpu.eax = 1;
-    cpu.edx = vector;
-    cpu.ebx = other;
-    cpu.ecx = vector;
-    return stackCall(app, cpu, kAdd);
+    guest::direct<0x4dffb0, vertices::offsetVectorList<true>>(app, cpu, 1, vector, other, vector);
+    if (cpu.terminate)
+        return false;
+    eax = vector + 12;  // the vector past its end, as the thunk leaves it
+    return true;
 }
 
 /* A vector's part along the up axis taken off, scaled by `keep`, and put back: `part` a vector
- * on the guest's stack the callees are handed.  `last`: settleCar's last, its add by address. */
+ * on the guest's stack the callees are handed.  `last`: settleCar's last, its add by address, whose
+ * eax goes to `eax`. */
 bool dampUpPart(App* app, CPU& cpu, reg32 vector, reg32 up, reg32 part, float along, float keep, reg32 scaleFrom, reg32 scaleTo,
-                bool last)
+                bool last, reg32& eax)
 {
     if (!scaleVector(app, cpu, up, along, part) || !vectorWith<false>(app, cpu, vector, part)
         || !scaleVector(app, cpu, scaleFrom, keep, scaleTo))
         return false;
-    return last ? addByAddress(app, cpu, vector, part) : vectorWith<true>(app, cpu, vector, part);
+    return last ? addByAddress(app, cpu, vector, part, eax) : vectorWith<true>(app, cpu, vector, part);
 }
 
 /* 0x4aa8e7: the car settled when it is all but stopped and upright: its speed's and its spin's
  * parts off the up axis damped -- by 0.94 and 0.98 at the race's start, else by 0.98 and 0.998
  * unless it hardly moves (two of the speeds' sizes under the constant).  eax is left as the code
  * leaves it, which callers on registers can see: where it stops early, the status word of its last
- * compare in the low half.  False when the game stopped. */
-bool settleCar(App* app, CPU& cpu, reg32 car)
+ * compare in the low half.  That eax; nullopt when the game stopped. */
+std::optional<reg32> settleCarLeaving(App* app, CPU& cpu, reg32 car)
 {
     const reg32 up = car + kCarUpAxis;
     if (i32(at(app, car + kCarRoadSpeed)) > kBits0_2)
-    {
-        cpu.eax = car;
-        return true;
-    }
+        return car;
     const x86::Float upward = f32(app, up + 4);
     const x86::Float lowest = f64(app, kUprightLowest);
     if (!(upward >= lowest))
-    {
-        cpu.fpu.compare(upward, lowest);
-        cpu.eax = up;
-        cpu.ax = cpu.fpu.status.word;
-        return true;
-    }
+        return (up & 0xffff0000u) | fp::compare(upward, lowest);
     const float rolling = floatAt(app, car + kCarRoadState);
     const auto speedUp = dot(app, cpu, car + 0xc0, up);
     if (!speedUp)
-        return false;
+        return std::nullopt;
     const auto spinUp = dot(app, cpu, car + 0xd8, up);
     if (!spinUp)
-        return false;
+        return std::nullopt;
     const float rollingSize = size(rolling), speedSize = size(*speedUp), spinSize = size(*spinUp);
     float keepSpeed = 0.94f, keepSpin = 0.98f;
     if (half(app, car + kCarRaceStarted) != 0)
@@ -1148,12 +1091,7 @@ bool settleCar(App* app, CPU& cpu, reg32 car)
         const x86::Float still = f32(app, kStillBelow);
         const x86::Float lastSum = fp::add(speedSize, spinSize);
         if (!(fp::add(rollingSize, speedSize) > still) && !(fp::add(rollingSize, spinSize) > still) && !(lastSum > still))
-        {
-            cpu.fpu.compare(lastSum, still);
-            cpu.eax = car;
-            cpu.ax = cpu.fpu.status.word;
-            return true;
-        }
+            return (car & 0xffff0000u) | fp::compare(lastSum, still);
         keepSpeed = 0.98f;
         keepSpin = 0.998f;
     }
@@ -1163,25 +1101,35 @@ bool settleCar(App* app, CPU& cpu, reg32 car)
     const reg32 speed = car + kCarSpeed, spin = car + kCarSpin;
     const auto alongSpeed = dot(app, cpu, up, speed);
     if (!alongSpeed)
-        return false;
-    if (!dampUpPart(app, cpu, speed, up, part, *alongSpeed, keepSpeed, speed, speed, false))
-        return false;
+        return std::nullopt;
+    reg32 eax = 0;
+    if (!dampUpPart(app, cpu, speed, up, part, *alongSpeed, keepSpeed, speed, speed, false, eax))
+        return std::nullopt;
     const auto alongSpin = dot(app, cpu, up, spin);
     if (!alongSpin)
-        return false;
-    return dampUpPart(app, cpu, spin, up, part, *alongSpin, keepSpin, part, part, true);
+        return std::nullopt;
+    if (!dampUpPart(app, cpu, spin, up, part, *alongSpin, keepSpin, part, part, true, eax))
+        return std::nullopt;
+    return eax;
 }
 
-/* The adapter: car eax; eax as settleCar leaves it, the other registers kept. */
-void settleAtRest(App* app, CPU& cpu)
+/* settleCarLeaving: the eax it leaves; nullopt when the game stopped. */
+std::optional<reg32> settleCar(App* app, CPU& cpu, reg32 car)
+{
+    return settleCarLeaving(app, cpu, car);
+}
+
+/* The thunk: car eax; eax as settleCar leaves it, the other registers kept. */
+x86::reg32 settleAtRest(App* app, x86::CPU& cpu, x86::Args& args)
 {
     const Saved saved(cpu);
-    if (!settleCar(app, cpu, cpu.eax))
-        return;
-    const reg32 left = cpu.eax;
+    const std::optional<reg32> left = settleCarLeaving(app, cpu, args.eax);
+    if (!left)
+        return args.eax;
     saved.restore(cpu);
-    cpu.eax = left;
+    args.eax = *left;
     cpu.esp += 4;
+    return args.eax;
 }
 
 }  // namespace handling
