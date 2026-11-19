@@ -32,28 +32,28 @@ struct Bus
 static_assert(sizeof(Bus) == 0x10, "SND's effect bus");
 
 constexpr Records<Bus> kBuses{0xa0a25c};
-constexpr Var<reg32> kSetFx{0x9ef654};                // what eacsnd's start calls for the bus
-constexpr Table<reg32> kFxFunctions{0x9f6a60};        // the mixer's reverb, its send, its end
-constexpr Var<reg32> kMmx{0x5643b4};                  // whether the CPU has MMX
+constexpr Var<u32> kSetFx{0x9ef654};                // what eacsnd's start calls for the bus
+constexpr Table<u32> kFxFunctions{0x9f6a60};        // the mixer's reverb, its send, its end
+constexpr Var<u32> kMmx{0x5643b4};                  // whether the CPU has MMX
 constexpr Var<uint8_t> kIntegerSend{0x9f6a5b};        // the send in 16 bits: the MMX set's
 constexpr Var<uint8_t> kPlainSet{0x9f6a5a};
-constexpr Var<reg32> kOutputFunction{0x9f6b20};
+constexpr Var<u32> kOutputFunction{0x9f6b20};
 constexpr Var<uint16_t> kBlockBytes{0x9f6a58};        // a 256-frame block's output, in bytes
-constexpr Var<reg32> kClearFunction{0x9f6a5c};        // cdecl (accumulator, dwords)
-constexpr Var<reg32> kAccumulator{0x9fbca8}, kDecoded{0x9fbcac}, kResampled{0x9fbcb0};
+constexpr Var<u32> kClearFunction{0x9f6a5c};        // cdecl (accumulator, dwords)
+constexpr Var<u32> kAccumulator{0x9fbca8}, kDecoded{0x9fbcac}, kResampled{0x9fbcb0};
 constexpr int32_t kChannelCount = 16;
 
 // Where the reverb starts, and what runs it.
-constexpr reg32 kReverbStart = 0x5230b8, kReverbSend = 0x5230dc, kReverbEnd = 0x523118;
+constexpr u32 kReverbStart = 0x5230b8, kReverbSend = 0x5230dc, kReverbEnd = 0x523118;
 
 // The reverb's delay lines and what is kept for them: a line's four words
 // each lie at 4 bytes a line from the base.
-constexpr Table<reg32> kLineStarts{0xa181d0};         // the line's first word
-constexpr Table<reg32> kReadAt{0xa181b0}, kStartAt{0xa181c0}, kStateAt{0xa181e0}, kEndAt{0xa181f0};
-constexpr Table<reg32> kWriteAt{0xa0d2a0};
+constexpr Table<u32> kLineStarts{0xa181d0};         // the line's first word
+constexpr Table<u32> kReadAt{0xa181b0}, kStartAt{0xa181c0}, kStateAt{0xa181e0}, kEndAt{0xa181f0};
+constexpr Table<u32> kWriteAt{0xa0d2a0};
 constexpr Table<float> kGaps{0x56ae2c}, kGains{0x56ae3c};
 constexpr Var<double> kLineGrowth{0x551b00};
-constexpr reg32 kFirstLine = 0xa0d2b4, kLinesBytes = 0xaf00;
+constexpr u32 kFirstLine = 0xa0d2b4, kLinesBytes = 0xaf00;
 
 constexpr Where kSetFxError{0x54eb00, 0x54eb10}, kFxLevelError{0x54eb4c, 0x54eb5c};
 constexpr Where kInitBusError{0x54b41c, 0x54b42c}, kMasterError{0x54b41c, 0x54b540}, kReinitError{0x54e184, 0x54e194};
@@ -90,22 +90,22 @@ int32_t primeFrom(int32_t n)
  * timbre's) and +0x39 (the level it sends at) for bus `bus`. */
 int8_t& timbreSend(App* app, int32_t index, int32_t bus)
 {
-    return record<int8_t>(app, kVoices.address(index) + offsetof(Voice, timbreSend) + reg32(bus));
+    return record<int8_t>(app, kVoices.address(index) + offsetof(Voice, timbreSend) + u32(bus));
 }
 
 int8_t& sendOf(App* app, int32_t index, int32_t bus)
 {
-    return record<int8_t>(app, kVoices.address(index) + offsetof(Voice, send) + reg32(bus));
+    return record<int8_t>(app, kVoices.address(index) + offsetof(Voice, send) + u32(bus));
 }
 
 /* Voice `index`'s send to bus `bus` at `level` (0..127): the voice's timbre's
  * send times it times the bus's level, over 0x3f01, to the mixer.  The
  * mixer's answer. */
-Result sendVoice(App* app, CPU& cpu, reg32 esp, int32_t index, int32_t bus, int32_t level, int32_t& scaled)
+Result sendVoice(App* app, ThreadState& ts, u32 esp, int32_t index, int32_t bus, int32_t level, int32_t& scaled)
 {
     sendOf(app, index, bus) = int8_t(level);
     scaled = idiv(imul(imul(timbreSend(app, index, bus), level), kBuses(app, bus).level), 0x3f01);
-    return voiceSendLevel(app, cpu, esp, index, scaled);
+    return voiceSendLevel(app, ts, esp, index, scaled);
 }
 
 }  // namespace
@@ -123,16 +123,16 @@ int32_t reverbLineLength(int32_t rate, float seconds)
 void startReverb(App* app, int32_t rate)
 {
     std::memset(&app->getMemory<uint8_t>(kFirstLine), 0, kLinesBytes);
-    reg32 line = kFirstLine;
+    u32 line = kFirstLine;
     float seconds = 0.1f;
     for (int32_t i = 1; i <= 4; ++i)
     {
         kLineStarts.set(app, i, line);
         const int32_t length = reverbLineLength(rate, seconds);
         kGains.set(app, i, float(1.0 - double(kGaps(app, i))));
-        const reg32 start = kLineStarts(app, i);
-        line += reg32(length) * 4;
-        const reg32 last = reg32(length) * 4 - 4 + start;
+        const u32 start = kLineStarts(app, i);
+        line += u32(length) * 4;
+        const u32 last = u32(length) * 4 - 4 + start;
         kReadAt.set(app, i, start);
         kStartAt.set(app, i, start);
         kEndAt.set(app, i, last);
@@ -145,15 +145,15 @@ void startReverb(App* app, int32_t rate)
 /* 0x502ff0's (iSNDwinsetfx): the bus's effect type `type` made the mixer's:
  * none (0), or one of the reverbs (5..120) -- the reverb started at the mixer's
  * rate, its functions the mixer's.  0; an error for another type. */
-Result applyBusEffect(App* app, CPU& cpu, reg32 esp, reg32 type)
+Result applyBusEffect(App* app, ThreadState& ts, u32 esp, u32 type)
 {
     if (type == 0)
         return 0;
     bool known = false;
-    for (const reg32 t : {5u, 10u, 20u, 30u, 40u, 50u, 100u, 110u, 120u})
+    for (const u32 t : {5u, 10u, 20u, 30u, 40u, 50u, 100u, 110u, 120u})
         known = known || type == t;
     if (!known)
-        return fail(app, cpu, esp - 3 * 4, kSetFxError, 0x24, {0x54eb20, type}, type);
+        return fail(app, ts, esp - 3 * 4, kSetFxError, 0x24, {0x54eb20, type}, type);
     startReverb(app, int32_t(kMixRate(app)));
     kFxFunctions.set(app, 0, kReverbStart);
     kFxFunctions.set(app, 1, kReverbSend);
@@ -163,10 +163,10 @@ Result applyBusEffect(App* app, CPU& cpu, reg32 esp, reg32 type)
 
 /* 0x5030ac's: bus effect type `type` set where eacsnd's start finds it, and
  * now when the library runs.  0. */
-Result setBusType(App* app, CPU& cpu, reg32 esp, reg32 type)
+Result setBusType(App* app, ThreadState& ts, u32 esp, u32 type)
 {
     kSetFx.set(app, 0x502ff0);
-    if (kInited(app) != 0 && !applyBusEffect(app, cpu, esp - 4, type))
+    if (kInited(app) != 0 && !applyBusEffect(app, ts, esp - 4, type))
         return {};
     return 0;
 }
@@ -177,35 +177,35 @@ Result setBusType(App* app, CPU& cpu, reg32 esp, reg32 type)
  * with none); -10 before SNDinit, -8 for no sound.  A level an error let by is
  * the next group voice's too: the code keeps what it computed in the register
  * that held the level. */
-Result setBusSend(App* app, CPU& cpu, reg32 esp, reg32 handle, int32_t bus, int32_t level)
+Result setBusSend(App* app, ThreadState& ts, u32 esp, u32 handle, int32_t bus, int32_t level)
 {
     if (kInited(app) == 0)
         return kNotStarted;
-    const reg32 frame = esp - 4 * 4 - 8;
+    const u32 frame = esp - 4 * 4 - 8;
     if (bus >= 1 || bus < 0)
-        if (!fail(app, cpu, frame, kFxLevelError, 0x3a, {0x54eb68, reg32(bus)}, 0x3a))
+        if (!fail(app, ts, frame, kFxLevelError, 0x3a, {0x54eb68, u32(bus)}, 0x3a))
             return {};
     if (level > 0x7f || level < 0)
-        if (!fail(app, cpu, frame, kFxLevelError, 0x3d, {0x54eb90, reg32(level)}, 0x3d))
+        if (!fail(app, ts, frame, kFxLevelError, 0x3d, {0x54eb90, u32(level)}, 0x3d))
             return {};
-    if (!enterAudio(app, cpu, frame - 4))
+    if (!enterAudio(app, ts, frame - 4))
         return {};
     const int32_t index = voiceOfHandle(app, handle);
     if (index < 0)
     {
-        if (!leaveAudio(app, cpu, frame - 4, reg32(index)))
+        if (!leaveAudio(app, ts, frame - 4, u32(index)))
             return {};
         return kNoSound;
     }
     const uint8_t group = kVoices(app, index).group;
     int32_t scaled;
     Result sent = 0;
-    reg32 eax = reg32(index);
+    u32 eax = u32(index);
     if (group == 0)
     {
-        if (!(sent = sendVoice(app, cpu, frame - 4, index, bus, level, scaled)))
+        if (!(sent = sendVoice(app, ts, frame - 4, index, bus, level, scaled)))
             return {};
-        eax = reg32(*sent);
+        eax = u32(*sent);
     }
     else
         for (int32_t i = 0; i < kVoiceCount; ++i)
@@ -213,31 +213,31 @@ Result setBusSend(App* app, CPU& cpu, reg32 esp, reg32 handle, int32_t bus, int3
             const Voice& w = kVoices(app, i);
             if (w.group != group || w.state != 1 || w.handle < 0)
                 continue;
-            if (!(sent = sendVoice(app, cpu, frame - 4, i, bus, level, scaled)))
+            if (!(sent = sendVoice(app, ts, frame - 4, i, bus, level, scaled)))
                 return {};
             level = scaled;
-            eax = reg32(*sent);
+            eax = u32(*sent);
         }
-    if (!leaveAudio(app, cpu, frame - 4, eax))
+    if (!leaveAudio(app, ts, frame - 4, eax))
         return {};
     return sent;
 }
 
 /* 0x4e9dfc's (SNDfxmasterlevel): bus `bus`'s master level set to `level`
  * (0..127), each voice's send set again with it.  0. */
-Result setBusMaster(App* app, CPU& cpu, reg32 esp, int32_t bus, int32_t level)
+Result setBusMaster(App* app, ThreadState& ts, u32 esp, int32_t bus, int32_t level)
 {
-    const reg32 frame = esp - 5 * 4;
+    const u32 frame = esp - 5 * 4;
     if (bus < 0 || bus >= 1)
-        if (!fail(app, cpu, frame, kMasterError, 0xc2, {0x54b554, reg32(bus)}, reg32(bus)))
+        if (!fail(app, ts, frame, kMasterError, 0xc2, {0x54b554, u32(bus)}, u32(bus)))
             return {};
     if (level < 0 || level > 0x7f)
-        if (!fail(app, cpu, frame, kMasterError, 0xc8, {0x54b57c, reg32(level)}, 0x54b540))
+        if (!fail(app, ts, frame, kMasterError, 0xc8, {0x54b57c, u32(level)}, 0x54b540))
             return {};
     kBuses(app, bus).level = level;
     // 0x5030c4's: nothing to do for the bus's level (it gives 0).
     for (int32_t i = 0; i < kVoiceCount; ++i)
-        if (!setBusSend(app, cpu, frame - 4, reg32(kVoices(app, i).handle), bus, sendOf(app, i, bus)))
+        if (!setBusSend(app, ts, frame - 4, u32(kVoices(app, i).handle), bus, sendOf(app, i, bus)))
             return {};
     return 0;
 }
@@ -245,48 +245,48 @@ Result setBusMaster(App* app, CPU& cpu, reg32 esp, int32_t bus, int32_t level)
 /* 0x4e9c70's (SNDfxinitbus): bus `bus` (0 only) set to effect type `type` with
  * parameters `first` and `second` (-1 for 127), its master level `level` (0
  * for no effect).  What setBusMaster gave. */
-Result initEffectBus(App* app, CPU& cpu, reg32 esp, int32_t bus, reg32 type, int32_t first, int32_t second, int32_t level)
+Result initEffectBus(App* app, ThreadState& ts, u32 esp, int32_t bus, u32 type, int32_t first, int32_t second, int32_t level)
 {
-    const reg32 frame = esp - 3 * 4;
+    const u32 frame = esp - 3 * 4;
     if (bus < 0 || bus >= 1)
-        if (!fail(app, cpu, frame, kInitBusError, 0x52, {0x54b43c, reg32(bus)}, 0x54b42c))
+        if (!fail(app, ts, frame, kInitBusError, 0x52, {0x54b43c, u32(bus)}, 0x54b42c))
             return {};
     if (first == -1)
         first = 0x7f;
     else if (first < 0 || first > 0x7f)
-        if (!fail(app, cpu, frame, kInitBusError, 0x5a, {0x54b468, reg32(first)}, 0x5a))
+        if (!fail(app, ts, frame, kInitBusError, 0x5a, {0x54b468, u32(first)}, 0x5a))
             return {};
     if (second == -1)
         second = 0x7f;
     else if (second < 0 || second > 0x7f)
-        if (!fail(app, cpu, frame, kInitBusError, 0x62, {0x54b48c, reg32(second)}, 0x54b42c))
+        if (!fail(app, ts, frame, kInitBusError, 0x62, {0x54b48c, u32(second)}, 0x54b42c))
             return {};
     Bus& b = kBuses(app, bus);
     b.type = int32_t(type);
     b.first = first;
     b.second = second;
-    const Result set = setBusType(app, cpu, frame - 4, type);
+    const Result set = setBusType(app, ts, frame - 4, type);
     if (!set)
         return {};
     if (kInited(app) == 0)
     {
-        if (*set < 0 && !fail(app, cpu, frame, kInitBusError, 0x7b, {0x54b4f8}, 0x7b))
+        if (*set < 0 && !fail(app, ts, frame, kInitBusError, 0x7b, {0x54b4f8}, 0x7b))
             return {};
     }
-    else if (*set < 0 && !fail(app, cpu, frame, kInitBusError, 0x74, {0x54b4b0}, reg32(*set)))
+    else if (*set < 0 && !fail(app, ts, frame, kInitBusError, 0x74, {0x54b4b0}, u32(*set)))
         return {};
-    return setBusMaster(app, cpu, frame - 4, bus, type == 0 ? 0 : level);
+    return setBusMaster(app, ts, frame - 4, bus, type == 0 ? 0 : level);
 }
 
 /* 0x500008's (iSNDmixreinit): the mixer's output function and its block's
  * bytes for the card's format (the low byte of `eax`: 8, 2, 4, 1 in that order
  * of preference).  0; an error for another. */
-Result setMixerOutput(App* app, CPU& cpu, reg32 esp, reg32 eax)
+Result setMixerOutput(App* app, ThreadState& ts, u32 esp, u32 eax)
 {
-    const reg32 format = eax & 0xff;
+    const u32 format = eax & 0xff;
     struct Output
     {
-        reg32 function;
+        u32 function;
         uint16_t bytes;
     };
     Output output;
@@ -300,11 +300,11 @@ Result setMixerOutput(App* app, CPU& cpu, reg32 esp, reg32 eax)
         output = {0x9f6b0c, 0x100};
     else
     {
-        if (!fail(app, cpu, esp - 3 * 4, kReinitError, 0xbc, {0x54e1a4}, eax))
+        if (!fail(app, ts, esp - 3 * 4, kReinitError, 0xbc, {0x54e1a4}, eax))
             return {};
         return 0;
     }
-    kOutputFunction.set(app, app->getMemory<reg32>(output.function));
+    kOutputFunction.set(app, app->getMemory<u32>(output.function));
     kBlockBytes.set(app, output.bytes);
     return 0;
 }
@@ -312,13 +312,13 @@ Result setMixerOutput(App* app, CPU& cpu, reg32 esp, reg32 eax)
 /* 0x4ffd84's: the mixer's functions, by whether the CPU has MMX: its volume
  * functions, resamplers, outputs, clear and emms.  The code's eax: the
  * output function. */
-reg32 pickMixerFunctions(App* app)
+u32 pickMixerFunctions(App* app)
 {
     struct Set
     {
-        reg32 at, value;
+        u32 at, value;
     };
-    const reg32 mmx = kMmx(app);
+    const u32 mmx = kMmx(app);
     kIntegerSend.set(app, uint8_t(mmx));
     if (mmx != 0)
     {
@@ -349,10 +349,10 @@ reg32 pickMixerFunctions(App* app)
  * `ended` what it tells of a channel that ended: its tables, its 3 buffers
  * 8-aligned, its functions, its output; its channels free, its accumulator
  * cleared, the effect's start.  0. */
-Result startMixer(App* app, CPU& cpu, reg32 esp, reg32 format, reg32 ended)
+Result startMixer(App* app, ThreadState& ts, u32 esp, u32 format, u32 ended)
 {
-    const reg32 frame = esp - 4 * 4;
-    if (!pickPcmFirstSetups(app, cpu, frame - 4))
+    const u32 frame = esp - 4 * 4;
+    if (!pickPcmFirstSetups(app, ts, frame - 4))
         return {};
     pickPcmSecondSetups(app);
     pickXaSetups(app);
@@ -360,24 +360,24 @@ Result startMixer(App* app, CPU& cpu, reg32 esp, reg32 format, reg32 ended)
     kAccumulator.set(app, 0x9f6b28);
     kDecoded.set(app, 0x9f7330);
     kResampled.set(app, 0x9fb498);
-    for (const Var<reg32>& buffer : {kAccumulator, kDecoded, kResampled})
+    for (const Var<u32>& buffer : {kAccumulator, kDecoded, kResampled})
         buffer.set(app, (buffer(app) + 7) & ~7u);
     pickMixerFunctions(app);
     kChannelEnded.set(app, ended);
-    if (!setMixerOutput(app, cpu, frame - 4, format))
+    if (!setMixerOutput(app, ts, frame - 4, format))
         return {};
     for (int32_t i = 0; i < kChannelCount; ++i)
         kChannels(app, i).playing = 0;
-    const reg32 accumulator = kAccumulator(app);
-    if (!pointerGame(app, cpu, esp - 2 * 4, kClearFunction(app), {reg32(kChannelCount) * kChannels.stride, 0, 0, accumulator},
+    const u32 accumulator = kAccumulator(app);
+    if (!pointerGame(app, ts, esp - 2 * 4, kClearFunction(app), {u32(kChannelCount) * kChannels.stride, 0, 0, accumulator},
                   {accumulator, 0x200}))
         return {};
     // The effect's start takes no argument; eax and edx are what the clearing left in them: the registers
     // as they are.
-    if (const reg32 start = kFxFunctions(app, 0); start != 0)
+    if (const u32 start = kFxFunctions(app, 0); start != 0)
     {
-        cpu.esp = esp - 2 * 4;
-        if (!guest::pointerCall(app, cpu, start, {}).has_value())
+        ts.sp = esp - 2 * 4;
+        if (!guest::pointerCall(app, ts, start, {}).has_value())
             return {};
     }
     return 0;
@@ -386,74 +386,74 @@ Result startMixer(App* app, CPU& cpu, reg32 esp, reg32 format, reg32 ended)
 /* The game's entries: each its thunk -- the game's registers and stack in,
  * the result in eax out -- around what it does. */
 
-x86::reg32 reverbLength(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 reverbLength(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.back(cpu, args, reg32(reverbLineLength(int32_t(e.eax), app->getMemory<float>(e.esp + 4))), 4);
+    const Entry e(ts, args);
+    return e.back(ts, args, u32(reverbLineLength(int32_t(e.eax), app->getMemory<float>(e.esp + 4))), 4);
 }
 
-x86::reg32 reverbInit(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 reverbInit(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
+    const Entry e(ts, args);
     startReverb(app, int32_t(e.eax));
-    return e.back(cpu, args, 0);
+    return e.back(ts, args, 0);
 }
 
-x86::reg32 iSNDwinsetfx(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 iSNDwinsetfx(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, applyBusEffect(app, cpu, e.esp, e.eax));
+    const Entry e(ts, args);
+    return e.finish(ts, args, applyBusEffect(app, ts, e.esp, e.eax));
 }
 
-x86::reg32 setBusFx(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 setBusFx(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, setBusType(app, cpu, e.esp, e.edx));
+    const Entry e(ts, args);
+    return e.finish(ts, args, setBusType(app, ts, e.esp, e.edx));
 }
 
-x86::reg32 busLevelSet(App*, CPU& cpu, x86::Args& args)
+nfs::u32 busLevelSet(App*, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.back(cpu, args, 0);
+    const Entry e(ts, args);
+    return e.back(ts, args, 0);
 }
 
-x86::reg32 SNDfxlevel(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 SNDfxlevel(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, setBusSend(app, cpu, e.esp, e.eax, int32_t(e.edx), int32_t(e.ebx)));
+    const Entry e(ts, args);
+    return e.finish(ts, args, setBusSend(app, ts, e.esp, e.eax, int32_t(e.edx), int32_t(e.ebx)));
 }
 
-x86::reg32 SNDfxinitbus(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 SNDfxinitbus(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args,
-             initEffectBus(app, cpu, e.esp, int32_t(e.eax), e.ebx, int32_t(e.ecx), int32_t(e.arg(app, 0)), int32_t(e.edx)),
+    const Entry e(ts, args);
+    return e.finish(ts, args,
+             initEffectBus(app, ts, e.esp, int32_t(e.eax), e.ebx, int32_t(e.ecx), int32_t(e.arg(app, 0)), int32_t(e.edx)),
              4);
     return args.eax;
 }
 
-x86::reg32 SNDfxmasterlevel(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 SNDfxmasterlevel(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, setBusMaster(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx)));
+    const Entry e(ts, args);
+    return e.finish(ts, args, setBusMaster(app, ts, e.esp, int32_t(e.eax), int32_t(e.edx)));
 }
 
-x86::reg32 iSNDmixreinit(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 iSNDmixreinit(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, setMixerOutput(app, cpu, e.esp, e.eax));
+    const Entry e(ts, args);
+    return e.finish(ts, args, setMixerOutput(app, ts, e.esp, e.eax));
 }
 
-x86::reg32 mixFunctions(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 mixFunctions(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.back(cpu, args, pickMixerFunctions(app));
+    const Entry e(ts, args);
+    return e.back(ts, args, pickMixerFunctions(app));
 }
 
-x86::reg32 iSNDmixinit(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 iSNDmixinit(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, startMixer(app, cpu, e.esp, e.eax, e.edx));
+    const Entry e(ts, args);
+    return e.finish(ts, args, startMixer(app, ts, e.esp, e.eax, e.edx));
 }
 
 }  // namespace port

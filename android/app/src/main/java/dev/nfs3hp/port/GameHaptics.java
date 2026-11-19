@@ -23,7 +23,7 @@ import java.util.Objects;
  *  cornering. */
 final class GameHaptics {
     private static final String TAG = "GameHaptics";
-    /** Matches win32::Gamepad::kSlotCount on the native side. */
+    /** Matches nfs::Gamepad::kSlotCount on the native side. */
     static final int SLOTS = 2;
 
     /* How long one effect is asked to run.  A new amplitude replaces it, and the
@@ -153,7 +153,7 @@ final class GameHaptics {
 
     /** Called by the native Force Feedback mixer, which names the slot: the
      *  mixed level, and the jolts, road and engine it is made of
-     *  (win32::Gamepad::RumbleDetail). */
+     *  (nfs::Gamepad::RumbleDetail). */
     void setEffects(int slot,float level,float impact,float road,float roadHz,float engine,float engineHz) {
         if(!enabled||slot<0||slot>=SLOTS)return;
         final long now=SystemClock.uptimeMillis();

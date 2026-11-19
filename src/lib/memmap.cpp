@@ -12,44 +12,44 @@
 #include <new>
 #include <algorithm>
 
-namespace win32
+namespace nfs
 {
 
-static const x86::reg32 s_simulatedMemory = 128*1024*1024;
+static const nfs::u32 s_simulatedMemory = 128*1024*1024;
 
-x86::reg8* MemMap::s_memory = nullptr;
-x86::reg8* MemMap::s_blocks = nullptr;
-x86::reg32 MemMap::s_blockCount = 0;
-x86::reg32 MemMap::s_blockSize = 0;
-x86::reg32 MemMap::s_sectionSize = 0;
-x86::reg32 MemMap::s_addressOffset = 0;
+nfs::u8* MemMap::s_memory = nullptr;
+nfs::u8* MemMap::s_blocks = nullptr;
+nfs::u32 MemMap::s_blockCount = 0;
+nfs::u32 MemMap::s_blockSize = 0;
+nfs::u32 MemMap::s_sectionSize = 0;
+nfs::u32 MemMap::s_addressOffset = 0;
 Mutex*     MemMap::s_lock = nullptr;
 std::vector<MemMap*> MemMap::s_memMaps;
-std::vector<std::pair<x86::reg32, x86::reg32>> MemMap::s_sections;
+std::vector<std::pair<nfs::u32, nfs::u32>> MemMap::s_sections;
 
-x86::reg32 MemMap::pageSize()
+nfs::u32 MemMap::pageSize()
 {
-    static const x86::reg32 s_pageSize = []() -> x86::reg32 {
+    static const nfs::u32 s_pageSize = []() -> nfs::u32 {
 #ifdef _WIN32
         SYSTEM_INFO si;
         GetSystemInfo(&si);
-        return x86::reg32(si.dwPageSize);
+        return nfs::u32(si.dwPageSize);
 #else
         long v = sysconf(_SC_PAGESIZE);
-        return v > 0 ? x86::reg32(v) : 4096u;
+        return v > 0 ? nfs::u32(v) : 4096u;
 #endif
     }();
     return s_pageSize;
 }
 
-x86::reg32 MemMap::granularity()
+nfs::u32 MemMap::granularity()
 {
-    const x86::reg32 p = pageSize();
+    const nfs::u32 p = pageSize();
     return p > 4096u ? p : 4096u;
 }
 
 
-static void* alloc(x86::reg32 size)
+static void* alloc(nfs::u32 size)
 {
 #ifdef _WIN32
     void* p = VirtualAlloc(0, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
@@ -62,7 +62,7 @@ static void* alloc(x86::reg32 size)
 #endif
 }
 
-static void dealloc(void* mem, x86::reg32 size)
+static void dealloc(void* mem, nfs::u32 size)
 {
 #ifdef _WIN32
     NFS2_USE(size);
@@ -72,7 +72,7 @@ static void dealloc(void* mem, x86::reg32 size)
 #endif
 }
 
-static bool protect(void* mem, x86::reg32 size, bool read, bool write)
+static bool protect(void* mem, nfs::u32 size, bool read, bool write)
 {
 #ifdef _WIN32
     NFS2_USE(mem);
@@ -89,29 +89,29 @@ static bool protect(void* mem, x86::reg32 size, bool read, bool write)
     uintptr_t addr = reinterpret_cast<uintptr_t>(mem);
     const uintptr_t pageMask = uintptr_t(MemMap::pageSize()) - 1;
     uintptr_t alignedAddr = addr & ~pageMask;
-    x86::reg32 alignedSize = x86::reg32(((addr - alignedAddr) + size + pageMask) & ~pageMask);
+    nfs::u32 alignedSize = nfs::u32(((addr - alignedAddr) + size + pageMask) & ~pageMask);
     int ret = mprotect(reinterpret_cast<void*>(alignedAddr), alignedSize, protection);
     return ret == 0;
 #endif
 }
 
-MemMap::MemMap(x86::reg32 size)
-    :   m_block(x86::reg32(-1))
+MemMap::MemMap(nfs::u32 size)
+    :   m_block(nfs::u32(-1))
     ,   m_blockCount(0)
 {
-    const x86::reg32 g = granularity();
+    const nfs::u32 g = granularity();
     // Validate before rounding or subtracting unsigned sizes.
     if (!size || size > s_simulatedMemory) throw std::bad_alloc();
     m_blockCount = (size - 1) / g + 1;
     s_lock->lock();
-    for (x86::reg32 b = 0; b <= s_blockCount - m_blockCount;)
+    for (nfs::u32 b = 0; b <= s_blockCount - m_blockCount;)
     {
-        x86::reg32 end = b;
+        nfs::u32 end = b;
         while (end < b + m_blockCount && !s_blocks[end]) ++end;
         if (end == b + m_blockCount) { m_block = b; break; }
         b = end + 1;
     }
-    if (m_block == x86::reg32(-1))
+    if (m_block == nfs::u32(-1))
     {
         s_lock->unlock();
         throw std::bad_alloc();
@@ -144,14 +144,14 @@ MemMap::~MemMap()
             break;
         }
     }
-    for (x86::reg32 s = m_block; s < m_block + m_blockCount; ++s)
+    for (nfs::u32 s = m_block; s < m_block + m_blockCount; ++s)
     {
         s_blocks[s] = 0;
     }
     s_lock->unlock();
 }
 
-MemMap* MemMap::findBlock(x86::reg32 memIndex)
+MemMap* MemMap::findBlock(nfs::u32 memIndex)
 {
     NFS2_ASSERT(memIndex >= s_addressOffset);
     NFS2_ASSERT(memIndex < s_addressOffset + s_simulatedMemory);
@@ -170,19 +170,19 @@ MemMap* MemMap::findBlock(x86::reg32 memIndex)
     return result;
 }
 
-void MemMap::usedRanges(std::vector<std::pair<x86::reg32, x86::reg32>>& ranges)
+void MemMap::usedRanges(std::vector<std::pair<nfs::u32, nfs::u32>>& ranges)
 {
     ranges = s_sections;
-    const x86::reg32 g = granularity();
+    const nfs::u32 g = granularity();
     s_lock->lock();
-    for (x86::reg32 b = 0; b < s_blockCount;)
+    for (nfs::u32 b = 0; b < s_blockCount;)
     {
         if (!s_blocks[b])
         {
             ++b;
             continue;
         }
-        x86::reg32 end = b;
+        nfs::u32 end = b;
         while (end < s_blockCount && s_blocks[end])
             ++end;
         ranges.emplace_back(s_addressOffset + b * g, (end - b) * g);
@@ -191,9 +191,9 @@ void MemMap::usedRanges(std::vector<std::pair<x86::reg32, x86::reg32>>& ranges)
     s_lock->unlock();
 }
 
-std::pair<x86::reg32, x86::reg32> MemMap::blockOf(x86::reg32 address)
+std::pair<nfs::u32, nfs::u32> MemMap::blockOf(nfs::u32 address)
 {
-    std::pair<x86::reg32, x86::reg32> result(0, 0);
+    std::pair<nfs::u32, nfs::u32> result(0, 0);
     s_lock->lock();
     for (const MemMap* map : s_memMaps)
     {
@@ -207,23 +207,23 @@ std::pair<x86::reg32, x86::reg32> MemMap::blockOf(x86::reg32 address)
     return result;
 }
 
-x86::reg8* MemMap::init(x86::reg32 baseAddress, const std::vector<Section>& sections)
+nfs::u8* MemMap::init(nfs::u32 baseAddress, const std::vector<Section>& sections)
 {
-    const x86::reg32 g = granularity();
+    const nfs::u32 g = granularity();
     s_blockCount = s_simulatedMemory / g;
     s_blockSize = (s_blockCount + g - 1) & ~(g - 1);
-    x86::reg32 maxEnd = 0;
+    nfs::u32 maxEnd = 0;
     for (std::vector<Section>::const_iterator it = sections.begin(); it != sections.end(); ++it)
     {
-        x86::reg32 end = it->baseAddress + it->size;
+        nfs::u32 end = it->baseAddress + it->size;
         if (end > maxEnd)
             maxEnd = end;
     }
     s_sectionSize = (maxEnd + g - 1) & ~(g - 1);
-    s_memory = reinterpret_cast<x86::reg8*>(alloc(s_simulatedMemory+s_blockSize+s_sectionSize));
+    s_memory = reinterpret_cast<nfs::u8*>(alloc(s_simulatedMemory+s_blockSize+s_sectionSize));
     s_blocks = s_memory + s_sectionSize;
     s_addressOffset = s_sectionSize + s_blockSize;
-    auto enable = [](void* address, x86::reg32 size) {
+    auto enable = [](void* address, nfs::u32 size) {
         if (!protect(address, size, true, true)) {
             dealloc(s_memory, s_simulatedMemory+s_blockSize+s_sectionSize);
             s_memory = nullptr;
@@ -264,20 +264,20 @@ void MemMap::fini()
     dealloc(s_memory, s_simulatedMemory + s_blockSize + s_sectionSize);
 }
 
-void MemMap::fillDebugGraph(x86::reg16* graph)
+void MemMap::fillDebugGraph(nfs::u16* graph)
 {
     s_lock->lock();
-    const x86::reg32 blocksPerPixel = (s_blockCount+639)/640;
-    for (x86::reg32 b = 0; b < s_blockCount; b += blocksPerPixel)
+    const nfs::u32 blocksPerPixel = (s_blockCount+639)/640;
+    for (nfs::u32 b = 0; b < s_blockCount; b += blocksPerPixel)
     {
-        x86::reg16 c = 0;
-        for (x86::reg32 b1 = b; b1 < (std::min)(b+blocksPerPixel, s_blockCount); ++b1)
+        nfs::u16 c = 0;
+        for (nfs::u32 b1 = b; b1 < (std::min)(b+blocksPerPixel, s_blockCount); ++b1)
         {
             if (s_blocks[b1])
                 c++;
         }
-        x86::reg16 r = x86::reg16((0x1f*c/blocksPerPixel) << (5+6));
-        x86::reg16 g = x86::reg16((0x3f*(blocksPerPixel-c)/blocksPerPixel) << 5);
+        nfs::u16 r = nfs::u16((0x1f*c/blocksPerPixel) << (5+6));
+        nfs::u16 g = nfs::u16((0x3f*(blocksPerPixel-c)/blocksPerPixel) << 5);
         graph[b/blocksPerPixel + 640*0] = r|g;
         graph[b/blocksPerPixel + 640*1] = r|g;
         graph[b/blocksPerPixel + 640*2] = r|g;
@@ -285,20 +285,20 @@ void MemMap::fillDebugGraph(x86::reg16* graph)
     s_lock->unlock();
 }
 
-void MemMap::fillDebugGraph(x86::reg32* graph)
+void MemMap::fillDebugGraph(nfs::u32* graph)
 {
     s_lock->lock();
-    const x86::reg32 blocksPerPixel = (s_blockCount+639)/640;
-    for (x86::reg32 b = 0; b < s_blockCount; b += blocksPerPixel)
+    const nfs::u32 blocksPerPixel = (s_blockCount+639)/640;
+    for (nfs::u32 b = 0; b < s_blockCount; b += blocksPerPixel)
     {
-        x86::reg16 c = 0;
-        for (x86::reg32 b1 = b; b1 < (std::min)(b+blocksPerPixel, s_blockCount); ++b1)
+        nfs::u16 c = 0;
+        for (nfs::u32 b1 = b; b1 < (std::min)(b+blocksPerPixel, s_blockCount); ++b1)
         {
             if (s_blocks[b1])
                 c++;
         }
-        x86::reg32 r = (0xff*c/blocksPerPixel) << 24;
-        x86::reg32 g = (0xff*(blocksPerPixel-c)/blocksPerPixel) << 16;
+        nfs::u32 r = (0xff*c/blocksPerPixel) << 24;
+        nfs::u32 g = (0xff*(blocksPerPixel-c)/blocksPerPixel) << 16;
         graph[b/blocksPerPixel + 640*0] = r|g;
         graph[b/blocksPerPixel + 640*1] = r|g;
         graph[b/blocksPerPixel + 640*2] = r|g;

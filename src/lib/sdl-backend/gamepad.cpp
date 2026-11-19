@@ -15,7 +15,7 @@
 #include <vector>
 
 
-namespace win32
+namespace nfs
 {
 
 /* ----------------------------------------------------------------------
@@ -85,7 +85,7 @@ static bool joystickHasDescriptor(SDL_JoystickID id, const std::string& descript
     return fingerprint == SDL_crc16(0, descriptor.data(), descriptor.size());
 }
 
-static void placeInSlot(x86::reg32 slot, SDL_JoystickID id)
+static void placeInSlot(nfs::u32 slot, SDL_JoystickID id)
 {
     if (s_slots[slot].id == id)
         return;
@@ -117,7 +117,7 @@ static void refreshSlots()
     {
         std::lock_guard<std::mutex> lock(s_assignmentMutex);
         known = s_assignmentKnown;
-        for (x86::reg32 slot = 0; slot < Gamepad::kSlotCount; ++slot)
+        for (nfs::u32 slot = 0; slot < Gamepad::kSlotCount; ++slot)
             wanted[slot] = s_assignment[slot];
         s_assignmentChanged = false;
     }
@@ -126,7 +126,7 @@ static void refreshSlots()
     {
         /* An empty slot stays empty: the launcher had no pad for it, and
          * guessing one here would undo exactly the choice it made. */
-        for (x86::reg32 slot = 0; slot < Gamepad::kSlotCount; ++slot)
+        for (nfs::u32 slot = 0; slot < Gamepad::kSlotCount; ++slot)
         {
             SDL_JoystickID match = 0;
             for (int i = 0; i < count && !match; ++i)
@@ -140,7 +140,7 @@ static void refreshSlots()
 
     /* Nobody has said which pad goes where -- the desktop build, where there
      * is no launcher -- so slots fill in the order pads were found. */
-    for (x86::reg32 slot = 0; slot < Gamepad::kSlotCount; ++slot)
+    for (nfs::u32 slot = 0; slot < Gamepad::kSlotCount; ++slot)
     {
         if (!s_slots[slot].id)
             continue;
@@ -153,9 +153,9 @@ static void refreshSlots()
     for (int i = 0; i < count; ++i)
     {
         bool held = false;
-        for (x86::reg32 slot = 0; slot < Gamepad::kSlotCount; ++slot)
+        for (nfs::u32 slot = 0; slot < Gamepad::kSlotCount; ++slot)
             if (s_slots[slot].id == ids[i]) { held = true; break; }
-        for (x86::reg32 slot = 0; slot < Gamepad::kSlotCount && !held; ++slot)
+        for (nfs::u32 slot = 0; slot < Gamepad::kSlotCount && !held; ++slot)
             if (!s_slots[slot].id) { placeInSlot(slot, ids[i]); held = true; }
     }
     SDL_free(ids);
@@ -189,10 +189,10 @@ void Gamepad::update()
     static Uint64 s_lastSlotScan = 0;
     const Uint64 now = SDL_GetTicks();
     /* The pads' state, once a frame, before it is read.  This used to happen
-     * as a side effect of the message pump, which ran SDL_PumpEvents -- and
+     * as a side effect of the window's wait, which ran SDL_PumpEvents -- and
      * SDL_UpdateJoysticks with it -- thousands of times a second while it
      * spun in SDL_WaitEvent (see SDL_HINT_POLL_SENTINEL in nfs3hp_main.cpp).
-     * The pump now sleeps until something happens; a pad read through HIDAPI,
+     * The wait now sleeps until something happens; a pad read through HIDAPI,
      * a DualSense among them, still needs its reports taken in. */
     SDL_UpdateJoysticks();
     if (assignmentChanged() || now - s_lastSlotScan >= 1000)
@@ -204,12 +204,12 @@ void Gamepad::update()
     forcefeedback::update();
 }
 
-x86::reg32 Input::getButtonCount() const
+nfs::u32 Input::getButtonCount() const
 {
     return 0;
 }
 
-x86::reg32 Input::getAxesCount() const
+nfs::u32 Input::getAxesCount() const
 {
     return 0;
 }
@@ -234,11 +234,11 @@ struct MouseImpl
 {
     SDL_Mutex*  mutex;
     float       accumDx, accumDy, accumDz;
-    x86::reg32  buttons;
+    nfs::u32  buttons;
 
-    static const x86::reg32 kBufferCapacity = 64;
+    static const nfs::u32 kBufferCapacity = 64;
     Mouse::BufferedEvent buffer[kBufferCapacity];
-    x86::reg32  bufferHead, bufferCount;
+    nfs::u32  bufferHead, bufferCount;
 
     MouseImpl()
         :   mutex(SDL_CreateMutex())
@@ -255,9 +255,9 @@ struct MouseImpl
     /* Caller holds mutex.  Drops the oldest entry once full -- DirectInput
      * would report a buffer-overflow flag instead, but nothing here reads
      * that flag back. */
-    void pushEvent(x86::reg32 offset, x86::sreg32 value)
+    void pushEvent(nfs::u32 offset, nfs::s32 value)
     {
-        const x86::reg32 idx = (bufferHead + bufferCount) % kBufferCapacity;
+        const nfs::u32 idx = (bufferHead + bufferCount) % kBufferCapacity;
         if (bufferCount == kBufferCapacity)
             bufferHead = (bufferHead + 1) % kBufferCapacity;
         else
@@ -283,9 +283,9 @@ bool SDLCALL mouseEventWatch(void* /*userdata*/, SDL_Event* event)
         m.accumDx += event->motion.xrel;
         m.accumDy += event->motion.yrel;
         if (event->motion.xrel != 0.f)
-            m.pushEvent(DIMOFS_X, x86::sreg32(event->motion.xrel));
+            m.pushEvent(DIMOFS_X, nfs::s32(event->motion.xrel));
         if (event->motion.yrel != 0.f)
-            m.pushEvent(DIMOFS_Y, x86::sreg32(event->motion.yrel));
+            m.pushEvent(DIMOFS_Y, nfs::s32(event->motion.yrel));
         SDL_UnlockMutex(m.mutex);
         break;
     case SDL_EVENT_MOUSE_BUTTON_DOWN:
@@ -306,8 +306,8 @@ bool SDLCALL mouseEventWatch(void* /*userdata*/, SDL_Event* event)
         {
             const bool down = event->type == SDL_EVENT_MOUSE_BUTTON_DOWN;
             SDL_LockMutex(m.mutex);
-            if (down) m.buttons |= (x86::reg32(1) << bit);
-            else      m.buttons &= ~(x86::reg32(1) << bit);
+            if (down) m.buttons |= (nfs::u32(1) << bit);
+            else      m.buttons &= ~(nfs::u32(1) << bit);
             m.pushEvent(DIMOFS_BUTTON0 + bit, down ? 0x80 : 0x00);
             SDL_UnlockMutex(m.mutex);
         }
@@ -316,7 +316,7 @@ bool SDLCALL mouseEventWatch(void* /*userdata*/, SDL_Event* event)
     case SDL_EVENT_MOUSE_WHEEL:
         SDL_LockMutex(m.mutex);
         m.accumDz += event->wheel.y * 120.f;
-        m.pushEvent(DIMOFS_Z, x86::sreg32(event->wheel.y * 120.f));
+        m.pushEvent(DIMOFS_Z, nfs::s32(event->wheel.y * 120.f));
         SDL_UnlockMutex(m.mutex);
         break;
     default:
@@ -329,7 +329,7 @@ bool SDLCALL mouseEventWatch(void* /*userdata*/, SDL_Event* event)
 
 }
 
-void Mouse::movePointer(x86::sreg32 dx, x86::sreg32 dy)
+void Mouse::movePointer(nfs::s32 dx, nfs::s32 dy)
 {
     if (!dx && !dy)
         return;
@@ -344,14 +344,14 @@ void Mouse::movePointer(x86::sreg32 dx, x86::sreg32 dy)
     SDL_UnlockMutex(m.mutex);
 }
 
-void Mouse::pressPointer(x86::reg32 button, bool down)
+void Mouse::pressPointer(nfs::u32 button, bool down)
 {
     if (button > 3)
         return;
     MouseImpl& m = mouseImpl();
     SDL_LockMutex(m.mutex);
-    if (down) m.buttons |= (x86::reg32(1) << button);
-    else      m.buttons &= ~(x86::reg32(1) << button);
+    if (down) m.buttons |= (nfs::u32(1) << button);
+    else      m.buttons &= ~(nfs::u32(1) << button);
     m.pushEvent(DIMOFS_BUTTON0 + button, down ? 0x80 : 0x00);
     SDL_UnlockMutex(m.mutex);
 }
@@ -366,9 +366,9 @@ Mouse::MouseState Mouse::getState()
 
     MouseState result;
     SDL_LockMutex(m.mutex);
-    result.dx = x86::sreg32(m.accumDx);
-    result.dy = x86::sreg32(m.accumDy);
-    result.dz = x86::sreg32(m.accumDz);
+    result.dx = nfs::s32(m.accumDx);
+    result.dy = nfs::s32(m.accumDy);
+    result.dz = nfs::s32(m.accumDz);
     /* Keep the fractional remainder so slow, sub-pixel motion accumulates
      * across several reads instead of being truncated away every time. */
     m.accumDx -= float(result.dx);
@@ -379,12 +379,12 @@ Mouse::MouseState Mouse::getState()
     return result;
 }
 
-x86::reg32 Mouse::drainBuffer(BufferedEvent* out, x86::reg32 max)
+nfs::u32 Mouse::drainBuffer(BufferedEvent* out, nfs::u32 max)
 {
     MouseImpl& m = mouseImpl();
     SDL_LockMutex(m.mutex);
-    const x86::reg32 n = m.bufferCount < max ? m.bufferCount : max;
-    for (x86::reg32 i = 0; i < n; ++i)
+    const nfs::u32 n = m.bufferCount < max ? m.bufferCount : max;
+    for (nfs::u32 i = 0; i < n; ++i)
         out[i] = m.buffer[(m.bufferHead + i) % MouseImpl::kBufferCapacity];
     m.bufferHead = (m.bufferHead + n) % MouseImpl::kBufferCapacity;
     m.bufferCount -= n;
@@ -392,12 +392,12 @@ x86::reg32 Mouse::drainBuffer(BufferedEvent* out, x86::reg32 max)
     return n;
 }
 
-x86::reg32 Mouse::getButtonCount() const
+nfs::u32 Mouse::getButtonCount() const
 {
     return 4;
 }
 
-x86::reg32 Mouse::getAxesCount() const
+nfs::u32 Mouse::getAxesCount() const
 {
     return 3;
 }
@@ -468,10 +468,10 @@ static const int kPadSteerThreshold = 8192;
 /* Larger magnitude wins rather than a sum, so a stick resting off-centre
  * cannot cancel a finger or a button asking for full lock, and no two sources
  * can push an axis past its range. */
-static void blendAxis(GamepadState& state, x86::reg32 axis, int value)
+static void blendAxis(GamepadState& state, nfs::u32 axis, int value)
 {
     if (std::abs(value) > std::abs(int(state.axes[axis])))
-        state.axes[axis] = x86::sreg16(value);
+        state.axes[axis] = nfs::s16(value);
 }
 
 /* What a DirectInput driver did with an axis before the game saw it, on a
@@ -506,12 +506,12 @@ static int shapeAxis(int value, const Gamepad::AxisResponse& response)
     return value < 0 ? -shaped : shaped;
 }
 
-Gamepad::AxisResponse Gamepad::axisResponse(x86::reg32 axis) const
+Gamepad::AxisResponse Gamepad::axisResponse(nfs::u32 axis) const
 {
     return axis < kDirectInputAxes ? m_axisResponse[axis] : AxisResponse();
 }
 
-void Gamepad::setAxisResponse(x86::reg32 axis, const AxisResponse& response)
+void Gamepad::setAxisResponse(nfs::u32 axis, const AxisResponse& response)
 {
     if (axis < kDirectInputAxes)
         m_axisResponse[axis] = response;
@@ -638,11 +638,11 @@ std::atomic<int> s_context{int(Gamepad::Context::Menu)};
  * sets (NFS_GAMEPAD<n>_<BUTTON>) and the one a menu and a replay get
  * (..._UI), which the launcher fixes -- the lower face button confirms, the
  * right one goes back, the D-pad moves the highlight, the rest say nothing. */
-const ButtonBinding& buttonBinding(x86::reg32 slot, size_t button, Gamepad::Context context)
+const ButtonBinding& buttonBinding(nfs::u32 slot, size_t button, Gamepad::Context context)
 {
     static const auto s_bindings = []() {
         std::array<std::array<std::array<ButtonBinding, kPadButtons>, 2>, Gamepad::kSlotCount> table;
-        for (x86::reg32 slot = 0; slot < Gamepad::kSlotCount; ++slot)
+        for (nfs::u32 slot = 0; slot < Gamepad::kSlotCount; ++slot)
         {
             std::string summary;
             for (size_t i = 0; i < kPadButtons; ++i)
@@ -732,7 +732,7 @@ void updateButtonKeys()
     // The first frame resolves and logs every binding, before anything is pressed.
     buttonBinding(0, 0, context);
     const bool muted = s_gameKeysMuted.load(std::memory_order_relaxed);
-    for (x86::reg32 slot = 0; slot < Gamepad::kSlotCount; ++slot)
+    for (nfs::u32 slot = 0; slot < Gamepad::kSlotCount; ++slot)
     {
         SlotButtons& buttons = s_slotButtons[slot];
         const Slot& source = s_slots[slot];
@@ -792,7 +792,7 @@ void Gamepad::context(Context context)
     s_context.store(int(context), std::memory_order_relaxed);
 }
 
-Gamepad::Gamepad(x86::reg32 gamepadIndex)
+Gamepad::Gamepad(nfs::u32 gamepadIndex)
     :   m_slot(gamepadIndex)
 {
     refreshSlots();
@@ -807,7 +807,7 @@ Gamepad::~Gamepad()
      * devices. */
 }
 
-x86::reg32 Gamepad::getCount()
+nfs::u32 Gamepad::getCount()
 {
     return kSlotCount;
 }
@@ -818,12 +818,12 @@ x86::reg32 Gamepad::getCount()
  * bindings away and generates new ones.  So a slot is always the same two
  * axes and no buttons -- which is also exactly what the launcher's control
  * profile describes when it writes that file (ControlProfile.java). */
-x86::reg32 Gamepad::getButtonCount() const
+nfs::u32 Gamepad::getButtonCount() const
 {
     return 0;
 }
 
-x86::reg32 Gamepad::getAxesCount() const
+nfs::u32 Gamepad::getAxesCount() const
 {
     return 2;
 }
@@ -851,7 +851,7 @@ GamepadState Gamepad::getState() const
     const Slot* slot = m_slot < kSlotCount ? &s_slots[m_slot] : nullptr;
     if (slot && slot->gamepad)
     {
-        result.axes[kAxisSteer] = x86::sreg16(shapeAxis(
+        result.axes[kAxisSteer] = nfs::s16(shapeAxis(
             SDL_GetGamepadAxis(slot->gamepad, SDL_GAMEPAD_AXIS_LEFTX), steerResponse));
         /* Both triggers share one axis, the way combined pedals did on wheels
          * of the time: the right trigger pulls it up, towards accelerate, the
@@ -862,7 +862,7 @@ GamepadState Gamepad::getState() const
          * zone goes on each before they are combined: on the difference it
          * would swallow a light press of one whenever the other rested on its
          * trigger too. */
-        result.axes[kAxisPedals] = x86::sreg16(
+        result.axes[kAxisPedals] = nfs::s16(
               shapeAxis(SDL_GetGamepadAxis(slot->gamepad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER), pedalResponse)
             - shapeAxis(SDL_GetGamepadAxis(slot->gamepad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER), pedalResponse));
         /* A button put on an axis steers or works a pedal, which is a racing
@@ -871,7 +871,7 @@ GamepadState Gamepad::getState() const
         {
             const ButtonBinding& binding = buttonBinding(m_slot, i, Context::Race);
             if (binding.axis >= 0 && buttonDown(slot->gamepad, s_padButtons[i], false))
-                blendAxis(result, x86::reg32(binding.axis), binding.direction * 32767);
+                blendAxis(result, nfs::u32(binding.axis), binding.direction * 32767);
         }
     }
     else if (SDL_Joystick* pad = joystick())
@@ -880,9 +880,9 @@ GamepadState Gamepad::getState() const
          * a plain joystick keeps them. */
         const int axes = SDL_GetNumJoystickAxes(pad);
         if (axes > 0)
-            result.axes[kAxisSteer] = x86::sreg16(shapeAxis(SDL_GetJoystickAxis(pad, 0), steerResponse));
+            result.axes[kAxisSteer] = nfs::s16(shapeAxis(SDL_GetJoystickAxis(pad, 0), steerResponse));
         if (axes > 1)
-            result.axes[kAxisPedals] = x86::sreg16(shapeAxis(SDL_GetJoystickAxis(pad, 1), pedalResponse));
+            result.axes[kAxisPedals] = nfs::s16(shapeAxis(SDL_GetJoystickAxis(pad, 1), pedalResponse));
     }
 
     if (m_slot == 0 && !touchDrivesAsKeys())
@@ -911,7 +911,7 @@ GamepadState Gamepad::getState() const
 #ifdef __ANDROID__
 namespace {
 // SDL supplies an attached JNIEnv on every calling thread. No global Activity refs.
-void androidForceFeedback(x86::reg32 slot,float strength,const win32::Gamepad::RumbleDetail& detail) {
+void androidForceFeedback(nfs::u32 slot,float strength,const nfs::Gamepad::RumbleDetail& detail) {
     JNIEnv* env=static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
     jobject activity=static_cast<jobject>(SDL_GetAndroidActivity());
     if(!env||!activity)return;
@@ -925,7 +925,7 @@ void androidForceFeedback(x86::reg32 slot,float strength,const win32::Gamepad::R
 }
 
 #endif
-bool win32::Gamepad::hasForceFeedback() const {
+bool nfs::Gamepad::hasForceFeedback() const {
 #ifdef __ANDROID__
     /* Yes, for both slots, whatever is plugged in.  A pad's vibration belongs
      * to the game now -- Options -> Controllers -> Force Feedback, with Stick
@@ -940,10 +940,10 @@ bool win32::Gamepad::hasForceFeedback() const {
     return pad&&SDL_GetBooleanProperty(SDL_GetJoystickProperties(pad),SDL_PROP_JOYSTICK_CAP_RUMBLE_BOOLEAN,false);
 #endif
 }
-void win32::Gamepad::rumble(float strength) {
+void nfs::Gamepad::rumble(float strength) {
     rumble(strength,RumbleDetail());
 }
-void win32::Gamepad::rumble(float strength,const RumbleDetail& detail) {
+void nfs::Gamepad::rumble(float strength,const RumbleDetail& detail) {
 #ifdef __ANDROID__
     /* Which motors a slot drives is decided in GameHaptics, which owns both
      * the enable switches and the two strength sliders: slot 0 reaches the
@@ -955,7 +955,7 @@ void win32::Gamepad::rumble(float strength,const RumbleDetail& detail) {
     if(pad)SDL_RumbleJoystick(pad,Uint16(strength*65535),Uint16(strength*65535),100);
 #endif
 }
-void win32::Gamepad::phoneTick(float turn) {
+void nfs::Gamepad::phoneTick(float turn) {
 #ifdef __ANDROID__
     JNIEnv* env=static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
     jobject activity=static_cast<jobject>(SDL_GetAndroidActivity());

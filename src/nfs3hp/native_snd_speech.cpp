@@ -16,20 +16,20 @@ namespace snd
  * and none is: its handle kept (0x7dd844), the header copied out of the file
  * where SND asks (0x7dd84c); 1, or 0.  Every register but eax as it was, esp
  * past the return address. */
-x86::reg32 descriptionLoad(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 descriptionLoad(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const port::Entry e(cpu, args);
+    const port::Entry e(ts, args);
     args.ebp = e.frame(6);
-    cpu.esp = args.ebp - 0x104;
-    const reg32 name = args.ebp - 0x104;
-    auto none = [&] { return e.back(cpu, args, 0); };
+    ts.sp = args.ebp - 0x104;
+    const u32 name = args.ebp - 0x104;
+    auto none = [&] { return e.back(ts, args, 0); };
     // The game's inlined strcpy of `from` to `to`, two bytes a turn: al left 0, esi where the copy stopped
     // reading; and its strcat, its repne scasb leaving ecx past the end.
-    auto copyString = [&](reg32 to, reg32 from) {
+    auto copyString = [&](u32 to, u32 from) {
         args.esi = from;
-        for (reg32 at = to;; at += 2)
+        for (u32 at = to;; at += 2)
         {
-            reg8 c = byte(app, args.esi);
+            u8 c = byte(app, args.esi);
             putByte(app, at, c);
             if (c == 0)
                 break;
@@ -41,11 +41,11 @@ x86::reg32 descriptionLoad(App* app, CPU& cpu, x86::Args& args)
         }
         args.eax &= 0xffffff00;
     };
-    auto appendString = [&](reg32 to, reg32 from) {
-        reg32 end = to;
+    auto appendString = [&](u32 to, u32 from) {
+        u32 end = to;
         while (byte(app, end) != 0)
             ++end;
-        args.ecx = reg32(-2 - i32(end - to));
+        args.ecx = u32(-2 - i32(end - to));
         copyString(end, from);
     };
     if (at(app, 0x55290c) == 0)
@@ -53,14 +53,14 @@ x86::reg32 descriptionLoad(App* app, CPU& cpu, x86::Args& args)
     copyString(name, args.eax);
     appendString(name, 0x54033c);
     args.edi = name;
-    const std::optional<bool> there = guest::direct<0x4e0e60, ea::fileThere>(app, cpu, name);
+    const std::optional<bool> there = guest::direct<0x4e0e60, ea::fileThere>(app, ts, name);
     if (!there)
         return args.eax;
     args.eax = *there ? 1 : 0;
     if (args.eax == 0 || at(app, 0x7dd838) != 0)
         return none();
     args.edx = 0;
-    const std::optional<reg32> file = guest::direct<0x4e0ec0, ea::loadWhole>(app, cpu, name, args.edx);
+    const std::optional<u32> file = guest::direct<0x4e0ec0, ea::loadWhole>(app, ts, name, args.edx);
     if (!file)
         return args.eax;
     args.eax = *file;
@@ -68,23 +68,23 @@ x86::reg32 descriptionLoad(App* app, CPU& cpu, x86::Args& args)
     args.ebx = args.eax;
     args.edx = args.eax;
     // SNDbankadd: the handle into [ebp - 4], the bank the file.
-    const port::Result added = guest::direct<0x4e8d20, port::bankAdded>(app, cpu, cpu.esp - 4, args.ebp - 4, *file);
+    const port::Result added = guest::direct<0x4e8d20, port::bankAdded>(app, ts, ts.sp - 4, args.ebp - 4, *file);
     if (!added)
         return args.eax;
-    args.eax = reg32(*added);
+    args.eax = u32(*added);
     args.edi = args.eax;
     if (args.eax == 7)
     {
         // SNDbankheadersize of the handle.
         const port::Result size =
-            guest::direct<0x4e8db0, port::bankHeaderSize>(app, cpu, cpu.esp - 4, i32(at(app, args.ebp - 4)));
+            guest::direct<0x4e8db0, port::bankHeaderSize>(app, ts, ts.sp - 4, i32(at(app, args.ebp - 4)));
         if (!size)
             return args.eax;
-        args.eax = reg32(*size);
+        args.eax = u32(*size);
         args.ebx ^= args.ecx;
         args.edx = args.eax;
         // ebx and edx after it are the code's own again at once, ecx the bank's (kept).
-        const std::optional<reg32> copy = guest::direct<0x4e1620, ea::reserved>(app, cpu, 0x540344u, args.edx, args.ebx);
+        const std::optional<u32> copy = guest::direct<0x4e1620, ea::reserved>(app, ts, 0x540344u, args.edx, args.ebx);
         if (!copy)
             return args.eax;
         args.eax = *copy;
@@ -92,12 +92,12 @@ x86::reg32 descriptionLoad(App* app, CPU& cpu, x86::Args& args)
         args.ebx = args.eax;
         // SNDbankheadercopy to the copy, of the handle.
         const port::Result copied =
-            guest::direct<0x4e8e20, port::copyBankHeader>(app, cpu, cpu.esp - 4, args.eax, i32(args.edx));
+            guest::direct<0x4e8e20, port::copyBankHeader>(app, ts, ts.sp - 4, args.eax, i32(args.edx));
         if (!copied)
             return args.eax;
-        args.eax = reg32(*copied);
+        args.eax = u32(*copied);
         // ebx (the copy) kept across it, as the code counts on.
-        const std::optional<reg32> purged = guest::direct<0x4e1890, ea::purgeBlock>(app, cpu, args.ecx);
+        const std::optional<u32> purged = guest::direct<0x4e1890, ea::purgeBlock>(app, ts, args.ecx);
         if (!purged)
             return args.eax;
         args.eax = *purged;
@@ -109,7 +109,7 @@ x86::reg32 descriptionLoad(App* app, CPU& cpu, x86::Args& args)
     args.ebx = 1;
     put(app, 0x7dd844, args.eax);
     put(app, 0x7dd838, args.ebx);
-    return e.back(cpu, args, args.ebx);
+    return e.back(ts, args, args.ebx);
 }
 
 }  // namespace snd

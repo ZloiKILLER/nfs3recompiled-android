@@ -1,12 +1,12 @@
 #ifndef LIB_THRASHRENDERER_H_
 #define LIB_THRASHRENDERER_H_
 
-#include <lib/winapp.h>
+#include <lib/app.h>
 #include <array>
 #include <unordered_map>
 #include <vector>
 
-namespace win32
+namespace nfs
 {
 
 class Renderer;
@@ -46,9 +46,9 @@ struct DrawCounters
 struct ThrashVertex
 {
     float           x, y, z;
-    x86::reg32      color;
+    nfs::u32      color;
     float           u, v, oow;
-    x86::reg8       combine[4];
+    nfs::u8       combine[4];
 };
 static_assert(sizeof(ThrashVertex) == 32, "the attribute offsets in thrashrenderer.cpp assume this layout");
 
@@ -71,9 +71,9 @@ public:
     explicit ThrashRenderer(Renderer* renderer);
     ~ThrashRenderer();
 
-    void clear(x86::reg32 color);
+    void clear(nfs::u32 color);
     void swap();
-    void render(x86::reg32 buffer);
+    void render(nfs::u32 buffer);
     void setZWrite(bool enable);
     void setZTest(bool enable);
     /* The depth compared ALWAYS rather than LEQUAL while the test is on: it
@@ -82,24 +82,24 @@ public:
     void setDepthAlways(bool always);
     void setAlphaBlendDst(AlphaBlend method);
     void setDither(bool enable);
-    void setCullMode(x86::reg32 mode);
+    void setCullMode(nfs::u32 mode);
     void setChromakeyMode(bool enable);
     /* Each texture axis wrapped or clamped. */
     void setTexClampMode(bool wrapS, bool wrapT);
-    void setChromakeyValue(x86::reg32 color);
-    void setClipWindow(x86::reg32 minX, x86::reg32 minY, x86::reg32 maxX, x86::reg32 maxY);
+    void setChromakeyValue(nfs::u32 color);
+    void setClipWindow(nfs::u32 minX, nfs::u32 minY, nfs::u32 maxX, nfs::u32 maxY);
     void setGamma(float correction);
     void setColorFactor(float colorFactor);
     void setAlphaFactor(float alphaFactor);
-    void setFogMode(x86::reg32 mode);
-    void setFogColor(x86::reg32 color);
-    void setFogTable(const x86::reg8* table);
+    void setFogMode(nfs::u32 mode);
+    void setFogColor(nfs::u32 color);
+    void setFogTable(const nfs::u8* table);
     /* The alpha the fragment must pass (the game compares GREATER). */
-    void setAlphaTestRef(x86::reg32 value);
+    void setAlphaTestRef(nfs::u32 value);
     /* The texture downloaded to `address`. */
-    void setTexture(x86::reg32 tmu, x86::reg32 address);
-    void setTextureData(x86::reg32 tmu, x86::reg32 address, const void* data,
-                        x86::reg32 largeMipmap, x86::reg32 smallMimmap, TextureFormat format);
+    void setTexture(nfs::u32 tmu, nfs::u32 address);
+    void setTextureData(nfs::u32 tmu, nfs::u32 address, const void* data,
+                        nfs::u32 largeMipmap, nfs::u32 smallMimmap, TextureFormat format);
     /* THRASH_treset: every texture given up. */
     void resetTextures();
 
@@ -117,7 +117,7 @@ public:
     }
     void finishTriangle(ThrashVertex* corners);
 
-    static const x86::reg32 s_maxVertices = 128000;
+    static const nfs::u32 s_maxVertices = 128000;
 
     /* The counters since the last look, and those counted into. */
     static DrawCounters takeCounters();
@@ -126,14 +126,14 @@ public:
     /* One batch: the state it is drawn with, and the triangles up to `end`. */
     struct Batch
     {
-        x86::reg32 end;
-        x86::reg32 texture;     // index into m_glTextures on the GL thread
-        x86::reg32 levels;      // its mipmap levels, for the hand-filtered chroma key
+        nfs::u32 end;
+        nfs::u32 texture;     // index into m_glTextures on the GL thread
+        nfs::u32 levels;      // its mipmap levels, for the hand-filtered chroma key
         int format;             // 0 RGBA8, 1 565, 2 1555, 3 4444: how the chroma key compares
         bool wrapS, wrapT;
         bool zTest, zTestAlways, zBuffer, alphaBlend, cull, chromaKey;
-        x86::reg32 cullMode;
-        x86::reg32 clipMinX, clipMinY, clipMaxX, clipMaxY;
+        nfs::u32 cullMode;
+        nfs::u32 clipMinX, clipMinY, clipMaxX, clipMaxY;
         float gamma;
         int fogTable;
     };
@@ -144,19 +144,19 @@ public:
     {
         virtual ~Watcher() = default;
         virtual void drawn(const ThrashDraw& draw) = 0;
-        virtual void uploaded(x86::reg32 index, x86::reg32 size, x86::reg32 levels, TextureFormat format,
-                              bool fresh, const std::vector<x86::reg8>& texels) = 0;
-        virtual void cleared(x86::reg32 color, x86::reg32 clipMinX, x86::reg32 clipMinY, x86::reg32 clipMaxX,
-                             x86::reg32 clipMaxY) = 0;
+        virtual void uploaded(nfs::u32 index, nfs::u32 size, nfs::u32 levels, TextureFormat format,
+                              bool fresh, const std::vector<nfs::u8>& texels) = 0;
+        virtual void cleared(nfs::u32 color, nfs::u32 clipMinX, nfs::u32 clipMinY, nfs::u32 clipMaxX,
+                             nfs::u32 clipMaxY) = 0;
         virtual void swapped() = 0;
-        virtual void rendered(x86::reg32 buffer) = 0;
-        virtual void released(const std::vector<x86::reg32>& indices) = 0;
+        virtual void rendered(nfs::u32 buffer) = 0;
+        virtual void released(const std::vector<nfs::u32>& indices) = 0;
     };
     static void watch(Watcher* watcher) { s_watcher = watcher; }
     /* The game thread's side of the renderer, every word of it: what is
      * pending, the textures as it keeps them, the state it draws with -- for a
      * check to compare after each call of the driver. */
-    void snapshot(std::vector<x86::reg32>& out) const;
+    void snapshot(std::vector<nfs::u32>& out) const;
 
 private:
     friend struct ThrashDraw;
@@ -166,22 +166,22 @@ private:
      * selected in. */
     struct Texture
     {
-        x86::reg32 index;
-        x86::reg32 size;
-        x86::reg32 levels;
-        x86::reg32 useStamp;
+        nfs::u32 index;
+        nfs::u32 size;
+        nfs::u32 levels;
+        nfs::u32 useStamp;
         int format;
     };
 
     void initGl();
     void compileShaders(int depthBits, const char* renderer);
-    void clearFrame(x86::reg32 color, x86::reg32 clipMinX, x86::reg32 clipMinY,
-                    x86::reg32 clipMaxX, x86::reg32 clipMaxY);
+    void clearFrame(nfs::u32 color, nfs::u32 clipMinX, nfs::u32 clipMinY,
+                    nfs::u32 clipMaxX, nfs::u32 clipMaxY);
     void flush();
     void renderPending();
     void drawPending(const ThrashDraw& draw);
-    void upload(x86::reg32 index, x86::reg32 size, x86::reg32 levels, TextureFormat format,
-                std::vector<x86::reg8>& texels);
+    void upload(nfs::u32 index, nfs::u32 size, nfs::u32 levels, TextureFormat format,
+                std::vector<nfs::u8>& texels);
 
     static DrawCounters s_counters;
     static Watcher* s_watcher;
@@ -206,19 +206,19 @@ private:
 
     // The game thread's.
     ThrashVertex*           m_vertices;
-    x86::reg32              m_vertexCount;
+    nfs::u32              m_vertexCount;
     std::vector<Batch>      m_batches;
-    std::unordered_map<x86::reg32, Texture> m_textures;  // by the address the game downloaded to
-    x86::reg32              m_nextTexture;
-    x86::reg32              m_texture;
-    x86::reg32              m_textureLevels;
+    std::unordered_map<nfs::u32, Texture> m_textures;  // by the address the game downloaded to
+    nfs::u32              m_nextTexture;
+    nfs::u32              m_texture;
+    nfs::u32              m_textureLevels;
     int                     m_textureFormat;
-    x86::reg32              m_renderStamp;
+    nfs::u32              m_renderStamp;
     std::vector<std::array<float, 64>> m_fogTables;
     int                     m_fogTableIndex;
-    x86::reg8               m_fogTableRaw[64];
+    nfs::u8               m_fogTableRaw[64];
     bool                    m_fogTableValid;
-    x86::reg32              m_fogMode;
+    nfs::u32              m_fogMode;
     float                   m_fogColor[3];
     float                   m_alphaTestRef;
     float                   m_colorFactor;
@@ -231,12 +231,12 @@ private:
     bool                    m_chromaKey;
     bool                    m_wrapS;
     bool                    m_wrapT;
-    x86::reg32              m_cullMode;
-    x86::reg32              m_chromaKeyColor;
-    x86::reg32              m_clipMinX;
-    x86::reg32              m_clipMinY;
-    x86::reg32              m_clipMaxX;
-    x86::reg32              m_clipMaxY;
+    nfs::u32              m_cullMode;
+    nfs::u32              m_chromaKeyColor;
+    nfs::u32              m_clipMinX;
+    nfs::u32              m_clipMinY;
+    nfs::u32              m_clipMaxX;
+    nfs::u32              m_clipMaxY;
     float                   m_gamma;
 };
 
@@ -245,14 +245,14 @@ private:
 struct ThrashDraw
 {
     ThrashVertex*                       vertices;
-    x86::reg32                          vertexCount;
+    nfs::u32                          vertexCount;
     std::vector<ThrashRenderer::Batch>  batches;
     std::vector<std::array<float, 64>>  fogTables;
     float                               fogColor[3];
     float                               alphaTestRef;
-    x86::reg32                          chromaKeyColor;
-    x86::reg32                          width;
-    x86::reg32                          height;
+    nfs::u32                          chromaKeyColor;
+    nfs::u32                          width;
+    nfs::u32                          height;
 };
 
 }

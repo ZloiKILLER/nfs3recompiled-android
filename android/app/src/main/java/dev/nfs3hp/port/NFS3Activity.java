@@ -22,7 +22,7 @@ import org.libsdl.app.SDLSurface;
  * overriding here.
  *
  * Only ever started by LauncherActivity, once DataImporter confirms the game
- * data and the bundled original binaries are both present under
+ * data and install.win are both present under
  * getExternalFilesDir(null) -- see src/nfs3hp/nfs3hp_main.cpp, which reads
  * SDL_GetAndroidExternalStoragePath() for both the data and "CD" directory.
  *
@@ -31,7 +31,7 @@ import org.libsdl.app.SDLSurface;
  * address space -- Os.setenv() here lands in the same environment table
  * SDL_getenv()/getenv() reads from native code, as long as it runs before the
  * native thread starts (SDLActivity only spins that up later, from
- * surfaceCreated()). This is how NFS_TRACE_API (winapp.h) and NFS_TRACE_MSG's
+ * surfaceCreated()). This is how NFS_TRACE_API (lib/app.h) and NFS_TRACE_MSG's
  * runtime cousins get toggled on device without a wrap.sh or a rebuild:
  *   adb shell am start -n dev.nfs3hp.port/.SplashActivity --ez trace_api true
  */
@@ -656,7 +656,7 @@ public class NFS3Activity extends SDLActivity
                                 float engine, float engineHz) {
         long sent=android.os.SystemClock.uptimeMillis();
         /* `level` is everything mixed; the rest splits it into jolts and the
-         * game's two textures with their rates (win32::Gamepad::RumbleDetail),
+         * game's two textures with their rates (nfs::Gamepad::RumbleDetail),
          * which is what a pad and the phone each play in their own way.  A level
          * that waited too long for the UI thread is dropped, but a stop never is:
          * an effect runs for seconds until it is told otherwise. */

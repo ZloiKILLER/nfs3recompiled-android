@@ -40,14 +40,14 @@ namespace
 using fe::args;
 using fe::Guest;
 using fe::GuestString;
-using x86::reg32;
-using App = win32::WinApplication;
-using CPU = x86::CPU;
+using nfs::u32;
+using App = nfs::App;
+using ThreadState = nfs::ThreadState;
 
-constexpr reg32 kSprintf = 0x4df690;
-constexpr reg32 kStrcmp = 0x4ee310;
-constexpr reg32 kCarFlag4 = 0x4395c0;              // the car has a folder of its own
-constexpr reg32 kShapeIntoTexture = 0x4d5ed0;      // (texture, shape, side, format)
+constexpr u32 kSprintf = 0x4df690;
+constexpr u32 kStrcmp = 0x4ee310;
+constexpr u32 kCarFlag4 = 0x4395c0;              // the car has a folder of its own
+constexpr u32 kShapeIntoTexture = 0x4d5ed0;      // (texture, shape, side, format)
 
 /* ---------------------------------------------------------------------------
  * The tiles
@@ -57,63 +57,63 @@ constexpr GuestString kPathFormat = { 0x53ab0c, "%s%s" };
 constexpr GuestString kTileNameFormat = { 0x53ab14, "%04d" };
 constexpr GuestString kTilesStrings[] = { kPathFormat, kTileNameFormat };
 
-constexpr reg32 kTiles = 0x67895c;                 // the widget's records: port_view's grid draws them
-constexpr reg32 kTileBytes = 44;
-constexpr reg32 kTileTexture = 4;                  // the texture's handle in a record
-constexpr reg32 kTileCount = 5;
-constexpr reg32 kTileSide = 0x100;                 // pixels
-constexpr reg32 kTileFormat = 3;
+constexpr u32 kTiles = 0x67895c;                 // the widget's records: port_view's grid draws them
+constexpr u32 kTileBytes = 44;
+constexpr u32 kTileTexture = 4;                  // the texture's handle in a record
+constexpr u32 kTileCount = 5;
+constexpr u32 kTileSide = 0x100;                 // pixels
+constexpr u32 kTileFormat = 3;
 // The block's flags.  The game sets edx to them before the sprintf, which keeps it, for the load after.
-constexpr reg32 kLoadFlags = 0x10;
+constexpr u32 kLoadFlags = 0x10;
 
 /* The frame of both: ebx, ecx, esi, edi, ebp, then one buffer for the file's
  * path and each tile's name. */
-constexpr reg32 kNameBytes = 0x100;
-constexpr reg32 kTilesFrame = 20 + kNameBytes;
+constexpr u32 kNameBytes = 0x100;
+constexpr u32 kTilesFrame = 20 + kNameBytes;
 
 /* The file of the tiles, its path in the frame's buffer. */
-reg32 loadTileFile(App* app, CPU& cpu, Guest& guest, reg32 folder, reg32 fileName)
+u32 loadTileFile(App* app, ThreadState& ts, Guest& guest, u32 folder, u32 fileName)
 {
-    const reg32 name = guest.frame();
-    fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), name, kPathFormat.address, guest::Words{folder, fileName});
-    return *fe::direct<0x4e0ec0, ea::loadWhole>(app, cpu, name, kLoadFlags);
+    const u32 name = guest.frame();
+    fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.ts(), name, kPathFormat.address, guest::Words{folder, fileName});
+    return *fe::direct<0x4e0ec0, ea::loadWhole>(app, ts, name, kLoadFlags);
 }
 
 }  // namespace
 
 /* sub_464700: the tiles' records made from folder + fileName, then the file freed. */
-x86::reg32 frontend::view::makeTiles(App* app, CPU& cpu, reg32 fileName, reg32 folder)
+nfs::u32 frontend::view::makeTiles(App* app, ThreadState& ts, u32 fileName, u32 folder)
 {
-    Guest guest(app, cpu);
-    const fe::Frame frame(guest, cpu, kTilesFrame);
-    const reg32 name = guest.frame();
-    const reg32 file = loadTileFile(app, cpu, guest, folder, fileName);
-    for (reg32 tile = 0; tile < kTileCount; ++tile)
+    Guest guest(app, ts);
+    const fe::Frame frame(guest, ts, kTilesFrame);
+    const u32 name = guest.frame();
+    const u32 file = loadTileFile(app, ts, guest, folder, fileName);
+    for (u32 tile = 0; tile < kTileCount; ++tile)
     {
-        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), name, kTileNameFormat.address, guest::Words{tile});
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.ts(), name, kTileNameFormat.address, guest::Words{tile});
         // The tile's texture made: (file, name, side, record), the format on the stack.
-        fe::direct<0x4d4080, rende::loadShapeTexture>(app, cpu, file, name, kTileSide, kTiles + kTileBytes * tile,
+        fe::direct<0x4d4080, rende::loadShapeTexture>(app, ts, file, name, kTileSide, kTiles + kTileBytes * tile,
                                                       kTileFormat);
     }
-    return *fe::direct<0x4e1890, ea::purgeBlock>(app, cpu, file);
+    return *fe::direct<0x4e1890, ea::purgeBlock>(app, ts, file);
 }
 
 /* sub_4647a0: the same records' textures filled from folder + fileName, then the
  * file freed. */
-x86::reg32 frontend::view::fillTiles(App* app, CPU& cpu, reg32 fileName, reg32 folder)
+nfs::u32 frontend::view::fillTiles(App* app, ThreadState& ts, u32 fileName, u32 folder)
 {
-    Guest guest(app, cpu);
-    const fe::Frame frame(guest, cpu, kTilesFrame);
-    const reg32 name = guest.frame();
-    const reg32 file = loadTileFile(app, cpu, guest, folder, fileName);
-    for (reg32 tile = 0; tile < kTileCount; ++tile)
+    Guest guest(app, ts);
+    const fe::Frame frame(guest, ts, kTilesFrame);
+    const u32 name = guest.frame();
+    const u32 file = loadTileFile(app, ts, guest, folder, fileName);
+    for (u32 tile = 0; tile < kTileCount; ++tile)
     {
-        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), name, kTileNameFormat.address, guest::Words{tile});
-        const reg32 shape = fe::direct<0x4ef1e0, eab::shapeFileFind>(app, cpu, file, name);
-        const reg32 texture = guest.dword(kTiles + kTileBytes * tile + kTileTexture);
-        fe::direct<0x4d5ed0, graphics::shapeIntoTextureOf>(app, cpu, texture, shape, kTileSide, kTileFormat);
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.ts(), name, kTileNameFormat.address, guest::Words{tile});
+        const u32 shape = fe::direct<0x4ef1e0, eab::shapeFileFind>(app, ts, file, name);
+        const u32 texture = guest.dword(kTiles + kTileBytes * tile + kTileTexture);
+        fe::direct<0x4d5ed0, graphics::shapeIntoTextureOf>(app, ts, texture, shape, kTileSide, kTileFormat);
     }
-    return *fe::direct<0x4e1890, ea::purgeBlock>(app, cpu, file);
+    return *fe::direct<0x4e1890, ea::purgeBlock>(app, ts, file);
 }
 
 /* ---------------------------------------------------------------------------
@@ -129,53 +129,53 @@ constexpr GuestString kCreditsFormat = { 0x53ab54, "IN_%d.fsh" };
 constexpr GuestString kCarFolderFormat = { 0x53ab60, "%s\\%s\\" };
 constexpr GuestString kInteriorStrings[] = { kInteriorFormat, kCredits, kCreditsFormat, kCarFolderFormat };
 
-constexpr reg32 kScreenFade = 0x559c60;            // a screen's fade out: nothing is loaded under it
-constexpr reg32 kCar = 0x664794;                   // the car to show
-constexpr reg32 kShownCar = 0x664798;              // the car shown
-constexpr reg32 kInteriorCar = 0x678940;           // the car whose interior the tiles hold
-constexpr reg32 kCarRootOwn = 0x7a28b4;            // the folder of the cars' own folders
-constexpr reg32 kCarRootCommon = 0x7a3234;         // the folder of the others' art
+constexpr u32 kScreenFade = 0x559c60;            // a screen's fade out: nothing is loaded under it
+constexpr u32 kCar = 0x664794;                   // the car to show
+constexpr u32 kShownCar = 0x664798;              // the car shown
+constexpr u32 kInteriorCar = 0x678940;           // the car whose interior the tiles hold
+constexpr u32 kCarRootOwn = 0x7a28b4;            // the folder of the cars' own folders
+constexpr u32 kCarRootCommon = 0x7a3234;         // the folder of the others' art
 
 /* The frame: six registers, then two buffers of 300 bytes. */
-constexpr reg32 kPathBytes = 300;
-constexpr reg32 kInteriorFrame = 24 + 2 * kPathBytes;
+constexpr u32 kPathBytes = 300;
+constexpr u32 kInteriorFrame = 24 + 2 * kPathBytes;
 
 }  // namespace
 
 /* sub_464eb0: the car's interior on the tiles, when the car is not the one they
  * hold.  Under a fade eax stays as it came; with the same car it is the car. */
-x86::reg32 frontend::view::loadInterior(App* app, CPU& cpu, reg32 eax)
+nfs::u32 frontend::view::loadInterior(App* app, ThreadState& ts, u32 eax)
 {
-    Guest guest(app, cpu);
-    const fe::Frame frame(guest, cpu, kInteriorFrame);
+    Guest guest(app, ts);
+    const fe::Frame frame(guest, ts, kInteriorFrame);
     if (guest.dword(kScreenFade) != 0)
         return eax;
-    const reg32 car = guest.dword(kCar);
+    const u32 car = guest.dword(kCar);
     if (car == guest.dword(kInteriorCar))
         return car;
     guest.setDword(kShownCar, car);
     guest.setDword(kInteriorCar, car);
 
-    const reg32 picture = guest.frame();
-    const reg32 folder = guest.frame() + kPathBytes;
-    const reg32 carFolder = *fe::direct<0x4392b0, load::folderOf>(app, cpu, car);
-    const reg32 stem = fe::direct<0x439290, frontend::showcase::carFileStem>(app, cpu, guest.dword(kShownCar));
-    fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), picture, kInteriorFormat.address, guest::Words{stem});
+    const u32 picture = guest.frame();
+    const u32 folder = guest.frame() + kPathBytes;
+    const u32 carFolder = *fe::direct<0x4392b0, load::folderOf>(app, ts, car);
+    const u32 stem = fe::direct<0x439290, frontend::showcase::carFileStem>(app, ts, guest.dword(kShownCar));
+    fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.ts(), picture, kInteriorFormat.address, guest::Words{stem});
 
-    const reg32 screen = fe::direct<0x44ae00, frontend::loop::currentMenuName>(app, cpu);
-    if (fe::direct<kStrcmp, watcom::clib::strcmp>(guest.app(), guest.cpu(), screen, kCredits.address) == 0)
+    const u32 screen = fe::direct<0x44ae00, frontend::loop::currentMenuName>(app, ts);
+    if (fe::direct<kStrcmp, watcom::clib::strcmp>(guest.app(), guest.ts(), screen, kCredits.address) == 0)
     {
         // By the car's number there.  The folder copied is the game's own dead store:
         // both ways on write over it.
-        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), picture, kCreditsFormat.address, guest::Words{guest.dword(kShownCar)});
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.ts(), picture, kCreditsFormat.address, guest::Words{guest.dword(kShownCar)});
         guest.copyString(folder, kCarRootCommon);
     }
 
-    if (*fe::direct<0x4395c0, load::flag4Of>(guest.app(), guest.cpu(), guest.dword(kShownCar)) != 0)
-        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), folder, kCarFolderFormat.address, guest::Words{kCarRootOwn, carFolder});
+    if (*fe::direct<0x4395c0, load::flag4Of>(guest.app(), guest.ts(), guest.dword(kShownCar)) != 0)
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.ts(), folder, kCarFolderFormat.address, guest::Words{kCarRootOwn, carFolder});
     else
         guest.copyString(folder, kCarRootCommon);
-    return guest::direct<0x4647a0, view::fillTiles>(app, cpu, picture, folder);
+    return guest::direct<0x4647a0, view::fillTiles>(app, ts, picture, folder);
 }
 
 /* ---------------------------------------------------------------------------
@@ -185,49 +185,49 @@ x86::reg32 frontend::view::loadInterior(App* app, CPU& cpu, reg32 eax)
 namespace
 {
 
-constexpr reg32 kDragging = 0x67894c;              // port_view's: the mouse drags the map
-constexpr reg32 kPanActive = 0x678950;             // port_view's: the map is panning
-constexpr reg32 kStateDragging = 2, kStatePanning = 1;
-constexpr reg32 kStateIdle = 0xfffffffd;           // -3
+constexpr u32 kDragging = 0x67894c;              // port_view's: the mouse drags the map
+constexpr u32 kPanActive = 0x678950;             // port_view's: the map is panning
+constexpr u32 kStateDragging = 2, kStatePanning = 1;
+constexpr u32 kStateIdle = 0xfffffffd;           // -3
 
 constexpr std::uint8_t kRestoreBcSiDi = fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi;
 
 }  // namespace
 
 /* sub_4652f0: the table's +0x14. */
-x86::reg32 frontend::view::widgetState(App* app, CPU& cpu)
+nfs::u32 frontend::view::widgetState(App* app, ThreadState& ts)
 {
-    const Guest guest(app, cpu);
+    const Guest guest(app, ts);
     if (guest.dword(kDragging) != 0)
         return kStateDragging;
     return guest.dword(kPanActive) != 0 ? kStatePanning : kStateIdle;
 }
 
-x86::reg32 frontend::viewMakeTiles(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 frontend::viewMakeTiles(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site{ "sub_464700", 0, 0, kTilesStrings, std::size(kTilesStrings), kRestoreBcSiDi };
-    const reg32 fileName = args.eax, folder = args.edx;
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return view::makeTiles(app, cpu, fileName, folder); });
+    const u32 fileName = args.eax, folder = args.edx;
+    return fe::runThunk(app, ts, args, site, [&](Guest&) { return view::makeTiles(app, ts, fileName, folder); });
 }
 
-x86::reg32 frontend::viewFillTiles(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 frontend::viewFillTiles(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site{ "sub_4647a0", 0, 0, kTilesStrings, std::size(kTilesStrings), kRestoreBcSiDi };
-    const reg32 fileName = args.eax, folder = args.edx;
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return view::fillTiles(app, cpu, fileName, folder); });
+    const u32 fileName = args.eax, folder = args.edx;
+    return fe::runThunk(app, ts, args, site, [&](Guest&) { return view::fillTiles(app, ts, fileName, folder); });
 }
 
-x86::reg32 frontend::viewLoadInterior(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 frontend::viewLoadInterior(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site{ "sub_464eb0", 0, 0, kInteriorStrings, std::size(kInteriorStrings), fe::kRestoreAll };
-    const reg32 eax = args.eax;
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return view::loadInterior(app, cpu, eax); });
+    const u32 eax = args.eax;
+    return fe::runThunk(app, ts, args, site, [&](Guest&) { return view::loadInterior(app, ts, eax); });
 }
 
-x86::reg32 frontend::viewWidgetState(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 frontend::viewWidgetState(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site{ "sub_4652f0", 0, 0, nullptr, 0, 0 };
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return view::widgetState(app, cpu); });
+    return fe::runThunk(app, ts, args, site, [&](Guest&) { return view::widgetState(app, ts); });
 }
 
 }

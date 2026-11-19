@@ -1,8 +1,8 @@
 #include <lib/glfuncs.h>
-#include <x86.h>
+#include <game_types.h>
 #include <SDL3/SDL.h>
 
-namespace win32
+namespace nfs
 {
 
 #if NFS_GL_NEEDS_LOADER

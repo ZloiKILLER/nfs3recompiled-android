@@ -1,32 +1,32 @@
 #ifndef LIB_PALETTE_H_
 #define LIB_PALETTE_H_
 
-#include <lib/winapp.h>
+#include <lib/app.h>
 
-namespace win32
+namespace nfs
 {
 
 class Renderer;
 
-struct PALETTEENTRY
+/* A palette's colour, as the game keeps it. */
+struct Colour
 {
-    x86::reg8 peRed;
-    x86::reg8 peGreen;
-    x86::reg8 peBlue;
-    x86::reg8 peFlags;
+    nfs::u8 red;
+    nfs::u8 green;
+    nfs::u8 blue;
+    nfs::u8 flags;
 };
-typedef PALETTEENTRY* LPPALETTEENTRY;
 
 class Palette : public GenericResource
 {
 public:
-    Palette(Renderer* renderer, const PALETTEENTRY* entries, x86::reg32 entryCount);
+    Palette(Renderer* renderer, const Colour* entries, nfs::u32 entryCount);
     ~Palette();
 
-    void setEntries(const PALETTEENTRY* entries, x86::reg32 firstEntry, x86::reg32 entryCount);
+    void setEntries(const Colour* entries, nfs::u32 firstEntry, nfs::u32 entryCount);
 private:
-    x86::reg32      m_paletteSize;
-    x86::reg32      m_palette[256];
+    nfs::u32      m_paletteSize;
+    nfs::u32      m_palette[256];
     Renderer*       m_renderer;
 };
 

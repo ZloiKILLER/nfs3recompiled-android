@@ -2,10 +2,9 @@
 #include "native_frontend_eab.h"
 #include "port_snd_stream.h"
 #include "port_timer.h"
-#include "host_threads.h"
+#include "os_time.h"
 
-#include <lib/winapp.h>
-#include <winapi/types.h>
+#include <lib/app.h>
 
 #include <cstdint>
 
@@ -48,41 +47,36 @@ namespace
 using stream::safepoint;
 
 constexpr int32_t kCallbackCount = 8;
-constexpr Table<reg32> kCallbacks{0x79c130};
-constexpr Var<reg32> kTimeWhole{0x79c16c}, kTimeStep{0x79c170}, kTimerResolution{0x79c174}, kTimeNext{0x79c178};
-constexpr Var<reg32> kTimerEvent{0x79c17c}, kTimerHandle{0x79c194}, kTimeFraction{0x79c198}, kTimerRunning{0x79c19c};
-constexpr Var<reg32> kThreadTicks{0x79c1a0}, kClockTicks{0x79c1a4};
-constexpr Var<reg32> kServerEvent{0x79c168};
-constexpr Var<reg32> kBusy{0x55e2c4}, kResyncs{0x55e2d0}, kStarts{0x55e2d4};
-constexpr Var<reg32> kTimerRate{0x5643d8}, kExitFunction{0x56441c};
-constexpr reg32 kTimerThread = 0x79c180, kServerThread = 0x79c154;  // thread slots, passed by address
-
-// Windows' multimedia timer, by its imports' slots.
-// kTimeGetTime: GetTickCount's slot (the game takes the time from it).
-constexpr reg32 kTimeGetTime = 0x534568, kTimeSetEvent = 0x534660, kTimeKillEvent = 0x53465c;
-constexpr reg32 kTimeBeginPeriod = 0x534650, kTimeEndPeriod = 0x534654, kTimeGetDevCaps = 0x534658;
+constexpr Table<u32> kCallbacks{0x79c130};
+constexpr Var<u32> kTimeWhole{0x79c16c}, kTimeStep{0x79c170}, kTimerResolution{0x79c174}, kTimeNext{0x79c178};
+constexpr Var<u32> kTimerEvent{0x79c17c}, kTimerHandle{0x79c194}, kTimeFraction{0x79c198}, kTimerRunning{0x79c19c};
+constexpr Var<u32> kThreadTicks{0x79c1a0}, kClockTicks{0x79c1a4};
+constexpr Var<u32> kServerEvent{0x79c168};
+constexpr Var<u32> kBusy{0x55e2c4}, kResyncs{0x55e2d0}, kStarts{0x55e2d4};
+constexpr Var<u32> kTimerRate{0x5643d8}, kExitFunction{0x56441c};
+constexpr u32 kTimerThread = 0x79c180, kServerThread = 0x79c154;  // thread slots, passed by address
 
 // The timer's own, whose addresses are handed to the game's code and Windows.
-constexpr reg32 kThreadFunction = 0x48eb90, kTickFunction = 0x48ed30, kStopFunction = 0x48ef50;
-constexpr reg32 kClearFunction = 0x48ed00;
+constexpr u32 kThreadFunction = 0x48eb90, kTickFunction = 0x48ed30, kStopFunction = 0x48ef50;
+constexpr u32 kClearFunction = 0x48ed00;
 
 /* The registers the timer's thread is entered with, which it hands the functions registered to run
  * with each tick (a call through a pointer, as the code makes it). */
 struct Regs
 {
-    reg32 eax = 0, edx = 0, ebx = 0, ecx = 0;
+    u32 eax = 0, edx = 0, ebx = 0, ecx = 0;
 };
 
 /* A typed core of another file called as C++ (guest::direct) with esp as the code has it at the
  * call; nullopt when the game stopped in it.  The menus' (native_frontend_*) throw
  * fe::Terminated when it did. */
-template <reg32 Address, auto Core, typename... Args>
-std::optional<reg32> menuCore(App* app, CPU& cpu, Args... args)
+template <u32 Address, auto Core, typename... Args>
+std::optional<u32> menuCore(App* app, ThreadState& ts, Args... args)
 {
     try
     {
-        const reg32 result = guest::direct<Address, Core>(app, cpu, args...);
-        if (cpu.terminate)
+        const u32 result = guest::direct<Address, Core>(app, ts, args...);
+        if (ts.terminate)
             return std::nullopt;
         return result;
     }
@@ -99,10 +93,10 @@ std::optional<reg32> menuCore(App* app, CPU& cpu, Args... args)
 struct Calls
 {
     App* app;
-    CPU& cpu;
-    reg32 esp;
-    reg32 eax;
-    bool take(const std::optional<reg32>& result)
+    ThreadState& ts;
+    u32 esp;
+    u32 eax;
+    bool take(const std::optional<u32>& result)
     {
         if (!result)
             return false;
@@ -112,74 +106,72 @@ struct Calls
     /* 0x4dfb00: an event, auto-reset. */
     bool createEvent()
     {
-        cpu.esp = esp;
-        return take(guest::direct<0x4dfb00, ea::newAutoEvent>(app, cpu));
+        ts.sp = esp;
+        return take(guest::direct<0x4dfb00, ea::newAutoEvent>(app, ts));
     }
     /* 0x4dfb20: `event` set. */
-    bool setEvent(reg32 event)
+    bool setEvent(u32 event)
     {
-        cpu.esp = esp;
-        return take(guest::direct<0x4dfb20, ea::eventPosted>(app, cpu, event));
+        ts.sp = esp;
+        return take(guest::direct<0x4dfb20, ea::eventPosted>(app, ts, event));
     }
     /* 0x4dfb70: `event` waited on. */
-    bool waitEvent(reg32 event)
+    bool waitEvent(u32 event)
     {
-        cpu.esp = esp;
-        return take(guest::direct<0x4dfb70, ea::eventWaited>(app, cpu, event));
+        ts.sp = esp;
+        return take(guest::direct<0x4dfb70, ea::eventWaited>(app, ts, event));
     }
     /* 0x4dfc00: `event` closed. */
-    bool closeEvent(reg32 event)
+    bool closeEvent(u32 event)
     {
-        cpu.esp = esp;
-        return take(guest::direct<0x4dfc00, ea::eventClosed>(app, cpu, event));
+        ts.sp = esp;
+        return take(guest::direct<0x4dfc00, ea::eventClosed>(app, ts, event));
     }
     /* 0x4df8e0: `ms` slept. */
-    bool sleep(reg32 ms)
+    bool sleep(u32 ms)
     {
-        cpu.esp = esp;
-        return take(guest::direct<0x4df8e0, ea::sleepFor>(app, cpu, ms));
+        ts.sp = esp;
+        return take(guest::direct<0x4df8e0, ea::sleepFor>(app, ts, ms));
     }
     /* 0x4df7a0: a thread running `function`, its stack `stackBytes`, priority `priority`, into the record
      * at `record`. */
-    bool createThread(reg32 function, reg32 stackBytes, reg32 priority, reg32 record)
+    bool createThread(u32 function, u32 stackBytes, u32 priority, u32 record)
     {
-        cpu.esp = esp;
-        return take(guest::direct<0x4df7a0, ea::threadStarted>(app, cpu, function, stackBytes, priority, record));
+        ts.sp = esp;
+        return take(guest::direct<0x4df7a0, ea::threadStarted>(app, ts, function, stackBytes, priority, record));
     }
     /* 0x4f2a78: the runtime's atexit. */
-    bool atExit(reg32 function)
+    bool atExit(u32 function)
     {
-        cpu.esp = esp;
-        return take(menuCore<0x4f2a78, frontend::eab::atexitJump>(app, cpu, function));
+        ts.sp = esp;
+        return take(menuCore<0x4f2a78, frontend::eab::atexitJump>(app, ts, function));
     }
     /* 0x4f2a60: the low timer's event signalled, if it has one (eax as it is when it has none). */
     bool tickDone()
     {
-        cpu.esp = esp;
-        return take(menuCore<0x4f2a60, frontend::eab::lowTimerSignal>(app, cpu, eax));
+        ts.sp = esp;
+        return take(menuCore<0x4f2a60, frontend::eab::lowTimerSignal>(app, ts, eax));
     }
     /* A function through a pointer (a registered one), `a` its registers. */
-    bool with(reg32 target, Args a, std::initializer_list<reg32> stack = {})
+    bool with(u32 target, Args a, std::initializer_list<u32> stack = {})
     {
-        cpu.esp = esp;
-        x86::Args registers;
+        ts.sp = esp;
+        nfs::Args registers;
         registers.eax = a.eax;
         registers.edx = a.edx;
         registers.ebx = a.ebx;
         registers.ecx = a.ecx;
-        const std::optional<reg32> result = guest::pointerCall(app, cpu, target, registers, stack);
+        const std::optional<u32> result = guest::pointerCall(app, ts, target, registers, stack);
         if (!result)
             return false;
         eax = *result;
         return true;
     }
-    /* A Windows function (`Function`) handed `words`: the port's own, called as C++
-     * (native_windows.h). */
-    template <reg32 Slot, auto Function, typename... Words>
-    bool windows(Words... words)
+    /* The game's milliseconds (os::time) into eax. */
+    void ticks()
     {
-        cpu.esp = esp;
-        return take(guest::windows<Slot, Function>(app, cpu, words...));  // every one of them returns a value
+        ts.sp = esp;
+        eax = os::time::ticks(app, ts);
     }
 };
 
@@ -189,19 +181,18 @@ struct Calls
  * (1193 / 65536 of the milliseconds' count: the code's fixed point), and the
  * registered functions run, each handed its place in the table times 4,
  * until one that is not there.  eax as the event's close leaves it. */
-Result runTimer(App* app, CPU& cpu, reg32 esp, Regs r)
+Result runTimer(App* app, ThreadState& ts, u32 esp, Regs r)
 {
-    Calls c{app, cpu, esp - 5 * 4, r.eax};
-    if (!c.windows<kTimeGetTime, &host::ticks>())
-        return {};
-    reg32 last = c.eax;
+    Calls c{app, ts, esp - 5 * 4, r.eax};
+    c.ticks();
+    u32 last = c.eax;
     if (!c.createEvent())
         return {};
     int32_t fraction = 0;
     kTimerEvent.set(app, c.eax);
     for (;;)
     {
-        safepoint(app, cpu);
+        safepoint(app, ts);
         if (!c.waitEvent(kTimerEvent(app)))
             return {};
         if (kTimerRunning(app) == 0)
@@ -216,20 +207,19 @@ Result runTimer(App* app, CPU& cpu, reg32 esp, Regs r)
         }
         kClockTicks.set(app, kClockTicks(app) + 1);
         kThreadTicks.set(app, kThreadTicks(app) + 1);
-        if (!c.windows<kTimeGetTime, &host::ticks>())
-            return {};
-        const reg32 now = c.eax;
-        fraction = int32_t(reg32(fraction) + (now - last) * 0x4a9u);
+        c.ticks();
+        const u32 now = c.eax;
+        fraction = int32_t(u32(fraction) + (now - last) * 0x4a9u);
         last = now;
         if (fraction > 0xffff)
         {
-            kTimeWhole.set(app, kTimeWhole(app) + reg32(fraction >> 16));
+            kTimeWhole.set(app, kTimeWhole(app) + u32(fraction >> 16));
             fraction &= 0xffff;
         }
         for (int32_t i = 0; i < kCallbackCount && kCallbacks(app, i) != 0; ++i)
         {
-            safepoint(app, cpu);
-            if (!c.with(kCallbacks(app, i), {reg32(i) * 4, r.edx, r.ebx, r.ecx}))
+            safepoint(app, ts);
+            if (!c.with(kCallbacks(app, i), {u32(i) * 4, r.edx, r.ebx, r.ecx}))
                 return {};
         }
     }
@@ -249,50 +239,43 @@ int32_t clearCallbacks(App* app)
  * in a millisecond when late, the time taken again when late by more than a
  * second -- unless the timer is stopped; the timer's thread woken, and the
  * sound thread; the runtime's hook.  eax as that call leaves it. */
-Result tickTimer(App* app, CPU& cpu, reg32 esp)
+Result tickTimer(App* app, ThreadState& ts, u32 esp)
 {
-    const reg32 frame = esp - 4 * 4;
-    Calls c{app, cpu, frame, kTimeStep(app)};
-    const reg32 sum = c.eax + kTimeFraction(app);
+    const u32 frame = esp - 4 * 4;
+    Calls c{app, ts, frame, kTimeStep(app)};
+    const u32 sum = c.eax + kTimeFraction(app);
     const bool running = kTimerRunning(app) != 0;
-    c.eax = reg32(int32_t(sum) >> 16);
+    c.eax = u32(int32_t(sum) >> 16);
     kTimeFraction.set(app, sum & 0xffff);
     kTimeNext.set(app, kTimeNext(app) + c.eax);
     if (running)
     {
-        if (!c.windows<kTimeGetTime, &host::ticks>())
-            return {};
-        const reg32 late = kTimeNext(app) - c.eax;
+        c.ticks();
+        const u32 late = kTimeNext(app) - c.eax;
         c.eax = late - 1;
         if (int32_t(c.eax) < 1)
         {
             if (int32_t(c.eax) < -1000)
             {
-                if (!c.windows<kTimeGetTime, &host::ticks>())
-                    return {};
+                c.ticks();
                 c.eax += 1;
                 kTimeNext.set(app, c.eax);
                 kResyncs.set(app, kResyncs(app) + 1);
             }
             c.eax = 1;
         }
-        // timeSetEvent(delay, resolution, this callback, 0, one shot)
-        if (!c.windows<kTimeSetEvent, &host::startTimer>(c.eax, kTimerResolution(app), kTickFunction, 0, 0))
+        // The next shot: this callback, handed 0, in eax ms.
+        ts.sp = c.esp;
+        const std::optional<os::Handle> timer = os::timers::start(app, ts, c.eax, kTickFunction, 0);
+        if (!timer)
             return {};
+        c.eax = *timer;
         kTimerHandle.set(app, c.eax);
-        if (c.eax == 0)
-        {
-            const reg32 resolution = kTimerResolution(app);
-            kTimerRate.set(app, 0);
-            kTimerRunning.set(app, 0);
-            if (!c.windows<kTimeEndPeriod, &host::timerPeriodEnd>(resolution))
-                return {};
-        }
     }
-    const reg32 event = kTimerEvent(app);
+    const u32 event = kTimerEvent(app);
     if (event != 0 && kBusy(app) == 0 && !c.setEvent(event))
         return {};
-    const reg32 server = kServerEvent(app);
+    const u32 server = kServerEvent(app);
     if (server != 0 && !c.setEvent(server))
         return {};
     if (!c.tickDone())
@@ -304,13 +287,13 @@ Result tickTimer(App* app, CPU& cpu, reg32 esp)
  * free place, unless it is there already.  The place the search ended at: 8
  * when it found none, the function's own when it was there.  (The busy
  * count is raised and lowered, in a register: it ends as it was.) */
-int32_t addCallback(App* app, reg32 function)
+int32_t addCallback(App* app, u32 function)
 {
-    const reg32 busy = kBusy(app);
+    const u32 busy = kBusy(app);
     int32_t free = -1, i = 0;
     for (; i < kCallbackCount; ++i)
     {
-        const reg32 entry = kCallbacks(app, i);
+        const u32 entry = kCallbacks(app, i);
         if (entry != 0 || free >= 0)
         {
             if (function == entry)
@@ -331,9 +314,9 @@ int32_t addCallback(App* app, reg32 function)
 /* 0x48ee90: `function` no longer registered -- the ones after it moved down a
  * place, the last place emptied.  The place the search ended at, after the
  * moving: 7 when it found it, 8 when it did not. */
-int32_t removeCallback(App* app, reg32 function)
+int32_t removeCallback(App* app, u32 function)
 {
-    const reg32 busy = kBusy(app);
+    const u32 busy = kBusy(app);
     int32_t i = 0;
     while (i < kCallbackCount && kCallbacks(app, i) != function)
         ++i;
@@ -351,26 +334,28 @@ int32_t removeCallback(App* app, reg32 function)
  * its period ended, the thread woken to find the flag and waited for until it
  * has closed its event; the state cleared.  eax as the last call leaves it
  * (`eax` as the code is entered with when it ran none). */
-Result stopClock(App* app, CPU& cpu, reg32 esp, reg32 eax)
+Result stopClock(App* app, ThreadState& ts, u32 esp, u32 eax)
 {
-    const reg32 frame = esp - 4 * 4;
-    Calls c{app, cpu, frame, eax};
+    const u32 frame = esp - 4 * 4;
+    Calls c{app, ts, frame, eax};
     if (kTimerRunning(app) != 0)
     {
-        const reg32 handle = kTimerHandle(app);
+        const u32 handle = kTimerHandle(app);
         kTimerRunning.set(app, 0);
         kTimerRate.set(app, 0);
-        if (handle != 0 && !c.windows<kTimeKillEvent, &host::killTimer>(handle))
-            return {};
-        c.eax = kTimerResolution(app);
-        if (!c.windows<kTimeEndPeriod, &host::timerPeriodEnd>(kTimerResolution(app)))
-            return {};
-        const reg32 event = kTimerEvent(app);
+        if (handle != 0)
+        {
+            ts.sp = c.esp;
+            os::timers::stop(app, handle);
+        }
+        // The port's timers keep to the millisecond: there is no period to end, 0 as its answer.
+        c.eax = 0;
+        const u32 event = kTimerEvent(app);
         if (event != 0 && !c.setEvent(event))
             return {};
         for (;;)
         {
-            safepoint(app, cpu);
+            safepoint(app, ts);
             if (kTimerHandle(app) == 0 || kTimerEvent(app) == 0)
                 break;
             if (!c.sleep(1))
@@ -393,41 +378,38 @@ Result stopClock(App* app, CPU& cpu, reg32 esp, reg32 eax)
  * the game's tick waited for to move on for as long as 5 ticks; if it does
  * not the timer is stopped and started again, once more.  eax as the way out
  * leaves it. */
-Result startClock(App* app, CPU& cpu, reg32 esp, reg32 rate)
+Result startClock(App* app, ThreadState& ts, u32 esp, u32 rate)
 {
-    const reg32 ebpValue = esp - 6 * 4;   // ebx, ecx, edx, esi, edi, ebp pushed; two locals below
-    const reg32 frame = ebpValue - 8;
-    Calls c{app, cpu, frame, rate};
+    const u32 ebpValue = esp - 6 * 4;   // ebx, ecx, edx, esi, edi, ebp pushed; two locals below
+    const u32 frame = ebpValue - 8;
+    Calls c{app, ts, frame, rate};
     for (;;)
     {
-        safepoint(app, cpu);
+        safepoint(app, ts);
         // The stop at the top of a try: the rate stays in edi, eax is the
         // stop's.
         {
-            const Result r = stopClock(app, cpu, frame - 4, c.eax);
+            const Result r = stopClock(app, ts, frame - 4, c.eax);
             if (!r)
                 return {};
-            c.eax = reg32(*r);
+            c.eax = u32(*r);
         }
         int32_t ticksPerSecond = int32_t(rate);
         if (rate == 0 || ticksPerSecond < 1 || ticksPerSecond > 10000)
             ticksPerSecond = 100;
-        reg32 flag = reg32(ticksPerSecond);   // esi
-        c.eax = 0x3e80000u / reg32(ticksPerSecond);
+        u32 flag = u32(ticksPerSecond);   // esi
+        c.eax = 0x3e80000u / u32(ticksPerSecond);
         kTimeStep.set(app, c.eax);
         kTimeFraction.set(app, 0);
         kClockTicks.set(app, 0);
         kTimeWhole.set(app, 0);
-        const reg32 capabilities = ebpValue - 8;
+        const u32 capabilities = ebpValue - 8;
         c.eax = capabilities;
-        if (!c.windows<kTimeGetDevCaps, &host::timerCaps>(capabilities, 8))
-            return {};
-        if (c.eax != 0)
-        {
-            kTimerRunning.set(app, 0);
-            kTimerRate.set(app, 0);
-            return int32_t(c.eax);
-        }
+        // The timers' shortest and longest delays into the frame, as the code asks for them: 0 as the
+        // answer, they are told.
+        guest::put(app, capabilities, os::timers::kShortest);
+        guest::put(app, capabilities + 4, os::timers::kLongest);
+        c.eax = 0;
         // The capabilities are overwritten by 1s (a minimum and a maximum
         // that nothing reads); the resolution is 1.
         kTimerResolution.set(app, 1);
@@ -447,18 +429,8 @@ Result startClock(App* app, CPU& cpu, reg32 esp, reg32 rate)
             kTimerRate.set(app, 0);
             return 0;
         }
-        const reg32 resolution = kTimerResolution(app);
-        if (!c.windows<kTimeBeginPeriod, &host::timerPeriodBegin>(resolution))
-            return {};
-        if (c.eax != 0)
-        {
-            const reg32 event = kTimerEvent(app);
-            kTimerRate.set(app, 0);
-            kTimerRunning.set(app, 0);
-            if (!c.setEvent(event))
-                return {};
-            return int32_t(c.eax);
-        }
+        // The port's timers keep to the millisecond: there is no period to begin, 0 as its answer.
+        c.eax = 0;
         // The stop run at exit.
         if (!c.atExit(kStopFunction))
             return {};
@@ -467,33 +439,30 @@ Result startClock(App* app, CPU& cpu, reg32 esp, reg32 rate)
         if (flag != 0 && kTimerHandle(app) == 0)
         {
             // The first tick by hand: the busy count 1 meanwhile.
-            const reg32 busy = kBusy(app);
+            const u32 busy = kBusy(app);
             kBusy.set(app, 1);
             c.eax = 1;
-            if (!c.windows<kTimeGetTime, &host::ticks>())
-                return {};
+            c.ticks();
             kTimeNext.set(app, c.eax);
             // call 0x48ed30 with five words of 0, which it does not read
-            const Result tick = tickTimer(app, cpu, frame - 5 * 4 - 4);
+            const Result tick = tickTimer(app, ts, frame - 5 * 4 - 4);
             if (!tick)
                 return {};
-            c.eax = reg32(*tick);
+            c.eax = u32(*tick);
             kBusy.set(app, busy);
         }
         // The game's tick waited for to move on, for 5 ticks of the rate at most.
-        const reg32 before = kClockTicks(app);
+        const u32 before = kClockTicks(app);
         c.eax = before;
-        if (!c.windows<kTimeGetTime, &host::ticks>())
-            return {};
+        c.ticks();
         // eax = 5 * the rate (lea, add) while the first look at the clock is made.
-        const reg32 started = c.eax;
+        const u32 started = c.eax;
         c.eax = 5 * kTimerRate(app);
-        const reg32 deadline = started + c.eax;
+        const u32 deadline = started + c.eax;
         for (;;)
         {
-            safepoint(app, cpu);
-            if (!c.windows<kTimeGetTime, &host::ticks>())
-                return {};
+            safepoint(app, ts);
+            c.ticks();
             if (c.eax >= deadline)
                 break;
             c.eax = kClockTicks(app);
@@ -505,10 +474,10 @@ Result startClock(App* app, CPU& cpu, reg32 esp, reg32 rate)
         c.eax = kClockTicks(app);
         if (before == c.eax)
         {
-            const Result r = stopClock(app, cpu, frame - 4, c.eax);
+            const Result r = stopClock(app, ts, frame - 4, c.eax);
             if (!r)
                 return {};
-            c.eax = reg32(*r);
+            c.eax = u32(*r);
             kStarts.set(app, kStarts(app) + 1);
             if (int32_t(kStarts(app)) < 2)
                 continue;
@@ -523,78 +492,78 @@ Result startClock(App* app, CPU& cpu, reg32 esp, reg32 rate)
 
 /* The game's entries: thunks around the cores above. */
 
-x86::reg32 timerThread(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 timerThread(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, runTimer(app, cpu, e.esp, Regs{e.eax, e.edx, e.ebx, e.ecx}));
+    const Entry e(ts, args);
+    return e.finish(ts, args, runTimer(app, ts, e.esp, Regs{e.eax, e.edx, e.ebx, e.ecx}));
 }
 
-x86::reg32 clearTimerCallbacks(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 clearTimerCallbacks(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.back(cpu, args, reg32(clearCallbacks(app)));
+    const Entry e(ts, args);
+    return e.back(ts, args, u32(clearCallbacks(app)));
 }
 
-x86::reg32 timerTick(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 timerTick(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, tickTimer(app, cpu, e.esp), 0x14);
+    const Entry e(ts, args);
+    return e.finish(ts, args, tickTimer(app, ts, e.esp), 0x14);
 }
 
-x86::reg32 addTimerCallback(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 addTimerCallback(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.back(cpu, args, reg32(addCallback(app, e.eax)));
+    const Entry e(ts, args);
+    return e.back(ts, args, u32(addCallback(app, e.eax)));
 }
 
-x86::reg32 removeTimerCallback(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 removeTimerCallback(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.back(cpu, args, reg32(removeCallback(app, e.eax)));
+    const Entry e(ts, args);
+    return e.back(ts, args, u32(removeCallback(app, e.eax)));
 }
 
-x86::reg32 stopTimer(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 stopTimer(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, stopClock(app, cpu, e.esp, e.eax));
+    const Entry e(ts, args);
+    return e.finish(ts, args, stopClock(app, ts, e.esp, e.eax));
 }
 
-x86::reg32 startTimer(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 startTimer(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, startClock(app, cpu, e.esp, e.eax));
+    const Entry e(ts, args);
+    return e.finish(ts, args, startClock(app, ts, e.esp, e.eax));
 }
 
 /* The typed cores of the thunks above, for callers that call them as C++ (port_timer.h). */
-std::optional<reg32> timerStarted(App* app, CPU& cpu, reg32 rate)
+std::optional<u32> timerStarted(App* app, ThreadState& ts, u32 rate)
 {
-    const Result r = startClock(app, cpu, cpu.esp, rate);
+    const Result r = startClock(app, ts, ts.sp, rate);
     if (!r)
         return std::nullopt;
-    return reg32(*r);
+    return u32(*r);
 }
 
-std::optional<reg32> timerStopped(App* app, CPU& cpu, reg32 unchanged)
+std::optional<u32> timerStopped(App* app, ThreadState& ts, u32 unchanged)
 {
-    const Result r = stopClock(app, cpu, cpu.esp, unchanged);
+    const Result r = stopClock(app, ts, ts.sp, unchanged);
     if (!r)
         return std::nullopt;
-    return reg32(*r);
+    return u32(*r);
 }
 
-reg32 timerCallbackAdded(App* app, reg32 function)
+u32 timerCallbackAdded(App* app, u32 function)
 {
-    return reg32(addCallback(app, function));
+    return u32(addCallback(app, function));
 }
 
-reg32 timerCallbackRemoved(App* app, reg32 function)
+u32 timerCallbackRemoved(App* app, u32 function)
 {
-    return reg32(removeCallback(app, function));
+    return u32(removeCallback(app, function));
 }
 
-reg32 timerCallbacksCleared(App* app)
+u32 timerCallbacksCleared(App* app)
 {
-    return reg32(clearCallbacks(app));
+    return u32(clearCallbacks(app));
 }
 
 }  // namespace port

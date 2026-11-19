@@ -11,7 +11,7 @@
 
 #include <lib/glcompat.h>
 
-namespace win32
+namespace nfs
 {
 
 #if NFS_GL_NEEDS_LOADER

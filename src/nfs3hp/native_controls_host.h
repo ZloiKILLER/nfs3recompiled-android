@@ -1,7 +1,7 @@
 #ifndef NFS3HP_NATIVE_CONTROLS_HOST_H
 #define NFS3HP_NATIVE_CONTROLS_HOST_H
 
-#include <lib/winapp.h>
+#include <lib/app.h>
 
 #include <optional>
 
@@ -26,11 +26,11 @@ enum class Object
 };
 
 /* DirectInputCreateA (by its thunk, 0x533ee0): its four words. */
-constexpr x86::reg32 kCreate = 0xffffffff;
+constexpr nfs::u32 kCreate = 0xffffffff;
 
 /* The same, the result (the HRESULT) given back instead of put in eax; nothing when the game stopped. */
-std::optional<x86::reg32> directInputResult(win32::WinApplication* app, x86::CPU& cpu, Object object,
-                                            x86::reg32 method);
+std::optional<nfs::u32> directInputResult(nfs::App* app, nfs::ThreadState& ts, Object object,
+                                            nfs::u32 method);
 
 }  // namespace controls
 }  // namespace nfs3hp

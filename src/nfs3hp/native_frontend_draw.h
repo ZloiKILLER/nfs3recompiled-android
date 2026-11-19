@@ -8,9 +8,9 @@
  * the game's code calls each by address.
  *
  * They are written as their code is, register by register: each takes its arguments into the
- * registers the game's function takes them in, runs on `cpu` as the code does, and returns what
+ * registers the game's function takes them in, runs on `ts` as the code does, and returns what
  * it leaves in eax -- or nothing, its value left on the x87's stack.  When the game stopped in a
- * call they return at once with cpu.terminate set, as the code does -- they do not throw -- and
+ * call they return at once with ts.terminate set, as the code does -- they do not throw -- and
  * so do their calls by address here. */
 namespace nfs3hp
 {
@@ -19,16 +19,16 @@ namespace frontend
 namespace draw
 {
 
-using App = win32::WinApplication;
-using CPU = x86::CPU;
-using reg32 = x86::reg32;
+using App = nfs::App;
+using ThreadState = nfs::ThreadState;
+using u32 = nfs::u32;
 
 // The game's 0x469520: the value of the slider at `slider`, which its code leaves on the x87's stack.
-double sliderStoredValue(App* app, CPU& cpu, reg32 slider);
+double sliderStoredValue(App* app, ThreadState& ts, u32 slider);
 // The game's 0x46afd0: value `end` of the two-axis slider at `slider`, which its code leaves on the x87's stack.
-double twoAxisValue(App* app, CPU& cpu, reg32 slider, reg32 end);
+double twoAxisValue(App* app, ThreadState& ts, u32 slider, u32 end);
 // The game's 0x4956f0: the .qfs file named at `fileName` loaded with the loader's flags (the game's code has them in edx), the menus' extension put after a name without one.
-reg32 loadQfsFlags(App* app, CPU& cpu, reg32 fileName, reg32 flags);
+u32 loadQfsFlags(App* app, ThreadState& ts, u32 fileName, u32 flags);
 
 }  // namespace draw
 }  // namespace frontend

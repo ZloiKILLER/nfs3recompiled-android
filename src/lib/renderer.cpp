@@ -121,7 +121,7 @@ inline void tick(const char*) {}
 #endif
 }
 
-namespace win32
+namespace nfs
 {
 
 /* Fraction of the picture's own height, not the window's: the game's dialog
@@ -253,7 +253,7 @@ static SDL_GLContext createContext(SDL_Window* window)
     return SDL_GL_CreateContext(window);
 }
 
-Renderer::Renderer(WinApplication* application, Window *window)
+Renderer::Renderer(App* application, Window *window)
     :   m_application(application)
     ,   m_window(window)
     ,   m_renderer(createContext(m_window->m_window))
@@ -422,14 +422,14 @@ void Renderer::clearCurrent()
     SDL_GL_MakeCurrent(m_window->m_window, nullptr);
 }
 
-void Renderer::setVideoMode(x86::reg32 w, x86::reg32 h, x86::reg32 bpp)
+void Renderer::setVideoMode(nfs::u32 w, nfs::u32 h, nfs::u32 bpp)
 {
     // Guest LFB remains two-byte RGB565 for Glide; allocate for the actual mode.
     // This also covers the existing 1024x768 mode, beyond the old 800x600 buffer.
     const size_t bytes = size_t(w) * h * 2 * 2;
     if (!w || !h || bytes > 128u * 1024u * 1024u) throw std::bad_alloc();
     if (bytes > m_videoMemory->getBlockSize()) {
-        MemMap* replacement = new MemMap(x86::reg32(bytes));
+        MemMap* replacement = new MemMap(nfs::u32(bytes));
         delete m_videoMemory;
         m_videoMemory = replacement;
     }
@@ -442,7 +442,7 @@ void Renderer::setVideoMode(x86::reg32 w, x86::reg32 h, x86::reg32 bpp)
     /* The per-frame path is glTexSubImage2D, so the storage has to be allocated
      * here and in the format update() will actually upload -- 5_6_5 for the
      * 16-bit surface, RGBA bytes for the palettised one. */
-    const x86::reg32 width = w, height = h;
+    const nfs::u32 width = w, height = h;
     glthread::post(this, [this, width, height]() {
         glBindTexture(GL_TEXTURE_2D, m_texture);
         glDisable(GL_DITHER);
@@ -466,7 +466,7 @@ void Renderer::setVideoMode(x86::reg32 w, x86::reg32 h, x86::reg32 bpp)
          * the 16-bit nor the palettised guest buffer can be handed to GL
          * directly. */
         free(m_convertBuffer);
-        m_convertBuffer = reinterpret_cast<x86::reg8*>(malloc(size_t(width) * height * 4));
+        m_convertBuffer = reinterpret_cast<nfs::u8*>(malloc(size_t(width) * height * 4));
 
         /* The 16-bit guest frame goes to the GPU as it is, into a texture of
          * its own format, and the GPU copies it into the target, widening it
@@ -484,18 +484,18 @@ void Renderer::setVideoMode(x86::reg32 w, x86::reg32 h, x86::reg32 bpp)
     });
 }
 
-void Renderer::updatePalette(x86::reg32 colorCount, const x86::reg32* colors)
+void Renderer::updatePalette(nfs::u32 colorCount, const nfs::u32* colors)
 {
     NFS2_ASSERT(colorCount <= 256);
     memcpy(m_colorPalette, colors, colorCount*4);
 }
 
-x86::reg32 Renderer::getFrontBuffer() const
+nfs::u32 Renderer::getFrontBuffer() const
 {
     return m_videoMemory->getBlockStart() + m_currentBuffer * m_width * m_height * 2;
 }
 
-x86::reg32 Renderer::getBackBuffer() const
+nfs::u32 Renderer::getBackBuffer() const
 {
     return m_videoMemory->getBlockStart() + (1 - m_currentBuffer) * m_width * m_height * 2;
 }
@@ -507,12 +507,12 @@ void Renderer::present()
 {
     tick("present");
     Gamepad::update();
-    const x86::reg32 width = m_width, height = m_height;
+    const nfs::u32 width = m_width, height = m_height;
     glthread::post(this, [this, width, height]() { presentFrame(width, height); });
     m_presentNs += glthread::presentPosted(1);
 }
 
-void Renderer::presentFrame(x86::reg32 width, x86::reg32 height)
+void Renderer::presentFrame(nfs::u32 width, nfs::u32 height)
 {
     const Uint64 presentStart = SDL_GetTicksNS();
     glBindTexture(GL_TEXTURE_2D, m_texture);
@@ -621,10 +621,10 @@ Renderer* Renderer::active()
     return activeSlot()->load();
 }
 
-void Renderer::presentMovieFrame(std::vector<x86::reg8> rgba, x86::reg32 w, x86::reg32 h,
+void Renderer::presentMovieFrame(std::vector<nfs::u8> rgba, nfs::u32 w, nfs::u32 h,
                                  int x, int y, int dw, int dh)
 {
-    const x86::reg32 width = m_width, height = m_height;
+    const nfs::u32 width = m_width, height = m_height;
     glthread::post(this, [this, w, h, x, y, dw, dh, width, height, rgba = std::move(rgba)]() {
         if (!m_frameRead || !m_frameDraw)
             return;
@@ -667,11 +667,11 @@ void Renderer::update()
     activeSlot()->store(this);
     /* The guest's frame as it is now: the game writes the next one into the
      * same memory while the GL thread is still converting this one. */
-    const x86::reg32 width = m_width, height = m_height;
+    const nfs::u32 width = m_width, height = m_height;
     const bool deep = m_depth == 16;
-    const x86::reg8* front = &m_application->getMemory<x86::reg8>(getFrontBuffer());
-    std::vector<x86::reg8> frame(front, front + size_t(width) * height * (deep ? 2 : 1));
-    std::array<x86::reg32, 256> palette;
+    const nfs::u8* front = &m_application->getMemory<nfs::u8>(getFrontBuffer());
+    std::vector<nfs::u8> frame(front, front + size_t(width) * height * (deep ? 2 : 1));
+    std::array<nfs::u32, 256> palette;
     if (!deep)
         std::copy(m_colorPalette, m_colorPalette + 256, palette.begin());
     glthread::post(this, [this, width, height, deep, frame = std::move(frame), palette]() {
@@ -705,7 +705,7 @@ void Renderer::update()
          * texture object state, so re-sending them every frame is pure
          * overhead, and glTexImage2D would additionally reallocate the storage
          * each time. */
-        x86::reg8* screenData = m_convertBuffer;
+        nfs::u8* screenData = m_convertBuffer;
         if (deep)
         {
             /* Expand the guest 5:6:5 buffer to the RGBA8 the target now uses.
@@ -714,16 +714,16 @@ void Renderer::update()
              * DirectDraw path comes through here -- menus and the intro movie
              * -- because the Glide renderer draws into this texture directly,
              * so a race pays nothing for this loop. */
-            const x86::reg16* srcData = reinterpret_cast<const x86::reg16*>(frame.data());
-            for (x86::reg32 i = 0; i < width*height; ++i)
+            const nfs::u16* srcData = reinterpret_cast<const nfs::u16*>(frame.data());
+            for (nfs::u32 i = 0; i < width*height; ++i)
             {
-                const x86::reg16 c = srcData[i];
-                const x86::reg8 r = x86::reg8((c >> 11) & 0x1f);
-                const x86::reg8 g = x86::reg8((c >> 5) & 0x3f);
-                const x86::reg8 b = x86::reg8(c & 0x1f);
-                screenData[i*4 + 0] = x86::reg8(r << 3 | r >> 2);
-                screenData[i*4 + 1] = x86::reg8(g << 2 | g >> 4);
-                screenData[i*4 + 2] = x86::reg8(b << 3 | b >> 2);
+                const nfs::u16 c = srcData[i];
+                const nfs::u8 r = nfs::u8((c >> 11) & 0x1f);
+                const nfs::u8 g = nfs::u8((c >> 5) & 0x3f);
+                const nfs::u8 b = nfs::u8(c & 0x1f);
+                screenData[i*4 + 0] = nfs::u8(r << 3 | r >> 2);
+                screenData[i*4 + 1] = nfs::u8(g << 2 | g >> 4);
+                screenData[i*4 + 2] = nfs::u8(b << 3 | b >> 2);
                 screenData[i*4 + 3] = 0xff;
             }
         }
@@ -735,14 +735,14 @@ void Renderer::update()
              * GL_UNSIGNED_BYTE, which is both endian-independent and available
              * in GLES.  The destination is a persistent buffer: this used to
              * malloc and free ~1.9 MB every single frame. */
-            const x86::reg8* srcData = frame.data();
-            for (x86::reg32 i = 0; i < width*height; ++i)
+            const nfs::u8* srcData = frame.data();
+            for (nfs::u32 i = 0; i < width*height; ++i)
             {
-                const x86::reg32 c = palette[srcData[i]];
-                screenData[i*4 + 0] = x86::reg8(c >> 24);
-                screenData[i*4 + 1] = x86::reg8(c >> 16);
-                screenData[i*4 + 2] = x86::reg8(c >> 8);
-                screenData[i*4 + 3] = x86::reg8(c);
+                const nfs::u32 c = palette[srcData[i]];
+                screenData[i*4 + 0] = nfs::u8(c >> 24);
+                screenData[i*4 + 1] = nfs::u8(c >> 16);
+                screenData[i*4 + 2] = nfs::u8(c >> 8);
+                screenData[i*4 + 3] = nfs::u8(c);
             }
         }
         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height,
@@ -751,12 +751,12 @@ void Renderer::update()
     present();
 }
 
-x86::reg32 Renderer::lock(x86::reg32 index)
+nfs::u32 Renderer::lock(nfs::u32 index)
 {
     return index == 0 ? getFrontBuffer() : getBackBuffer();
 }
 
-void Renderer::unlock(x86::reg32 index)
+void Renderer::unlock(nfs::u32 index)
 {
     tick(index == 0 ? "unlock0" : "unlockN");
     if (index == 0)

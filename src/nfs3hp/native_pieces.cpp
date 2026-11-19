@@ -18,7 +18,7 @@ namespace pieces
 namespace
 {
 
-[[noreturn]] void notAFunction(x86::reg32 address)
+[[noreturn]] void notAFunction(nfs::u32 address)
 {
 #ifdef __ANDROID__
     SDL_LogCritical(SDL_LOG_CATEGORY_APPLICATION, "[DEAD] no function at sub_%x (native_pieces.inc)", address);
@@ -31,7 +31,7 @@ namespace
 }  // namespace
 
 #define DEAD(address) \
-    x86::reg32 stub_##address(win32::WinApplication*, x86::CPU&, x86::Args&) { notAFunction(address); return 0; }
+    nfs::u32 stub_##address(nfs::App*, nfs::ThreadState&, nfs::Args&) { notAFunction(address); return 0; }
 #include "native_pieces.inc"
 #undef DEAD
 

@@ -36,32 +36,32 @@ namespace
 
 using guest::at;
 using guest::put;
-using x86::reg32;
+using nfs::u32;
 
-constexpr reg32 kInRace = 0x559234;          // the menus are a race's pause screens
+constexpr u32 kInRace = 0x559234;          // the menus are a race's pause screens
 // The pointer.
-constexpr reg32 kMouseX = 0x55e5e4, kMouseY = 0x55e5e8;   // where the menus have it, on a 640 by 480 screen
-constexpr reg32 kMouse = 0x554ee8;           // the mouse's handle, or none
-constexpr reg32 kGetDeviceData = 0x28;       // GetDeviceData: what the mouse has buffered
-constexpr reg32 kPointerLeft = 0x5f38e0, kPointerTop = 0x5f38e4;
-constexpr reg32 kPointerRight = 0x5f38e8, kPointerBottom = 0x5f38ec;
-constexpr reg32 kPointerX = 0x5f38f0, kPointerY = 0x5f38f4;
+constexpr u32 kMouseX = 0x55e5e4, kMouseY = 0x55e5e8;   // where the menus have it, on a 640 by 480 screen
+constexpr u32 kMouse = 0x554ee8;           // the mouse's handle, or none
+constexpr u32 kGetDeviceData = 0x28;       // GetDeviceData: what the mouse has buffered
+constexpr u32 kPointerLeft = 0x5f38e0, kPointerTop = 0x5f38e4;
+constexpr u32 kPointerRight = 0x5f38e8, kPointerBottom = 0x5f38ec;
+constexpr u32 kPointerX = 0x5f38f0, kPointerY = 0x5f38f4;
 // The screens' art.
-constexpr reg32 kCurrentMenuName = 0x44ae00;  // the shown screen's name, or none
-constexpr reg32 kNoTag = 0x537830;            // ""
-constexpr reg32 kPauseName = 0x53793c, kMainMultName = 0x537944, kPostGameName = 0x537950;
-constexpr reg32 kNetworkScreen = 0x555748;    // the screen is MAINMULT's, or a race's pause over the network
-constexpr reg32 kArtLeft = 0x5f3fc8, kArtTop = 0x5f3fcc;
-constexpr reg32 kItemLines = 0x5f3fdc, kItemLinesBytes = 0x64;
-constexpr reg32 kItemText = 0x5f3fd0, kItemTextBytes = 0x384;
-constexpr reg32 kDetail = 0x7a3a58;           // bit 2: no glow
+constexpr u32 kCurrentMenuName = 0x44ae00;  // the shown screen's name, or none
+constexpr u32 kNoTag = 0x537830;            // ""
+constexpr u32 kPauseName = 0x53793c, kMainMultName = 0x537944, kPostGameName = 0x537950;
+constexpr u32 kNetworkScreen = 0x555748;    // the screen is MAINMULT's, or a race's pause over the network
+constexpr u32 kArtLeft = 0x5f3fc8, kArtTop = 0x5f3fcc;
+constexpr u32 kItemLines = 0x5f3fdc, kItemLinesBytes = 0x64;
+constexpr u32 kItemText = 0x5f3fd0, kItemTextBytes = 0x384;
+constexpr u32 kDetail = 0x7a3a58;           // bit 2: no glow
 
 /* The shapes the screens draw their items with: each its name, where its
  * number goes (a word). */
 struct Shape
 {
-    reg32 name;
-    reg32 to;
+    u32 name;
+    u32 to;
 };
 constexpr Shape kShapes[] = {
     {0x53795c, 0x5556cc},  // netw
@@ -78,18 +78,18 @@ constexpr Shape kGlows[] = {
     {0x5379a4, 0x5f3ff6},  // rglo
 };
 
-void push(win32::WinApplication* app, x86::CPU& cpu, reg32 value)
+void push(nfs::App* app, nfs::ThreadState& ts, u32 value)
 {
-    cpu.esp -= 4;
-    put(app, cpu.esp, value);
+    ts.sp -= 4;
+    put(app, ts.sp, value);
 }
 
 /* ret, the thunks' end: the return address popped, unless the game stopped
  * in the function. */
-void ret(x86::CPU& cpu)
+void ret(nfs::ThreadState& ts)
 {
-    if (!cpu.terminate)
-        cpu.esp += 4;
+    if (!ts.terminate)
+        ts.sp += 4;
 }
 
 using guest::EspKept;
@@ -98,45 +98,45 @@ using guest::EspKept;
 
 /* 0x435230: the pointer put at eax, edx, inside its bounds, what the mouse
  * has buffered taken first.  The eax it leaves. */
-reg32 screen::placePointer(App* app, CPU& cpu, reg32 x, reg32 y)
+u32 screen::placePointer(App* app, ThreadState& ts, u32 x, u32 y)
 {
     // ebx, ecx, esi, edi and ebp pushed by the code (ebp its base), and the local at [ebp - 4]: the
     // frame; the registers they restore are kept across the host call that reads and spoils them.
-    const EspKept kept(cpu);
-    cpu.esp -= 4 * 5;
-    const reg32 ebp = cpu.esp;
-    cpu.esp -= 4;
-    reg32 eax = x;
-    const reg32 esi = x, ebx = y;
+    const EspKept kept(ts);
+    ts.sp -= 4 * 5;
+    const u32 ebp = ts.sp;
+    ts.sp -= 4;
+    u32 eax = x;
+    const u32 esi = x, ebx = y;
     put(app, ebp - 4, 0xffffffff);
-    const reg32 device = at(app, kMouse);
+    const u32 device = at(app, kMouse);
     if (device != 0)
     {
         // GetDeviceData(the device, 0x10, none, &(INFINITE), 0): the events dropped.
-        push(app, cpu, 0);
-        push(app, cpu, ebp - 4);
-        push(app, cpu, 0);
-        push(app, cpu, 0x10);
-        push(app, cpu, device);
-        const auto hostResult = controls::directInputResult(app, cpu, controls::Object::Device, kGetDeviceData);
+        push(app, ts, 0);
+        push(app, ts, ebp - 4);
+        push(app, ts, 0);
+        push(app, ts, 0x10);
+        push(app, ts, device);
+        const auto hostResult = controls::directInputResult(app, ts, controls::Object::Device, kGetDeviceData);
         if (!hostResult)
             return eax;
         eax = *hostResult;  // the host's result
-        const reg32 left = at(app, kPointerLeft);
-        if (x86::sreg32(esi) < x86::sreg32(left))
+        const u32 left = at(app, kPointerLeft);
+        if (nfs::s32(esi) < nfs::s32(left))
             put(app, kPointerX, left);
         else
         {
             eax = at(app, kPointerRight);
-            put(app, kPointerX, x86::sreg32(esi) > x86::sreg32(eax) ? eax : esi);
+            put(app, kPointerX, nfs::s32(esi) > nfs::s32(eax) ? eax : esi);
         }
-        const reg32 top = at(app, kPointerTop);
-        if (x86::sreg32(ebx) < x86::sreg32(top))
+        const u32 top = at(app, kPointerTop);
+        if (nfs::s32(ebx) < nfs::s32(top))
             put(app, kPointerY, top);
         else
         {
-            const reg32 bottom = at(app, kPointerBottom);
-            put(app, kPointerY, x86::sreg32(ebx) > x86::sreg32(bottom) ? bottom : ebx);
+            const u32 bottom = at(app, kPointerBottom);
+            put(app, kPointerY, nfs::s32(ebx) > nfs::s32(bottom) ? bottom : ebx);
         }
     }
     return eax;
@@ -145,57 +145,57 @@ reg32 screen::placePointer(App* app, CPU& cpu, reg32 x, reg32 y)
 /* 0x49bfc0: the menus' pointer to eax, edx on a 640 by 480 screen, and the
  * mouse's to there on the screen's own when the 3D card draws the menus.
  * The eax it leaves (placePointer's). */
-reg32 screen::setPointer(App* app, CPU& cpu, reg32 x, reg32 y)
+u32 screen::setPointer(App* app, ThreadState& ts, u32 x, u32 y)
 {
-    cpu.esp -= 4 * 3;  // ebx, ecx and ebp pushed by the code
-    reg32 pointerX = x, pointerY = y;
+    ts.sp -= 4 * 3;  // ebx, ecx and ebp pushed by the code
+    u32 pointerX = x, pointerY = y;
     put(app, kMouseY, y);
     put(app, kMouseX, x);
     if (at(app, kInRace) != 0)
     {
-        pointerX = reg32(port::text::screenX(app, x86::sreg32(x)));
-        pointerY = reg32(port::text::screenY(app, x86::sreg32(y)));
+        pointerX = u32(port::text::screenX(app, nfs::s32(x)));
+        pointerY = u32(port::text::screenY(app, nfs::s32(y)));
     }
-    const reg32 eax = guest::direct<0x435230, screen::placePointer>(app, cpu, pointerX, pointerY);
-    if (cpu.terminate)
+    const u32 eax = guest::direct<0x435230, screen::placePointer>(app, ts, pointerX, pointerY);
+    if (ts.terminate)
         return eax;
-    cpu.esp += 4 * 3;
+    ts.sp += 4 * 3;
     return eax;
 }
 
 /* 0x440970: the screens' art for the one shown -- whether it is the network
  * game's, the shapes its items are drawn with (on the menus, not a race's
  * pause screens) -- and the items' buffers made anew, cleared.  The eax it leaves. */
-reg32 screen::loadScreenArt(App* app, CPU& cpu)
+u32 screen::loadScreenArt(App* app, ThreadState& ts)
 {
     // ebx, ecx, edx, esi, edi and ebp pushed by the code: the frame the calls are made in.
-    cpu.esp -= 4 * 6;
+    ts.sp -= 4 * 6;
     put(app, kArtTop, 0x251);
     put(app, kArtLeft, 0x87);
     // 0x44ae00's: the shown screen's name, or none (a plain read of the loop's data: that file is not
     // in the function checks).
-    const reg32 menu = at(app, 0x559230);
-    const reg32 name = menu != 0 ? at(app, menu + 0x14) : 0;
-    reg32 eax = name;
+    const u32 menu = at(app, 0x559230);
+    const u32 name = menu != 0 ? at(app, menu + 0x14) : 0;
+    u32 eax = name;
     if (at(app, kInRace) != 0)
     {
         if (name != 0)
         {
-            eax = guest::direct<0x4ee310, watcom::clib::strcmp>(app, cpu, name, kPauseName);
-            if (cpu.terminate)
+            eax = guest::direct<0x4ee310, watcom::clib::strcmp>(app, ts, name, kPauseName);
+            if (ts.terminate)
                 return eax;
             put(app, kNetworkScreen, eax == 0 ? 1 : 0);
         }
     }
     else if (name != 0)
     {
-        eax = guest::direct<0x4ee310, watcom::clib::strcmp>(app, cpu, name, kMainMultName);
-        if (cpu.terminate)
+        eax = guest::direct<0x4ee310, watcom::clib::strcmp>(app, ts, name, kMainMultName);
+        if (ts.terminate)
             return eax;
         if (eax == 0)
             put(app, kNetworkScreen, 1);
-        eax = guest::direct<0x4ee310, watcom::clib::strcmp>(app, cpu, name, kPostGameName);
-        if (cpu.terminate)
+        eax = guest::direct<0x4ee310, watcom::clib::strcmp>(app, ts, name, kPostGameName);
+        if (ts.terminate)
             return eax;
         if (eax == 0)
             put(app, kNetworkScreen, eax);
@@ -204,11 +204,11 @@ reg32 screen::loadScreenArt(App* app, CPU& cpu)
     {
         // A shape of the menus' art by its name (port_shapes.cpp's).
         auto load = [&](const Shape& shape) {
-            const port::Result found = guest::direct<0x4d5db0, port::shapes::shapeNamed>(app, cpu, cpu.esp - 4, shape.name);
+            const port::Result found = guest::direct<0x4d5db0, port::shapes::shapeNamed>(app, ts, ts.sp - 4, shape.name);
             if (!found)
                 return false;
-            eax = reg32(*found);
-            app->getMemory<x86::reg16>(shape.to) = x86::reg16(eax);
+            eax = u32(*found);
+            app->getMemory<nfs::u16>(shape.to) = nfs::u16(eax);
             return true;
         };
         for (const Shape& shape : kShapes)
@@ -221,67 +221,67 @@ reg32 screen::loadScreenArt(App* app, CPU& cpu)
     }
     // The items' buffers given back and made anew: the memory's (native_ea_memory.cpp's), a tag, the
     // bytes, the class.
-    const reg32 oldLines = at(app, kItemLines);
+    const u32 oldLines = at(app, kItemLines);
     if (oldLines != 0)
     {
-        const std::optional<reg32> freed = guest::direct<0x4e1890, ea::purgeBlock>(app, cpu, oldLines);
+        const std::optional<u32> freed = guest::direct<0x4e1890, ea::purgeBlock>(app, ts, oldLines);
         if (!freed)
             return eax;
         eax = *freed;
     }
-    const std::optional<reg32> lines = guest::direct<0x4e1620, ea::reserved>(app, cpu, kNoTag, kItemLinesBytes, 0);
+    const std::optional<u32> lines = guest::direct<0x4e1620, ea::reserved>(app, ts, kNoTag, kItemLinesBytes, 0);
     if (!lines)
         return eax;
     eax = *lines;
     put(app, kItemLines, eax);
     if (eax != 0)
     {
-        eax = guest::direct<0x4e0640, watcom::clib::memset>(app, cpu, eax, 0, kItemLinesBytes);
-        if (cpu.terminate)
+        eax = guest::direct<0x4e0640, watcom::clib::memset>(app, ts, eax, 0, kItemLinesBytes);
+        if (ts.terminate)
             return eax;
     }
-    const reg32 oldText = at(app, kItemText);
+    const u32 oldText = at(app, kItemText);
     if (oldText != 0)
     {
-        const std::optional<reg32> freed = guest::direct<0x4e1890, ea::purgeBlock>(app, cpu, oldText);
+        const std::optional<u32> freed = guest::direct<0x4e1890, ea::purgeBlock>(app, ts, oldText);
         if (!freed)
             return eax;
         eax = *freed;
     }
-    const std::optional<reg32> text = guest::direct<0x4e1620, ea::reserved>(app, cpu, kNoTag, kItemTextBytes, 0);
+    const std::optional<u32> text = guest::direct<0x4e1620, ea::reserved>(app, ts, kNoTag, kItemTextBytes, 0);
     if (!text)
         return eax;
     eax = *text;
     put(app, kItemText, eax);
-    eax = guest::direct<0x4e0640, watcom::clib::memset>(app, cpu, eax, 0, kItemTextBytes);
-    if (cpu.terminate)
+    eax = guest::direct<0x4e0640, watcom::clib::memset>(app, ts, eax, 0, kItemTextBytes);
+    if (ts.terminate)
         return eax;
     if (at(app, kInRace) == 0)
         gameSettings(app).networkLobby = 0;
-    cpu.esp += 4 * 6;
+    ts.sp += 4 * 6;
     return eax;
 }
 
 /* The thunks under the game's names, which the addresses are bound to: the
  * arguments from the registers, the core, the ret. */
-x86::reg32 placePointer(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 placePointer(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    args.eax = screen::placePointer(app, cpu, args.eax, args.edx);
-    ret(cpu);
+    args.eax = screen::placePointer(app, ts, args.eax, args.edx);
+    ret(ts);
     return args.eax;
 }
 
-x86::reg32 setPointer(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 setPointer(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    args.eax = screen::setPointer(app, cpu, args.eax, args.edx);
-    ret(cpu);
+    args.eax = screen::setPointer(app, ts, args.eax, args.edx);
+    ret(ts);
     return args.eax;
 }
 
-x86::reg32 loadScreenArt(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 loadScreenArt(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    args.eax = screen::loadScreenArt(app, cpu);
-    ret(cpu);
+    args.eax = screen::loadScreenArt(app, ts);
+    ret(ts);
     return args.eax;
 }
 

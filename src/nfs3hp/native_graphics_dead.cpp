@@ -18,7 +18,7 @@ namespace graphics
 namespace
 {
 
-[[noreturn]] void deadCode(x86::reg32 address)
+[[noreturn]] void deadCode(nfs::u32 address)
 {
 #ifdef __ANDROID__
     SDL_LogCritical(SDL_LOG_CATEGORY_APPLICATION, "[GFX] dead code called: sub_%x (native_graphics_dead.inc)", address);
@@ -31,7 +31,7 @@ namespace
 }  // namespace
 
 #define DEAD(address) \
-    x86::reg32 dead_##address(win32::WinApplication*, x86::CPU&, x86::Args&) { deadCode(address); }
+    nfs::u32 dead_##address(nfs::App*, nfs::ThreadState&, nfs::Args&) { deadCode(address); }
 #include "native_graphics_dead.inc"
 #undef DEAD
 

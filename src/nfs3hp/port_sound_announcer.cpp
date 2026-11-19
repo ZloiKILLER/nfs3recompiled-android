@@ -34,7 +34,7 @@ constexpr Var<int32_t> kRaceTime{0x7d3684}, kRaceClock{0x7d36b0};
 constexpr Var<int32_t> kMusicOn{0x552794}, kBestLap{0x552904};
 constexpr Table<uint8_t> kLastLap{0x5710c8, 1}, kEventKind{0x5710a0, 1};
 constexpr Table<int32_t> kLapStart{0x5710d0}, kLapTime{0x5710f0};
-constexpr Table<reg32> kRaceOrder{0x5efac8};
+constexpr Table<u32> kRaceOrder{0x5efac8};
 constexpr Var<int32_t> kMusicLap{0x552860}, kMusicLapNow{0x55285c}, kMusicAhead{0x55284c};
 constexpr Var<uint8_t> kMusicLevel{0x552850}, kMusicEvent{0x552834}, kWaitMark{0x552d7c};
 constexpr Var<int32_t> kMusicBusy{0x552838};
@@ -44,28 +44,28 @@ constexpr Var<int32_t> kLineStart{0x571238}, kLineEnd{0x571240};
 constexpr Var<float> kMetricScale{0x536a18}, kImperialScale{0x536a1c};
 
 // What it calls: what has no typed function yet (by address), the trace (compiled out), its fellow rewrites.
-constexpr reg32 kTrace = 0x42d510, kSectionKind = 0x4211c0;
-constexpr reg32 kPathControl = 0x4e705c, kPathInterrupt = 0x4e7208, kPathEvent = 0x4e70fc;
-constexpr reg32 kPrepare = 0x40a330, kSettle = 0x4129b0, kPursuitSounds = 0x4188a0;
-constexpr reg32 kTraceLaps = 0x5369e8, kTraceWait = 0x5369d8;
+constexpr u32 kTrace = 0x42d510, kSectionKind = 0x4211c0;
+constexpr u32 kPathControl = 0x4e705c, kPathInterrupt = 0x4e7208, kPathEvent = 0x4e70fc;
+constexpr u32 kPrepare = 0x40a330, kSettle = 0x4129b0, kPursuitSounds = 0x4188a0;
+constexpr u32 kTraceLaps = 0x5369e8, kTraceWait = 0x5369d8;
 
 /* The tick of one car: the announcer for its player, then the music. */
 struct Tick
 {
     App* app;
-    CPU& cpu;
-    reg32 sp;       // esp where the code calls from
-    reg32 car;
+    ThreadState& ts;
+    u32 sp;       // esp where the code calls from
+    u32 car;
     uint8_t own;    // the car's player
-    reg32 side;     // the player's side in the split screen, else 0
+    u32 side;     // the player's side in the split screen, else 0
 
-    reg32 pan() const { return gameSettings(app).playMode == 1 ? (side != 0 ? kSideRight : kSideLeft) : 0; }
+    u32 pan() const { return gameSettings(app).playMode == 1 ? (side != 0 ? kSideRight : kSideLeft) : 0; }
 
     /* The race voice's line `effect` queued at full volume (kind 0), the
      * player's side. */
-    Result say(reg32 effect) const
+    Result say(u32 effect) const
     {
-        const reg32 line = sp;
+        const u32 line = sp;
         SpeechLine& l = record<SpeechLine>(app, line);
         l.volume = 0x7f;
         l.pitch = 0x40;
@@ -74,13 +74,13 @@ struct Tick
         l.effect = int32_t(effect);
         l.player = int32_t(side);
         l.kind = 0;
-        return speechLineSaid(app, cpu, sp - 4, line);
+        return speechLineSaid(app, ts, sp - 4, line);
     }
 };
 
 /* The unsigned revs of a car, scaled by `scale` and chopped: seconds of a lap
  * time. */
-int32_t scaledRevs(App* app, reg32 car, float scale)
+int32_t scaledRevs(App* app, u32 car, float scale)
 {
     const float revs = load<float>(app, car + 0x4f4);
     const float unsignedRevs = 0.0 < revs || revs != revs ? revs : -revs;
@@ -91,35 +91,35 @@ int32_t scaledRevs(App* app, reg32 car, float scale)
 
 /* 0x412d60's: car `car`'s announcer and music tick.  eax as the code leaves
  * it. */
-Result raceAnnouncerTicked(App* app, CPU& cpu, reg32 esp, reg32 car)
+Result raceAnnouncerTicked(App* app, ThreadState& ts, u32 esp, u32 car)
 {
-    const reg32 frame = esp - 6 * 4;
-    const reg32 sp = frame - 0x3c;
+    const u32 frame = esp - 6 * 4;
+    const u32 sp = frame - 0x3c;
     const int32_t split = gameSettings(app).playMode;
     const uint8_t own = load<uint8_t>(app, car + 0x1f0);
-    const Tick t{app, cpu, sp, car, own, split == 1 ? own : 0u};
-    const reg32 place = load<reg32>(app, kRaceOrder(app, own) + 0x2bc);
+    const Tick t{app, ts, sp, car, own, split == 1 ? own : 0u};
+    const u32 place = load<u32>(app, kRaceOrder(app, own) + 0x2bc);
     // The car's kind of driver, kept by its player.
-    const reg32 driver = load<reg32>(app, car + 0x2c);
-    kEventKind.set(app, int32_t(load<reg32>(app, car + 0x1f0)), driver != 0 ? load<uint8_t>(app, driver + 3) : uint8_t(0));
+    const u32 driver = load<u32>(app, car + 0x2c);
+    kEventKind.set(app, int32_t(load<u32>(app, car + 0x1f0)), driver != 0 ? load<uint8_t>(app, driver + 3) : uint8_t(0));
     // What has no typed function yet, by its address with the registers it takes.
-    const auto call = [&](reg32 target, std::initializer_list<reg32> registers) {
-        return callAt(app, cpu, sp, target, registers);
+    const auto call = [&](u32 target, std::initializer_list<u32> registers) {
+        return callAt(app, ts, sp, target, registers);
     };
-    const auto keyPressed = [&](reg32 key) -> Result {
-        cpu.esp = sp;
-        const reg32 held = guest::direct<0x48f7b0, controls::functionKeyHeld>(app, cpu, key, 1);
-        if (cpu.terminate)
+    const auto keyPressed = [&](u32 key) -> Result {
+        ts.sp = sp;
+        const u32 held = guest::direct<0x48f7b0, controls::functionKeyHeld>(app, ts, key, 1);
+        if (ts.terminate)
             return {};
         return int32_t(held);
     };
-    cpu.esp = sp;
-    guest::direct<kPrepare, pursuit::tickRadioFrames>(app, cpu);
-    if (cpu.terminate)
+    ts.sp = sp;
+    guest::direct<kPrepare, pursuit::tickRadioFrames>(app, ts);
+    if (ts.terminate)
         return {};
-    cpu.esp = sp;
-    guest::direct<kSettle, eaxKept>(app, cpu, 0u);
-    if (cpu.terminate)
+    ts.sp = sp;
+    guest::direct<kSettle, eaxKept>(app, ts, 0u);
+    if (ts.terminate)
         return {};
     // The keys: 0x13 the music on and off.
     Result key = keyPressed(0x13);
@@ -129,8 +129,8 @@ Result raceAnnouncerTicked(App* app, CPU& cpu, reg32 esp, reg32 car)
         kMusicOn.set(app, kMusicOn(app) == 0 ? 1 : 0);
     if (gameSettings(app).raceType == 3)
     {
-        cpu.esp = sp;
-        if (!guest::direct<kPursuitSounds, copBeepsTicked>(app, cpu, sp - 4, t.side))
+        ts.sp = sp;
+        if (!guest::direct<kPursuitSounds, copBeepsTicked>(app, ts, sp - 4, t.side))
             return {};
     }
     const uint8_t flags = load<uint8_t>(app, car + 0x200);
@@ -141,11 +141,11 @@ Result raceAnnouncerTicked(App* app, CPU& cpu, reg32 esp, reg32 car)
             if (!(key = keyPressed(2)))
                 return {};
             // The gap to the leader, to be said (the code has the car in ecx).
-            if (*key != 0 && !gapLineQueued(app, cpu, sp - 4, car, 0, 1, car))
+            if (*key != 0 && !gapLineQueued(app, ts, sp - 4, car, 0, 1, car))
                 return {};
             if (!(key = keyPressed(3)))
                 return {};
-            if (*key != 0 && !raceEventLineQueued(app, cpu, sp - 4, 0, place))
+            if (*key != 0 && !raceEventLineQueued(app, ts, sp - 4, 0, place))
                 return {};
         }
         if (!(key = keyPressed(4)))
@@ -156,47 +156,47 @@ Result raceAnnouncerTicked(App* app, CPU& cpu, reg32 esp, reg32 car)
             const int32_t language = gameSettings(app).hud[0].speedometerForm;
             const bool metric = language == 1 || language == 2 || (language == 0 && gameSettings(app).language == 0);
             const int32_t seconds = scaledRevs(app, car, metric ? kMetricScale(app) : kImperialScale(app));
-            if (!lapTimeLineQueued(app, cpu, sp - 4, 0, seconds))
+            if (!lapTimeLineQueued(app, ts, sp - 4, 0, seconds))
                 return {};
         }
     }
     const int32_t lap = load<int32_t>(app, car + 0x204);
     const int32_t laps = gameSettings(app).laps;
-    const reg32 lastLap = reg32(kLastLap(app, own));
+    const u32 lastLap = u32(kLastLap(app, own));
     if (gameSettings(app).raceType != 3)
     {
         // A new lap: the lap's line, the best lap's.
         bool said = false;
-        if (lastLap != reg32(lap) && lap > 0)
+        if (lastLap != u32(lap) && lap > 0)
         {
-            const int32_t time = int32_t(reg32(kRaceTime(app)) - reg32(kLapStart(app, own)));
+            const int32_t time = int32_t(u32(kRaceTime(app)) - u32(kLapStart(app, own)));
             if (time < kBestLap(app) || kBestLap(app) == 0)
             {
                 if (!t.say((nextRandom(app) & 1) + 3))
                     return {};
-                const int32_t best = int32_t(reg32(kRaceTime(app)) - reg32(kLapStart(app, own)));
+                const int32_t best = int32_t(u32(kRaceTime(app)) - u32(kLapStart(app, own)));
                 kBestLap.set(app, best);
                 kLapTime.set(app, own, best);
                 said = true;
             }
         }
-        if (!said && lastLap != reg32(lap) && lap > 1)
+        if (!said && lastLap != u32(lap) && lap > 1)
         {
-            const int32_t time = int32_t(reg32(kRaceTime(app)) - reg32(kLapStart(app, own)));
+            const int32_t time = int32_t(u32(kRaceTime(app)) - u32(kLapStart(app, own)));
             if (time < kLapTime(app, own))
             {
                 // Faster than the last lap.
                 if (!t.say(nextRandom(app) % 3))
                     return {};
-                kLapTime.set(app, own, int32_t(reg32(kRaceTime(app)) - reg32(kLapStart(app, own))));
+                kLapTime.set(app, own, int32_t(u32(kRaceTime(app)) - u32(kLapStart(app, own))));
             }
         }
         // The race over: the position.
-        if (lastLap != reg32(lap) && lap == laps && !(gameSettings(app).networkGame != 0 && split > 1)
+        if (lastLap != u32(lap) && lap == laps && !(gameSettings(app).networkGame != 0 && split > 1)
             && !(gameSettings(app).opponentCount == 0 && split == 0))
         {
-            const Result radioLine = copLineChosen(app, cpu, sp - 4, int32_t(place));
-            if (!radioLine || !t.say(reg32(*radioLine) + (t.side << 4)))
+            const Result radioLine = copLineChosen(app, ts, sp - 4, int32_t(place));
+            if (!radioLine || !t.say(u32(*radioLine) + (t.side << 4)))
                 return {};
         }
     }
@@ -204,38 +204,38 @@ Result raceAnnouncerTicked(App* app, CPU& cpu, reg32 esp, reg32 car)
     {
         // The last lap, or the lap's number.
         bool queued = false;
-        if (laps - 1 == lap && lastLap != reg32(lap))
+        if (laps - 1 == lap && lastLap != u32(lap))
         {
             if (!t.say((nextRandom(app) & 1) + 5))
                 return {};
             queued = true;
         }
-        if (!queued && lastLap != reg32(lap) && lap != 0 && laps - 1 > lap)
+        if (!queued && lastLap != u32(lap) && lap != 0 && laps - 1 > lap)
         {
-            if (!t.say(reg32(lap) + 6))
+            if (!t.say(u32(lap) + 6))
                 return {};
         }
     }
     // The lap kept.
-    if (lastLap != reg32(lap))
+    if (lastLap != u32(lap))
     {
         if (uint8_t(lastLap) == 0)
-            kLapTime.set(app, own, int32_t(reg32(kRaceTime(app)) - reg32(kLapStart(app, own))));
+            kLapTime.set(app, own, int32_t(u32(kRaceTime(app)) - u32(kLapStart(app, own))));
         kLastLap.set(app, own, uint8_t(lap));
         kLapStart.set(app, own, load<int32_t>(app, car + 0x238));
         kMusicLap.set(app, lap);
         kMusicLapNow.set(app, lap);
     }
-    Result ticked = playerSpeechTicked(app, cpu, sp - 4, int32_t(t.side));
+    Result ticked = playerSpeechTicked(app, ts, sp - 4, int32_t(t.side));
     if (!ticked)
         return {};
     // The music: player one's (in the split screen, the one ahead's).
     bool ahead = false;
-    reg32 eax = reg32(*ticked);
+    u32 eax = u32(*ticked);
     if (split == 1)
     {
-        const reg32 first = kRaceOrder(app, 0), second = kRaceOrder(app, 1);
-        eax = load<reg32>(app, first + 0x2bc);
+        const u32 first = kRaceOrder(app, 0), second = kRaceOrder(app, 1);
+        eax = load<u32>(app, first + 0x2bc);
         ahead = load<int32_t>(app, first + 0x2bc) >= load<int32_t>(app, second + 0x2bc);
     }
     eax = (eax & 0xffffff00u) | (ahead ? 1u : 0u);
@@ -244,7 +244,7 @@ Result raceAnnouncerTicked(App* app, CPU& cpu, reg32 esp, reg32 car)
         return int32_t(eax);
     if (split == 1 && uint8_t(eax) != uint8_t(t.side))
         return int32_t(eax);
-    const reg32 rival = load<reg32>(app, car + 0x628);
+    const u32 rival = load<u32>(app, car + 0x628);
     kMusicAhead.set(app, rival != 0 && load<int32_t>(app, rival + 0x2c) > 0 ? 1 : 0);
     // The intensity: by the laps left and the race's laps.
     const int32_t furthest = lap > kMusicLap(app) ? lap : kMusicLap(app);
@@ -260,7 +260,7 @@ Result raceAnnouncerTicked(App* app, CPU& cpu, reg32 esp, reg32 car)
     {
         if (mode == 1)
         {
-            if (reg32(furthest) <= 7)
+            if (u32(furthest) <= 7)
             {
                 if (place == 1)
                     switch (furthest)
@@ -290,67 +290,67 @@ Result raceAnnouncerTicked(App* app, CPU& cpu, reg32 esp, reg32 car)
     }
     // Calm when the car is slow.
     const int32_t chopped = truncatedInteger(double(load<float>(app, car + 0x4f4)));
-    const reg32 speed = (chopped <= 0 ? 0u - reg32(chopped) : reg32(chopped)) * 2;
+    const u32 speed = (chopped <= 0 ? 0u - u32(chopped) : u32(chopped)) * 2;
     if (int32_t(speed) < 0x32)
         level = 0;
     if (level != kMusicLevel(app) && kMusicBusy(app) == -1)
     {
-        cpu.esp = sp;
-        if (!guest::direct<kPathControl, stream::pathControl>(app, cpu, sp - 4, int32_t(level)))
+        ts.sp = sp;
+        if (!guest::direct<kPathControl, stream::pathControl>(app, ts, sp - 4, int32_t(level)))
             return {};
         kMusicLevel.set(app, level);
     }
     // The long wait (over 600): the music's event resumed once.
     // The game's trace, compiled out (its words, 0x64, 2, kTraceWait and the wait at +0x8a0, the caller's to
     // push): nothing.
-    cpu.esp = sp;
-    guest::direct<kTrace, ea::traceOff>(app, cpu);
-    if (cpu.terminate)
+    ts.sp = sp;
+    guest::direct<kTrace, ea::traceOff>(app, ts);
+    if (ts.terminate)
         return {};
     if (load<int32_t>(app, car + 0x8a0) > 0x258 && kWaitMark(app) == 0)
     {
         kWaitMark.set(app, 1);
-        cpu.esp = sp;
-        if (!guest::direct<kPathInterrupt, stream::pathEventInterrupt>(app, cpu, sp - 4, 0))
+        ts.sp = sp;
+        if (!guest::direct<kPathInterrupt, stream::pathEventInterrupt>(app, ts, sp - 4, 0))
             return {};
-        const reg32 event = kMusicBusy(app) != -1 ? 1u : reg32(kMusicEvent(app));
-        cpu.esp = sp;
-        if (!guest::direct<kPathEvent, stream::pathEvent>(app, cpu, sp - 4, int32_t(event), 0))
+        const u32 event = kMusicBusy(app) != -1 ? 1u : u32(kMusicEvent(app));
+        ts.sp = sp;
+        if (!guest::direct<kPathEvent, stream::pathEvent>(app, ts, sp - 4, int32_t(event), 0))
             return {};
     }
     else if (load<int32_t>(app, car + 0x8a0) == 0 && kWaitMark(app) != 0)
         kWaitMark.set(app, 0);
     // The section's event.
-    cpu.esp = sp;
-    eax = guest::direct<kSectionKind, trackdata::trackKindUnderCar>(app, cpu, car);
+    ts.sp = sp;
+    eax = guest::direct<kSectionKind, trackdata::trackKindUnderCar>(app, ts, car);
     const uint8_t event = uint8_t(eax), was = kMusicEvent(app);
     if (event == was)
         return int32_t(eax);
     if (kRaceClock(app) > 0x258)
     {
-        const reg32 backwards = load<reg32>(app, car + 0x998);
+        const u32 backwards = load<u32>(app, car + 0x998);
         bool over = false;
         if (backwards == 0)
         {
-            if (reg32(was) == kLineStart(app))
+            if (u32(was) == kLineStart(app))
             {
                 eax &= 0xff;
-                over = eax == reg32(kLineEnd(app));
+                over = eax == u32(kLineEnd(app));
             }
         }
         if (!over && backwards != 0)
         {
-            eax = reg32(kMusicEvent(app));
-            if (eax == reg32(kLineEnd(app)))
+            eax = u32(kMusicEvent(app));
+            if (eax == u32(kLineEnd(app)))
             {
                 eax = event;
-                over = eax == reg32(kLineStart(app));
+                over = eax == u32(kLineStart(app));
             }
         }
         if (over)
         {
             // Over the line: a lap on (or back, going backwards).
-            const int32_t now = int32_t(reg32(kMusicLapNow(app)) + (backwards != 0 ? 0xffffffffu : 1u));
+            const int32_t now = int32_t(u32(kMusicLapNow(app)) + (backwards != 0 ? 0xffffffffu : 1u));
             kMusicLapNow.set(app, now);
             if (backwards == 0)
                 kMusicLap.set(app, now);
@@ -358,11 +358,11 @@ Result raceAnnouncerTicked(App* app, CPU& cpu, reg32 esp, reg32 car)
                 kMusicLap.set(app, 0);
             if (laps == kMusicLap(app))
                 kMusicLap.set(app, laps - 1);
-            eax = reg32(kMusicLapNow(app));
+            eax = u32(kMusicLapNow(app));
             // The trace, compiled out (its words 0x64, 1, kTraceLaps and the laps): nothing.
-            cpu.esp = sp;
-            guest::direct<kTrace, ea::traceOff>(app, cpu);
-            if (cpu.terminate)
+            ts.sp = sp;
+            guest::direct<kTrace, ea::traceOff>(app, ts);
+            if (ts.terminate)
                 return {};
         }
     }
@@ -370,15 +370,15 @@ Result raceAnnouncerTicked(App* app, CPU& cpu, reg32 esp, reg32 car)
     kMusicEvent.set(app, event);
     if (busy != -1)
         return int32_t(eax);
-    cpu.esp = sp;
-    return guest::direct<kPathEvent, stream::pathEvent>(app, cpu, sp - 4, int32_t(event), 0);
+    ts.sp = sp;
+    return guest::direct<kPathEvent, stream::pathEvent>(app, ts, sp - 4, int32_t(event), 0);
 }
 
 /* 0x412d60: car eax's announcer and music tick. */
-x86::reg32 raceAnnouncer(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 raceAnnouncer(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, raceAnnouncerTicked(app, cpu, e.esp, e.eax));
+    const Entry e(ts, args);
+    return e.finish(ts, args, raceAnnouncerTicked(app, ts, e.esp, e.eax));
 }
 
 }  // namespace port

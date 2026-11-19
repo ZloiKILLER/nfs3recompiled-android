@@ -61,13 +61,13 @@ enum RaceType : std::uint32_t
 constexpr std::uint32_t kSingleRaceAidCount = 6;
 // Nonzero (int16) while the game is set up to race others over a network
 // (sub_49e220).
-constexpr x86::reg32 kNetworkGame = 0x7a22dc;
+constexpr nfs::u32 kNetworkGame = 0x7a22dc;
 
 // The game's functions the screens call.
 // Leaves the network game: the session closed, the network let go.
-constexpr x86::reg32 kLeaveNetworkGame = 0x4a65e0;
+constexpr nfs::u32 kLeaveNetworkGame = 0x4a65e0;
 // Zeroes a run of bytes: eax where, edx how many (Watcom's memset at 0).
-constexpr x86::reg32 kFillZero = 0x4e070c;
+constexpr nfs::u32 kFillZero = 0x4e070c;
 
 // Lines of the language's text (sub_4d1850), by what they are on these screens.
 constexpr std::uint32_t kOpponentsTextSeries = 0x1eb;      // MAIN_OPPONENT_BUTTON, a tournament or knockout
@@ -131,11 +131,11 @@ void placeAfterLabel(Guest& guest, Item shifted, std::uint32_t label)
  * the dialog keeps and calls. */
 struct NameDialog
 {
-    x86::reg32 name;             // 10 characters and a zero
-    x86::reg32 lines;
-    x86::reg32 buttons;
+    nfs::u32 name;             // 10 characters and a zero
+    nfs::u32 lines;
+    nfs::u32 buttons;
     std::uint32_t firstLine;
-    x86::reg32 answer;
+    nfs::u32 answer;
 };
 constexpr std::uint32_t kPlayerNameLength = 10;
 constexpr std::uint32_t kNameDialogLine2 = 0xf8;
@@ -145,11 +145,11 @@ constexpr NameDialog kPlayer1Name{ SETTINGS_ADDRESS(players[0].name), 0x678908, 
 constexpr NameDialog kPlayer2Name{ SETTINGS_ADDRESS(players[1].name), 0x678918, 0x678920, 0xca, 0x45ce60 };
 
 // The players' name buttons' handlers, whose addresses the screens hand out.
-constexpr x86::reg32 kPlayer1NameButton = 0x45cef0;
-constexpr x86::reg32 kPlayer2NameButton = 0x45cf70;
+constexpr nfs::u32 kPlayer1NameButton = 0x45cef0;
+constexpr nfs::u32 kPlayer2NameButton = 0x45cf70;
 
 /* sub_45cef0, sub_45cf70: a player's name button, a dialog to type it in. */
-x86::reg32 onPlayerName(win32::WinApplication* app, x86::CPU& cpu, Guest& guest, const NameDialog& player)
+nfs::u32 onPlayerName(nfs::App* app, nfs::ThreadState& ts, Guest& guest, const NameDialog& player)
 {
     guest.setDword(player.lines, fe::text(guest, player.firstLine));
     guest.setDword(player.lines + 4, fe::text(guest, kNameDialogLine2));
@@ -165,7 +165,7 @@ x86::reg32 onPlayerName(win32::WinApplication* app, x86::CPU& cpu, Guest& guest,
     dialog.editLength = kPlayerNameLength;
     dialog.editMode = 1;
     dialog.callback = player.answer;
-    guest::direct<0x444c20, frontend::dialogs::openEdit>(app, cpu, dialog.lineCount, dialog.lines, dialog.buttonCount,
+    guest::direct<0x444c20, frontend::dialogs::openEdit>(app, ts, dialog.lineCount, dialog.lines, dialog.buttonCount,
                                                          dialog.buttons, dialog.focus, dialog.edit, dialog.editLength,
                                                          dialog.editMode, dialog.callback);
     return fe::kDialogHandled;
@@ -178,14 +178,14 @@ x86::reg32 onPlayerName(win32::WinApplication* app, x86::CPU& cpu, Guest& guest,
  * From the mouse, Enter with the second button (Cancel) highlighted closes
  * the dialog as Escape does.  From the keys, Enter keeps the name whichever
  * button is highlighted, Cancel too -- as the original does. */
-x86::reg32 onPlayerNameAnswer(win32::WinApplication* app, x86::CPU& cpu, Guest& guest, const NameDialog& player,
-                              std::uint32_t answer, x86::reg32 close)
+nfs::u32 onPlayerNameAnswer(nfs::App* app, nfs::ThreadState& ts, Guest& guest, const NameDialog& player,
+                              std::uint32_t answer, nfs::u32 close)
 {
     guest.setByte(close, 0);
-    const x86::reg32 typed = guest::direct<0x444c10, frontend::dialogs::editText>(app, cpu);
+    const nfs::u32 typed = guest::direct<0x444c10, frontend::dialogs::editText>(app, ts);
     if (answer == fe::kDialogEnter)
     {
-        const std::uint32_t focus = guest::direct<0x4446c0, frontend::dialogs::focusedButton>(app, cpu);
+        const std::uint32_t focus = guest::direct<0x4446c0, frontend::dialogs::focusedButton>(app, ts);
         if (focus != 0 && guest.dword(fe::kInputFromMouse) != 0)
         {
             if (focus == 1)
@@ -195,7 +195,7 @@ x86::reg32 onPlayerNameAnswer(win32::WinApplication* app, x86::CPU& cpu, Guest& 
             }
             return 0;
         }
-        if (fe::direct<0x4721f0, frontend::text::nameValid>(app, cpu, typed) == 0)
+        if (fe::direct<0x4721f0, frontend::text::nameValid>(app, ts, typed) == 0)
             return 0;
         guest.copyString(player.name, typed);
         guest.setByte(close, 1);
@@ -232,7 +232,7 @@ constexpr GuestString kShowPlayerName2{ 0x53a748, "SHOW_PLAYERNAME2" };
 
 /* A series runs its own tracks: the track cannot be chosen.  The opponents'
  * button and list are labelled for the kind of race. */
-void fitTrackAndOpponents(Guest& guest, x86::reg32 menu, RaceType type)
+void fitTrackAndOpponents(Guest& guest, nfs::u32 menu, RaceType type)
 {
     if (isSeries(type))
     {
@@ -255,7 +255,7 @@ void fitTrackAndOpponents(Guest& guest, x86::reg32 menu, RaceType type)
 }
 
 /* Player one's name: the button that changes it, the line that shows it. */
-void fitPlayerName(Guest& guest, x86::reg32 menu)
+void fitPlayerName(Guest& guest, nfs::u32 menu)
 {
     if (Item button = fe::findItem(guest, menu, kSetPlayerName))
         button.setOnClick(kPlayer1NameButton);
@@ -264,7 +264,7 @@ void fitPlayerName(Guest& guest, x86::reg32 menu)
 }
 
 /* The level of a series, shown only for one. */
-void fitGameLevel(Guest& guest, x86::reg32 menu, RaceType type)
+void fitGameLevel(Guest& guest, nfs::u32 menu, RaceType type)
 {
     if (Item level = fe::findItem(guest, menu, kGameLevel1))
     {
@@ -285,8 +285,8 @@ void fitGameLevel(Guest& guest, x86::reg32 menu, RaceType type)
  * each item is laid out, after the screen's own handler has run (sub_44a960:
  * the button's, the cascade's and the text's methods, sub_461900, sub_4623a0,
  * sub_4600b0). */
-constexpr x86::reg32 kRowX = 0x559c6c;
-constexpr x86::reg32 kRowY = 0x559c94;
+constexpr nfs::u32 kRowX = 0x559c6c;
+constexpr nfs::u32 kRowY = 0x559c94;
 constexpr std::size_t kRows = 8;
 constexpr std::int16_t kOriginalRowX[kRows] = { 12, 5, 2, 1, 4, 9, 16, 27 };
 constexpr std::int16_t kOriginalRowY[kRows] = { 138, 173, 208, 243, 278, 313, 348, 383 };
@@ -301,17 +301,17 @@ void setRows(Guest& guest, const std::int16_t (&x)[kRows], const std::int16_t (&
 {
     for (std::size_t i = 0; i < kRows; ++i)
     {
-        guest.setWord(kRowX + 4 * x86::reg32(i), std::uint16_t(x[i]));
-        guest.setWord(kRowY + 4 * x86::reg32(i), std::uint16_t(y[i]));
+        guest.setWord(kRowX + 4 * nfs::u32(i), std::uint16_t(x[i]));
+        guest.setWord(kRowY + 4 * nfs::u32(i), std::uint16_t(y[i]));
     }
 }
 
 /* sub_45cff0, sub_45d300: main's and mainsplt's every pass of the menu loop. */
-x86::reg32 onFrame(win32::WinApplication* app, x86::CPU& cpu, Guest& guest, x86::reg32 menu)
+nfs::u32 onFrame(nfs::App* app, nfs::ThreadState& ts, Guest& guest, nfs::u32 menu)
 {
     // Left alone long enough, the screen gives way to the attract-mode movie (the screen the game's
     // code has in eax as it calls, unread).
-    if (fe::direct<0x496200, frontend::glue::attractMode>(app, cpu) != 0)
+    if (fe::direct<0x496200, frontend::glue::attractMode>(app, ts) != 0)
         return fe::kMenuMoviePlayed;
 
     // The opponents' button pops up the list of the series' cars in a series,
@@ -334,33 +334,33 @@ x86::reg32 onFrame(win32::WinApplication* app, x86::CPU& cpu, Guest& guest, x86:
  *
  * The machine that sets the race up chooses; the others follow the race type
  * it sends them. */
-constexpr x86::reg32 kRaceListLine = 0x5556d8;         // the line chosen
-constexpr x86::reg32 kRaceListLineShown = 0x5556dc;    // the line the screen was last fitted to
+constexpr nfs::u32 kRaceListLine = 0x5556d8;         // the line chosen
+constexpr nfs::u32 kRaceListLineShown = 0x5556dc;    // the line the screen was last fitted to
 // Whether each line of the list can be chosen: seven int16 (1 can), and the
 // list's name after them.
-constexpr x86::reg32 kRaceListChoices = 0x555730;
+constexpr nfs::u32 kRaceListChoices = 0x555730;
 constexpr std::uint32_t kRaceListChoiceCount = 7;
 // How this machine joined it (sub_43f320).  With 2 only the race already
 // chosen stays on the list.
-constexpr x86::reg32 kNetworkJoin = 0x7a22e4;
+constexpr nfs::u32 kNetworkJoin = 0x7a22e4;
 constexpr std::uint32_t kNetworkJoinFollow = 2;
 // Nonzero (int16) on the machine that sets the race up: only it chooses the
 // track and the opponents.
-constexpr x86::reg32 kNetworkHost = 0x7a22da;
+constexpr nfs::u32 kNetworkHost = 0x7a22da;
 // Nonzero while connected to the others: leaving the screen asks first.
-constexpr x86::reg32 kNetworkConnected = 0x7a22e0;
+constexpr nfs::u32 kNetworkConnected = 0x7a22e0;
 
 // The question before leaving: its line and its two buttons, char* each.
-constexpr x86::reg32 kLeaveLines = 0x5f40b0;
-constexpr x86::reg32 kLeaveButtons = 0x5f40b4;
+constexpr nfs::u32 kLeaveLines = 0x5f40b0;
+constexpr nfs::u32 kLeaveButtons = 0x5f40b4;
 constexpr std::uint32_t kLeaveQuestion = 0x101;
 constexpr std::uint32_t kLeaveYes = 0xc4;
 constexpr std::uint32_t kLeaveNo = 0xc5;
 
 // The functions of this screen whose addresses it hands out: the Back
 // button's handler and its question's answer.
-constexpr x86::reg32 kMultiBackButton = 0x4400d0;
-constexpr x86::reg32 kMultiLeaveAnswer = 0x43fcb0;
+constexpr nfs::u32 kMultiBackButton = 0x4400d0;
+constexpr nfs::u32 kMultiLeaveAnswer = 0x43fcb0;
 
 // Its items, by the codelinks MAINMULT.MNU gives them (its own copy of the
 // strings, and of the list's name).
@@ -396,10 +396,10 @@ const GuestString kMultiFrameStrings[] = { kMultiOpponentButton, kMultiOpponentC
 }
 
 /* sub_45d050, main as it opens: each item fitted to the kind of race. */
-x86::reg32 frontend::mainmenu::mainEnter(App* app, CPU& cpu, reg32 menu)
+nfs::u32 frontend::mainmenu::mainEnter(App* app, ThreadState& ts, u32 menu)
 {
-    Guest guest(app, cpu);
-    const fe::Frame frame(guest, cpu, 20);
+    Guest guest(app, ts);
+    const fe::Frame frame(guest, ts, 20);
     const RaceType type = raceType(guest);
     fitTrackAndOpponents(guest, menu, type);
     fitPlayerName(guest, menu);
@@ -420,7 +420,7 @@ x86::reg32 frontend::mainmenu::mainEnter(App* app, CPU& cpu, reg32 menu)
     // Back here from a network game: it is over.
     if (guest.word(kNetworkGame) != 0)
     {
-        guest::direct<0x444be0, dialogs::messageById>(app, cpu, kNetworkGameEndedText);
+        guest::direct<0x444be0, dialogs::messageById>(app, ts, kNetworkGameEndedText);
         guest.call(kLeaveNetworkGame);
     }
     return 0;
@@ -428,10 +428,10 @@ x86::reg32 frontend::mainmenu::mainEnter(App* app, CPU& cpu, reg32 menu)
 
 /* sub_45d360, mainsplt as it opens: two players on this machine, the second
  * one's name too.  The aids are a single race's only. */
-x86::reg32 frontend::mainmenu::splitEnter(App* app, CPU& cpu, reg32 menu)
+nfs::u32 frontend::mainmenu::splitEnter(App* app, ThreadState& ts, u32 menu)
 {
-    Guest guest(app, cpu);
-    const fe::Frame frame(guest, cpu, 24);
+    Guest guest(app, ts);
+    const fe::Frame frame(guest, ts, 24);
     setRows(guest, kSplitRowX, kSplitRowY);
     gameSettings(guest).playMode = 1;
     if (Item shifted = fe::findItem(guest, menu, kShiftMe))
@@ -466,9 +466,9 @@ x86::reg32 frontend::mainmenu::splitEnter(App* app, CPU& cpu, reg32 menu)
 /* sub_440390: the list's line for the race type the game has -- what the
  * machines that do not set the race up follow.  Any other type leaves it.
  * The race type is what it leaves in eax. */
-x86::reg32 frontend::mainmenu::followRaceType(App* app, CPU& cpu)
+nfs::u32 frontend::mainmenu::followRaceType(App* app, ThreadState& ts)
 {
-    Guest guest(app, cpu);
+    Guest guest(app, ts);
     std::uint32_t line = guest.dword(kRaceListLine);
     const bool firstVariant = gameSettings(guest).seriesVariant == 0;
     const RaceType type = raceType(guest);
@@ -494,10 +494,10 @@ x86::reg32 frontend::mainmenu::followRaceType(App* app, CPU& cpu)
 /* sub_440160: the race type and variant of the list's line, and the items
  * fitted to them.  Only the machine that sets the race up chooses the track
  * and the opponents, and not for a series.  The aids are a single race's. */
-x86::reg32 frontend::mainmenu::applyRaceList(App* app, CPU& cpu, reg32 menu)
+nfs::u32 frontend::mainmenu::applyRaceList(App* app, ThreadState& ts, u32 menu)
 {
-    Guest guest(app, cpu);
-    const fe::Frame frame(guest, cpu, 24);
+    Guest guest(app, ts);
+    const fe::Frame frame(guest, ts, 24);
     switch (guest.dword(kRaceListLine))
     {
     case 0:
@@ -535,10 +535,10 @@ x86::reg32 frontend::mainmenu::applyRaceList(App* app, CPU& cpu, reg32 menu)
 /* sub_440470, mainmult as it opens: which lines of the race list can be
  * chosen, the list's line for the race the game has, and the screen fitted
  * to it. */
-x86::reg32 frontend::mainmenu::multiEnter(App* app, CPU& cpu, reg32 menu)
+nfs::u32 frontend::mainmenu::multiEnter(App* app, ThreadState& ts, u32 menu)
 {
-    Guest guest(app, cpu);
-    const fe::Frame frame(guest, cpu, 20);
+    Guest guest(app, ts);
+    const fe::Frame frame(guest, ts, 20);
     for (std::uint32_t i = 0; i < kRaceListChoiceCount; ++i)
         guest.setWord(kRaceListChoices + 2 * i, 1);
     if (gameSettings(guest).networkGame != 0)
@@ -556,8 +556,8 @@ x86::reg32 frontend::mainmenu::multiEnter(App* app, CPU& cpu, reg32 menu)
         if (guest.dword(kNetworkJoin) == kNetworkJoinFollow)
         {
             const RaceType type = raceType(guest);
-            fe::direct<kFillZero, ea::clearBytes>(guest.app(), guest.cpu(), kRaceListChoices, 2 * kRaceListChoiceCount);
-            x86::reg32 line = type;
+            fe::direct<kFillZero, ea::clearBytes>(guest.app(), guest.ts(), kRaceListChoices, 2 * kRaceListChoiceCount);
+            nfs::u32 line = type;
             if (type == kTournament)
                 line += 1;
             if (std::int32_t(type) >= 2)
@@ -565,9 +565,9 @@ x86::reg32 frontend::mainmenu::multiEnter(App* app, CPU& cpu, reg32 menu)
             guest.setWord(kRaceListChoices + 2 * line, 1);
         }
     }
-    guest::direct<0x440390, followRaceType>(app, cpu);
+    guest::direct<0x440390, followRaceType>(app, ts);
     guest.setDword(kRaceListLineShown, guest.dword(kRaceListLine));
-    guest::direct<0x440160, applyRaceList>(app, cpu, menu);
+    guest::direct<0x440160, applyRaceList>(app, ts, menu);
 
     if (Item button = fe::findItem(guest, menu, kMultiSetPlayerName))
         button.setOnClick(kPlayer1NameButton);
@@ -582,17 +582,17 @@ x86::reg32 frontend::mainmenu::multiEnter(App* app, CPU& cpu, reg32 menu)
 
 /* sub_4403f0, mainmult's every pass: a machine that does not set the race up
  * follows the race type sent to it; a line changed on the list is applied. */
-x86::reg32 frontend::mainmenu::multiFrame(App* app, CPU& cpu, reg32 menu)
+nfs::u32 frontend::mainmenu::multiFrame(App* app, ThreadState& ts, u32 menu)
 {
-    Guest guest(app, cpu);
-    const fe::Frame frame(guest, cpu, 16);
+    Guest guest(app, ts);
+    const fe::Frame frame(guest, ts, 16);
     if (guest.word(kNetworkHost) == 0)
-        guest::direct<0x440390, followRaceType>(app, cpu);
+        guest::direct<0x440390, followRaceType>(app, ts);
     const std::uint32_t line = guest.dword(kRaceListLine);
     if (line != guest.dword(kRaceListLineShown))
     {
         guest.setDword(kRaceListLineShown, line);
-        guest::direct<0x440160, applyRaceList>(app, cpu, menu);
+        guest::direct<0x440160, applyRaceList>(app, ts, menu);
     }
 
     // The opponents' button pops up the list of the series' cars in a series.
@@ -604,10 +604,10 @@ x86::reg32 frontend::mainmenu::multiFrame(App* app, CPU& cpu, reg32 menu)
 
 /* sub_4400d0, mainmult's Back (the ipx screen's too): connected to others, a
  * question first; otherwise straight back to the first screen. */
-x86::reg32 frontend::mainmenu::multiBack(App* app, CPU& cpu)
+nfs::u32 frontend::mainmenu::multiBack(App* app, ThreadState& ts)
 {
-    Guest guest(app, cpu);
-    const fe::Frame frame(guest, cpu, 16);
+    Guest guest(app, ts);
+    const fe::Frame frame(guest, ts, 16);
     if (guest.dword(kNetworkConnected) == 0)
         return fe::kMenuBackToFirst;
     guest.setDword(kLeaveLines, fe::text(guest, kLeaveQuestion));
@@ -622,7 +622,7 @@ x86::reg32 frontend::mainmenu::multiBack(App* app, CPU& cpu)
     question.focus = 0;
     question.column = 0;
     question.callback = kMultiLeaveAnswer;
-    guest::direct<0x4446d0, dialogs::openQuestion>(app, cpu, question.lineCount, question.lines, question.buttonCount,
+    guest::direct<0x4446d0, dialogs::openQuestion>(app, ts, question.lineCount, question.lines, question.buttonCount,
                                                    question.buttons, question.buttonHelp, question.focus,
                                                    question.column, question.callback);
     return 0;
@@ -631,17 +631,17 @@ x86::reg32 frontend::mainmenu::multiBack(App* app, CPU& cpu)
 /* sub_43fcb0, the question answered: Enter on Yes leaves the network game's
  * screens for the first one; Enter on No, or Escape, closes the question.
  * `close`, when there is one, keeps the question up when cleared. */
-x86::reg32 frontend::mainmenu::multiLeaveAnswer(App* app, CPU& cpu, reg32 answer, reg32 close)
+nfs::u32 frontend::mainmenu::multiLeaveAnswer(App* app, ThreadState& ts, u32 answer, u32 close)
 {
-    Guest guest(app, cpu);
-    const fe::Frame frame(guest, cpu, 8);
+    Guest guest(app, ts);
+    const fe::Frame frame(guest, ts, 8);
     auto setClose = [&](std::uint8_t value) {
         if (close != 0)
             guest.setByte(close, value);
     };
     if (answer == fe::kDialogEnter)
     {
-        const std::uint32_t focus = guest::direct<0x4446c0, dialogs::focusedButton>(app, cpu);
+        const std::uint32_t focus = guest::direct<0x4446c0, dialogs::focusedButton>(app, ts);
         if (focus == 0)
         {
             setClose(1);
@@ -659,70 +659,70 @@ x86::reg32 frontend::mainmenu::multiLeaveAnswer(App* app, CPU& cpu, reg32 answer
 }
 
 /* sub_45d2f0, main as it closes: nothing to undo. */
-x86::reg32 frontend::mainmenu::mainExit(App*, CPU&)
+nfs::u32 frontend::mainmenu::mainExit(App*, ThreadState&)
 {
     return 0;
 }
 
 /* sub_45cff0: main's every pass of the menu loop. */
-x86::reg32 frontend::mainmenu::mainFrame(App* app, CPU& cpu, reg32 menu)
+nfs::u32 frontend::mainmenu::mainFrame(App* app, ThreadState& ts, u32 menu)
 {
-    Guest guest(app, cpu);
-    const fe::Frame frame(guest, cpu, 12);
-    return onFrame(app, cpu, guest, menu);
+    Guest guest(app, ts);
+    const fe::Frame frame(guest, ts, 12);
+    return onFrame(app, ts, guest, menu);
 }
 
 /* sub_45cef0: player one's name button. */
-x86::reg32 frontend::mainmenu::playerName(App* app, CPU& cpu)
+nfs::u32 frontend::mainmenu::playerName(App* app, ThreadState& ts)
 {
-    Guest guest(app, cpu);
-    const fe::Frame frame(guest, cpu, 16);
-    return onPlayerName(app, cpu, guest, kPlayer1Name);
+    Guest guest(app, ts);
+    const fe::Frame frame(guest, ts, 16);
+    return onPlayerName(app, ts, guest, kPlayer1Name);
 }
 
 /* sub_45cdd0: player one's name dialog answered. */
-x86::reg32 frontend::mainmenu::playerNameAnswer(App* app, CPU& cpu, reg32 answer, reg32 close)
+nfs::u32 frontend::mainmenu::playerNameAnswer(App* app, ThreadState& ts, u32 answer, u32 close)
 {
-    Guest guest(app, cpu);
-    const fe::Frame frame(guest, cpu, 16);
-    return onPlayerNameAnswer(app, cpu, guest, kPlayer1Name, answer, close);
+    Guest guest(app, ts);
+    const fe::Frame frame(guest, ts, 16);
+    return onPlayerNameAnswer(app, ts, guest, kPlayer1Name, answer, close);
 }
 
 /* sub_45d620, mainsplt as it closes: nothing to undo but the port's rows,
  * back for the other screens. */
-x86::reg32 frontend::mainmenu::splitExit(App* app, CPU& cpu)
+nfs::u32 frontend::mainmenu::splitExit(App* app, ThreadState& ts)
 {
-    Guest guest(app, cpu);
+    Guest guest(app, ts);
     setRows(guest, kOriginalRowX, kOriginalRowY);
     return 0;
 }
 
 /* sub_45d300: mainsplt's every pass, main's instruction for instruction. */
-x86::reg32 frontend::mainmenu::splitFrame(App* app, CPU& cpu, reg32 menu)
+nfs::u32 frontend::mainmenu::splitFrame(App* app, ThreadState& ts, u32 menu)
 {
-    Guest guest(app, cpu);
-    const fe::Frame frame(guest, cpu, 12);
-    return onFrame(app, cpu, guest, menu);
+    Guest guest(app, ts);
+    const fe::Frame frame(guest, ts, 12);
+    return onFrame(app, ts, guest, menu);
 }
 
 /* sub_45cf70: player two's name button. */
-x86::reg32 frontend::mainmenu::player2Name(App* app, CPU& cpu)
+nfs::u32 frontend::mainmenu::player2Name(App* app, ThreadState& ts)
 {
-    Guest guest(app, cpu);
-    const fe::Frame frame(guest, cpu, 16);
-    return onPlayerName(app, cpu, guest, kPlayer2Name);
+    Guest guest(app, ts);
+    const fe::Frame frame(guest, ts, 16);
+    return onPlayerName(app, ts, guest, kPlayer2Name);
 }
 
 /* sub_45ce60: player two's name dialog answered. */
-x86::reg32 frontend::mainmenu::player2NameAnswer(App* app, CPU& cpu, reg32 answer, reg32 close)
+nfs::u32 frontend::mainmenu::player2NameAnswer(App* app, ThreadState& ts, u32 answer, u32 close)
 {
-    Guest guest(app, cpu);
-    const fe::Frame frame(guest, cpu, 16);
-    return onPlayerNameAnswer(app, cpu, guest, kPlayer2Name, answer, close);
+    Guest guest(app, ts);
+    const fe::Frame frame(guest, ts, 16);
+    return onPlayerNameAnswer(app, ts, guest, kPlayer2Name, answer, close);
 }
 
 /* sub_4405b0, mainmult as it closes: nothing to undo. */
-x86::reg32 frontend::mainmenu::multiExit(App*, CPU&)
+nfs::u32 frontend::mainmenu::multiExit(App*, ThreadState&)
 {
     return 0;
 }
@@ -733,116 +733,116 @@ x86::reg32 frontend::mainmenu::multiExit(App*, CPU&)
 namespace frontend
 {
 
-x86::reg32 mainMenuOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 mainMenuOnEnter(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site{ "sub_45d050", 0, 0, kMainEnterStrings, std::size(kMainEnterStrings) };
-    const x86::reg32 menu = args.eax;
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return mainmenu::mainEnter(app, cpu, menu); });
+    const nfs::u32 menu = args.eax;
+    return fe::runThunk(app, ts, args, site, [&](Guest&) { return mainmenu::mainEnter(app, ts, menu); });
 }
 
-x86::reg32 mainMenuOnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 mainMenuOnExit(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site{ "sub_45d2f0", 0, 0, nullptr, 0 };
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return mainmenu::mainExit(app, cpu); });
+    return fe::runThunk(app, ts, args, site, [&](Guest&) { return mainmenu::mainExit(app, ts); });
 }
 
-x86::reg32 mainMenuOnFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 mainMenuOnFrame(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site{ "sub_45cff0", 0, 0, kFrameStrings, std::size(kFrameStrings) };
-    const x86::reg32 menu = args.eax;
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return mainmenu::mainFrame(app, cpu, menu); });
+    const nfs::u32 menu = args.eax;
+    return fe::runThunk(app, ts, args, site, [&](Guest&) { return mainmenu::mainFrame(app, ts, menu); });
 }
 
-x86::reg32 mainMenuOnPlayerName(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 mainMenuOnPlayerName(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site{ "sub_45cef0", 0, 0, nullptr, 0 };
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return mainmenu::playerName(app, cpu); });
+    return fe::runThunk(app, ts, args, site, [&](Guest&) { return mainmenu::playerName(app, ts); });
 }
 
-x86::reg32 mainMenuPlayerNameAnswer(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 mainMenuPlayerNameAnswer(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site{ "sub_45cdd0", 0, 0, nullptr, 0 };
-    const x86::reg32 answer = args.eax, close = args.edx;
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return mainmenu::playerNameAnswer(app, cpu, answer, close); });
+    const nfs::u32 answer = args.eax, close = args.edx;
+    return fe::runThunk(app, ts, args, site, [&](Guest&) { return mainmenu::playerNameAnswer(app, ts, answer, close); });
 }
 
-x86::reg32 splitMenuOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 splitMenuOnEnter(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site{ "sub_45d360", 0, 0, kSplitEnterStrings, std::size(kSplitEnterStrings) };
-    const x86::reg32 menu = args.eax;
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return mainmenu::splitEnter(app, cpu, menu); });
+    const nfs::u32 menu = args.eax;
+    return fe::runThunk(app, ts, args, site, [&](Guest&) { return mainmenu::splitEnter(app, ts, menu); });
 }
 
-x86::reg32 splitMenuOnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 splitMenuOnExit(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site{ "sub_45d620", 0, 0, nullptr, 0 };
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return mainmenu::splitExit(app, cpu); });
+    return fe::runThunk(app, ts, args, site, [&](Guest&) { return mainmenu::splitExit(app, ts); });
 }
 
-x86::reg32 splitMenuOnFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 splitMenuOnFrame(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site{ "sub_45d300", 0, 0, kFrameStrings, std::size(kFrameStrings) };
-    const x86::reg32 menu = args.eax;
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return mainmenu::splitFrame(app, cpu, menu); });
+    const nfs::u32 menu = args.eax;
+    return fe::runThunk(app, ts, args, site, [&](Guest&) { return mainmenu::splitFrame(app, ts, menu); });
 }
 
-x86::reg32 splitMenuOnPlayer2Name(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 splitMenuOnPlayer2Name(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site{ "sub_45cf70", 0, 0, nullptr, 0 };
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return mainmenu::player2Name(app, cpu); });
+    return fe::runThunk(app, ts, args, site, [&](Guest&) { return mainmenu::player2Name(app, ts); });
 }
 
-x86::reg32 splitMenuPlayer2NameAnswer(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 splitMenuPlayer2NameAnswer(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site{ "sub_45ce60", 0, 0, nullptr, 0 };
-    const x86::reg32 answer = args.eax, close = args.edx;
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return mainmenu::player2NameAnswer(app, cpu, answer, close); });
+    const nfs::u32 answer = args.eax, close = args.edx;
+    return fe::runThunk(app, ts, args, site, [&](Guest&) { return mainmenu::player2NameAnswer(app, ts, answer, close); });
 }
 
-x86::reg32 multiMenuOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 multiMenuOnEnter(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site{ "sub_440470", 0, 0, kMultiEnterStrings, std::size(kMultiEnterStrings) };
-    const x86::reg32 menu = args.eax;
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return mainmenu::multiEnter(app, cpu, menu); });
+    const nfs::u32 menu = args.eax;
+    return fe::runThunk(app, ts, args, site, [&](Guest&) { return mainmenu::multiEnter(app, ts, menu); });
 }
 
-x86::reg32 multiMenuOnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 multiMenuOnExit(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site{ "sub_4405b0", 0, 0, nullptr, 0 };
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return mainmenu::multiExit(app, cpu); });
+    return fe::runThunk(app, ts, args, site, [&](Guest&) { return mainmenu::multiExit(app, ts); });
 }
 
-x86::reg32 multiMenuOnFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 multiMenuOnFrame(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site{ "sub_4403f0", 0, 0, kMultiFrameStrings, std::size(kMultiFrameStrings) };
-    const x86::reg32 menu = args.eax;
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return mainmenu::multiFrame(app, cpu, menu); });
+    const nfs::u32 menu = args.eax;
+    return fe::runThunk(app, ts, args, site, [&](Guest&) { return mainmenu::multiFrame(app, ts, menu); });
 }
 
-x86::reg32 multiMenuApplyRaceList(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 multiMenuApplyRaceList(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site{ "sub_440160", 0, 0, kMultiApplyStrings, std::size(kMultiApplyStrings) };
-    const x86::reg32 menu = args.eax;
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return mainmenu::applyRaceList(app, cpu, menu); });
+    const nfs::u32 menu = args.eax;
+    return fe::runThunk(app, ts, args, site, [&](Guest&) { return mainmenu::applyRaceList(app, ts, menu); });
 }
 
-x86::reg32 multiMenuFollowRaceType(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 multiMenuFollowRaceType(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site{ "sub_440390", 0, 0, nullptr, 0 };
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return mainmenu::followRaceType(app, cpu); });
+    return fe::runThunk(app, ts, args, site, [&](Guest&) { return mainmenu::followRaceType(app, ts); });
 }
 
-x86::reg32 multiMenuOnBack(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 multiMenuOnBack(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site{ "sub_4400d0", 0, 0, nullptr, 0 };
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return mainmenu::multiBack(app, cpu); });
+    return fe::runThunk(app, ts, args, site, [&](Guest&) { return mainmenu::multiBack(app, ts); });
 }
 
-x86::reg32 multiMenuLeaveAnswer(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 multiMenuLeaveAnswer(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site{ "sub_43fcb0", 0, 0, nullptr, 0 };
-    const x86::reg32 answer = args.eax, close = args.edx;
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return mainmenu::multiLeaveAnswer(app, cpu, answer, close); });
+    const nfs::u32 answer = args.eax, close = args.edx;
+    return fe::runThunk(app, ts, args, site, [&](Guest&) { return mainmenu::multiLeaveAnswer(app, ts, answer, close); });
 }
 
 }  // namespace frontend

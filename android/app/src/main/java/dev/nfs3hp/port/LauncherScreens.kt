@@ -1023,7 +1023,6 @@ private fun AdvancedScreen(a: LauncherActivity) {
             key(generation) {
                 val groups = listOf(
                     R.string.debug_traces to DebugOptions.TRACES,
-                    R.string.debug_code to DebugOptions.CODE,
                     R.string.debug_picture to DebugOptions.PICTURE,
                 )
                 for ((title, options) in groups) {

@@ -1,8 +1,8 @@
 #include "native_frontend.h"
 #include <nfs3hp.h>
 
-#include <lib/socket.h>
-#include <lib/winapp.h>
+#include "os_net.h"
+#include <lib/app.h>
 #include <SDL3/SDL.h>
 
 #include <cstdio>
@@ -26,29 +26,29 @@ namespace nfs3hp
 {
 
 // nfs3hp_main.cpp.
-x86::reg32 networkPort();
-void setNetworkPort(x86::reg32 port);
+nfs::u32 networkPort();
+void setNetworkPort(nfs::u32 port);
 
 namespace
 {
 
-using App = win32::WinApplication;
-using CPU = x86::CPU;
-using x86::reg32;
+using App = nfs::App;
+using ThreadState = nfs::ThreadState;
+using nfs::u32;
 
-constexpr reg32 kPortModern = 9803, kPortOriginal = 1030;
+constexpr u32 kPortModern = 9803, kPortOriginal = 1030;
 
 // Addresses of the port's own, for the game to call: past anything it has.
-constexpr reg32 kPortClicked = 0xbff000, kScreenFrame = 0xbff010;
+constexpr u32 kPortClicked = 0xbff000, kScreenFrame = 0xbff010;
 
 constexpr std::size_t kPortRoom = 20, kAddressRoom = 15;
 constexpr Uint64 kAddressEveryMs = 2000;
 
-reg32 s_portText, s_addressText;  // where the two values are written
-reg32 s_gameFrame;                // the screen's own handler for each pass, if any
+u32 s_portText, s_addressText;  // where the two values are written
+u32 s_gameFrame;                // the screen's own handler for each pass, if any
 Uint64 s_nextAddress;
 
-void writeText(App* app, reg32 to, const char* text, std::size_t room)
+void writeText(App* app, u32 to, const char* text, std::size_t room)
 {
     if (to == 0)
         return;
@@ -66,7 +66,7 @@ void showPort(App* app)
 
 void showAddress(App* app)
 {
-    const std::uint32_t address = win32::Socket::localAddress();
+    const std::uint32_t address = os::net::localAddress();
     char text[kAddressRoom + 1];
     if (address == 0)
         std::snprintf(text, sizeof text, "No network");
@@ -78,7 +78,7 @@ void showAddress(App* app)
 }
 
 /* Kept in the launcher's preferences, as the game starts from them. */
-void rememberPort(reg32 port)
+void rememberPort(u32 port)
 {
 #ifdef __ANDROID__
     JNIEnv* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
@@ -98,15 +98,15 @@ void rememberPort(reg32 port)
 #endif
 }
 
-reg32 findItem(App* app, reg32 menu, const char* codelink)
+u32 findItem(App* app, u32 menu, const char* codelink)
 {
     const std::int32_t first = app->getMemory<std::int16_t>(menu + fe::menu::kFirstItem);
     for (std::int32_t i = 0;; ++i)
     {
-        const reg32 item = fe::item::kTable + fe::item::kSize * reg32(first + i);
-        if (app->getMemory<reg32>(item + fe::item::kType) == 0)
+        const u32 item = fe::item::kTable + fe::item::kSize * u32(first + i);
+        if (app->getMemory<u32>(item + fe::item::kType) == 0)
             return 0;
-        const reg32 name = app->getMemory<reg32>(item + fe::item::kCodelink);
+        const u32 name = app->getMemory<u32>(item + fe::item::kCodelink);
         if (name != 0 && std::strcmp(&app->getMemory<char>(name), codelink) == 0)
             return item;
     }
@@ -114,20 +114,20 @@ reg32 findItem(App* app, reg32 menu, const char* codelink)
 
 /* A button's handler, called as the game's are: it takes its return address's
  * slot off the stack.  2: the key is spent. */
-x86::reg32 portClicked(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 portClicked(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const reg32 port = networkPort() == kPortModern ? kPortOriginal : kPortModern;
+    const u32 port = networkPort() == kPortModern ? kPortOriginal : kPortModern;
     setNetworkPort(port);
     rememberPort(port);
     showPort(app);
     args.eax = fe::kDialogHandled;
-    cpu.esp += 4;
+    ts.sp += 4;
     return args.eax;
 }
 
 /* Each pass of the menu loop: the address looked at again now and then, the
  * phone may join a network while the screen is up.  0 stays on the screen. */
-x86::reg32 screenFrame(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 screenFrame(App* app, ThreadState& ts, nfs::Args& args)
 {
     if (SDL_GetTicks() >= s_nextAddress)
         showAddress(app);
@@ -135,37 +135,37 @@ x86::reg32 screenFrame(App* app, CPU& cpu, x86::Args& args)
     {
         // The game's own handler in its place: called with what this one was handed, its return slot
         // this one's (it takes it off, as this one would).
-        const reg32 esp = cpu.esp;
-        cpu.esp = esp + 4;
-        const std::optional<reg32> left = guest::pointerCall(app, cpu, s_gameFrame, args);
-        cpu.esp = esp + 4;
+        const u32 esp = ts.sp;
+        ts.sp = esp + 4;
+        const std::optional<u32> left = guest::pointerCall(app, ts, s_gameFrame, args);
+        ts.sp = esp + 4;
         args.eax = left.value_or(0);
         return args.eax;
     }
     args.eax = 0;
-    cpu.esp += 4;
+    ts.sp += 4;
     return args.eax;
 }
 
-x86::reg32 screenEnter(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 screenEnter(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const reg32 menu = args.eax;
-    frontend::connectOnEnter(app, cpu, args);
-    const reg32 button = findItem(app, menu, "NET_PORT");
-    const reg32 port = findItem(app, menu, "NET_PORT_VALUE");
-    const reg32 address = findItem(app, menu, "NET_ADDRESS_VALUE");
+    const u32 menu = args.eax;
+    frontend::connectOnEnter(app, ts, args);
+    const u32 button = findItem(app, menu, "NET_PORT");
+    const u32 port = findItem(app, menu, "NET_PORT_VALUE");
+    const u32 address = findItem(app, menu, "NET_ADDRESS_VALUE");
     if (button == 0 || port == 0 || address == 0)
         return args.eax;
-    app->getMemory<reg32>(button + fe::item::kOnClick) = kPortClicked;
-    s_portText = app->getMemory<reg32>(port + fe::item::kText);
-    s_addressText = app->getMemory<reg32>(address + fe::item::kText);
+    app->getMemory<u32>(button + fe::item::kOnClick) = kPortClicked;
+    s_portText = app->getMemory<u32>(port + fe::item::kText);
+    s_addressText = app->getMemory<u32>(address + fe::item::kText);
     showPort(app);
     showAddress(app);
-    const reg32 frame = app->getMemory<reg32>(menu + fe::menu::kOnFrame);
+    const u32 frame = app->getMemory<u32>(menu + fe::menu::kOnFrame);
     if (frame != kScreenFrame)
     {
         s_gameFrame = frame;
-        app->getMemory<reg32>(menu + fe::menu::kOnFrame) = kScreenFrame;
+        app->getMemory<u32>(menu + fe::menu::kOnFrame) = kScreenFrame;
     }
     return args.eax;
 }

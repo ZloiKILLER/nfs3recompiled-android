@@ -24,12 +24,10 @@ attribute, or the game cannot write its settings and saves. That folder is what
 you import in the launcher.
 
 `install.win`, the table of data paths the game reads before anything else,
-comes from the installer rather than the disc. The Android build packages the
-copy at `android/app/src/main/assets/gamefiles/install.win`; for a desktop run
-put it next to the game data. `tools/make_install_win.py` regenerates it and
-documents the format, reverse-engineered from the executable. So a complete
-desktop game folder is `fedata/`, `gamedata/`, `install.win` and the four
-executables from `nfs3hp/`.
+comes from the installer rather than the disc. The APK carries a copy at
+`android/app/src/main/assets/gamefiles/install.win`, and the launcher puts it
+next to the imported data. `tools/make_install_win.py` regenerates it and
+documents the format, reverse-engineered from the executable.
 
 ## Playing on a phone
 
@@ -107,7 +105,7 @@ The report sorts the functions into `native_*.cpp` and the typed port
 (`port_*.cpp`) by the source files in the library's debug info,
 and says how many of each were seen, how the time divides, and what runs in
 each 20 seconds. The log also notes the x87's precision: every control word the
-game sets reaches `FloatEnv::s_controlHook` (`include/fpu.h`, null otherwise), each
+game sets reaches `FloatEnv::s_controlHook` (`include/game_float.h`, null otherwise), each
 thread's last one is kept, and each sample carries the precision control its
 thread was under, so the report divides the time between 24, 53 and 64 bits and
 counts the words set.
@@ -349,8 +347,9 @@ inputs, so the port works the x87 as a PC does in a race (every player needs
 the same precision, see below), and the game's
 version is checked when a machine joins. The port reports nfs3.exe's own,
 "27, 2.0" — the version resource the phone has no copy of, and the string the
-Modern Patch keeps in its data. Winsock 1.1 is in `src/nfs3hp/host_net.cpp`
-over the phone's sockets (`src/lib/socket.cpp`); `NFS_NET_TRACE=1` writes a
+Modern Patch keeps in its data. The network the game's code calls is the port's
+`src/nfs3hp/os_net.cpp` (TCP, and IPX carried on UDP) over the phone's sockets
+(`src/lib/socket.cpp`); `NFS_NET_TRACE=1` writes a
 join into the log in debug mode (switch `net_trace`).
 
 ### The x87's precision
@@ -369,9 +368,9 @@ Single precision rounds sums, products, quotients and roots only: sin, cos and
 atan2 (fsin, fcos, fpatan) keep their full width, as on the x87, until the next
 operation or a float store rounds them. So a value between operations is a double,
 holding a float's 24 bits with the x87's wider exponent; the operations are `fp::`
-in `include/fpu.h`, which work out the exact result's side of a tie, and come out
+in `include/game_float.h`, which work out the exact result's side of a tie, and come out
 as the x87's to the bit. There is no x87 under them, only its control word: the
-thread's `FloatEnv` (`include/fpu.h`), which starts at single precision and which
+thread's `FloatEnv` (`include/game_float.h`), which starts at single precision and which
 the game's runtime sets and reads as it did the x87's (`_control87`). Where the
 code itself loads a control word around its work, its arithmetic goes by it: 64
 bits to turn numbers into text and back in the runtime, and chopping for an
@@ -388,20 +387,39 @@ are always at their best quality and the detail at the game's highest. A movie s
 drops a frame that is late against its sound; that is keeping them together, not the
 processor's speed.
 
-## Windows, on the host
+## The port's system services
 
-The game asks Windows for files, threads, a window, DirectDraw, sound, input and
-the network through its imports. None of them is a Windows of the port's any more:
-each call site in the native code calls the port's host code in the import's
-place (`guest::windows<slot, &host::fn>`, `src/nfs3hp/native_windows.h`), with the
-words the game's code pushes for it, and gets back what Windows gave in eax. The
-host code is in `src/nfs3hp/host_*.cpp` on `src/lib`: `host_files` (files,
-directories, drives, mappings), `host_system` (the process, memory, modules,
-environment, console, code pages, errors, the registry, the version resource and
-what was left of user32, ole32 and shell32), `host_threads`, `host_window`,
-`host_video` (DirectDraw) and `host_net`. `src/lib/winapi` keeps only the types,
-COM's objects and the wrapper that makes a stdcall thunk of a host function
-(`win32::Wrapper`, for what the game reaches through a COM object's table).
+On a PC the game asked Windows for files, threads, a window, DirectDraw, sound,
+input and the network. There is no Windows under the port, emulated or
+otherwise: where the game's code made such a call, the native code calls the
+port's own API as plain C++, `nfs3hp::os` in `src/nfs3hp/os_*.cpp`, and passes on
+what the game needs from the answer. Its parts:
+
+- `os_files`: files, directories and drives, with paths as the game writes them
+  (`X:\` or a leading `\` for the data's root, any case) found whatever the case
+  of the files on the device; mapped views of a file.
+- `os_system`: the objects the game holds by handle, the process (leaving, its
+  name, command line and environment, the standard streams), memory pages,
+  modules loaded by name, text (capitals, the code page, wide characters),
+  message boxes, the debugger's log, the settings and the executable's version.
+- `os_threads`: threads, locks and events. The game's threads share one context
+  and hand it over whenever one waits.
+- `os_time`: the game's millisecond clock, which stands still while the app is
+  in the background, the date and time, and one-shot timers that call the game
+  back.
+- `os_net`: TCP connections, and IPX carried on UDP inside the local network.
+- `os_window`: the one window, and the keys, typed text and the game's own
+  messages as the port's events.
+- `os_video`: the display (EA's display library, the menus and the movies): its
+  modes, its screen and back buffer to lock and draw into, and a palette.
+
+Under them is `src/lib` (namespace `nfs`): the application (`lib/app.h`: the
+game's memory, its resources by handle, the shared context, calls through a
+pointer), files, memory maps, threads, locks and events, timers, the window,
+the renderer and its surfaces and palette, sockets, pads and force feedback.
+The settings the game looks up under its old registry paths are a table of the
+port's (`lib/settings.h`), filled at start-up in `nfs3hp_main.cpp` with the
+keys and names the game asks for.
 
 ## How the port is made
 
@@ -428,12 +446,12 @@ now.
 `fe::direct`, `src/nfs3hp/native_guest.h`). Where the game hands a record's
 address on -- a buffer, a string, a frame `strtok` keeps a pointer into -- the
 function keeps that frame on the game's stack in the game's memory
-(`fe::Frame`, `GuestFrame`, below `cpu.esp`), at the depth the original had it,
+(`fe::Frame`, `GuestFrame`, below `ts.sp`), at the depth the original had it,
 so every address the game sees is the one it saw on a PC. A call through a
 pointer the game's data holds -- a table of handlers, a callback, a COM
 object's method, a thread's start -- goes to the function registered at that
 address (`app->callAddress`, `guest::pointerCall`): a thunk
-`x86::reg32 f(App*, CPU&, x86::Args&)`. `x86::Args` (`include/cpu.h`) is the
+`nfs::u32 f(App*, ThreadState&, nfs::Args&)`. `nfs::Args` (`include/game_thread.h`) is the
 calling convention the game's Watcom code was compiled with, as a record: the
 arguments in eax, edx, ebx and ecx, more on the stack, a float argument and
 result where the math library passes one, and what a callee hands back besides
@@ -441,13 +459,13 @@ eax. Some of EA's code reads ebp it never set (an uninitialised variable the
 compiler kept there); `port::HeldEbp` and `guest::heldEbp` keep the value it
 found on a PC and hand it on.
 
-**A thread.** `x86::CPU` is no processor any more: the top of the thread's
-stack in the game's memory (`esp`), its thread block (the exception chain and
+**A thread.** `nfs::ThreadState` (`ts` in the code) is all a thread has: the top of the thread's
+stack in the game's memory (`sp`), its thread block (the exception chain and
 the context lock), its floating-point environment (`FloatEnv`, the control and
 status words the game's runtime sets and reads) and whether the game is
 stopping. The game's threads -- its own, the timer, the sound's -- take one
 lock between them, as on Windows 98, and hand it over at the safepoints of
-their waiting loops (`lib/winapp.h`).
+their waiting loops (`lib/app.h`).
 
 **Unreachable code.** What nothing can call -- the modem and serial links,
 the software renderers and Direct3D, the library functions the linker brought
@@ -548,7 +566,7 @@ pictures are checked by eye on a phone.
   item). Their arithmetic is the game's single precision
   (`fe::FloatMath`), so a box in a race's pause screens lands where the
   game puts it, to the pixel.
-- Windows (see Windows, on the host): `host_*.cpp`.
+- The port's system services (see The port's system services): `os_*.cpp`.
 
 ## Building
 
@@ -577,39 +595,19 @@ The APK lands in `android/app/build/outputs/apk/release/` unsigned: align it
 with `zipalign -p 4` and sign it with `apksigner` and the key in `APK/`. Testing needs no other build: the launcher's Advanced screen
 opens the log and the diagnostic switches.
 
-### Desktop (Windows)
-
-Uses the prebuilt SDL3 in `sdl3/`. CMake ≥ 3.15 and a C++17 compiler:
-
-```bash
-cmake -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build
-```
-
-Run it with the path to your game folder:
-
-```bash
-./build/nfs3hp /path/to/game
-```
-
-With two arguments the second is the CD path, for data split between an install
-directory and the disc.
-
 ### CMake options
 
 | Option | Default | Description |
 |---|---|---|
-| `NFS_TRACE_MSG` | `OFF` | Message-pump tracing. Very verbose. |
+| `NFS_TRACE_MSG` | `OFF` | Traces the window's events and the game's timers. Very verbose. |
 | `NFS2_ASSERT_TRAP` | `OFF` | Unsupported-path asserts break into the debugger instead of logging. |
-| `NFS_BUILD_FF_TESTS` | `OFF` | Build `force_feedback_checks`, the force-feedback (`lib/forcefeedback.h`) regression test, against an SDL virtual joystick. |
-| `NFS_BUILD_MEMORY_TESTS` | `OFF` | Build the guest memory allocator checks. |
 
 ## Environment variables
 
 Read once at startup. On Android the launcher sets `NFS_ORIENTATION`,
 `NFS_FPS_CAP`, `NFS_GAMMA`, `NFS_BRIGHTNESS`, `NFS_CONTRAST`, the `NFS_TOUCH_*`
 keys and one variable per pad button from its own screens, and `NFS_AUDIO_RATE`
-from the phone; the rest matter for a desktop run.
+from the phone; the rest keep their defaults.
 
 | Variable | Default | Description |
 |---|---|---|

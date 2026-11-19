@@ -1,14 +1,14 @@
 #ifndef NFS3HP_PORT_SND_H
 #define NFS3HP_PORT_SND_H
 
-#include "host_files.h"
-#include "host_system.h"
-#include "native_windows.h"
+#include "os_files.h"
+#include "os_system.h"
+#include "native_guest.h"
+#include "os_threads.h"
 #include "port.h"
 #include "port_sound_calls.h"
 
-#include <lib/winapp.h>
-#include <winapi/types.h>
+#include <lib/app.h>
 
 #include <array>
 #include <cstdint>
@@ -125,10 +125,10 @@ struct Channel
 
 // The parts of a channel the mixer's functions keep their states in, and
 // those functions.
-constexpr reg32 kChannelDecoder = 0xc, kChannelResampler = 0xd64, kChannelVolumes = 0xd90;
-constexpr reg32 kChannelDa8 = 0xda8, kChannelDac = 0xdac, kChannelSetStep = 0xdb0, kChannelDb4 = 0xdb4;
-constexpr reg32 kChannelDb8 = 0xdb8, kChannelSetVolume = 0xdbc, kChannelDc0 = 0xdc0, kChannelSend = 0xdc4;
-constexpr reg32 kChannelSetSend = 0xddc, kChannelDe0 = 0xde0;
+constexpr u32 kChannelDecoder = 0xc, kChannelResampler = 0xd64, kChannelVolumes = 0xd90;
+constexpr u32 kChannelDa8 = 0xda8, kChannelDac = 0xdac, kChannelSetStep = 0xdb0, kChannelDb4 = 0xdb4;
+constexpr u32 kChannelDb8 = 0xdb8, kChannelSetVolume = 0xdbc, kChannelDc0 = 0xdc0, kChannelSend = 0xdc4;
+constexpr u32 kChannelSetSend = 0xddc, kChannelDe0 = 0xde0;
 
 /* One of the 24 banks' slots at 0xa0a13c. */
 struct BankSlot
@@ -207,7 +207,7 @@ struct Timbre
     int32_t spread;
 
     /* Tag `tag`'s number (or data's place) set, the dword it is. */
-    void set(reg32 tag, int32_t value) { std::memcpy(reinterpret_cast<uint8_t*>(this) + 4 * tag, &value, 4); }
+    void set(u32 tag, int32_t value) { std::memcpy(reinterpret_cast<uint8_t*>(this) + 4 * tag, &value, 4); }
 };
 static_assert(sizeof(Timbre) == 0x98, "SND's timbre settings");
 
@@ -215,10 +215,10 @@ static_assert(sizeof(Timbre) == 0x98, "SND's timbre settings");
  * read, the tag, its first up to 4 bytes as a number, and where they are. */
 struct Tag
 {
-    reg32 place;
-    reg32 tag;
-    reg32 number;
-    reg32 data;
+    u32 place;
+    u32 tag;
+    u32 number;
+    u32 data;
 };
 
 #pragma pack(pop)
@@ -243,24 +243,23 @@ constexpr Var<uint8_t> kInTick{0xa09af7};
 constexpr Var<uint8_t> kEntered{0xa09af8};        // in the library's lock
 constexpr Var<int8_t> kClientCount{0xa09af9};     // the tick's clients
 constexpr Var<uint32_t> kTicks{0xa09afc};
-constexpr Var<reg32> kLock{0xa09b04};             // the critical section's address
-constexpr Table<reg32> kClients{0xa09b0c};        // 6 functions the tick calls first
+constexpr Var<u32> kLock{0xa09b04};             // the critical section's address
+constexpr Table<u32> kClients{0xa09b0c};        // 6 functions the tick calls first
 constexpr Var<uint8_t> kGroupSerial{0x5678b0};    // the last group handed out
 constexpr Var<int32_t> kHandleSerial{0x56786c};   // a handle's high bits, 0x20 a time
 constexpr Table<int8_t> kPicked{0x9f6a54};        // the voices allocVoices picked
 constexpr Var<uint16_t> kMixRate{0x9ef614};       // the mixer's rate
 constexpr Var<int16_t> kPriorityOffset{0x9ef616}; // added to a sample's priority
 constexpr Var<int32_t> kBusLevel{0xa0a260};       // the first effect bus's level
-constexpr Var<reg32> kChannelEnded{0x9f6b1c};     // what the mixer calls when a channel ends
-constexpr Var<reg32> kEmms{0x9f6b24};
-constexpr Var<reg32> kBankHook{0xa09b24};         // what SNDrestore calls for the banks
+constexpr Var<u32> kChannelEnded{0x9f6b1c};     // what the mixer calls when a channel ends
+constexpr Var<u32> kEmms{0x9f6b24};
+constexpr Var<u32> kBankHook{0xa09b24};         // what SNDrestore calls for the banks
 
 // What the library calls of the game's.
-constexpr reg32 kSurfaceLocked = 0x4f9070;
-constexpr reg32 kEnterCriticalSection = 0x5344b8, kLeaveCriticalSection = 0x534588;  // their imports' slots
-constexpr reg32 kRamp = 0x5004c8;        // the mixer's volume ramp (channel, frames)
-constexpr reg32 kMoveMemory = 0x4ea4f0;  // EA's memmove: eax to, edx from, ebx bytes
-constexpr reg32 kRemoveAllBanks = 0x4e8c1c;
+constexpr u32 kSurfaceLocked = 0x4f9070;
+constexpr u32 kRamp = 0x5004c8;        // the mixer's volume ramp (channel, frames)
+constexpr u32 kMoveMemory = 0x4ea4f0;  // EA's memmove: eax to, edx from, ebx bytes
+constexpr u32 kRemoveAllBanks = 0x4e8c1c;
 
 // Its error codes.
 constexpr int32_t kNoSound = -8, kNoVoices = -9, kNotStarted = -10, kNoMethod = -7;
@@ -271,54 +270,25 @@ inline int32_t imul(int32_t a, int32_t b) { return int32_t(uint32_t(a) * uint32_
 inline int32_t idiv(int32_t a, int32_t b) { return b == -1 ? int32_t(0u - uint32_t(a)) : a / b; }
 inline int32_t negated(int32_t a) { return int32_t(0u - uint32_t(a)); }
 
-/* A Windows function (`Function`) called as callGame calls the game's code: esp and the register
- * arguments `a` set, `words` handed.  The port's own, called as C++ (native_windows.h); in the
- * check through its import's slot `Slot`.  `result` its eax; false when the game stops. */
-template <reg32 Slot, auto Function, typename... Words>
-inline bool callWindows(App* app, CPU& cpu, reg32 esp, Args a, reg32& result, Words... words)
+/* The game's lock at `section` entered or left (os::locks), from `esp` where the game's code has
+ * it at the call: eax stays as the code has it.  False when the game stops. */
+inline bool lockEnter(App* app, ThreadState& ts, u32 esp, u32 section)
 {
-    cpu.esp = esp;
-    // a host call's result when it has none: eax as it was
-    const std::optional<reg32> eax = guest::windowsKeeping<Slot, Function>(app, cpu, a.eax, words...);
-    if (!eax)
-        return false;
-    result = *eax;
-    return true;
+    ts.sp = esp;
+    return os::locks::enter(app, ts, section);
 }
 
-/* The same with no register set: a Windows function takes its words only.  esp where the game's code has it
- * at the call. */
-template <reg32 Slot, auto Function, typename... Words>
-inline bool callWindowsWords(App* app, CPU& cpu, reg32 esp, reg32& result, Words... words)
+inline bool lockLeave(App* app, ThreadState& ts, u32 esp, u32 section)
 {
-    cpu.esp = esp;
-    const std::optional<reg32> eax = guest::windows<Slot, Function>(app, cpu, words...);
-    if (!eax)
-        return false;
-    result = *eax;
-    return true;
-}
-
-/* callWindowsWords with `eax` what the game's code has in eax at the call, and
- * then what the call leaves there: its result, or for a Windows function with
- * none, eax as it was.  A call to the host, which stays as it is
- * this pass: eax set for it is the one register it writes. */
-template <reg32 Slot, auto Function, typename... Words>
-inline bool callWindowsEax(App* app, CPU& cpu, reg32 esp, reg32& eax, Words... words)
-{
-    cpu.esp = esp;
-    const std::optional<reg32> left = guest::windowsKeeping<Slot, Function>(app, cpu, eax, words...);
-    if (!left)
-        return false;
-    eax = *left;
-    return true;
+    ts.sp = esp;
+    return os::locks::leave(app, ts, section);
 }
 
 /* Where an error comes from -- the source file's and the function's names, as
  * the game has them -- and Error's text. */
 struct Where
 {
-    reg32 file, function;
+    u32 file, function;
 };
 
 /* An error of the library's, as its code raises one: where it comes from in
@@ -326,68 +296,68 @@ struct Where
  * as the code has it.  Error's eax, for it may come back -- with one under
  * way, the eax it got; let go by the game's filter, 0 -- and the code goes
  * on. */
-Result fail(App* app, CPU& cpu, reg32 esp, Where where, reg32 line, std::initializer_list<reg32> arguments,
-            reg32 eax = 0);
+Result fail(App* app, ThreadState& ts, u32 esp, Where where, u32 line, std::initializer_list<u32> arguments,
+            u32 eax = 0);
 
 /* The game's sound effect (port_sound_effects.cpp): effect `effect` of bank
  * `bank` (a handle) at `volume`, pan `pan`, pitch `pitch`; `esp` as the
  * game's code has it on entering 0x4182b0.  The sound's handle, -1 with the
  * effects off. */
-Result bankEffect(App* app, CPU& cpu, reg32 esp, int32_t bank, int32_t effect, int32_t volume, uint32_t pan,
+Result bankEffect(App* app, ThreadState& ts, u32 esp, int32_t bank, int32_t effect, int32_t volume, uint32_t pan,
                   uint8_t pitch);
 
 /* The voices, their volume, pan and pitch (port_snd_voices.cpp). */
 
-reg32 nextRandom(App* app);
+u32 nextRandom(App* app);
 int32_t randomWithin(App* app, int32_t range);
-int32_t bigEndian(App* app, reg32 at, int32_t bytes);
+int32_t bigEndian(App* app, u32 at, int32_t bytes);
 bool readTag(App* app, Tag& tag);
 Sides splitPan(int32_t pan, int32_t volume);
-Sides panAt(App* app, reg32 angle, reg32 volume);
-Sides panAtPositive(App* app, reg32 angle, reg32 volume);
-Sides panSurroundAt(App* app, reg32 angle, reg32 volume, int32_t front, int32_t back);
-int32_t voiceOfHandle(App* app, reg32 handle);
+Sides panAt(App* app, u32 angle, u32 volume);
+Sides panAtPositive(App* app, u32 angle, u32 volume);
+Sides panSurroundAt(App* app, u32 angle, u32 volume, int32_t front, int32_t back);
+int32_t voiceOfHandle(App* app, u32 handle);
 bool isPicked(App* app, int32_t index, int32_t count);
-Result freeVoice(App* app, CPU& cpu, reg32 esp, int32_t index);
-Result allocVoices(App* app, CPU& cpu, reg32 esp, uint32_t mask, int32_t count, uint8_t priority, reg32& handle);
-Result enterAudio(App* app, CPU& cpu, reg32 esp);
-Result leaveAudio(App* app, CPU& cpu, reg32 esp, reg32 eax = 0);
-Result addTickClient(App* app, CPU& cpu, reg32 esp, reg32 client);
-Result removeTickClient(App* app, CPU& cpu, reg32 esp, reg32 client);
-Result sendVolume(App* app, CPU& cpu, reg32 esp, reg32 channel);
-Result channelVolume(App* app, CPU& cpu, reg32 esp, int32_t index, int32_t left, int32_t right);
-Result channelSendLevel(App* app, CPU& cpu, reg32 esp, int32_t index, uint8_t level);
-Result voiceSendLevel(App* app, CPU& cpu, reg32 esp, int32_t index, int32_t level);
+Result freeVoice(App* app, ThreadState& ts, u32 esp, int32_t index);
+Result allocVoices(App* app, ThreadState& ts, u32 esp, uint32_t mask, int32_t count, uint8_t priority, u32& handle);
+Result enterAudio(App* app, ThreadState& ts, u32 esp);
+Result leaveAudio(App* app, ThreadState& ts, u32 esp, u32 eax = 0);
+Result addTickClient(App* app, ThreadState& ts, u32 esp, u32 client);
+Result removeTickClient(App* app, ThreadState& ts, u32 esp, u32 client);
+Result sendVolume(App* app, ThreadState& ts, u32 esp, u32 channel);
+Result channelVolume(App* app, ThreadState& ts, u32 esp, int32_t index, int32_t left, int32_t right);
+Result channelSendLevel(App* app, ThreadState& ts, u32 esp, int32_t index, uint8_t level);
+Result voiceSendLevel(App* app, ThreadState& ts, u32 esp, int32_t index, int32_t level);
 int32_t refreshVolume(App* app, int32_t index);
-Result voiceVolume(App* app, CPU& cpu, reg32 esp, int32_t index, int32_t volume, reg32 ebp);
-reg32 refreshPitch(App* app, int32_t index);
-x86::Float pitchScale(App* app, CPU& cpu, int32_t cents);
-int32_t stepFor(App* app, CPU& cpu, int32_t rate, int32_t mixRate, int32_t pitch);
-Result channelStep(App* app, CPU& cpu, reg32 esp, int32_t index, uint32_t step);
-Result detuneVoice(App* app, CPU& cpu, reg32 esp, int32_t index, int32_t pitch);
-Result placeVoice(App* app, CPU& cpu, reg32 esp, int32_t index, uint32_t position, int32_t elevation);
-Result panVoice(App* app, CPU& cpu, reg32 esp, int32_t index, int32_t pan);
-Result silenceChannel(App* app, CPU& cpu, reg32 esp, int32_t index);
-Result stopVoice(App* app, CPU& cpu, reg32 esp, int32_t index);
-Result tickSoundFrom(App* app, CPU& cpu, reg32 esp, reg32 eax, reg32 edx, reg32 ecx, reg32 ebp);
+Result voiceVolume(App* app, ThreadState& ts, u32 esp, int32_t index, int32_t volume, u32 ebp);
+u32 refreshPitch(App* app, int32_t index);
+nfs::Float pitchScale(App* app, ThreadState& ts, int32_t cents);
+int32_t stepFor(App* app, ThreadState& ts, int32_t rate, int32_t mixRate, int32_t pitch);
+Result channelStep(App* app, ThreadState& ts, u32 esp, int32_t index, uint32_t step);
+Result detuneVoice(App* app, ThreadState& ts, u32 esp, int32_t index, int32_t pitch);
+Result placeVoice(App* app, ThreadState& ts, u32 esp, int32_t index, uint32_t position, int32_t elevation);
+Result panVoice(App* app, ThreadState& ts, u32 esp, int32_t index, int32_t pan);
+Result silenceChannel(App* app, ThreadState& ts, u32 esp, int32_t index);
+Result stopVoice(App* app, ThreadState& ts, u32 esp, int32_t index);
+Result tickSoundFrom(App* app, ThreadState& ts, u32 esp, u32 eax, u32 edx, u32 ecx, u32 ebp);
 // 0x4ffce0 (eacsnd's buffer position): the three floats at `to` from the angle and the elevation; the pan's second side.
-Result bufferPositioned(App* app, CPU& cpu, reg32 esp, uint32_t angle, uint32_t elevation, reg32 to);
-Result stopSound(App* app, CPU& cpu, reg32 esp, reg32 handle);
-Result soundStatus(App* app, CPU& cpu, reg32 esp, reg32 handle);
-Result stopAllSounds(App* app, CPU& cpu, reg32 esp);
-Result fadeSound(App* app, CPU& cpu, reg32 esp, reg32 handle, int32_t ticks, int32_t target);
-Result volumeNow(App* app, CPU& cpu, reg32 esp, reg32 handle, int32_t volume, reg32 ebp);
-Result setVolumeFrom(App* app, CPU& cpu, reg32 esp, reg32 handle, int32_t volume, reg32 ebp);
-Result setVolume(App* app, CPU& cpu, reg32 esp, reg32 handle, int32_t volume);
-Result bendNow(App* app, CPU& cpu, reg32 esp, reg32 handle, int32_t bend);
-Result setBendFrom(App* app, CPU& cpu, reg32 esp, reg32 handle, int32_t bend, reg32 ebx, reg32 esi, reg32 edi);
-Result setBend(App* app, CPU& cpu, reg32 esp, reg32 handle, int32_t bend);
-Result placeSound(App* app, CPU& cpu, reg32 esp, reg32 handle, reg32 position, int32_t elevation);
-Result panSound(App* app, CPU& cpu, reg32 esp, reg32 handle, int32_t pan);
+Result bufferPositioned(App* app, ThreadState& ts, u32 esp, uint32_t angle, uint32_t elevation, u32 to);
+Result stopSound(App* app, ThreadState& ts, u32 esp, u32 handle);
+Result soundStatus(App* app, ThreadState& ts, u32 esp, u32 handle);
+Result stopAllSounds(App* app, ThreadState& ts, u32 esp);
+Result fadeSound(App* app, ThreadState& ts, u32 esp, u32 handle, int32_t ticks, int32_t target);
+Result volumeNow(App* app, ThreadState& ts, u32 esp, u32 handle, int32_t volume, u32 ebp);
+Result setVolumeFrom(App* app, ThreadState& ts, u32 esp, u32 handle, int32_t volume, u32 ebp);
+Result setVolume(App* app, ThreadState& ts, u32 esp, u32 handle, int32_t volume);
+Result bendNow(App* app, ThreadState& ts, u32 esp, u32 handle, int32_t bend);
+Result setBendFrom(App* app, ThreadState& ts, u32 esp, u32 handle, int32_t bend, u32 ebx, u32 esi, u32 edi);
+Result setBend(App* app, ThreadState& ts, u32 esp, u32 handle, int32_t bend);
+Result placeSound(App* app, ThreadState& ts, u32 esp, u32 handle, u32 position, int32_t elevation);
+Result panSound(App* app, ThreadState& ts, u32 esp, u32 handle, int32_t pan);
 void playDefaults(PlayOptions& options);
-Result playByOptions(App* app, CPU& cpu, reg32 esp, const PlayOptions& options);
-Result playSound(App* app, CPU& cpu, reg32 esp, const PlayOptions& options);
-Result playingLevel(App* app, CPU& cpu, reg32 esp, reg32 handle);
+Result playByOptions(App* app, ThreadState& ts, u32 esp, const PlayOptions& options);
+Result playSound(App* app, ThreadState& ts, u32 esp, const PlayOptions& options);
+Result playingLevel(App* app, ThreadState& ts, u32 esp, u32 handle);
 uint8_t nextGroup(App* app);
 
 /* What a sound is played from (port_snd_play.cpp). */
@@ -398,7 +368,7 @@ struct SamplePlay
     int32_t volume;
     int32_t pitch;
     int32_t send;
-    reg32 position;
+    u32 position;
     int32_t elevation;
     int32_t byPan;            // its pan the pan's, else the position's
 };
@@ -406,7 +376,7 @@ struct SamplePlay
 /* A channel's start, as iSNDmixstart takes it on the stack. */
 struct ChannelStart
 {
-    reg32 sample;
+    u32 sample;
     int32_t length;
     int32_t loopStart, loopEnd;
     int32_t left, right;
@@ -416,46 +386,46 @@ struct ChannelStart
 };
 static_assert(sizeof(SamplePlay) == 0x18 && sizeof(ChannelStart) == 0x24, "the stack's words");
 
-using Places = std::array<reg32, 0x26>;
+using Places = std::array<u32, 0x26>;
 
 void timbrePatchDefaults(Timbre& timbre);
 void clearTimbre(Timbre& timbre, Places& places);
 void addDataPlaces(Timbre& timbre, const Places& places);
-Result playTimbre(App* app, CPU& cpu, reg32 esp, Timbre& timbre, reg32 sample, const PlayOptions& options,
+Result playTimbre(App* app, ThreadState& ts, u32 esp, Timbre& timbre, u32 sample, const PlayOptions& options,
                   const Places& places, int32_t key, int32_t velocity, int32_t pitchOffset);
-Result playPatchFrom(App* app, CPU& cpu, reg32 esp, reg32 patch, const PlayOptions& options, reg32 ebp);
-Result playPatch(App* app, CPU& cpu, reg32 esp, reg32 patch, const PlayOptions& options);
-Result resolvePatch(App* app, CPU& cpu, reg32 esp, reg32 patch, reg32 base);
-Result unresolvePatch(App* app, CPU& cpu, reg32 esp, reg32 patch, reg32 esi, reg32 ebp);
-Result sampleInfo(App* app, CPU& cpu, reg32 esp, reg32 patch, reg32 info);
+Result playPatchFrom(App* app, ThreadState& ts, u32 esp, u32 patch, const PlayOptions& options, u32 ebp);
+Result playPatch(App* app, ThreadState& ts, u32 esp, u32 patch, const PlayOptions& options);
+Result resolvePatch(App* app, ThreadState& ts, u32 esp, u32 patch, u32 base);
+Result unresolvePatch(App* app, ThreadState& ts, u32 esp, u32 patch, u32 esi, u32 ebp);
+Result sampleInfo(App* app, ThreadState& ts, u32 esp, u32 patch, u32 info);
 int32_t bankState(App* app, int32_t bank);
-Result removePatch(App* app, CPU& cpu, reg32 esp, int32_t bank, int32_t index, reg32 esi, reg32 ebp);
-Result freeBankHandle(App* app, CPU& cpu, reg32 esp);
-Result downloadBank(App* app, CPU& cpu, reg32 esp, reg32 bank, reg32 base);
-Result resolveSample(App* app, CPU& cpu, reg32 esp, reg32 tags, reg32 base);
-Result unresolveSample(App* app, CPU& cpu, reg32 esp, reg32 tags, reg32 esi, reg32 ebp);
-Result startChannel(App* app, CPU& cpu, reg32 esp, int32_t index, reg32 format, reg32 compression, reg32 mode,
-                    ChannelStart& start, reg32 edi, reg32 ebp);
-Result playSample(App* app, CPU& cpu, reg32 esp, reg32 tags, int32_t mode, int32_t index, int32_t pan,
+Result removePatch(App* app, ThreadState& ts, u32 esp, int32_t bank, int32_t index, u32 esi, u32 ebp);
+Result freeBankHandle(App* app, ThreadState& ts, u32 esp);
+Result downloadBank(App* app, ThreadState& ts, u32 esp, u32 bank, u32 base);
+Result resolveSample(App* app, ThreadState& ts, u32 esp, u32 tags, u32 base);
+Result unresolveSample(App* app, ThreadState& ts, u32 esp, u32 tags, u32 esi, u32 ebp);
+Result startChannel(App* app, ThreadState& ts, u32 esp, int32_t index, u32 format, u32 compression, u32 mode,
+                    ChannelStart& start, u32 edi, u32 ebp);
+Result playSample(App* app, ThreadState& ts, u32 esp, u32 tags, int32_t mode, int32_t index, int32_t pan,
                   SamplePlay& play);
-Result playPackets(App* app, CPU& cpu, reg32 esp, int32_t index, int32_t pan, int32_t volume, int32_t pitch,
-                   int32_t send, int32_t priority, reg32 sample);
-Result checkPlayOptions(App* app, CPU& cpu, reg32 esp, reg32 at);
-Result removePatches(App* app, CPU& cpu, reg32 esp, int32_t bank, int32_t count, reg32 esi, reg32 ebp);
-Result removeBank(App* app, CPU& cpu, reg32 esp, int32_t bank, reg32 esi, reg32 ebp);
-Result removeEveryBankFrom(App* app, CPU& cpu, reg32 esp, int32_t bank, reg32 esi, reg32 ebp);
-Result removeEveryBank(App* app, CPU& cpu, reg32 esp, int32_t bank);
-Result addBank(App* app, CPU& cpu, reg32 esp, reg32 bank, reg32& handle);
-Result bankHeaderSize(App* app, CPU& cpu, reg32 esp, int32_t bank);
-Result copyBankHeader(App* app, CPU& cpu, reg32 esp, reg32 to, int32_t bank);
-Result bankHasPatch(App* app, CPU& cpu, reg32 esp, int32_t bank, int32_t patch);
-Result masterVolumeFrom(App* app, CPU& cpu, reg32 esp, int32_t volume, reg32 ebp);
-Result setMasterVolume(App* app, CPU& cpu, reg32 esp, int32_t volume);
+Result playPackets(App* app, ThreadState& ts, u32 esp, int32_t index, int32_t pan, int32_t volume, int32_t pitch,
+                   int32_t send, int32_t priority, u32 sample);
+Result checkPlayOptions(App* app, ThreadState& ts, u32 esp, u32 at);
+Result removePatches(App* app, ThreadState& ts, u32 esp, int32_t bank, int32_t count, u32 esi, u32 ebp);
+Result removeBank(App* app, ThreadState& ts, u32 esp, int32_t bank, u32 esi, u32 ebp);
+Result removeEveryBankFrom(App* app, ThreadState& ts, u32 esp, int32_t bank, u32 esi, u32 ebp);
+Result removeEveryBank(App* app, ThreadState& ts, u32 esp, int32_t bank);
+Result addBank(App* app, ThreadState& ts, u32 esp, u32 bank, u32& handle);
+Result bankHeaderSize(App* app, ThreadState& ts, u32 esp, int32_t bank);
+Result copyBankHeader(App* app, ThreadState& ts, u32 esp, u32 to, int32_t bank);
+Result bankHasPatch(App* app, ThreadState& ts, u32 esp, int32_t bank, int32_t patch);
+Result masterVolumeFrom(App* app, ThreadState& ts, u32 esp, int32_t volume, u32 ebp);
+Result setMasterVolume(App* app, ThreadState& ts, u32 esp, int32_t volume);
 
 /* The bus's effect (port_snd_fx.cpp): iSNDwinsetfx's core and its thunk,
  * what the driver's start calls through its pointer. */
-Result applyBusEffect(App* app, CPU& cpu, reg32 esp, reg32 type);
-x86::reg32 iSNDwinsetfx(App* app, CPU& cpu, x86::Args& args);
+Result applyBusEffect(App* app, ThreadState& ts, u32 esp, u32 type);
+nfs::u32 iSNDwinsetfx(App* app, ThreadState& ts, nfs::Args& args);
 
 }  // namespace port
 }  // namespace nfs3hp

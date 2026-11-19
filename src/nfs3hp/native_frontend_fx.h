@@ -6,7 +6,7 @@
 #include "native_watcom.h"
 
 /* What the native functions of native_frontend_{dialogs,loada,loopa,loopb,sima,simb,simc,simd,sime,inpa}.cpp share
- * now that none of them touches the registers or the x87 of x86::CPU: the game's single-precision arithmetic
+ * now that none of them touches the registers or the x87 of nfs::ThreadState: the game's single-precision arithmetic
  * (fp::, fpu.h) in the shape fe::X87 had it, and a call by address made through guest::pointerCall with
  * the arguments of Guest::call (eax, edx, ebx and ecx in turn, then the stack words; every other
  * register 0 -- the callees take no others). */
@@ -21,24 +21,24 @@ public:
     explicit Arith(fe::Guest& guest) : m_guest(guest) {}
 
     // fild
-    static x86::Float integer(std::int32_t value) { return x86::Float(x86::sreg32(value)); }
+    static nfs::Float integer(std::int32_t value) { return nfs::Float(nfs::s32(value)); }
     // fld dword
-    x86::Float load(x86::reg32 address) const { return x86::Float(m_guest.floatAt(address)); }
+    nfs::Float load(nfs::u32 address) const { return nfs::Float(m_guest.floatAt(address)); }
 
-    x86::Float add(const x86::Float& a, const x86::Float& b) { return fp::add(a, b); }
-    x86::Float sub(const x86::Float& a, const x86::Float& b) { return fp::sub(a, b); }
-    x86::Float mul(const x86::Float& a, const x86::Float& b) { return fp::mul(a, b); }
+    nfs::Float add(const nfs::Float& a, const nfs::Float& b) { return fp::add(a, b); }
+    nfs::Float sub(const nfs::Float& a, const nfs::Float& b) { return fp::sub(a, b); }
+    nfs::Float mul(const nfs::Float& a, const nfs::Float& b) { return fp::mul(a, b); }
 
     /* fcom a, b and what a jump after it reads: ja, and jb (true unordered). */
-    bool above(const x86::Float& a, const x86::Float& b) { return (fp::compare(a, b) & 0x4100) == 0; }
-    bool below(const x86::Float& a, const x86::Float& b) { return (fp::compare(a, b) & 0x0100) != 0; }
+    bool above(const nfs::Float& a, const nfs::Float& b) { return (fp::compare(a, b) & 0x4100) == 0; }
+    bool below(const nfs::Float& a, const nfs::Float& b) { return (fp::compare(a, b) & 0x0100) != 0; }
 
     /* sub_4dfd56 and fistp: `value` cut to an integer towards zero. */
-    std::int32_t truncated(const x86::Float& value)
+    std::int32_t truncated(const nfs::Float& value)
     {
         const double chopped =
-            fe::direct<0x4dfd56, watcom::clib::chop>(m_guest.app(), m_guest.cpu(), double(value));
-        return fp::toInteger<x86::sreg32>(chopped);
+            fe::direct<0x4dfd56, watcom::clib::chop>(m_guest.app(), m_guest.ts(), double(value));
+        return fp::toInteger<nfs::s32>(chopped);
     }
 
 private:
@@ -49,26 +49,26 @@ private:
  * rest of its Args: what goes in (esi, the float arguments floatIn/floatsIn) and what comes back (edx,
  * ebx, ecx, esi, edi, floatSet/floatResult, floatsTaken); its eax, edx, ebx and ecx are set from
  * `arguments`.  Throws fe::Terminated when the game stopped in it. */
-inline x86::reg32 callAt(fe::Guest& guest, x86::reg32 address, const fe::Arguments& arguments = fe::Arguments(),
-                         x86::Args* io = nullptr)
+inline nfs::u32 callAt(fe::Guest& guest, nfs::u32 address, const fe::Arguments& arguments = fe::Arguments(),
+                         nfs::Args* io = nullptr)
 {
-    x86::Args own;
-    x86::Args& a = io ? *io : own;
+    nfs::Args own;
+    nfs::Args& a = io ? *io : own;
     a.eax = arguments.registers[0];
     a.edx = arguments.registers[1];
     a.ebx = arguments.registers[2];
     a.ecx = arguments.registers[3];
-    x86::CPU& cpu = guest.cpu();
-    const x86::reg32 esp = cpu.esp;
+    nfs::ThreadState& ts = guest.ts();
+    const nfs::u32 esp = ts.sp;
     for (std::size_t i = arguments.stackCount; i-- > 0;)
     {
-        cpu.esp -= 4;
-        guest.setDword(cpu.esp, arguments.stack[i]);
+        ts.sp -= 4;
+        guest.setDword(ts.sp, arguments.stack[i]);
     }
-    const std::optional<x86::reg32> eax = guest::pointerCall(guest.app(), cpu, address, a);
+    const std::optional<nfs::u32> eax = guest::pointerCall(guest.app(), ts, address, a);
     if (!eax)
         throw fe::Terminated();
-    cpu.esp = esp;
+    ts.sp = esp;
     return *eax;
 }
 

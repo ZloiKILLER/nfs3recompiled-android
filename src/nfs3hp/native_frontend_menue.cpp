@@ -23,23 +23,23 @@ namespace
 /* A call through a pointer or to a function of the game's that has no typed core: Watcom's register
  * arguments (eax, edx, ebx, ecx in turn) and the stack words as `arguments` have them, through
  * guest::pointerCall; its eax, and Terminated when the game stopped in it. */
-x86::reg32 callAt(fe::Guest& guest, x86::reg32 target, const fe::Arguments& arguments = fe::Arguments())
+nfs::u32 callAt(fe::Guest& guest, nfs::u32 target, const fe::Arguments& arguments = fe::Arguments())
 {
-    x86::CPU& cpu = guest.cpu();
-    x86::Args registers;
-    x86::reg32* const into[4] = { &registers.eax, &registers.edx, &registers.ebx, &registers.ecx };
+    nfs::ThreadState& ts = guest.ts();
+    nfs::Args registers;
+    nfs::u32* const into[4] = { &registers.eax, &registers.edx, &registers.ebx, &registers.ecx };
     for (std::size_t i = 0; i < arguments.registerCount; ++i)
         *into[i] = arguments.registers[i];
-    const x86::reg32 esp = cpu.esp;
+    const nfs::u32 esp = ts.sp;
     for (std::size_t i = arguments.stackCount; i-- > 0;)
     {
-        cpu.esp -= 4;
-        guest.setDword(cpu.esp, arguments.stack[i]);
+        ts.sp -= 4;
+        guest.setDword(ts.sp, arguments.stack[i]);
     }
-    const std::optional<x86::reg32> result = guest::pointerCall(guest.app(), cpu, target, registers);
+    const std::optional<nfs::u32> result = guest::pointerCall(guest.app(), ts, target, registers);
     if (!result)
         throw fe::Terminated();
-    cpu.esp = esp;
+    ts.sp = esp;
     return *result;
 }
 
@@ -57,17 +57,17 @@ struct FloatMath
 {
     explicit FloatMath(fe::Guest& guest) : m_guest(guest) {}
 
-    static x86::Float integer(std::int32_t value) { return x86::Float(x86::sreg32(value)); }
-    x86::Float load(x86::reg32 address) const { return x86::Float(m_guest.floatAt(address)); }
-    x86::Float add(const x86::Float& a, const x86::Float& b) { return fp::add(a, b); }
-    x86::Float sub(const x86::Float& a, const x86::Float& b) { return fp::sub(a, b); }
-    x86::Float mul(const x86::Float& a, const x86::Float& b) { return fp::mul(a, b); }
-    bool above(const x86::Float& a, const x86::Float& b) { return a > b; }
-    bool below(const x86::Float& a, const x86::Float& b) { return !(a >= b); }  // or unordered
-    std::int32_t truncated(const x86::Float& value)
+    static nfs::Float integer(std::int32_t value) { return nfs::Float(nfs::s32(value)); }
+    nfs::Float load(nfs::u32 address) const { return nfs::Float(m_guest.floatAt(address)); }
+    nfs::Float add(const nfs::Float& a, const nfs::Float& b) { return fp::add(a, b); }
+    nfs::Float sub(const nfs::Float& a, const nfs::Float& b) { return fp::sub(a, b); }
+    nfs::Float mul(const nfs::Float& a, const nfs::Float& b) { return fp::mul(a, b); }
+    bool above(const nfs::Float& a, const nfs::Float& b) { return a > b; }
+    bool below(const nfs::Float& a, const nfs::Float& b) { return !(a >= b); }  // or unordered
+    std::int32_t truncated(const nfs::Float& value)
     {
-        const double chopped = fe::direct<0x4dfd56, watcom::clib::chop>(m_guest.app(), m_guest.cpu(), double(value));
-        return fp::toInteger<x86::sreg32>(chopped);
+        const double chopped = fe::direct<0x4dfd56, watcom::clib::chop>(m_guest.app(), m_guest.ts(), double(value));
+        return fp::toInteger<nfs::s32>(chopped);
     }
 
 private:
@@ -106,11 +106,11 @@ namespace
 using fe::args;
 using fe::Guest;
 using fe::GuestString;
-using x86::Float;
-using x86::reg32;
-using x86::sreg32;
+using nfs::Float;
+using nfs::u32;
+using nfs::s32;
 
-constexpr reg32 kSprintf = 0x4df690;
+constexpr u32 kSprintf = 0x4df690;
 
 constexpr std::uint8_t kPushedEsiEdi = fe::kRestoreEsi | fe::kRestoreEdi;
 constexpr std::uint8_t kPushedEcxEdx = fe::kRestoreEcx | fe::kRestoreEdx;
@@ -118,13 +118,13 @@ constexpr std::uint8_t kPushedEcxEsiEdi = fe::kRestoreEcx | fe::kRestoreEsi | fe
 constexpr std::uint8_t kPushedEbxEcxEsiEdi = fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi;
 
 /* A game function's stack argument, by its place, before its frame. */
-reg32 stackArgument(win32::WinApplication* app, const x86::CPU& cpu, reg32 place)
+u32 stackArgument(nfs::App* app, const nfs::ThreadState& ts, u32 place)
 {
-    return app->getMemory<reg32>(cpu.esp + 4 + 4 * place);
+    return app->getMemory<u32>(ts.sp + 4 + 4 * place);
 }
 
 /* A double of the game's constants, as fmul qword reads it. */
-Float doubleAt(const Guest& guest, reg32 address)
+Float doubleAt(const Guest& guest, u32 address)
 {
     const std::uint64_t bits = std::uint64_t(guest.dword(address)) | (std::uint64_t(guest.dword(address + 4)) << 32);
     double value;
@@ -139,7 +139,7 @@ bool belowOrUnordered(const Float& a, const Float& b)
 }
 
 /* A record's int16, sign extended, as the game reads it: a dword, then sar 16. */
-std::int32_t int16At(const Guest& guest, reg32 address)
+std::int32_t int16At(const Guest& guest, u32 address)
 {
     return std::int16_t(guest.word(address));
 }
@@ -149,39 +149,39 @@ std::int32_t int16At(const Guest& guest, reg32 address)
  * ------------------------------------------------------------------------- */
 
 constexpr std::uint32_t kKilometresA = 3, kKilometresB = 4;
-constexpr reg32 kToKilometres = 0x5404d8;      // float, 3.6
-constexpr reg32 kToMiles = 0x5404dc;           // float, 2.2369
-constexpr reg32 kSpeedFormat = 0x5404cc;       // "%5.2f"
+constexpr u32 kToKilometres = 0x5404d8;      // float, 3.6
+constexpr u32 kToMiles = 0x5404dc;           // float, 2.2369
+constexpr u32 kSpeedFormat = 0x5404cc;       // "%5.2f"
 constexpr GuestString kNoSpeed{ 0x5404d4, "---" };
 
 }  // namespace
 
 /* sub_4cedd0: a speed in metres per second into `buffer`, in the player's
  * units; "---" for 1 or less. */
-x86::reg32 frontend::menue::metricText(App* app, CPU& cpu, float speed, reg32 buffer)
+nfs::u32 frontend::menue::metricText(App* app, ThreadState& ts, float speed, u32 buffer)
 {
-    Guest guest(app, cpu);
-    const fe::Frame frame(guest, cpu, 12);
+    Guest guest(app, ts);
+    const fe::Frame frame(guest, ts, 12);
     if (!belowOrUnordered(Float(1.0), Float(speed)))
     {
-        return fe::direct<kSprintf, watcom::clib::sprintf>(app, cpu, buffer, kNoSpeed.address, guest::Words({}));
+        return fe::direct<kSprintf, watcom::clib::sprintf>(app, ts, buffer, kNoSpeed.address, guest::Words({}));
     }
     const std::uint32_t units = gameSettings(guest).hud[0].speedometerForm;
-    const reg32 toUnits = units == kKilometresA || units == kKilometresB ? kToKilometres : kToMiles;
+    const u32 toUnits = units == kKilometresA || units == kKilometresB ? kToKilometres : kToMiles;
     const double shown = fp::mul(Float(speed), Float(guest.floatAt(toUnits)));
     std::uint64_t bits;
     std::memcpy(&bits, &shown, sizeof bits);
-    return fe::direct<kSprintf, watcom::clib::sprintf>(app, cpu, buffer, kSpeedFormat,
-                                                       guest::Words{reg32(bits), reg32(bits >> 32)});
+    return fe::direct<kSprintf, watcom::clib::sprintf>(app, ts, buffer, kSpeedFormat,
+                                                       guest::Words{u32(bits), u32(bits >> 32)});
 }
 
 namespace
 {
 
-constexpr reg32 kToHundredths = 0x5404f8;      // double, 100/64: the game's times are in 64ths of a second
+constexpr u32 kToHundredths = 0x5404f8;      // double, 100/64: the game's times are in 64ths of a second
 constexpr GuestString kTimeFormat{ 0x5404e0, "%01d%c%02d%c%02d" };
-constexpr reg32 kMinuteMarks = 0x561b28;       // a language's mark after the minutes (bytes)
-constexpr reg32 kSecondMarks = 0x561b2e;       // and after the seconds
+constexpr u32 kMinuteMarks = 0x561b28;       // a language's mark after the minutes (bytes)
+constexpr u32 kSecondMarks = 0x561b2e;       // and after the seconds
 constexpr std::int32_t kHundredthsAMinute = 6000;
 constexpr std::int32_t kHundredthsASecond = 100;
 
@@ -189,22 +189,22 @@ constexpr std::int32_t kHundredthsASecond = 100;
 
 /* sub_4cee40: a time into `buffer` as minutes, seconds and hundredths with the
  * language's marks.  The parts go through 16 bits, as the game takes them. */
-x86::reg32 frontend::menue::timeText(App* app, CPU& cpu, reg32 time, reg32 buffer)
+nfs::u32 frontend::menue::timeText(App* app, ThreadState& ts, u32 time, u32 buffer)
 {
-    Guest guest(app, cpu);
-    const fe::Frame frame(guest, cpu, 28);
+    Guest guest(app, ts);
+    const fe::Frame frame(guest, ts, 28);
     FloatMath x87(guest);
     const std::int32_t hundredths = x87.truncated(fp::mul(FloatMath::integer(std::int32_t(time)), doubleAt(guest, kToHundredths)));
     const std::int32_t minutes = std::int16_t(hundredths / kHundredthsAMinute);
-    const std::int32_t pastMinute = std::int32_t(reg32(hundredths) - reg32(minutes) * reg32(kHundredthsAMinute));
+    const std::int32_t pastMinute = std::int32_t(u32(hundredths) - u32(minutes) * u32(kHundredthsAMinute));
     const std::int32_t seconds = std::int16_t(pastMinute / kHundredthsASecond);
-    const std::int32_t rest = std::int16_t(reg32(pastMinute) - reg32(seconds) * reg32(kHundredthsASecond));
-    const reg32 language = gameSettings(guest).language;
-    const reg32 secondMark = guest.byte(language + kSecondMarks);
-    const reg32 minuteMark = guest.byte(language + kMinuteMarks);
+    const std::int32_t rest = std::int16_t(u32(pastMinute) - u32(seconds) * u32(kHundredthsASecond));
+    const u32 language = gameSettings(guest).language;
+    const u32 secondMark = guest.byte(language + kSecondMarks);
+    const u32 minuteMark = guest.byte(language + kMinuteMarks);
     return fe::direct<kSprintf, watcom::clib::sprintf>(
-        app, cpu, buffer, kTimeFormat.address,
-        guest::Words{reg32(minutes), minuteMark, reg32(seconds), secondMark, reg32(rest)});
+        app, ts, buffer, kTimeFormat.address,
+        guest::Words{u32(minutes), minuteMark, u32(seconds), secondMark, u32(rest)});
 }
 
 /* ---------------------------------------------------------------------------
@@ -213,7 +213,7 @@ x86::reg32 frontend::menue::timeText(App* app, CPU& cpu, reg32 time, reg32 buffe
 
 /* sub_4cf160: 2 laps the list's first place (al cleared, the rest of eax as it
  * came), 4 the second, others the third. */
-x86::reg32 frontend::menue::lapsToOption(App*, CPU&, reg32 laps)
+nfs::u32 frontend::menue::lapsToOption(App*, ThreadState&, u32 laps)
 {
     const std::uint16_t count = std::uint16_t(laps);
     if (count == 2)
@@ -222,7 +222,7 @@ x86::reg32 frontend::menue::lapsToOption(App*, CPU&, reg32 laps)
 }
 
 /* sub_4cf190: the laps of a place in the list. */
-x86::reg32 frontend::menue::optionToLaps(App*, CPU&, reg32 option)
+nfs::u32 frontend::menue::optionToLaps(App*, ThreadState&, u32 option)
 {
     const std::uint16_t place = std::uint16_t(option);
     if (place == 0)
@@ -237,19 +237,19 @@ x86::reg32 frontend::menue::optionToLaps(App*, CPU&, reg32 option)
 namespace
 {
 
-constexpr reg32 kLanguageTexts = 0x563a80;     // its block, once loaded
+constexpr u32 kLanguageTexts = 0x563a80;     // its block, once loaded
 
 }  // namespace
 
 /* sub_4d1880: the language's block given back. */
-x86::reg32 frontend::menue::freeLanguageTexts(App* app, CPU& cpu, reg32 eax)
+nfs::u32 frontend::menue::freeLanguageTexts(App* app, ThreadState& ts, u32 eax)
 {
-    Guest guest(app, cpu);
-    const fe::Frame frame(guest, cpu, 12);
-    const reg32 texts = guest.dword(kLanguageTexts);
-    reg32 result = eax;
+    Guest guest(app, ts);
+    const fe::Frame frame(guest, ts, 12);
+    const u32 texts = guest.dword(kLanguageTexts);
+    u32 result = eax;
     if (texts != 0)
-        result = *fe::direct<0x4e1890, ea::purgeBlock>(app, cpu, texts);
+        result = *fe::direct<0x4e1890, ea::purgeBlock>(app, ts, texts);
     guest.setDword(kLanguageTexts, 0);
     return result;
 }
@@ -262,54 +262,54 @@ namespace
  * ------------------------------------------------------------------------- */
 
 /* The four corners the 2D layer draws from, 0x20 bytes each. */
-constexpr reg32 kQuad = 0x563ab0;
-constexpr reg32 kCornerSize = 0x20;
-constexpr reg32 kCornerX = 0x00, kCornerY = 0x04, kCornerZ = 0x08, kCornerW = 0x0c;
-constexpr reg32 kCornerColour = 0x10, kCornerClip = 0x14, kCornerU = 0x18, kCornerV = 0x1c;
-constexpr reg32 kDepthZ = 0x563aa8, kDepthW = 0x563aac;   // floats: the 2D layer's depth
+constexpr u32 kQuad = 0x563ab0;
+constexpr u32 kCornerSize = 0x20;
+constexpr u32 kCornerX = 0x00, kCornerY = 0x04, kCornerZ = 0x08, kCornerW = 0x0c;
+constexpr u32 kCornerColour = 0x10, kCornerClip = 0x14, kCornerU = 0x18, kCornerV = 0x1c;
+constexpr u32 kDepthZ = 0x563aa8, kDepthW = 0x563aac;   // floats: the 2D layer's depth
 
-constexpr reg32 corner(reg32 index)
+constexpr u32 corner(u32 index)
 {
     return kQuad + kCornerSize * index;
 }
 
-constexpr reg32 kOneBits = 0x3f800000;  // 1.0f
+constexpr u32 kOneBits = 0x3f800000;  // 1.0f
 
 // The window the corners are clipped to: floats, which the game compares as
 // integers, as it may positive ones.
-constexpr reg32 kClipW = 0x7d34f8, kClipLeft = 0x7d34fc, kClipBottom = 0x7d3500, kClipTop = 0x7d3504, kClipRight = 0x7d350c;
+constexpr u32 kClipW = 0x7d34f8, kClipLeft = 0x7d34fc, kClipBottom = 0x7d3500, kClipTop = 0x7d3504, kClipRight = 0x7d350c;
 constexpr std::uint8_t kOffLeft = 1, kOffRight = 2, kOffBottom = 4, kOffTop = 8, kBehind = 0x10;
 
-constexpr reg32 kRenderStateTexture = 1;
-constexpr reg32 kClipQuad = 0x4c12e0;          // the four corners' addresses
+constexpr u32 kRenderStateTexture = 1;
+constexpr u32 kClipQuad = 0x4c12e0;          // the four corners' addresses
 
 /* A corner's outcode, as the game works it out in line for each corner before
  * the clipper. */
-std::uint8_t clipCode(const Guest& guest, reg32 at)
+std::uint8_t clipCode(const Guest& guest, u32 at)
 {
-    const std::int32_t w = sreg32(guest.dword(at + kCornerW));
-    if (w < 0 || w >= sreg32(guest.dword(kClipW)))
+    const std::int32_t w = s32(guest.dword(at + kCornerW));
+    if (w < 0 || w >= s32(guest.dword(kClipW)))
         return kBehind;
     std::uint8_t code = 0;
-    const std::int32_t y = sreg32(guest.dword(at + kCornerY));
-    if (y < 0 || y < sreg32(guest.dword(kClipTop)))
+    const std::int32_t y = s32(guest.dword(at + kCornerY));
+    if (y < 0 || y < s32(guest.dword(kClipTop)))
         code |= kOffTop;
-    else if (y > sreg32(guest.dword(kClipBottom)))
+    else if (y > s32(guest.dword(kClipBottom)))
         code |= kOffBottom;
-    const std::int32_t x = sreg32(guest.dword(at + kCornerX));
-    if (x < 0 || x < sreg32(guest.dword(kClipLeft)))
+    const std::int32_t x = s32(guest.dword(at + kCornerX));
+    if (x < 0 || x < s32(guest.dword(kClipLeft)))
         code |= kOffLeft;
-    else if (x > sreg32(guest.dword(kClipRight)))
+    else if (x > s32(guest.dword(kClipRight)))
         code |= kOffRight;
     return code;
 }
 
 /* Each corner's outcode, then the quad to the clipper. */
-reg32 clipAndDrawQuad(Guest& guest)
+u32 clipAndDrawQuad(Guest& guest)
 {
-    for (reg32 i = 0; i < 4; ++i)
+    for (u32 i = 0; i < 4; ++i)
         guest.setByte(corner(i) + kCornerClip, clipCode(guest, corner(i)));
-    return fe::direct<kClipQuad, vertices::quadClipped>(guest.app(), guest.cpu(), corner(0), corner(1), corner(2), corner(3));
+    return fe::direct<kClipQuad, vertices::quadClipped>(guest.app(), guest.ts(), corner(0), corner(1), corner(2), corner(3));
 }
 
 /* The quad's corners, clockwise from the top left. */
@@ -330,7 +330,7 @@ void placeDepth(Guest& guest)
 {
     const float z = float(Float(guest.floatAt(kDepthZ)));
     const float w = float(Float(guest.floatAt(kDepthW)));
-    for (reg32 i = 0; i < 4; ++i)
+    for (u32 i = 0; i < 4; ++i)
     {
         guest.setFloat(corner(i) + kCornerZ, z);
         guest.setFloat(corner(i) + kCornerW, w);
@@ -338,7 +338,7 @@ void placeDepth(Guest& guest)
 }
 
 /* The corners' texture coordinates, floats' bits, the corners in order. */
-void placeTexture(Guest& guest, reg32 u0, reg32 v0, reg32 u1, reg32 v1, reg32 u2, reg32 v2, reg32 u3, reg32 v3)
+void placeTexture(Guest& guest, u32 u0, u32 v0, u32 u1, u32 v1, u32 u2, u32 v2, u32 u3, u32 v3)
 {
     guest.setDword(corner(0) + kCornerU, u0);
     guest.setDword(corner(0) + kCornerV, v0);
@@ -361,69 +361,69 @@ void restoreTexture(Guest& guest)
  * An art record's tiles
  * ------------------------------------------------------------------------- */
 
-constexpr reg32 kDisplayFlags = 0x7a3a58;      // byte
+constexpr u32 kDisplayFlags = 0x7a3a58;      // byte
 constexpr std::uint8_t kNoTranslucency = 0x02;
-constexpr reg32 kInRace = 0x559234;
+constexpr u32 kInRace = 0x559234;
 
 // An art record, 20 bytes.
-constexpr reg32 kArtRecords = 0x8b48bc;
-constexpr reg32 kArtSize = 0x14;
-constexpr reg32 kArtX = 0x04;                  // int16
-constexpr reg32 kArtFirstTile = 0x10;          // int16; -1 when not loaded
-constexpr reg32 kArtEndTile = 0x12;            // int16: past its last
+constexpr u32 kArtRecords = 0x8b48bc;
+constexpr u32 kArtSize = 0x14;
+constexpr u32 kArtX = 0x04;                  // int16
+constexpr u32 kArtFirstTile = 0x10;          // int16; -1 when not loaded
+constexpr u32 kArtEndTile = 0x12;            // int16: past its last
 // A record's tile, 12 bytes.
-constexpr reg32 kTiles = 0x8b5090;
-constexpr reg32 kTileSize = 0x0c;
-constexpr reg32 kTileTexture = 0x00;
-constexpr reg32 kTileSide = 0x04;              // int16: its square's side, in pixels
-constexpr reg32 kTileColumn = 0x06;            // int16: counted leftwards from the record's x
-constexpr reg32 kTileRow = 0x08;               // int16
+constexpr u32 kTiles = 0x8b5090;
+constexpr u32 kTileSize = 0x0c;
+constexpr u32 kTileTexture = 0x00;
+constexpr u32 kTileSide = 0x04;              // int16: its square's side, in pixels
+constexpr u32 kTileColumn = 0x06;            // int16: counted leftwards from the record's x
+constexpr u32 kTileRow = 0x08;               // int16
 
 constexpr std::int32_t kTilePitch = 32;
-constexpr reg32 kNotLoadedLog = 0x42d500;
-constexpr reg32 kNotLoadedFormat = 0x549630;   // "ERROR: shape %d not loaded in texture po..."
+constexpr u32 kNotLoadedLog = 0x42d500;
+constexpr u32 kNotLoadedFormat = 0x549630;   // "ERROR: shape %d not loaded in texture po..."
 
 }  // namespace
 
 /* sub_4d7560: art record `art` at (x, y), a textured square white for each of
  * its tiles, with the whole texture on it; nothing in a race or without
  * translucency. */
-x86::reg32 frontend::menue::drawArtTiles(App* app, CPU& cpu, reg32 art, std::int32_t x, std::int32_t y)
+nfs::u32 frontend::menue::drawArtTiles(App* app, ThreadState& ts, u32 art, std::int32_t x, std::int32_t y)
 {
-    Guest guest(app, cpu);
-    const fe::Frame frame(guest, cpu, 16 + 0x1c);
+    Guest guest(app, ts);
+    const fe::Frame frame(guest, ts, 16 + 0x1c);
     if ((guest.byte(kDisplayFlags) & kNoTranslucency) != 0 || guest.dword(kInRace) != 0)
         return art;  // eax as it came: the art
-    const reg32 record = kArtRecords + kArtSize * art;
+    const u32 record = kArtRecords + kArtSize * art;
     const std::int32_t first = int16At(guest, record + kArtFirstTile);
     if (first == -1)
     {
         // By address: the log's hook takes nothing, but the game's code pushes its format and the record.
-        fe::direct<0x42d500, raceload::noHook>(app, cpu);
-        return *fe::direct<0x4f0120, ea::waitKey>(app, cpu);
+        fe::direct<0x42d500, raceload::noHook>(app, ts);
+        return *fe::direct<0x4f0120, ea::waitKey>(app, ts);
     }
     placeDepth(guest);
-    for (reg32 i = 0; i < 4; ++i)
+    for (u32 i = 0; i < 4; ++i)
         guest.setDword(corner(i) + kCornerColour, 0xffffffffu);
 
     const std::int32_t end = int16At(guest, record + kArtEndTile);
     for (std::int32_t tile = first; tile < end; ++tile)
     {
-        const reg32 at = kTiles + kTileSize * reg32(tile);
+        const u32 at = kTiles + kTileSize * u32(tile);
         placeTexture(guest, kOneBits, 0, 0, 0, 0, kOneBits, kOneBits, kOneBits);
         const Float side = FloatMath::integer(int16At(guest, at + kTileSide));
-        const Float column = FloatMath::integer(std::int32_t(reg32(int16At(guest, at + kTileColumn)) * kTilePitch + kTilePitch));
-        const Float place = FloatMath::integer(std::int32_t(reg32(int16At(guest, record + kArtX)) + reg32(x)));
+        const Float column = FloatMath::integer(std::int32_t(u32(int16At(guest, at + kTileColumn)) * kTilePitch + kTilePitch));
+        const Float place = FloatMath::integer(std::int32_t(u32(int16At(guest, record + kArtX)) + u32(x)));
         const Float left = fp::sub(place, column);
-        const float top = float(FloatMath::integer(std::int32_t(reg32(int16At(guest, at + kTileRow)) * kTilePitch + reg32(y))));
+        const float top = float(FloatMath::integer(std::int32_t(u32(int16At(guest, at + kTileRow)) * kTilePitch + u32(y))));
         const Float right = fp::add(left, side);
         const Float bottom = fp::add(side, Float(top));
         placeCorners(guest, float(left), top, float(right), float(bottom));
-        fe::direct<0x431900, graphics::sendState>(app, cpu, kRenderStateTexture, guest.dword(at + kTileTexture));
+        fe::direct<0x431900, graphics::sendState>(app, ts, kRenderStateTexture, guest.dword(at + kTileTexture));
         clipAndDrawQuad(guest);
     }
     restoreTexture(guest);
-    return reg32(end);
+    return u32(end);
 }
 
 namespace
@@ -434,22 +434,22 @@ namespace
  * ------------------------------------------------------------------------- */
 
 // A corner's fade: full in the screen's middle, less with its distance on each axis.
-constexpr reg32 kFadeCentreX = 0x549684, kFadeCentreY = 0x5496a4;   // floats: -395, -225
-constexpr reg32 kFadeFull = 0x549688;          // float, 255
-constexpr reg32 kFadePerX = 0x54968c, kFadePerY = 0x5496a8;         // floats: 1/490, 1/450
-constexpr reg32 kFadeStrength = 0x549694;      // double, 1.5
-constexpr reg32 kFadeTop = 0x54969c;           // double, 255
+constexpr u32 kFadeCentreX = 0x549684, kFadeCentreY = 0x5496a4;   // floats: -395, -225
+constexpr u32 kFadeFull = 0x549688;          // float, 255
+constexpr u32 kFadePerX = 0x54968c, kFadePerY = 0x5496a8;         // floats: 1/490, 1/450
+constexpr u32 kFadeStrength = 0x549694;      // double, 1.5
+constexpr u32 kFadeTop = 0x54969c;           // double, 255
 
 /* A corner's distance on an axis, through a float in memory as the game takes
  * it: as it is above 0 (and when unordered), else its sign changed. */
-float fadeDistance(const Guest& guest, float value, reg32 centre)
+float fadeDistance(const Guest& guest, float value, u32 centre)
 {
     const float distance = float(fp::add(Float(value), Float(guest.floatAt(centre))));
     return belowOrUnordered(Float(0.0), Float(distance)) ? distance : float(-Float(distance));
 }
 
 /* What that distance takes off. */
-Float fadeAlong(const Guest& guest, float distance, reg32 perUnit)
+Float fadeAlong(const Guest& guest, float distance, u32 perUnit)
 {
     Float share = fp::mul(Float(distance), Float(guest.floatAt(kFadeFull)));
     share = fp::mul(share, Float(guest.floatAt(perUnit)));
@@ -460,10 +460,10 @@ Float fadeAlong(const Guest& guest, float distance, reg32 perUnit)
 
 /* sub_4d7cc0 (stdcall): the top byte of the colour of a corner at (x, y), of a
  * picture of `alpha`. */
-x86::reg32 frontend::menue::cornerFade(App* app, CPU& cpu, float x, float y, reg32 alpha)
+nfs::u32 frontend::menue::cornerFade(App* app, ThreadState& ts, float x, float y, u32 alpha)
 {
-    Guest guest(app, cpu);
-    const fe::Frame frame(guest, cpu, 12 + 0x1c);
+    Guest guest(app, ts);
+    const fe::Frame frame(guest, ts, 12 + 0x1c);
     FloatMath x87(guest);
     const float awayX = fadeDistance(guest, x, kFadeCentreX);
     const Float afterX = fp::sub(doubleAt(guest, kFadeTop), fadeAlong(guest, awayX, kFadePerX));
@@ -471,21 +471,21 @@ x86::reg32 frontend::menue::cornerFade(App* app, CPU& cpu, float x, float y, reg
     std::int32_t level = x87.truncated(fp::sub(afterX, fadeAlong(guest, awayY, kFadePerY)));
     if (level < 0)
         level = 0;
-    const std::int32_t scaled = std::int32_t(alpha * reg32(level)) / 255;
-    return reg32(scaled) << 24;
+    const std::int32_t scaled = std::int32_t(alpha * u32(level)) / 255;
+    return u32(scaled) << 24;
 }
 
 namespace
 {
 
-constexpr reg32 kTexelSize = 0x5496ac;         // float, 1/256
+constexpr u32 kTexelSize = 0x5496ac;         // float, 1/256
 
 struct Bouncer
 {
-    reg32 texture;
+    u32 texture;
     std::int32_t x, y, u, v, width, height;
     float scale;
-    reg32 colour;
+    u32 colour;
 };
 
 }  // namespace
@@ -493,12 +493,12 @@ struct Bouncer
 /* sub_4d7d90 (stdcall 0x14): a stretch of a texture drawn scaled at (x, y), the
  * colour its tint and its top byte the alpha, each corner fading by its place
  * on the screen. */
-x86::reg32 frontend::menue::drawBouncer(App* app, CPU& cpu, reg32 texture, std::int32_t x, std::int32_t y,
+nfs::u32 frontend::menue::drawBouncer(App* app, ThreadState& ts, u32 texture, std::int32_t x, std::int32_t y,
                                         std::int32_t fromU, std::int32_t fromV, std::int32_t width, std::int32_t height,
-                                        float scale, reg32 colour)
+                                        float scale, u32 colour)
 {
-    Guest guest(app, cpu);
-    const fe::Frame frame(guest, cpu, 12 + 0x18);
+    Guest guest(app, ts);
+    const fe::Frame frame(guest, ts, 12 + 0x18);
     const Bouncer b{ texture, x, y, fromU, fromV, width, height, scale, colour };
     const Float widthValue = FloatMath::integer(b.width);
     const Float heightValue = FloatMath::integer(b.height);
@@ -512,11 +512,11 @@ x86::reg32 frontend::menue::drawBouncer(App* app, CPU& cpu, reg32 texture, std::
     const Float bottom = fp::add(scaledHeight, Float(top));
     placeCorners(guest, left, top, float(right), float(bottom));
 
-    const reg32 alpha = b.colour >> 24;
-    const reg32 tint = b.colour & 0xffffff;
-    for (reg32 i = 0; i < 4; ++i)
+    const u32 alpha = b.colour >> 24;
+    const u32 tint = b.colour & 0xffffff;
+    for (u32 i = 0; i < 4; ++i)
     {
-        const reg32 fade = guest::direct<0x4d7cc0, menue::cornerFade>(app, cpu, guest.floatAt(corner(i) + kCornerX),
+        const u32 fade = guest::direct<0x4d7cc0, menue::cornerFade>(app, ts, guest.floatAt(corner(i) + kCornerX),
                                                                       guest.floatAt(corner(i) + kCornerY), alpha);
         guest.setDword(corner(i) + kCornerColour, tint + fade);
     }
@@ -530,14 +530,14 @@ x86::reg32 frontend::menue::drawBouncer(App* app, CPU& cpu, reg32 texture, std::
     const Float vTo = fp::mul(texel, fp::add(v, Float(float(heightValue))));
     const auto bitsOf = [](Float value) {
         const float single = float(value);
-        reg32 bits;
+        u32 bits;
         std::memcpy(&bits, &single, sizeof bits);
         return bits;
     };
     placeTexture(guest, bitsOf(uFrom), bitsOf(vFrom), bitsOf(uTo), bitsOf(vFrom), bitsOf(uTo), bitsOf(vTo), bitsOf(uFrom), bitsOf(vTo));
 
-    fe::direct<0x431900, graphics::sendState>(app, cpu, kRenderStateTexture, b.texture);
-    const reg32 drawn = clipAndDrawQuad(guest);
+    fe::direct<0x431900, graphics::sendState>(app, ts, kRenderStateTexture, b.texture);
+    const u32 drawn = clipAndDrawQuad(guest);
     restoreTexture(guest);
     return drawn;
 }
@@ -549,14 +549,14 @@ x86::reg32 frontend::menue::drawBouncer(App* app, CPU& cpu, reg32 texture, std::
 /* sub_4d9180: a colour's red, green and blue scaled by `scale`/256, its alpha as
  * it is; a quarter by masks, the whole not at all.  edx is left the sum before
  * the blue. */
-x86::reg32 frontend::menue::scaleColour(App* app, CPU& cpu, reg32 colour, std::int32_t scale)
+nfs::u32 frontend::menue::scaleColour(App* app, ThreadState& ts, u32 colour, std::int32_t scale)
 {
-    Guest guest(app, cpu);
+    Guest guest(app, ts);
     constexpr std::int32_t kWhole = 0x100, kQuarter = 0x40;
     if (scale == kWhole)
         return colour;
-    const reg32 alpha = colour & 0xff000000;
-    reg32 alphaRedGreen, blue;
+    const u32 alpha = colour & 0xff000000;
+    u32 alphaRedGreen, blue;
     if (scale == kQuarter)
     {
         alphaRedGreen = ((colour & 0xfc0000) >> 2) + alpha + ((colour & 0xfc00) >> 2);
@@ -564,8 +564,8 @@ x86::reg32 frontend::menue::scaleColour(App* app, CPU& cpu, reg32 colour, std::i
     }
     else
     {
-        const auto scaled = [scale](reg32 component) {
-            return reg32(std::int32_t((component & 0xff) * reg32(scale)) / 256);
+        const auto scaled = [scale](u32 component) {
+            return u32(std::int32_t((component & 0xff) * u32(scale)) / 256);
         };
         alphaRedGreen = alpha + (scaled(colour >> 16) << 16) + (scaled(colour >> 8) << 8);
         blue = scaled(colour);
@@ -580,63 +580,63 @@ namespace
  * The menus' pointer
  * ------------------------------------------------------------------------- */
 
-constexpr reg32 kPointerKind = 0x563d3c;       // -2 none (port_draw2d.cpp)
-constexpr reg32 kPointerTextures = 0x563b34;   // 13 kinds of 10 frames
-constexpr reg32 kPointerTexturesPerKind = 0x28;
-constexpr reg32 kHotSpots = 0x563d4c;          // x, y for each frame of each kind
-constexpr reg32 kHotSpotsPerKind = 0x50;
-constexpr reg32 kHotSpotSize = 8;
+constexpr u32 kPointerKind = 0x563d3c;       // -2 none (port_draw2d.cpp)
+constexpr u32 kPointerTextures = 0x563b34;   // 13 kinds of 10 frames
+constexpr u32 kPointerTexturesPerKind = 0x28;
+constexpr u32 kHotSpots = 0x563d4c;          // x, y for each frame of each kind
+constexpr u32 kHotSpotsPerKind = 0x50;
+constexpr u32 kHotSpotSize = 8;
 constexpr std::int32_t kPointerKinds = 13, kPointerFrames = 10;
-constexpr reg32 kShapeCentreX = 0x08, kShapeCentreY = 0x0a;   // int16 of a shape
+constexpr u32 kShapeCentreX = 0x08, kShapeCentreY = 0x0a;   // int16 of a shape
 constexpr GuestString kPointerName{ 0x5496dc, "c%02d%d" };
 
-constexpr reg32 kFindShape = 0x4ef270;         // eax a file, edx a name
-constexpr reg32 kPointerSide = 0x20;
+constexpr u32 kFindShape = 0x4ef270;         // eax a file, edx a name
+constexpr u32 kPointerSide = 0x20;
 
-constexpr reg32 kDrawShadedTriangle = 0x4d8570;
+constexpr u32 kDrawShadedTriangle = 0x4d8570;
 
 }  // namespace
 
 /* sub_4daa10: the pointer's shapes, c<kind><frame>, out of their file: for each
  * there is its hot spot, and a texture.  A bitmap of 32 by 32 is made for the
  * time of it. */
-x86::reg32 frontend::menue::loadPointer(App* app, CPU& cpu, reg32 file)
+nfs::u32 frontend::menue::loadPointer(App* app, ThreadState& ts, u32 file)
 {
-    Guest guest(app, cpu);
-    const fe::Frame stackFrame(guest, cpu, 24 + 0x48);
-    const reg32 name = guest.frame();
-    const reg32 canvas =
-        fe::direct<0x4ef190, eab::windowBitmapCreateDefault>(app, cpu, kPointerSide, kPointerSide, kPointerSide, 0);
+    Guest guest(app, ts);
+    const fe::Frame stackFrame(guest, ts, 24 + 0x48);
+    const u32 name = guest.frame();
+    const u32 canvas =
+        fe::direct<0x4ef190, eab::windowBitmapCreateDefault>(app, ts, kPointerSide, kPointerSide, kPointerSide, 0);
     for (std::int32_t kind = 0; kind < kPointerKinds; ++kind)
     {
         for (std::int32_t frame = 0; frame < kPointerFrames; ++frame)
         {
             // eax, loaded with the name for it by the game's code, is the result's again after it.
-            fe::direct<kSprintf, watcom::clib::sprintf>(app, cpu, name, kPointerName.address,
-                                                        guest::Words{reg32(kind), reg32(frame)});
-            const reg32 shape = callAt(guest, kFindShape, args({ file, name }));
+            fe::direct<kSprintf, watcom::clib::sprintf>(app, ts, name, kPointerName.address,
+                                                        guest::Words{u32(kind), u32(frame)});
+            const u32 shape = callAt(guest, kFindShape, args({ file, name }));
             if (shape == 0)
                 continue;
-            const reg32 hotSpot = kHotSpots + kHotSpotsPerKind * reg32(kind) + kHotSpotSize * reg32(frame);
-            guest.setDword(hotSpot, reg32(int16At(guest, shape + kShapeCentreX)));
-            guest.setDword(hotSpot + 4, reg32(int16At(guest, shape + kShapeCentreY)));
+            const u32 hotSpot = kHotSpots + kHotSpotsPerKind * u32(kind) + kHotSpotSize * u32(frame);
+            guest.setDword(hotSpot, u32(int16At(guest, shape + kShapeCentreX)));
+            guest.setDword(hotSpot + 4, u32(int16At(guest, shape + kShapeCentreY)));
             fe::direct<0x4d6070, port::shapes::textureOf>(
-                app, cpu, cpu.esp - 4, kPointerTextures + kPointerTexturesPerKind * reg32(kind) + 4 * reg32(frame), shape,
+                app, ts, ts.sp - 4, kPointerTextures + kPointerTexturesPerKind * u32(kind) + 4 * u32(frame), shape,
                 std::int32_t(kPointerSide), 0);
         }
     }
-    return fe::direct<0x4eff00, eab::windowBitmapFree>(app, cpu, canvas);
+    return fe::direct<0x4eff00, eab::windowBitmapFree>(app, ts, canvas);
 }
 
 /* sub_4dab10: the shown pointer's hot spot into [xAt] and [yAt].  In a race the
  * two the code holds, for kind 0 and for kinds 8 to 11, the others left as they
  * are; in the menus its first frame's, 0 for a kind out of the table. */
-x86::reg32 frontend::menue::pointerHotSpot(App* app, CPU& cpu, reg32 xAt, reg32 yAt)
+nfs::u32 frontend::menue::pointerHotSpot(App* app, ThreadState& ts, u32 xAt, u32 yAt)
 {
-    Guest guest(app, cpu);
-    constexpr reg32 kRaceFirstKind = 0, kRaceOthersFirst = 8, kRaceOthersLast = 11;
-    const reg32 kind = guest.dword(kPointerKind);
-    reg32 result = xAt;  // eax as it came
+    Guest guest(app, ts);
+    constexpr u32 kRaceFirstKind = 0, kRaceOthersFirst = 8, kRaceOthersLast = 11;
+    const u32 kind = guest.dword(kPointerKind);
+    u32 result = xAt;  // eax as it came
     if (guest.dword(kInRace) != 0)
     {
         if (kind == kRaceFirstKind)
@@ -650,14 +650,14 @@ x86::reg32 frontend::menue::pointerHotSpot(App* app, CPU& cpu, reg32 xAt, reg32 
             guest.setDword(yAt, 0x10);
         }
     }
-    else if (sreg32(kind) < 0 || sreg32(kind) >= kPointerKinds)
+    else if (s32(kind) < 0 || s32(kind) >= kPointerKinds)
     {
         guest.setDword(xAt, 0);
         guest.setDword(yAt, 0);
     }
     else
     {
-        const reg32 spot = kHotSpots + kHotSpotsPerKind * kind;
+        const u32 spot = kHotSpots + kHotSpotsPerKind * kind;
         guest.setDword(xAt, guest.dword(spot));
         result = guest.dword(spot + 4);
         guest.setDword(yAt, result);
@@ -668,16 +668,16 @@ x86::reg32 frontend::menue::pointerHotSpot(App* app, CPU& cpu, reg32 xAt, reg32 
 
 /* sub_4d88c0 (stdcall 0x14): the colour picker's triangle (sub_43e310) handed on
  * to the 2D layer's as it came, its registers and the five on the stack. */
-x86::reg32 frontend::menue::shadedTriangle(App* app, CPU& cpu, reg32 x0, reg32 y0, reg32 x1, reg32 y1, reg32 x2,
-                                           reg32 y2, reg32 colour0, reg32 colour1, reg32 colour2)
+nfs::u32 frontend::menue::shadedTriangle(App* app, ThreadState& ts, u32 x0, u32 y0, u32 x1, u32 y1, u32 x2,
+                                           u32 y2, u32 colour0, u32 colour1, u32 colour2)
 {
-    Guest guest(app, cpu);
-    const fe::Frame frame(guest, cpu, 12);
+    Guest guest(app, ts);
+    const fe::Frame frame(guest, ts, 12);
         // The stack word x2 is pushed under the call's five, where the core finds it (and rewrites it).
-    const reg32 x2At = cpu.esp - 4 * 5;
+    const u32 x2At = ts.sp - 4 * 5;
     guest.setDword(x2At, x2);
-    return reg32(*fe::direct<kDrawShadedTriangle, port::fields::triangle>(
-        app, cpu, cpu.esp - 4 - 4 * 5, std::int32_t(x0), std::int32_t(y0), std::int32_t(x1), std::int32_t(y1), x2At,
+    return u32(*fe::direct<kDrawShadedTriangle, port::fields::triangle>(
+        app, ts, ts.sp - 4 - 4 * 5, std::int32_t(x0), std::int32_t(y0), std::int32_t(x1), std::int32_t(y1), x2At,
         std::int32_t(y2), colour0, colour1, colour2));
 }
 
@@ -685,110 +685,110 @@ x86::reg32 frontend::menue::shadedTriangle(App* app, CPU& cpu, reg32 x0, reg32 y
  * The functions
  * ------------------------------------------------------------------------- */
 
-x86::reg32 frontend::resultsMetricText(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 frontend::resultsMetricText(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static const GuestString kStrings[] = { kNoSpeed };
     static fe::Site site{ "sub_4cedd0", 8, 0, kStrings, 1 };
-    const float speed = app->getMemory<float>(cpu.esp + 4);
-    const reg32 buffer = stackArgument(app, cpu, 1);
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menue::metricText(app, cpu, speed, buffer); });
+    const float speed = app->getMemory<float>(ts.sp + 4);
+    const u32 buffer = stackArgument(app, ts, 1);
+    return fe::runThunk(app, ts, args, site, [&](Guest&) { return menue::metricText(app, ts, speed, buffer); });
 }
 
-x86::reg32 frontend::resultsTimeText(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 frontend::resultsTimeText(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static const GuestString kStrings[] = { kTimeFormat };
     static fe::Site site{ "sub_4cee40", 0, 0, kStrings, 1, kPushedEbxEcxEsiEdi };
-    const reg32 time = args.eax, buffer = args.edx;
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menue::timeText(app, cpu, time, buffer); });
+    const u32 time = args.eax, buffer = args.edx;
+    return fe::runThunk(app, ts, args, site, [&](Guest&) { return menue::timeText(app, ts, time, buffer); });
 }
 
-x86::reg32 frontend::lapsToOption(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 frontend::lapsToOption(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site{ "sub_4cf160", 0, 0, nullptr, 0 };
-    const reg32 laps = args.eax;
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menue::lapsToOption(app, cpu, laps); });
+    const u32 laps = args.eax;
+    return fe::runThunk(app, ts, args, site, [&](Guest&) { return menue::lapsToOption(app, ts, laps); });
 }
 
-x86::reg32 frontend::optionToLaps(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 frontend::optionToLaps(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site{ "sub_4cf190", 0, 0, nullptr, 0 };
-    const reg32 option = args.eax;
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menue::optionToLaps(app, cpu, option); });
+    const u32 option = args.eax;
+    return fe::runThunk(app, ts, args, site, [&](Guest&) { return menue::optionToLaps(app, ts, option); });
 }
 
-x86::reg32 frontend::languageTextsFree(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 frontend::languageTextsFree(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site{ "sub_4d1880", 0, 0, nullptr, 0, kPushedEcxEdx };
-    const x86::reg32 eax = args.eax;
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menue::freeLanguageTexts(app, cpu, eax); });
+    const nfs::u32 eax = args.eax;
+    return fe::runThunk(app, ts, args, site, [&](Guest&) { return menue::freeLanguageTexts(app, ts, eax); });
 }
 
-x86::reg32 frontend::artTilesDraw(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 frontend::artTilesDraw(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site{ "sub_4d7560", 0, 0, nullptr, 0, kPushedEcxEsiEdi };
-    const reg32 art = args.eax;
+    const u32 art = args.eax;
     const std::int32_t x = std::int32_t(args.edx), y = std::int32_t(args.ebx);
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menue::drawArtTiles(app, cpu, art, x, y); });
+    return fe::runThunk(app, ts, args, site, [&](Guest&) { return menue::drawArtTiles(app, ts, art, x, y); });
 }
 
-x86::reg32 frontend::bouncerCornerFade(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 frontend::bouncerCornerFade(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site{ "sub_4d7cc0", 12, 0, nullptr, 0, kPushedEcxEdx };
-    const float x = app->getMemory<float>(cpu.esp + 4), y = app->getMemory<float>(cpu.esp + 8);
-    const reg32 alpha = stackArgument(app, cpu, 2);
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menue::cornerFade(app, cpu, x, y, alpha); });
+    const float x = app->getMemory<float>(ts.sp + 4), y = app->getMemory<float>(ts.sp + 8);
+    const u32 alpha = stackArgument(app, ts, 2);
+    return fe::runThunk(app, ts, args, site, [&](Guest&) { return menue::cornerFade(app, ts, x, y, alpha); });
 }
 
-x86::reg32 frontend::bouncerDraw(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 frontend::bouncerDraw(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site{ "sub_4d7d90", 0x14, 0, nullptr, 0, kPushedEsiEdi };
     const Bouncer bouncer{ args.eax,
                            std::int32_t(args.edx),
                            std::int32_t(args.ebx),
                            std::int32_t(args.ecx),
-                           std::int32_t(stackArgument(app, cpu, 0)),
-                           std::int32_t(stackArgument(app, cpu, 1)),
-                           std::int32_t(stackArgument(app, cpu, 2)),
-                           app->getMemory<float>(cpu.esp + 4 + 4 * 3),
-                           stackArgument(app, cpu, 4) };
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
-        return menue::drawBouncer(app, cpu, bouncer.texture, bouncer.x, bouncer.y, bouncer.u, bouncer.v, bouncer.width,
+                           std::int32_t(stackArgument(app, ts, 0)),
+                           std::int32_t(stackArgument(app, ts, 1)),
+                           std::int32_t(stackArgument(app, ts, 2)),
+                           app->getMemory<float>(ts.sp + 4 + 4 * 3),
+                           stackArgument(app, ts, 4) };
+    return fe::runThunk(app, ts, args, site, [&](Guest&) {
+        return menue::drawBouncer(app, ts, bouncer.texture, bouncer.x, bouncer.y, bouncer.u, bouncer.v, bouncer.width,
                                   bouncer.height, bouncer.scale, bouncer.colour);
     });
 }
 
-x86::reg32 frontend::pickerShadedTriangle(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 frontend::pickerShadedTriangle(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site{ "sub_4d88c0", 0x14, 0, nullptr, 0, kPushedEsiEdi };
-    const reg32 x0 = args.eax, y0 = args.edx, x1 = args.ebx, y1 = args.ecx;
-    const reg32 x2 = stackArgument(app, cpu, 0), y2 = stackArgument(app, cpu, 1);
-    const reg32 colour0 = stackArgument(app, cpu, 2), colour1 = stackArgument(app, cpu, 3), colour2 = stackArgument(app, cpu, 4);
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
-        return menue::shadedTriangle(app, cpu, x0, y0, x1, y1, x2, y2, colour0, colour1, colour2);
+    const u32 x0 = args.eax, y0 = args.edx, x1 = args.ebx, y1 = args.ecx;
+    const u32 x2 = stackArgument(app, ts, 0), y2 = stackArgument(app, ts, 1);
+    const u32 colour0 = stackArgument(app, ts, 2), colour1 = stackArgument(app, ts, 3), colour2 = stackArgument(app, ts, 4);
+    return fe::runThunk(app, ts, args, site, [&](Guest&) {
+        return menue::shadedTriangle(app, ts, x0, y0, x1, y1, x2, y2, colour0, colour1, colour2);
     });
 }
 
-x86::reg32 frontend::effectsBandColourScaled(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 frontend::effectsBandColourScaled(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site{ "sub_4d9180", 0, 0, nullptr, 0, kPushedEbxEcxEsiEdi };
-    const reg32 colour = args.eax;
+    const u32 colour = args.eax;
     const std::int32_t scale = std::int32_t(args.edx);
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menue::scaleColour(app, cpu, colour, scale); });
+    return fe::runThunk(app, ts, args, site, [&](Guest&) { return menue::scaleColour(app, ts, colour, scale); });
 }
 
-x86::reg32 frontend::menuPointerLoad(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 frontend::menuPointerLoad(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static const GuestString kStrings[] = { kPointerName };
     static fe::Site site{ "sub_4daa10", 0, 0, kStrings, 1 };
-    const reg32 file = args.eax;
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menue::loadPointer(app, cpu, file); });
+    const u32 file = args.eax;
+    return fe::runThunk(app, ts, args, site, [&](Guest&) { return menue::loadPointer(app, ts, file); });
 }
 
-x86::reg32 frontend::menuPointerHotSpot(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 frontend::menuPointerHotSpot(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site{ "sub_4dab10", 0, 0, nullptr, 0, kPushedEbxEcxEsiEdi };
-    const reg32 xAt = args.eax, yAt = args.edx;
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menue::pointerHotSpot(app, cpu, xAt, yAt); });
+    const u32 xAt = args.eax, yAt = args.edx;
+    return fe::runThunk(app, ts, args, site, [&](Guest&) { return menue::pointerHotSpot(app, ts, xAt, yAt); });
 }
 
 }

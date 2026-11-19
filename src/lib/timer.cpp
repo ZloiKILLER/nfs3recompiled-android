@@ -1,30 +1,9 @@
 #include <lib/timer.h>
 #include <lib/window.h>
 #include <atomic>
-#include <time.h>
-#ifdef _WIN32
-# define localtime_r(a,b)  localtime_s(b,a)
-#endif
 
-namespace win32
+namespace nfs
 {
-
-void getSystemTime(SYSTEMTIME* systemTime)
-{
-    time_t now;
-    struct tm localTime;
-    time(&now);
-    localtime_r(&now, &localTime);
-    // tm_year counts from 1900, SYSTEMTIME.wYear wants the full year.
-    systemTime->wYear = WORD(localTime.tm_year + 1900);
-    systemTime->wMonth = WORD(localTime.tm_mon + 1);
-    systemTime->wDayOfWeek = WORD(localTime.tm_wday);
-    systemTime->wDay = WORD(localTime.tm_mday);
-    systemTime->wHour = WORD(localTime.tm_hour);
-    systemTime->wMinute = WORD(localTime.tm_min);
-    systemTime->wSecond = WORD(localTime.tm_sec);
-    systemTime->wMilliseconds = 0;
-}
 
 /* suspendTime(): whether the game's time stands still, since when, and how long
  * it has stood still before, all told -- which the clock leaves out. */
@@ -63,14 +42,14 @@ static Uint32 timeScale()
     return scale;
 }
 
-x86::reg32 timeGetTickCount()
+nfs::u32 gameClockMs()
 {
     const Uint64 now = s_suspended.load() ? s_suspendedAt.load() : SDL_GetTicks();
-    x86::reg32 result = (x86::reg32)((now - s_suspendedFor.load()) * timeScale());
+    nfs::u32 result = (nfs::u32)((now - s_suspendedFor.load()) * timeScale());
     return result;
 }
 
-Timer::Timer(x86::reg32 delay, WinApplication* app, x86::reg32 proc, x86::reg32 param)
+Timer::Timer(nfs::u32 delay, App* app, nfs::u32 proc, nfs::u32 param)
     :   m_app(app)
     ,   m_callback(proc)
     ,   m_parameter(param)
@@ -100,7 +79,7 @@ Uint32 Timer::timerCallback(void* data, SDL_TimerID /*timerID*/, Uint32 interval
      * good; one that fires late only runs late. */
     if (s_suspended.load())
         return 10;
-    x86::CPU cpu;
+    nfs::ThreadState ts;
     //SDL_Log("Timer callback: %d", t->m_id);
 #ifdef NFS_TRACE_MSG
     /* Whether this fires once or keeps coming back is the whole question for a
@@ -108,12 +87,12 @@ Uint32 Timer::timerCallback(void* data, SDL_TimerID /*timerID*/, Uint32 interval
      * identify which timer, so one shared rate limiter is enough.  Returning 0
      * below is what makes it one-shot. */
     static unsigned hits = 0;
-    const bool trace = win32::msgTraceRateLimit(hits);
+    const bool trace = nfs::eventTraceRateLimit(hits);
     if (trace)
         NFS_MSG_TRACE("timer fire    sdl_id=%u proc=0x%08x param=0x%08x (fire %u) -> guest",
                       unsigned(t->m_id), unsigned(t->m_callback), unsigned(t->m_parameter), hits);
 #endif
-    t->m_app->runCallback(cpu, t->m_callback, t->m_parameter);
+    t->m_app->runCallback(ts, t->m_callback, t->m_parameter);
 #ifdef NFS_TRACE_MSG
     if (trace)
         NFS_MSG_TRACE("timer done    sdl_id=%u proc=0x%08x (fire %u), not re-armed by us",

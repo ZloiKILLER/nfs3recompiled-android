@@ -5,7 +5,7 @@
 
 /* native_handling.cpp's typed functions that other files call as C++ (guest::direct), and how the
  * game's code calls each by address.  Each may call the
- * game's other functions by address on `cpu`, and says when the game stopped in one. */
+ * game's other functions by address on `ts`, and says when the game stopped in one. */
 namespace nfs3hp
 {
 namespace handling
@@ -15,22 +15,22 @@ namespace handling
 enum class AxleEnd { Stopped, Gripped, Slid };
 
 // The game's 0x4aca4f: the forces of car's axle at `axle` (its record).
-AxleEnd axleTyres(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 car, x86::reg32 axle);
+AxleEnd axleTyres(nfs::App* app, nfs::ThreadState& ts, nfs::u32 car, nfs::u32 axle);
 // axleTyres for a caller that asks only whether the game went on.
-inline bool axleForcesSet(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 car, x86::reg32 axle)
+inline bool axleForcesSet(nfs::App* app, nfs::ThreadState& ts, nfs::u32 car, nfs::u32 axle)
 {
-    return axleTyres(app, cpu, car, axle) != AxleEnd::Stopped;
+    return axleTyres(app, ts, car, axle) != AxleEnd::Stopped;
 }
 // The game's 0x4aa8e7: car settled when it is all but stopped and upright; false when the game stopped.
-std::optional<x86::reg32> settleCar(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 car);
+std::optional<nfs::u32> settleCar(nfs::App* app, nfs::ThreadState& ts, nfs::u32 car);
 // The game's 0x4a78d6: car's handling made for the race from its player's setup; false when the game stopped.
-bool tuneHandling(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 car);
+bool tuneHandling(nfs::App* app, nfs::ThreadState& ts, nfs::u32 car);
 // The game's 0x4a8bb9: the automatic gearbox's choice for car (0 for no change, else the gear).
-x86::reg32 gearChoice(win32::WinApplication* app, x86::reg32 car);
+nfs::u32 gearChoice(nfs::App* app, nfs::u32 car);
 // The game's 0x4aa4f4: car's speeds along its axes, its clutch, throttle and slip cleared; false when the game stopped.
-bool matchToSpeed(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 car);
+bool matchToSpeed(nfs::App* app, nfs::ThreadState& ts, nfs::u32 car);
 // The game's 0x4aa79f: car's drive put back (gear, forces, speeds along the axes cleared).
-void resetDrive(win32::WinApplication* app, x86::reg32 car);
+void resetDrive(nfs::App* app, nfs::u32 car);
 
 }  // namespace handling
 

@@ -7,9 +7,9 @@ namespace imports
 {
 
 #define IMPORT_THUNK(address, slot) \
-    x86::reg32 thunk_##address(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args) \
+    nfs::u32 thunk_##address(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args) \
     { \
-        return app->callAddress(app->getMemory<x86::reg32>(slot), cpu, args); \
+        return app->callAddress(app->getMemory<nfs::u32>(slot), ts, args); \
     }
 #include "native_import_thunks.inc"
 #undef IMPORT_THUNK

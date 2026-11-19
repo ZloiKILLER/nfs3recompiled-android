@@ -2,7 +2,6 @@
 #include "port_snd_voices.h"
 #include "port_snd_calls.h"
 #include "isnd_calls.h"
-#include "host_threads.h"
 #include "native_ea_threads.h"
 
 /* EA's SND library, rewritten (port_snd.h says how): its voices -- taken,
@@ -29,18 +28,18 @@ constexpr Where kVolume{0x54e5a8, 0x54e5b4}, kDetune{0x54ea0c, 0x54ea1c}, k3dPos
 constexpr Where kPan{0x54eac0, 0x54eacc}, kStop{0x549b10, 0x54a060}, kAutovol{0x54b278, 0x54b288};
 constexpr Where kSvol{0x54b2c0, 0x54b2cc}, kBend{0x54b2fc, 0x54b308}, kSpan{0x54b358, 0x54b364};
 constexpr Where kSetdef{0x54b390, 0x54b3a0}, kPlay{0x54b3dc, 0x54b3e8};
-constexpr reg32 kFreeChanText = 0x54e148, kEnterText = 0x54e334, kAddClientText = 0x54e3a8;
-constexpr reg32 kRemoveClientText = 0x54e3f4, kVolText = 0x54e5bc, kDetuneText = 0x54ea30, k3dPosText = 0x54ea88;
-constexpr reg32 kPanText = 0x54ead4, kStopText = 0x54a06c, kAutovolText = 0x54b294, kSvolText = 0x54b2d4;
-constexpr reg32 kBendText = 0x54b318, kSpanText = 0x54b36c, kSetdefText = 0x54b3b0, kPlayText = 0x54b3f0;
+constexpr u32 kFreeChanText = 0x54e148, kEnterText = 0x54e334, kAddClientText = 0x54e3a8;
+constexpr u32 kRemoveClientText = 0x54e3f4, kVolText = 0x54e5bc, kDetuneText = 0x54ea30, k3dPosText = 0x54ea88;
+constexpr u32 kPanText = 0x54ead4, kStopText = 0x54a06c, kAutovolText = 0x54b294, kSvolText = 0x54b2d4;
+constexpr u32 kBendText = 0x54b318, kSpanText = 0x54b36c, kSetdefText = 0x54b3b0, kPlayText = 0x54b3f0;
 
-constexpr Table<reg32> kRandomState{0x5644e0};  // six words, the lowest last
-constexpr Table<reg32> kSines{0x5672ac};        // a quarter's, 0x10000 one
+constexpr Table<u32> kRandomState{0x5644e0};  // six words, the lowest last
+constexpr Table<u32> kSines{0x5672ac};        // a quarter's, 0x10000 one
 constexpr Table<float> kPitchSteps{0x56adec};   // 2 to the power 2^i/4096
 constexpr Var<float> kStepScale{0x551af4};
 
-int8_t sbyteAt(App* app, reg32 at) { return app->getMemory<int8_t>(at); }
-uint8_t byteAt(App* app, reg32 at) { return app->getMemory<uint8_t>(at); }
+int8_t sbyteAt(App* app, u32 at) { return app->getMemory<int8_t>(at); }
+uint8_t byteAt(App* app, u32 at) { return app->getMemory<uint8_t>(at); }
 
 Voice& voice(App* app, int32_t index) { return kVoices(app, index); }
 PlatformVoice& platform(App* app, int32_t index) { return kPlatform(app, index); }
@@ -50,35 +49,35 @@ bool inGroup(const Voice& w, uint8_t group) { return w.group == group && w.state
 
 /* The two sides' volumes as the game's code leaves them on its stack where
  * an error left them unset. */
-Sides unset(App* app, reg32 at) { return load<Sides>(app, at); }
+Sides unset(App* app, u32 at) { return load<Sides>(app, at); }
 
 }  // namespace
 
-Result fail(App* app, CPU& cpu, reg32 esp, Where where, reg32 line, std::initializer_list<reg32> arguments,
-            reg32 eax)
+Result fail(App* app, ThreadState& ts, u32 esp, Where where, u32 line, std::initializer_list<u32> arguments,
+            u32 eax)
 {
-    constexpr Table<reg32> kWhere{0x552190};
-    constexpr reg32 kError = 0x401010;
+    constexpr Table<u32> kWhere{0x552190};
+    constexpr u32 kError = 0x401010;
     kWhere.set(app, 0, where.file);
     kWhere.set(app, 1, where.function);
     kWhere.set(app, 2, line);
-    if (!pointerGame(app, cpu, esp, kError, {eax}, arguments, eax))
+    if (!pointerGame(app, ts, esp, kError, {eax}, arguments, eax))
         return {};
     return int32_t(eax);
 }
 
 /* 0x4e0d88's: EA's random number -- the sum of a 192-bit state with its
  * carries, the state then counted up by one. */
-reg32 nextRandom(App* app)
+u32 nextRandom(App* app)
 {
     uint64_t sum = uint64_t(kRandomState(app, 5)) + kRandomState(app, 4);
-    kRandomState.set(app, 4, reg32(sum));
+    kRandomState.set(app, 4, u32(sum));
     for (const int32_t i : {3, 2, 1})
     {
-        sum = uint64_t(reg32(sum)) + kRandomState(app, i) + (sum >> 32);
-        kRandomState.set(app, i, reg32(sum));
+        sum = uint64_t(u32(sum)) + kRandomState(app, i) + (sum >> 32);
+        kRandomState.set(app, i, u32(sum));
     }
-    reg32 n = reg32(sum) + kRandomState(app, 0) + reg32(sum >> 32);
+    u32 n = u32(sum) + kRandomState(app, 0) + u32(sum >> 32);
     bool carry = true;
     for (const int32_t i : {5, 4, 3, 2, 1})
     {
@@ -108,10 +107,10 @@ int32_t randomWithin(App* app, int32_t range)
 }
 
 /* 0x52b230's: `bytes` bytes at `at`, big-endian; 1 to 3 of them signed. */
-int32_t bigEndian(App* app, reg32 at, int32_t bytes)
+int32_t bigEndian(App* app, u32 at, int32_t bytes)
 {
-    reg32 value = 0;
-    for (reg32 left = reg32(bytes); left != 0; --left)
+    u32 value = 0;
+    for (u32 left = u32(bytes); left != 0; --left)
         value = (value << 8) + byteAt(app, at++);
     if (bytes == 1 && int32_t(value) > 0x7f)
         value -= 0x100;
@@ -136,16 +135,16 @@ bool readTag(App* app, Tag& t)
     ++t.place;
     if (t.tag == 0xfd || t.tag == 0xfe)
         return true;
-    reg32 length = byteAt(app, t.place);
+    u32 length = byteAt(app, t.place);
     if (length == 0xff)
     {
-        length = reg32(bigEndian(app, t.place + 1, 4));
+        length = u32(bigEndian(app, t.place + 1, 4));
         t.place += 4;
     }
     ++t.place;
     if (int32_t(length) >= 0 && int32_t(length) <= 4)
     {
-        t.number = reg32(bigEndian(app, t.place, int32_t(length)));
+        t.number = u32(bigEndian(app, t.place, int32_t(length)));
         t.data = t.place;
     }
     t.place += length;
@@ -166,20 +165,20 @@ Sides splitPan(int32_t pan, int32_t volume)
 
 /* 0x52b1c0's: `volume` at `angle` (0x10000 a turn): the volume times 1 - sin
  * and 1 + sin, from the quarter's table, each at most 0x7f. */
-Sides panAt(App* app, reg32 angle, reg32 volume)
+Sides panAt(App* app, u32 angle, u32 volume)
 {
-    const reg32 a = reg32(int32_t(angle) >> 6);
-    const reg32 negative = (a & 0x200) ? 0xffffffff : 0;
-    const reg32 mirrored = (a & 0x100) ? 0xffffffff : 0;
-    const reg32 index = ((a ^ mirrored) & 0xff) - mirrored;
-    const reg32 sine = (kSines(app, int32_t(index)) ^ negative) - negative;
-    const reg32 left = (reg32(0x10000) - sine) * volume >> 16;
-    const reg32 right = volume * (sine + 0x10000) >> 16;
+    const u32 a = u32(int32_t(angle) >> 6);
+    const u32 negative = (a & 0x200) ? 0xffffffff : 0;
+    const u32 mirrored = (a & 0x100) ? 0xffffffff : 0;
+    const u32 index = ((a ^ mirrored) & 0xff) - mirrored;
+    const u32 sine = (kSines(app, int32_t(index)) ^ negative) - negative;
+    const u32 left = (u32(0x10000) - sine) * volume >> 16;
+    const u32 right = volume * (sine + 0x10000) >> 16;
     return {int32_t(left) > 0x7f ? 0x7f : int32_t(left), int32_t(right) > 0x7f ? 0x7f : int32_t(right)};
 }
 
 /* 0x5224b0's: panAt, both sides made positive. */
-Sides panAtPositive(App* app, reg32 angle, reg32 volume)
+Sides panAtPositive(App* app, u32 angle, u32 volume)
 {
     Sides s = panAt(app, angle, volume);
     if (s.left < 0)
@@ -192,7 +191,7 @@ Sides panAtPositive(App* app, reg32 angle, reg32 volume)
 /* 0x522320's: panAt for a voice played in Dolby surround, from the
  * surround's two levels it had: the side turned around that puts the sound
  * behind (a level below 0 is a side turned around). */
-Sides panSurroundAt(App* app, reg32 angle, reg32 volume, int32_t front, int32_t back)
+Sides panSurroundAt(App* app, u32 angle, u32 volume, int32_t front, int32_t back)
 {
     Sides s = panAt(app, angle, volume);
     int32_t quadrant;
@@ -231,11 +230,11 @@ Sides panSurroundAt(App* app, reg32 angle, reg32 volume, int32_t front, int32_t 
 
 /* 0x4ffc9c's: the voice a handle is on (its low five bits), or -8 when that
  * voice is free or holds another sound. */
-int32_t voiceOfHandle(App* app, reg32 handle)
+int32_t voiceOfHandle(App* app, u32 handle)
 {
     const int32_t index = int32_t(handle & 0x1f);
     if (int32_t(handle) >= 0 && index < kVoiceCount && voice(app, index).state != 0
-        && handle == reg32(voice(app, index).handle))
+        && handle == u32(voice(app, index).handle))
         return index;
     return kNoSound;
 }
@@ -255,7 +254,7 @@ bool isPicked(App* app, int32_t index, int32_t count)
  * kept.  A voice of a group ends the group's sound only when it is the last
  * of it playing, or the one marked to end it is ending already.  The ticks,
  * or the marked voice's offset, as the code leaves them. */
-Result freeVoice(App* app, CPU& cpu, reg32 esp, int32_t index)
+Result freeVoice(App* app, ThreadState& ts, u32 esp, int32_t index)
 {
     Voice& v = voice(app, index);
     const uint8_t group = v.group;
@@ -291,7 +290,7 @@ Result freeVoice(App* app, CPU& cpu, reg32 esp, int32_t index)
             }
         }
     }
-    else if (v.state == 0 && !fail(app, cpu, esp - 0x18, kAllocChan, 0x12a, {kFreeChanText, reg32(index)}))
+    else if (v.state == 0 && !fail(app, ts, esp - 0x18, kAllocChan, 0x12a, {kFreeChanText, u32(index)}))
         return {};
     v.state = 0;
     v.tick = kTicks(app);
@@ -303,12 +302,12 @@ Result freeVoice(App* app, CPU& cpu, reg32 esp, int32_t index)
  * below 0x66, the oldest first -- their sounds stopped.  The handle -- new
  * high bits with the first voice -- into `handle` and onto the first voice;
  * the others marked as led by it.  The first voice, or -9. */
-Result allocVoices(App* app, CPU& cpu, reg32 esp, uint32_t mask, int32_t count, uint8_t priority, reg32& handle)
+Result allocVoices(App* app, ThreadState& ts, u32 esp, uint32_t mask, int32_t count, uint8_t priority, u32& handle)
 {
-    const reg32 frame = esp - 0xc - 0x24;
+    const u32 frame = esp - 0xc - 0x24;
     for (int32_t i = 0; i < count; ++i)
         kPicked.set(app, i, -1);
-    kHandleSerial.set(app, int32_t(reg32(kHandleSerial(app)) + 0x20));
+    kHandleSerial.set(app, int32_t(u32(kHandleSerial(app)) + 0x20));
     if (kHandleSerial(app) < 0)
         kHandleSerial.set(app, 0);
     const int32_t used = kVoicesUsed(app);
@@ -359,16 +358,16 @@ Result allocVoices(App* app, CPU& cpu, reg32 esp, uint32_t mask, int32_t count, 
     if (found != count)
         return kNoVoices;
     const int32_t first = kPicked(app, 0);
-    handle = reg32(kHandleSerial(app)) | reg32(first);
+    handle = u32(kHandleSerial(app)) | u32(first);
     for (int32_t j = 0; j < found; ++j)
     {
         Voice& w = voice(app, kPicked(app, j));
         if (w.state == 1)
         {
-            const reg32 playing = reg32(w.handle >= 0 ? w.handle : voice(app, w.leader).handle);
-            if (!stopSound(app, cpu, frame - 4, playing))
+            const u32 playing = u32(w.handle >= 0 ? w.handle : voice(app, w.leader).handle);
+            if (!stopSound(app, ts, frame - 4, playing))
                 return {};
-            const Result ended = soundStatus(app, cpu, frame - 4, playing);
+            const Result ended = soundStatus(app, ts, frame - 4, playing);
             if (!ended)
                 return {};
             if (*ended != 1)
@@ -387,7 +386,7 @@ Result allocVoices(App* app, CPU& cpu, reg32 esp, uint32_t mask, int32_t count, 
     for (int32_t e = 1; e < found; ++e)
     {
         // Past the fourth, on into the patch's number, as the code has it.
-        app->getMemory<uint8_t>(kVoices.address(kPicked(app, 0)) + 3 + reg32(e)) = uint8_t(kPicked(app, e));
+        app->getMemory<uint8_t>(kVoices.address(kPicked(app, 0)) + 3 + u32(e)) = uint8_t(kPicked(app, e));
         Voice& w = voice(app, kPicked(app, e));
         w.handle = -1;
         w.leader = kPicked(app, 0);
@@ -398,21 +397,21 @@ Result allocVoices(App* app, CPU& cpu, reg32 esp, uint32_t mask, int32_t count, 
 /* 0x500e20's (iSNDenteraudio): into the library's lock -- an error first when
  * a DirectDraw surface is locked, outside the tick.  eax as the lock leaves
  * it: the surface's answer, or the error's. */
-Result enterAudio(App* app, CPU& cpu, reg32 esp)
+Result enterAudio(App* app, ThreadState& ts, u32 esp)
 {
-    cpu.esp = esp - 0xc;
-    const bool locked = guest::direct<kSurfaceLocked, ea::surfaceIsLocked>(app, cpu);
-    if (cpu.terminate)
+    ts.sp = esp - 0xc;
+    const bool locked = guest::direct<kSurfaceLocked, ea::surfaceIsLocked>(app, ts);
+    if (ts.terminate)
         return {};
-    reg32 eax = locked ? 1 : 0;
+    u32 eax = locked ? 1 : 0;
     if (eax != 0 && kInTick(app) == 0)
     {
-        const Result r = fail(app, cpu, esp - 0x10, kEnter, 0x114, {kEnterText}, eax);
+        const Result r = fail(app, ts, esp - 0x10, kEnter, 0x114, {kEnterText}, eax);
         if (!r)
             return {};
-        eax = reg32(*r);
+        eax = u32(*r);
     }
-    if (!callWindowsEax<kEnterCriticalSection, &host::enterLock>(app, cpu, esp - 0xc, eax, kLock(app)))
+    if (!lockEnter(app, ts, esp - 0xc, kLock(app)))
         return {};
     kEntered.set(app, uint8_t(kEntered(app) + 1));
     return int32_t(eax);
@@ -421,19 +420,19 @@ Result enterAudio(App* app, CPU& cpu, reg32 esp)
 /* 0x500e7c's (iSNDleaveaudio): out of the library's lock.  eax as the lock
  * leaves it: what the code had in it -- which only the game's callers of
  * iSNDleaveaudio read. */
-Result leaveAudio(App* app, CPU& cpu, reg32 esp, reg32 eax)
+Result leaveAudio(App* app, ThreadState& ts, u32 esp, u32 eax)
 {
     kEntered.set(app, uint8_t(kEntered(app) - 1));
-    if (!callWindowsEax<kLeaveCriticalSection, &host::leaveLock>(app, cpu, esp - 8, eax, kLock(app)))
+    if (!lockLeave(app, ts, esp - 8, kLock(app)))
         return {};
     return int32_t(eax);
 }
 
 /* 0x500e94's (iSNDserveradd100hzclient): `client` among the tick's clients;
  * its place. */
-Result addTickClient(App* app, CPU& cpu, reg32 esp, reg32 client)
+Result addTickClient(App* app, ThreadState& ts, u32 esp, u32 client)
 {
-    if (kClientCount(app) >= 6 && !fail(app, cpu, esp - 0x10, kAddClient, 0x149, {kAddClientText}))
+    if (kClientCount(app) >= 6 && !fail(app, ts, esp - 0x10, kAddClient, 0x149, {kAddClientText}))
         return {};
     const int32_t n = kClientCount(app);
     kClients.set(app, n, client);
@@ -443,7 +442,7 @@ Result addTickClient(App* app, CPU& cpu, reg32 esp, reg32 client)
 
 /* 0x500ef0's (iSNDserverremove100hzclient): `client` no longer a client, those
  * after it moved down; an error when it was none. */
-Result removeTickClient(App* app, CPU& cpu, reg32 esp, reg32 client)
+Result removeTickClient(App* app, ThreadState& ts, u32 esp, u32 client)
 {
     for (int32_t i = 0; i < kClientCount(app); ++i)
         if (kClients(app, i) == client)
@@ -453,13 +452,13 @@ Result removeTickClient(App* app, CPU& cpu, reg32 esp, reg32 client)
                 kClients.set(app, i, kClients(app, i + 1));
             return i;
         }
-    return fail(app, cpu, esp - 0xc, kRemoveClient, 0x165, {kRemoveClientText}, client);
+    return fail(app, ts, esp - 0xc, kRemoveClient, 0x165, {kRemoveClientText}, client);
 }
 
 /* 0x500654's: channel `c`'s effect send: the mean of its two targets times
  * its send level, to its send's volume function.  That one's eax, or the
  * channel's address with no send. */
-Result sendVolume(App* app, CPU& cpu, reg32 esp, reg32 c)
+Result sendVolume(App* app, ThreadState& ts, u32 esp, u32 c)
 {
     Channel& ch = record<Channel>(app, c);
     if (ch.sendLevel == 0)
@@ -469,9 +468,9 @@ Result sendVolume(App* app, CPU& cpu, reg32 esp, reg32 c)
     }
     ch.send = int8_t((ch.leftTarget + ch.rightTarget) >> 1);
     ch.send = int8_t(imul(ch.sendLevel, ch.send) >> 7);
-    const reg32 level = reg32(int32_t(ch.send));
-    reg32 eax;
-    if (!pointerGame(app, cpu, esp - 8, app->getMemory<reg32>(c + kChannelSetSend), {c}, {c + kChannelSend, level, level},
+    const u32 level = u32(int32_t(ch.send));
+    u32 eax;
+    if (!pointerGame(app, ts, esp - 8, app->getMemory<u32>(c + kChannelSetSend), {c}, {c + kChannelSend, level, level},
                   eax))
         return {};
     return int32_t(eax);
@@ -479,29 +478,29 @@ Result sendVolume(App* app, CPU& cpu, reg32 esp, reg32 c)
 
 /* 0x5006a4's: channel `index`'s volume to `left` and `right`, ramped there a
  * step a frame; and its send.  0. */
-Result channelVolume(App* app, CPU& cpu, reg32 esp, int32_t index, int32_t left, int32_t right)
+Result channelVolume(App* app, ThreadState& ts, u32 esp, int32_t index, int32_t left, int32_t right)
 {
     Channel& ch = kChannels(app, index);
     ch.leftTarget = int8_t(left);
     ch.rightTarget = int8_t(right);
     ch.leftWay = ch.left < left ? 1 : -1;
     ch.rightWay = ch.right < right ? 1 : -1;
-    if (!sendVolume(app, cpu, esp - 8, kChannels.address(index)))
+    if (!sendVolume(app, ts, esp - 8, kChannels.address(index)))
         return {};
     return 0;
 }
 
 /* 0x52b500's: channel `index`'s send level, and its send set. */
-Result channelSendLevel(App* app, CPU& cpu, reg32 esp, int32_t index, uint8_t level)
+Result channelSendLevel(App* app, ThreadState& ts, u32 esp, int32_t index, uint8_t level)
 {
     kChannels(app, index).sendLevel = int8_t(level);
-    return sendVolume(app, cpu, esp - 8, kChannels.address(index));
+    return sendVolume(app, ts, esp - 8, kChannels.address(index));
 }
 
 /* 0x523310's: voice `index`'s send level, but for a 3D voice.  0. */
-Result voiceSendLevel(App* app, CPU& cpu, reg32 esp, int32_t index, int32_t level)
+Result voiceSendLevel(App* app, ThreadState& ts, u32 esp, int32_t index, int32_t level)
 {
-    if (platform(app, index).method != 3 && !channelSendLevel(app, cpu, esp - 8, index, uint8_t(level)))
+    if (platform(app, index).method != 3 && !channelSendLevel(app, ts, esp - 8, index, uint8_t(level)))
         return {};
     return 0;
 }
@@ -524,7 +523,7 @@ int32_t refreshVolume(App* app, int32_t index)
     }
     if (v.volumeCurve != 0)
     {
-        const reg32 i = reg32(int32_t(v.mixLevel));
+        const u32 i = u32(int32_t(v.mixLevel));
         eax = int32_t((i & 0xffffff00) | byteAt(app, v.volumeCurve + i));
         v.mixLevel = int8_t(eax);
     }
@@ -535,41 +534,41 @@ int32_t refreshVolume(App* app, int32_t index)
  * is (in surround or not); eacsnd's for a 3D voice.  A Dolby voice with no
  * pan set takes the angle the code never set: `ebp`, what its caller had in
  * ebp. */
-Result voiceVolume(App* app, CPU& cpu, reg32 esp, int32_t index, int32_t volume, reg32 ebp)
+Result voiceVolume(App* app, ThreadState& ts, u32 esp, int32_t index, int32_t volume, u32 ebp)
 {
     PlatformVoice& p = platform(app, index);
-    const reg32 frame = esp - 0x14 - 8;
+    const u32 frame = esp - 0x14 - 8;
     Sides s;
     if (p.method == 3)
     {
-        const std::optional<reg32> eax = guest::soundFrom<isnd::kDirectVol, &eacsnd::volume>(
-            app, cpu, frame, reg32(volume), reg32(index), reg32(volume));
+        const std::optional<u32> eax = guest::soundFrom<isnd::kDirectVol, &eacsnd::volume>(
+            app, ts, frame, u32(volume), u32(index), u32(volume));
         if (!eax)
             return {};
         return int32_t(*eax);
     }
     if (p.method == 0 || p.method == 2)
         s = p.panSet != 0 ? splitPan(int8_t(voice(app, index).pan), volume)
-                          : panAtPositive(app, p.position, reg32(volume));
+                          : panAtPositive(app, p.position, u32(volume));
     else if (p.method == 1)
     {
-        const reg32 angle = p.panSet != 0 ? reg32(int8_t(voice(app, index).pan) - 0x40) << 8 : ebp;
-        s = panSurroundAt(app, angle, reg32(volume), p.surroundLeft, p.surroundRight);
+        const u32 angle = p.panSet != 0 ? u32(int8_t(voice(app, index).pan) - 0x40) << 8 : ebp;
+        s = panSurroundAt(app, angle, u32(volume), p.surroundLeft, p.surroundRight);
         p.surroundLeft = int8_t(s.left);
         p.surroundRight = int8_t(s.right);
     }
     else
     {
-        if (!fail(app, cpu, frame, kVolume, 0x30, {kVolText}))
+        if (!fail(app, ts, frame, kVolume, 0x30, {kVolText}))
             return {};
         s = unset(app, frame);
     }
-    return channelVolume(app, cpu, frame - 4, index, s.left, s.right);
+    return channelVolume(app, ts, frame - 4, index, s.left, s.right);
 }
 
 /* 0x502cb0's: voice `index`'s pitch with its bend (through its curve) and its
  * LFO.  The voice's address, as the code leaves it. */
-reg32 refreshPitch(App* app, int32_t index)
+u32 refreshPitch(App* app, int32_t index)
 {
     Voice& v = voice(app, index);
     int32_t pitch = v.pitch;
@@ -586,41 +585,41 @@ reg32 refreshPitch(App* app, int32_t index)
 
 /* 0x522e90's: 2 to the power cents/4096, as a float of the x87's: the table
  * holds it for each bit. */
-x86::Float pitchScale(App* app, CPU& cpu, int32_t cents)
+nfs::Float pitchScale(App* app, ThreadState& ts, int32_t cents)
 {
     float f = 1.0f;
     const bool down = cents <= 0;
     const int32_t n = down ? imul(cents, -1) : cents;
-    reg32 bit = 1;
+    u32 bit = 1;
     for (int32_t k = 0; int32_t(bit) <= n; ++k, bit += bit)
-        if (bit & reg32(n))
+        if (bit & u32(n))
         {
-            const x86::Float t = x86::Float(kPitchSteps(app, k));
-            f = float(down ? fp::div(x86::Float(f), t) : fp::mul(x86::Float(f), t));
+            const nfs::Float t = nfs::Float(kPitchSteps(app, k));
+            f = float(down ? fp::div(nfs::Float(f), t) : fp::mul(nfs::Float(f), t));
         }
-    return x86::Float(f);
+    return nfs::Float(f);
 }
 
 /* 0x522f10's: the mixer's step for a sample of `rate` at `pitch`, the mixer
  * at `mixRate`: rate * 2^(pitch/4096) / mix rate * [0x551af4], towards 0. */
-int32_t stepFor(App* app, CPU& cpu, int32_t rate, int32_t mixRate, int32_t pitch)
+int32_t stepFor(App* app, ThreadState& ts, int32_t rate, int32_t mixRate, int32_t pitch)
 {
-    x86::Float f = pitchScale(app, cpu, pitch);
-    f = fp::mul(f, x86::Float(rate));
-    f = fp::div(f, x86::Float(mixRate));
-    f = fp::mul(f, x86::Float(kStepScale(app)));
-    return chopped<int32_t>(cpu, f);
+    nfs::Float f = pitchScale(app, ts, pitch);
+    f = fp::mul(f, nfs::Float(rate));
+    f = fp::div(f, nfs::Float(mixRate));
+    f = fp::mul(f, nfs::Float(kStepScale(app)));
+    return chopped<int32_t>(ts, f);
 }
 
 /* 0x522f50's: channel `index`'s step (at most 0x80000), through its
  * resampler's function.  That one's eax. */
-Result channelStep(App* app, CPU& cpu, reg32 esp, int32_t index, uint32_t step)
+Result channelStep(App* app, ThreadState& ts, u32 esp, int32_t index, uint32_t step)
 {
-    const reg32 c = kChannels.address(index);
+    const u32 c = kChannels.address(index);
     if (step > 0x80000)
         step = 0x80000;
-    reg32 eax;
-    if (!pointerGame(app, cpu, esp - 4, app->getMemory<reg32>(c + kChannelSetStep), {c, c + kChannelResampler, 0, step},
+    u32 eax;
+    if (!pointerGame(app, ts, esp - 4, app->getMemory<u32>(c + kChannelSetStep), {c, c + kChannelResampler, 0, step},
                   {c + kChannelResampler, step}, eax))
         return {};
     return int32_t(eax);
@@ -628,28 +627,28 @@ Result channelStep(App* app, CPU& cpu, reg32 esp, int32_t index, uint32_t step)
 
 /* 0x502d30's (iSNDplatformdetune): voice `index` to `pitch`: its channel's
  * step, or eacsnd's rate for a 3D voice.  0, or -7 for no such method. */
-Result detuneVoice(App* app, CPU& cpu, reg32 esp, int32_t index, int32_t pitch)
+Result detuneVoice(App* app, ThreadState& ts, u32 esp, int32_t index, int32_t pitch)
 {
     const PlatformVoice& p = platform(app, index);
-    const reg32 frame = esp - 0xc - 4;
+    const u32 frame = esp - 0xc - 4;
     if (p.method <= 2)
     {
-        const int32_t step = stepFor(app, cpu, p.rate, kMixRate(app), pitch);
-        if (!channelStep(app, cpu, frame - 4, index, uint32_t(step)))
+        const int32_t step = stepFor(app, ts, p.rate, kMixRate(app), pitch);
+        if (!channelStep(app, ts, frame - 4, index, uint32_t(step)))
             return {};
         return 0;
     }
     if (p.method == 3)
     {
-        const x86::Float f = fp::mul(pitchScale(app, cpu, pitch), x86::Float(int32_t(p.rate)));
-        const reg32 rate = reg32(chopped<int32_t>(cpu, f));
-        const std::optional<reg32> eax =
-            guest::soundFrom<isnd::kDirectRate, &eacsnd::rate>(app, cpu, frame, p.rate, reg32(index), rate);
+        const nfs::Float f = fp::mul(pitchScale(app, ts, pitch), nfs::Float(int32_t(p.rate)));
+        const u32 rate = u32(chopped<int32_t>(ts, f));
+        const std::optional<u32> eax =
+            guest::soundFrom<isnd::kDirectRate, &eacsnd::rate>(app, ts, frame, p.rate, u32(index), rate);
         if (!eax)
             return {};
         return int32_t(*eax);
     }
-    if (!fail(app, cpu, frame, kDetune, 0x22, {kDetuneText}))
+    if (!fail(app, ts, frame, kDetune, 0x22, {kDetuneText}))
         return {};
     return kNoMethod;
 }
@@ -657,18 +656,18 @@ Result detuneVoice(App* app, CPU& cpu, reg32 esp, int32_t index, int32_t pitch)
 /* 0x502df0's (iSNDplatform3dpos): voice `index` to `position` (its low half
  * kept) and `elevation`: its channel's volumes panned by it (in surround or
  * not), or eacsnd's.  That one's eax. */
-Result placeVoice(App* app, CPU& cpu, reg32 esp, int32_t index, uint32_t position, int32_t elevation)
+Result placeVoice(App* app, ThreadState& ts, u32 esp, int32_t index, uint32_t position, int32_t elevation)
 {
     PlatformVoice& p = platform(app, index);
-    const reg32 frame = esp - 0xc - 8;
+    const u32 frame = esp - 0xc - 8;
     p.panSet = 0;
     p.position = uint16_t(position);
-    const reg32 volume = reg32(int32_t(voice(app, index).mixLevel));
+    const u32 volume = u32(int32_t(voice(app, index).mixLevel));
     Sides s;
     if (p.method == 3)
     {
-        const std::optional<reg32> eax = guest::soundFrom<isnd::kDirectPos3d, &eacsnd::position>(
-            app, cpu, frame, position, reg32(index), position, reg32(elevation));
+        const std::optional<u32> eax = guest::soundFrom<isnd::kDirectPos3d, &eacsnd::position>(
+            app, ts, frame, position, u32(index), position, u32(elevation));
         if (!eax)
             return {};
         return int32_t(*eax);
@@ -683,32 +682,32 @@ Result placeVoice(App* app, CPU& cpu, reg32 esp, int32_t index, uint32_t positio
         s = panAtPositive(app, position, volume);
     else
     {
-        if (!fail(app, cpu, frame, k3dPos, 0x29, {k3dPosText}))
+        if (!fail(app, ts, frame, k3dPos, 0x29, {k3dPosText}))
             return {};
         s = unset(app, frame);
     }
-    return channelVolume(app, cpu, frame - 4, index, s.left, s.right);
+    return channelVolume(app, ts, frame - 4, index, s.left, s.right);
 }
 
 /* 0x502ef0's (iSNDpan): voice `index` to `pan` (0..127): its channel's
  * volumes split by it (in surround or not), or eacsnd's for a 3D voice.  That
  * one's eax. */
-Result panVoice(App* app, CPU& cpu, reg32 esp, int32_t index, int32_t pan)
+Result panVoice(App* app, ThreadState& ts, u32 esp, int32_t index, int32_t pan)
 {
     PlatformVoice& p = platform(app, index);
-    const reg32 frame = esp - 0x14 - 8;
+    const u32 frame = esp - 0x14 - 8;
     p.panSet = 1;
-    const reg32 volume = reg32(int32_t(voice(app, index).mixLevel));
+    const u32 volume = u32(int32_t(voice(app, index).mixLevel));
     Sides s;
     if (p.method == 0 || p.method == 2)
         s = splitPan(pan, int32_t(volume));
     else
     {
-        const reg32 angle = reg32(pan - 0x40) << 8;
+        const u32 angle = u32(pan - 0x40) << 8;
         if (p.method == 3)
         {
-            const std::optional<reg32> eax = guest::soundFrom<isnd::kDirectPos3d, &eacsnd::position>(
-                app, cpu, frame, (reg32(index) & 0xffff00ff) | reg32(p.method) << 8, reg32(index), angle, 0u);
+            const std::optional<u32> eax = guest::soundFrom<isnd::kDirectPos3d, &eacsnd::position>(
+                app, ts, frame, (u32(index) & 0xffff00ff) | u32(p.method) << 8, u32(index), angle, 0u);
             if (!eax)
                 return {};
             return int32_t(*eax);
@@ -721,50 +720,50 @@ Result panVoice(App* app, CPU& cpu, reg32 esp, int32_t index, int32_t pan)
         }
         else
         {
-            if (!fail(app, cpu, frame, kPan, 0x2e, {kPanText}))
+            if (!fail(app, ts, frame, kPan, 0x2e, {kPanText}))
                 return {};
             s = unset(app, frame);
         }
     }
-    return channelVolume(app, cpu, frame - 4, index, s.left, s.right);
+    return channelVolume(app, ts, frame - 4, index, s.left, s.right);
 }
 
 /* 0x500604's (iSNDmixstop): channel `index` silenced at once -- its volume to
  * 0 and ramped there over a block -- freed, and the voice freed (what the
  * mixer calls when a channel ends).  0. */
-Result silenceChannel(App* app, CPU& cpu, reg32 esp, int32_t index)
+Result silenceChannel(App* app, ThreadState& ts, u32 esp, int32_t index)
 {
-    const reg32 frame = esp - 0x14;
-    const reg32 c = kChannels.address(index);
-    if (!channelVolume(app, cpu, frame - 4, index, 0, 0))
+    const u32 frame = esp - 0x14;
+    const u32 c = kChannels.address(index);
+    if (!channelVolume(app, ts, frame - 4, index, 0, 0))
         return {};
-    cpu.esp = frame;
-    guest::direct<kRamp, rampChannel>(app, cpu, frame - 4, c, 0x100u);
-    if (cpu.terminate || !pointerGame(app, cpu, frame, kEmms(app)))
+    ts.sp = frame;
+    guest::direct<kRamp, rampChannel>(app, ts, frame - 4, c, 0x100u);
+    if (ts.terminate || !pointerGame(app, ts, frame, kEmms(app)))
         return {};
     kChannels(app, index).playing = 0;
-    if (!pointerGame(app, cpu, frame, kChannelEnded(app), {reg32(index)}))
+    if (!pointerGame(app, ts, frame, kChannelEnded(app), {u32(index)}))
         return {};
     return 0;
 }
 
 /* 0x4e25c0's (iSNDstop): voice `index` stopped, on its channel or eacsnd's.
  * That one's eax, or -7 for no such method. */
-Result stopVoice(App* app, CPU& cpu, reg32 esp, int32_t index)
+Result stopVoice(App* app, ThreadState& ts, u32 esp, int32_t index)
 {
-    const reg32 frame = esp - 0xc;
+    const u32 frame = esp - 0xc;
     const uint8_t method = platform(app, index).method;
     if (method <= 2)
-        return silenceChannel(app, cpu, frame - 4, index);
+        return silenceChannel(app, ts, frame - 4, index);
     if (method == 3)
     {
-        const std::optional<reg32> eax =
-            guest::soundFrom<isnd::kDirectStopBuf, &eacsnd::stopBuffer>(app, cpu, frame, reg32(index), reg32(index));
+        const std::optional<u32> eax =
+            guest::soundFrom<isnd::kDirectStopBuf, &eacsnd::stopBuffer>(app, ts, frame, u32(index), u32(index));
         if (!eax)
             return {};
         return int32_t(*eax);
     }
-    if (!fail(app, cpu, frame, kStop, 0x3a3, {kStopText}))
+    if (!fail(app, ts, frame, kStop, 0x3a3, {kStopText}))
         return {};
     return kNoMethod;
 }
@@ -777,21 +776,21 @@ Result stopVoice(App* app, CPU& cpu, reg32 esp, int32_t index)
  * with no pan: so does the rewrite, for what it calls (`ebp` the caller's).
  * The clients get the caller's edx and ecx, the code's own ebx (the client's
  * number).  eax as the code leaves it (`eax` what the tick was called with). */
-Result tickSoundFrom(App* app, CPU& cpu, reg32 esp, reg32 eax, reg32 edx, reg32 ecx, reg32 ebp)
+Result tickSoundFrom(App* app, ThreadState& ts, u32 esp, u32 eax, u32 edx, u32 ecx, u32 ebp)
 {
-    const reg32 frame = esp - 0x18;
+    const u32 frame = esp - 0x18;
     kInTick.set(app, uint8_t(kInTick(app) + 1));
     kTicks.set(app, kTicks(app) + 1);
     for (int32_t i = 0; i < kClientCount(app); ++i)
     {
-        cpu.esp = frame;
-        const std::optional<reg32> r =
-            guest::pointerCall(app, cpu, kClients(app, i), {reg32(4 * i), edx, reg32(i), ecx});
+        ts.sp = frame;
+        const std::optional<u32> r =
+            guest::pointerCall(app, ts, kClients(app, i), {u32(4 * i), edx, u32(i), ecx});
         if (!r)
             return {};
         eax = *r;
     }
-    reg32 kept = ebp;
+    u32 kept = ebp;
     for (int32_t index = 0; index < kVoiceCount; ++index)
     {
         Voice& v = voice(app, index);
@@ -802,10 +801,10 @@ Result tickSoundFrom(App* app, CPU& cpu, reg32 esp, reg32 eax, reg32 edx, reg32 
             if (++v.pitchLfoPlace >= v.pitchLfoLength)
                 v.pitchLfoPlace = 0;
             refreshPitch(app, index);
-            const Result r = detuneVoice(app, cpu, frame - 4, index, v.playedPitch);
+            const Result r = detuneVoice(app, ts, frame - 4, index, v.playedPitch);
             if (!r)
                 return {};
-            eax = reg32(*r);
+            eax = u32(*r);
         }
         bool changed = false;
         if (v.volumeLfo != 0)
@@ -817,10 +816,10 @@ Result tickSoundFrom(App* app, CPU& cpu, reg32 esp, reg32 eax, reg32 edx, reg32 
         bool stop = false;
         if (v.volumeStep != 0)
         {
-            const int32_t value = int32_t(reg32(v.volume) + reg32(v.volumeStep));
+            const int32_t value = int32_t(u32(v.volume) + u32(v.volumeStep));
             changed = true;
             v.volume = value;
-            kept = reg32(v.volumeStep < 0 ? v.volumeTarget : value);
+            kept = u32(v.volumeStep < 0 ? v.volumeTarget : value);
             if (v.volumeStep < 0 ? value <= v.volumeTarget : value >= v.volumeTarget)
             {
                 v.volumeStep = 0;
@@ -832,7 +831,7 @@ Result tickSoundFrom(App* app, CPU& cpu, reg32 esp, reg32 eax, reg32 edx, reg32 
         {
             if (v.envelopeStep != 0)
             {
-                v.envelope = int32_t(reg32(v.envelope) + reg32(v.envelopeStep));
+                v.envelope = int32_t(u32(v.envelope) + u32(v.envelopeStep));
                 changed = true;
             }
             if (v.envelopeTicks == 0)
@@ -841,35 +840,35 @@ Result tickSoundFrom(App* app, CPU& cpu, reg32 esp, reg32 eax, reg32 edx, reg32 
                     stop = true;
                 else
                 {
-                    const reg32 segment = v.envelopeSegments + reg32(int32_t(v.segment)) * 8;
+                    const u32 segment = v.envelopeSegments + u32(int32_t(v.segment)) * 8;
                     const int32_t ticks = app->getMemory<int32_t>(segment);
                     v.envelopeTicks = ticks < 0 ? 0x7fffffff : ticks;
-                    kept = reg32(v.envelopeTicks);
-                    v.envelopeStep = idiv(int32_t((app->getMemory<reg32>(segment + 4) << 16) - reg32(v.envelope)),
+                    kept = u32(v.envelopeTicks);
+                    v.envelopeStep = idiv(int32_t((app->getMemory<u32>(segment + 4) << 16) - u32(v.envelope)),
                                           v.envelopeTicks);
                 }
             }
             if (!stop)
             {
-                v.envelopeTicks = int32_t(reg32(v.envelopeTicks) - 1);
+                v.envelopeTicks = int32_t(u32(v.envelopeTicks) - 1);
                 if (changed)
                 {
-                    eax = reg32(refreshVolume(app, index));
+                    eax = u32(refreshVolume(app, index));
                     if (v.handle >= 0)
                     {
-                        const Result r = voiceVolume(app, cpu, frame - 4, index, v.mixLevel, kept);
+                        const Result r = voiceVolume(app, ts, frame - 4, index, v.mixLevel, kept);
                         if (!r)
                             return {};
-                        eax = reg32(*r);
+                        eax = u32(*r);
                     }
                 }
                 continue;
             }
         }
-        const Result r = stopSound(app, cpu, frame - 4, reg32(v.handle));
+        const Result r = stopSound(app, ts, frame - 4, u32(v.handle));
         if (!r)
             return {};
-        eax = reg32(*r);
+        eax = u32(*r);
     }
     kInTick.set(app, uint8_t(kInTick(app) - 1));
     return int32_t(eax);
@@ -877,12 +876,12 @@ Result tickSoundFrom(App* app, CPU& cpu, reg32 esp, reg32 eax, reg32 edx, reg32 
 
 /* 0x4e9670's (SNDstop): the sound of `handle` stopped -- its voice, or every
  * voice of its group.  0, -8 for no such sound, -10 before SNDinit. */
-Result stopSound(App* app, CPU& cpu, reg32 esp, reg32 handle)
+Result stopSound(App* app, ThreadState& ts, u32 esp, u32 handle)
 {
     if (kInited(app) == 0)
         return kNotStarted;
-    const reg32 frame = esp - 0x10;
-    if (!enterAudio(app, cpu, frame - 4))
+    const u32 frame = esp - 0x10;
+    if (!enterAudio(app, ts, frame - 4))
         return {};
     const int32_t index = voiceOfHandle(app, handle);
     int32_t result = 0;
@@ -890,40 +889,40 @@ Result stopSound(App* app, CPU& cpu, reg32 esp, reg32 handle)
         result = kNoSound;
     else if (const uint8_t group = voice(app, index).group; group == 0)
     {
-        if (!stopVoice(app, cpu, frame - 4, index))
+        if (!stopVoice(app, ts, frame - 4, index))
             return {};
     }
     else
         for (int32_t j = 0; j < kVoiceCount; ++j)
-            if (inGroup(voice(app, j), group) && !stopVoice(app, cpu, frame - 4, j))
+            if (inGroup(voice(app, j), group) && !stopVoice(app, ts, frame - 4, j))
                 return {};
-    if (!leaveAudio(app, cpu, frame - 4))
+    if (!leaveAudio(app, ts, frame - 4))
         return {};
     return result;
 }
 
 /* 0x4e8fd0's (SNDstatus): 0 while the sound of `handle` plays, 1 when it no
  * longer does, -10 before SNDinit. */
-Result soundStatus(App* app, CPU& cpu, reg32 esp, reg32 handle)
+Result soundStatus(App* app, ThreadState& ts, u32 esp, u32 handle)
 {
     if (kInited(app) == 0)
         return kNotStarted;
-    const reg32 frame = esp - 4;
-    if (!enterAudio(app, cpu, frame - 4))
+    const u32 frame = esp - 4;
+    if (!enterAudio(app, ts, frame - 4))
         return {};
     const int32_t index = voiceOfHandle(app, handle);
-    if (!leaveAudio(app, cpu, frame - 4))
+    if (!leaveAudio(app, ts, frame - 4))
         return {};
     return index < 0 ? 1 : 0;
 }
 
 /* 0x4e9010's (SNDstopall): every voice's sound stopped.  The last one's
  * answer. */
-Result stopAllSounds(App* app, CPU& cpu, reg32 esp)
+Result stopAllSounds(App* app, ThreadState& ts, u32 esp)
 {
     Result r = 0;
     for (int32_t i = 0; i < kVoiceCount; ++i)
-        if (!(r = stopSound(app, cpu, esp - 8, reg32(voice(app, i).handle))))
+        if (!(r = stopSound(app, ts, esp - 8, u32(voice(app, i).handle))))
             return {};
     return r;
 }
@@ -931,14 +930,14 @@ Result stopAllSounds(App* app, CPU& cpu, reg32 esp)
 /* 0x4e9420's (SNDautovol): the sound of `handle` (its group's voices) to
  * `target` over `ticks` (at least 1).  0, -8 for no such sound, -10 before
  * SNDinit. */
-Result fadeSound(App* app, CPU& cpu, reg32 esp, reg32 handle, int32_t ticks, int32_t target)
+Result fadeSound(App* app, ThreadState& ts, u32 esp, u32 handle, int32_t ticks, int32_t target)
 {
     if (kInited(app) == 0)
         return kNotStarted;
-    const reg32 frame = esp - 0x10;
-    if ((target > 0x7f || target < -1) && !fail(app, cpu, frame, kAutovol, 0x40, {kAutovolText, reg32(target)}))
+    const u32 frame = esp - 0x10;
+    if ((target > 0x7f || target < -1) && !fail(app, ts, frame, kAutovol, 0x40, {kAutovolText, u32(target)}))
         return {};
-    if (!enterAudio(app, cpu, frame - 4))
+    if (!enterAudio(app, ts, frame - 4))
         return {};
     const int32_t index = voiceOfHandle(app, handle);
     if (index >= 0)
@@ -946,31 +945,31 @@ Result fadeSound(App* app, CPU& cpu, reg32 esp, reg32 handle, int32_t ticks, int
         const Voice& v = voice(app, index);
         if (ticks <= 0)
             ticks = 1;
-        const int32_t to = int32_t(reg32(target) << 16);
+        const int32_t to = int32_t(u32(target) << 16);
         for (int32_t j = 0; j < kVoiceCount; ++j)
         {
             Voice& w = voice(app, j);
             if (v.group == 0 ? &w != &v : !inGroup(w, v.group))
                 continue;
             w.volumeTarget = to;
-            w.volumeStep = idiv(int32_t(reg32(to) - reg32(w.volume)), ticks);
+            w.volumeStep = idiv(int32_t(u32(to) - u32(w.volume)), ticks);
         }
     }
-    if (!leaveAudio(app, cpu, frame - 4))
+    if (!leaveAudio(app, ts, frame - 4))
         return {};
     return index < 0 ? kNoSound : 0;
 }
 
 /* 0x4e9540's: the sound of `handle` (its group's voices) to `volume` at once,
  * in the library's lock.  0, -8 for no such sound. */
-Result volumeNow(App* app, CPU& cpu, reg32 esp, reg32 handle, int32_t volume, reg32 ebp)
+Result volumeNow(App* app, ThreadState& ts, u32 esp, u32 handle, int32_t volume, u32 ebp)
 {
-    const reg32 frame = esp - 0xc;
+    const u32 frame = esp - 0xc;
     const int32_t index = voiceOfHandle(app, handle);
     if (index < 0)
         return kNoSound;
     const Voice& v = voice(app, index);
-    const int32_t to = int32_t(reg32(volume) << 16);
+    const int32_t to = int32_t(u32(volume) << 16);
     if (to == v.volume)
         return 0;
     for (int32_t j = 0; j < kVoiceCount; ++j)
@@ -981,33 +980,33 @@ Result volumeNow(App* app, CPU& cpu, reg32 esp, reg32 handle, int32_t volume, re
         w.volume = to;
         w.volumeStep = 0;
         refreshVolume(app, j);
-        if (!voiceVolume(app, cpu, frame - 8, j, w.mixLevel, ebp))
+        if (!voiceVolume(app, ts, frame - 8, j, w.mixLevel, ebp))
             return {};
     }
     return 0;
 }
 
 /* 0x4e95fc's (SNDvol): volumeNow, the volume checked (0..127); ebp the caller's, for iSNDvol. */
-Result setVolumeFrom(App* app, CPU& cpu, reg32 esp, reg32 handle, int32_t volume, reg32 ebp)
+Result setVolumeFrom(App* app, ThreadState& ts, u32 esp, u32 handle, int32_t volume, u32 ebp)
 {
     if (kInited(app) == 0)
         return kNotStarted;
-    const reg32 frame = esp - 4;
-    if ((volume > 0x7f || volume < 0) && !fail(app, cpu, esp - 0x10, kSvol, 0x7b, {kSvolText, reg32(volume)}))
+    const u32 frame = esp - 4;
+    if ((volume > 0x7f || volume < 0) && !fail(app, ts, esp - 0x10, kSvol, 0x7b, {kSvolText, u32(volume)}))
         return {};
-    if (!enterAudio(app, cpu, frame - 4))
+    if (!enterAudio(app, ts, frame - 4))
         return {};
-    const Result r = volumeNow(app, cpu, frame - 4, handle, volume, ebp);
-    if (!r || !leaveAudio(app, cpu, frame - 4))
+    const Result r = volumeNow(app, ts, frame - 4, handle, volume, ebp);
+    if (!r || !leaveAudio(app, ts, frame - 4))
         return {};
     return r;
 }
 
 /* 0x4e9710's: the sound of `handle` (its group's voices) to `bend`, where the
  * bend moves its pitch.  0, -8 for no such sound. */
-Result bendNow(App* app, CPU& cpu, reg32 esp, reg32 handle, int32_t bend)
+Result bendNow(App* app, ThreadState& ts, u32 esp, u32 handle, int32_t bend)
 {
-    const reg32 frame = esp - 0x10 - 4;
+    const u32 frame = esp - 0x10 - 4;
     const int32_t index = voiceOfHandle(app, handle);
     if (index < 0)
         return kNoSound;
@@ -1017,42 +1016,42 @@ Result bendNow(App* app, CPU& cpu, reg32 esp, reg32 handle, int32_t bend)
         Voice& w = voice(app, j);
         if (v.group == 0 ? &w != &v : !inGroup(w, v.group))
             continue;
-        if (reg32(w.bend) == reg32(bend) || w.bendRange == 0)
+        if (u32(w.bend) == u32(bend) || w.bendRange == 0)
             continue;
         w.bend = uint8_t(bend);
         refreshPitch(app, j);
-        if (!detuneVoice(app, cpu, frame - 4, j, w.playedPitch))
+        if (!detuneVoice(app, ts, frame - 4, j, w.playedPitch))
             return {};
     }
     return 0;
 }
 
 /* SNDpitchbend as C++ (port_sound_player.cpp): the registers its error text reads 0. */
-Result setBend(App* app, CPU& cpu, reg32 esp, reg32 handle, int32_t bend)
+Result setBend(App* app, ThreadState& ts, u32 esp, u32 handle, int32_t bend)
 {
-    return setBendFrom(app, cpu, esp, handle, bend, 0, 0, 0);
+    return setBendFrom(app, ts, esp, handle, bend, 0, 0, 0);
 }
 
 /* 0x4e97e4's (SNDpitchbend): bendNow, the bend checked (0..127) -- its error
  * text's %i reading the registers the code pushes around the call: ebx,
  * esi and edi, the game's caller's. */
-Result setBendFrom(App* app, CPU& cpu, reg32 esp, reg32 handle, int32_t bend, reg32 ebx, reg32 esi, reg32 edi)
+Result setBendFrom(App* app, ThreadState& ts, u32 esp, u32 handle, int32_t bend, u32 ebx, u32 esi, u32 edi)
 {
     if (kInited(app) == 0)
         return kNotStarted;
-    const reg32 frame = esp - 4;
+    const u32 frame = esp - 4;
     if (bend < 0 || bend > 0x7f)
     {
-        app->getMemory<reg32>(esp - 8) = edi;
-        app->getMemory<reg32>(esp - 0xc) = esi;
-        app->getMemory<reg32>(esp - 0x10) = ebx;
-        if (!fail(app, cpu, esp - 0x10, kBend, 0x78, {kBendText}))
+        app->getMemory<u32>(esp - 8) = edi;
+        app->getMemory<u32>(esp - 0xc) = esi;
+        app->getMemory<u32>(esp - 0x10) = ebx;
+        if (!fail(app, ts, esp - 0x10, kBend, 0x78, {kBendText}))
             return {};
     }
-    if (!enterAudio(app, cpu, frame - 4))
+    if (!enterAudio(app, ts, frame - 4))
         return {};
-    const Result r = bendNow(app, cpu, frame - 4, handle, bend);
-    if (!r || !leaveAudio(app, cpu, frame - 4))
+    const Result r = bendNow(app, ts, frame - 4, handle, bend);
+    if (!r || !leaveAudio(app, ts, frame - 4))
         return {};
     return r;
 }
@@ -1060,16 +1059,16 @@ Result setBendFrom(App* app, CPU& cpu, reg32 esp, reg32 handle, int32_t bend, re
 /* setVolumeFrom and setBendFrom for the rewrites that call SNDvol and
  * SNDpitchbend as C++ (port_sound_*.cpp, port_snd_stream.cpp): the caller's
  * ebp as it is held (heldEbp), until those pass their own. */
-Result setVolume(App* app, CPU& cpu, reg32 esp, reg32 handle, int32_t volume)
+Result setVolume(App* app, ThreadState& ts, u32 esp, u32 handle, int32_t volume)
 {
-    return setVolumeFrom(app, cpu, esp, handle, volume, heldEbp());
+    return setVolumeFrom(app, ts, esp, handle, volume, heldEbp());
 }
 
 
 /* 0x4e9850's (SNDpos3d): the sound of `handle` (its group's voices) to 3D
  * `position` (its low half), `elevation` (kept to -0x4000..0x3fff).  0, -8 for
  * no such sound, -10 before SNDinit. */
-Result placeSound(App* app, CPU& cpu, reg32 esp, reg32 handle, reg32 position, int32_t elevation)
+Result placeSound(App* app, ThreadState& ts, u32 esp, u32 handle, u32 position, int32_t elevation)
 {
     if (kInited(app) == 0)
         return kNotStarted;
@@ -1078,8 +1077,8 @@ Result placeSound(App* app, CPU& cpu, reg32 esp, reg32 handle, reg32 position, i
         elevation = 0x3fff;
     else if (elevation < -0x4000)
         elevation = -0x4000;
-    reg32 frame = esp - 0xc - 4;
-    if (!enterAudio(app, cpu, frame - 4))
+    u32 frame = esp - 0xc - 4;
+    if (!enterAudio(app, ts, frame - 4))
         return {};
     const int32_t index = voiceOfHandle(app, handle);
     if (index >= 0)
@@ -1091,11 +1090,11 @@ Result placeSound(App* app, CPU& cpu, reg32 esp, reg32 handle, reg32 position, i
             const Voice& w = voice(app, j);
             if (v.group == 0 ? &w != &v : !inGroup(w, v.group))
                 continue;
-            if (!placeVoice(app, cpu, frame - 4, j, position, elevation))
+            if (!placeVoice(app, ts, frame - 4, j, position, elevation))
                 return {};
         }
     }
-    if (!leaveAudio(app, cpu, frame - 4))
+    if (!leaveAudio(app, ts, frame - 4))
         return {};
     return index < 0 ? kNoSound : 0;
 }
@@ -1104,14 +1103,14 @@ Result placeSound(App* app, CPU& cpu, reg32 esp, reg32 handle, reg32 position, i
  * (0..127): spread about the middle by each voice's spread, moved by its
  * patch's pan, through its pan curve.  0, -8 for no such sound, -10 before
  * SNDinit. */
-Result panSound(App* app, CPU& cpu, reg32 esp, reg32 handle, int32_t pan)
+Result panSound(App* app, ThreadState& ts, u32 esp, u32 handle, int32_t pan)
 {
     if (kInited(app) == 0)
         return kNotStarted;
-    const reg32 frame = esp - 0x14 - 8;
-    if ((pan > 0x7f || pan < 0) && !fail(app, cpu, frame, kSpan, 0x47, {kSpanText, reg32(pan)}))
+    const u32 frame = esp - 0x14 - 8;
+    if ((pan > 0x7f || pan < 0) && !fail(app, ts, frame, kSpan, 0x47, {kSpanText, u32(pan)}))
         return {};
-    if (!enterAudio(app, cpu, frame - 4))
+    if (!enterAudio(app, ts, frame - 4))
         return {};
     const int32_t index = voiceOfHandle(app, handle);
     if (index >= 0 && voice(app, index).panAsked != pan)
@@ -1127,13 +1126,13 @@ Result panSound(App* app, CPU& cpu, reg32 esp, reg32 handle, int32_t pan)
             p += w.patchPan - 0x40;
             p = p > 0x7f ? 0x7f : p < 0 ? 0 : p;
             if (w.panCurve != 0)
-                p = sbyteAt(app, w.panCurve + reg32(p));
+                p = sbyteAt(app, w.panCurve + u32(p));
             w.pan = uint8_t(p);
-            if (!panVoice(app, cpu, frame - 4, j, p))
+            if (!panVoice(app, ts, frame - 4, j, p))
                 return {};
         }
     }
-    if (!leaveAudio(app, cpu, frame - 4))
+    if (!leaveAudio(app, ts, frame - 4))
         return {};
     return index < 0 ? kNoSound : 0;
 }
@@ -1155,38 +1154,38 @@ void playDefaults(PlayOptions& o)
 }
 
 /* 0x4e9bf8's: the patch a play's options name played; -8 for none. */
-Result playByOptions(App* app, CPU& cpu, reg32 esp, const PlayOptions& options)
+Result playByOptions(App* app, ThreadState& ts, u32 esp, const PlayOptions& options)
 {
     const int32_t bank = options.bank;
     if (bankState(app, bank) < 0)
         return kNoSound;
-    const reg32 b = kBanks(app, bank).bank;
+    const u32 b = kBanks(app, bank).bank;
     const BankHeader& header = record<BankHeader>(app, b);
     if (options.patch < 0 || int32_t(header.patches) <= options.patch)
         return kNoSound;
-    const reg32 patch = app->getMemory<reg32>(b + reg32(options.patch) * 4 + (header.version == 4 ? 0x14 : 0xc));
-    return playPatch(app, cpu, esp - 0xc, patch, options);
+    const u32 patch = app->getMemory<u32>(b + u32(options.patch) * 4 + (header.version == 4 ? 0x14 : 0xc));
+    return playPatch(app, ts, esp - 0xc, patch, options);
 }
 
 /* 0x4e9ba0's (SNDplay): playByOptions; -10 before SNDinit. */
-Result playSound(App* app, CPU& cpu, reg32 esp, const PlayOptions& options)
+Result playSound(App* app, ThreadState& ts, u32 esp, const PlayOptions& options)
 {
     if (kInited(app) == 0)
         return kNotStarted;
-    return playByOptions(app, cpu, esp - 0xc, options);
+    return playByOptions(app, ts, esp - 0xc, options);
 }
 
 /* 0x501670's: what the sound of `handle` plays at, -8 for none, -10 before
  * SNDinit. */
-Result playingLevel(App* app, CPU& cpu, reg32 esp, reg32 handle)
+Result playingLevel(App* app, ThreadState& ts, u32 esp, u32 handle)
 {
     if (kInited(app) == 0)
         return kNotStarted;
-    const reg32 frame = esp - 4;
-    if (!enterAudio(app, cpu, frame - 4))
+    const u32 frame = esp - 4;
+    if (!enterAudio(app, ts, frame - 4))
         return {};
     const int32_t index = voiceOfHandle(app, handle);
-    if (!leaveAudio(app, cpu, frame - 4))
+    if (!leaveAudio(app, ts, frame - 4))
         return {};
     return index < 0 ? kNoSound : voice(app, index).mixLevel;
 }
@@ -1211,333 +1210,333 @@ uint8_t nextGroup(App* app)
 /* The game's entries: each its thunk -- the game's registers and stack in,
  * the result in eax out -- around what it does. */
 
-x86::reg32 eaRandom(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 eaRandom(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.back(cpu, args, nextRandom(app));
+    const Entry e(ts, args);
+    return e.back(ts, args, nextRandom(app));
 }
 
-x86::reg32 randomOffset(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 randomOffset(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.back(cpu, args, reg32(randomWithin(app, int32_t(e.eax))));
+    const Entry e(ts, args);
+    return e.back(ts, args, u32(randomWithin(app, int32_t(e.eax))));
 }
 
-x86::reg32 readBigEndian(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 readBigEndian(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.back(cpu, args, reg32(bigEndian(app, e.eax, int32_t(e.edx))));
+    const Entry e(ts, args);
+    return e.back(ts, args, u32(bigEndian(app, e.eax, int32_t(e.edx))));
 }
 
 /* The tag reader's four words at eax, edx, ebx and ecx. */
-x86::reg32 nextTag(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 nextTag(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    Tag t{app->getMemory<reg32>(e.eax), app->getMemory<reg32>(e.edx), app->getMemory<reg32>(e.ebx),
-          app->getMemory<reg32>(e.ecx)};
+    const Entry e(ts, args);
+    Tag t{app->getMemory<u32>(e.eax), app->getMemory<u32>(e.edx), app->getMemory<u32>(e.ebx),
+          app->getMemory<u32>(e.ecx)};
     const bool more = readTag(app, t);
-    app->getMemory<reg32>(e.eax) = t.place;
-    app->getMemory<reg32>(e.edx) = t.tag;
-    app->getMemory<reg32>(e.ebx) = t.number;
-    app->getMemory<reg32>(e.ecx) = t.data;
-    return e.back(cpu, args, more ? 1 : 0);
+    app->getMemory<u32>(e.eax) = t.place;
+    app->getMemory<u32>(e.edx) = t.tag;
+    app->getMemory<u32>(e.ebx) = t.number;
+    app->getMemory<u32>(e.ecx) = t.data;
+    return e.back(ts, args, more ? 1 : 0);
 }
 
 /* The pans' thunks: the sides into [ebx] and [ecx]; eax nobody reads. */
-x86::reg32 panSplit(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 panSplit(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
+    const Entry e(ts, args);
     const Sides s = splitPan(int32_t(e.eax), int32_t(e.edx));
     store(app, e.ebx, s.left);
     store(app, e.ecx, s.right);
-    return e.back(cpu, args, e.eax);
+    return e.back(ts, args, e.eax);
 }
 
-x86::reg32 panLaw(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 panLaw(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
+    const Entry e(ts, args);
     const Sides s = panAt(app, e.eax, e.edx);
     store(app, e.ebx, s.left);
     store(app, e.ecx, s.right);
-    return e.back(cpu, args, e.eax);
+    return e.back(ts, args, e.eax);
 }
 
-x86::reg32 panLawPositive(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 panLawPositive(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
+    const Entry e(ts, args);
     const Sides s = panAtPositive(app, e.eax, e.edx);
     store(app, e.ebx, s.left);
     store(app, e.ecx, s.right);
-    return e.back(cpu, args, e.eax);
+    return e.back(ts, args, e.eax);
 }
 
 /* stdcall 8: the surround's two levels on the stack. */
-x86::reg32 panSurround(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 panSurround(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
+    const Entry e(ts, args);
     const Sides s = panSurroundAt(app, e.eax, e.edx, int32_t(e.arg(app, 0)), int32_t(e.arg(app, 1)));
     store(app, e.ebx, s.left);
     store(app, e.ecx, s.right);
-    return e.back(cpu, args, e.eax, 8);
+    return e.back(ts, args, e.eax, 8);
 }
 
-x86::reg32 voiceOf(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 voiceOf(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.back(cpu, args, reg32(voiceOfHandle(app, e.eax)));
+    const Entry e(ts, args);
+    return e.back(ts, args, u32(voiceOfHandle(app, e.eax)));
 }
 
-x86::reg32 voicePicked(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 voicePicked(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.back(cpu, args, isPicked(app, int32_t(e.eax), int32_t(e.edx)) ? 1 : 0);
+    const Entry e(ts, args);
+    return e.back(ts, args, isPicked(app, int32_t(e.eax), int32_t(e.edx)) ? 1 : 0);
 }
 
-x86::reg32 iSNDfreechan(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 iSNDfreechan(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, freeVoice(app, cpu, e.esp, int32_t(e.eax)));
+    const Entry e(ts, args);
+    return e.finish(ts, args, freeVoice(app, ts, e.esp, int32_t(e.eax)));
 }
 
 /* The handle into [ecx]. */
-x86::reg32 iSNDallocchan(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 iSNDallocchan(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    reg32 handle = app->getMemory<reg32>(e.ecx);
-    const Result r = allocVoices(app, cpu, e.esp, e.eax, int32_t(e.edx), uint8_t(e.ebx), handle);
-    app->getMemory<reg32>(e.ecx) = handle;
-    return e.finish(cpu, args, r);
+    const Entry e(ts, args);
+    u32 handle = app->getMemory<u32>(e.ecx);
+    const Result r = allocVoices(app, ts, e.esp, e.eax, int32_t(e.edx), uint8_t(e.ebx), handle);
+    app->getMemory<u32>(e.ecx) = handle;
+    return e.finish(ts, args, r);
 }
 
-x86::reg32 iSNDenteraudio(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 iSNDenteraudio(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, enterAudio(app, cpu, e.esp));
+    const Entry e(ts, args);
+    return e.finish(ts, args, enterAudio(app, ts, e.esp));
 }
 
-x86::reg32 iSNDleaveaudio(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 iSNDleaveaudio(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, leaveAudio(app, cpu, e.esp, e.eax));
+    const Entry e(ts, args);
+    return e.finish(ts, args, leaveAudio(app, ts, e.esp, e.eax));
 }
 
-x86::reg32 iSNDserveradd100hzclient(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 iSNDserveradd100hzclient(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, addTickClient(app, cpu, e.esp, e.eax));
+    const Entry e(ts, args);
+    return e.finish(ts, args, addTickClient(app, ts, e.esp, e.eax));
 }
 
-x86::reg32 iSNDserverremove100hzclient(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 iSNDserverremove100hzclient(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, removeTickClient(app, cpu, e.esp, e.eax));
+    const Entry e(ts, args);
+    return e.finish(ts, args, removeTickClient(app, ts, e.esp, e.eax));
 }
 
-x86::reg32 setSendVolume(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 setSendVolume(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, sendVolume(app, cpu, e.esp, e.eax));
+    const Entry e(ts, args);
+    return e.finish(ts, args, sendVolume(app, ts, e.esp, e.eax));
 }
 
-x86::reg32 setMixVolume(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 setMixVolume(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, channelVolume(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx), int32_t(e.ebx)));
+    const Entry e(ts, args);
+    return e.finish(ts, args, channelVolume(app, ts, e.esp, int32_t(e.eax), int32_t(e.edx), int32_t(e.ebx)));
 }
 
-x86::reg32 setSendLevel(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 setSendLevel(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, channelSendLevel(app, cpu, e.esp, int32_t(e.eax), uint8_t(e.edx)));
+    const Entry e(ts, args);
+    return e.finish(ts, args, channelSendLevel(app, ts, e.esp, int32_t(e.eax), uint8_t(e.edx)));
 }
 
-x86::reg32 setVoiceSend(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 setVoiceSend(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, voiceSendLevel(app, cpu, e.esp, int32_t(e.eax), int32_t(e.ebx)));
+    const Entry e(ts, args);
+    return e.finish(ts, args, voiceSendLevel(app, ts, e.esp, int32_t(e.eax), int32_t(e.ebx)));
 }
 
-x86::reg32 updateVoiceVolume(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 updateVoiceVolume(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.back(cpu, args, reg32(refreshVolume(app, int32_t(e.eax))));
+    const Entry e(ts, args);
+    return e.back(ts, args, u32(refreshVolume(app, int32_t(e.eax))));
 }
 
-x86::reg32 iSNDvol(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 iSNDvol(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, voiceVolume(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx), e.ebp));
+    const Entry e(ts, args);
+    return e.finish(ts, args, voiceVolume(app, ts, e.esp, int32_t(e.eax), int32_t(e.edx), e.ebp));
 }
 
-x86::reg32 updateVoicePitch(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 updateVoicePitch(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.back(cpu, args, refreshPitch(app, int32_t(e.eax)));
+    const Entry e(ts, args);
+    return e.back(ts, args, refreshPitch(app, int32_t(e.eax)));
 }
 
 /* The factor onto the x87's stack; eax the power's size. */
-x86::reg32 pitchFactor(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 pitchFactor(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
+    const Entry e(ts, args);
     const int32_t cents = int32_t(e.eax);
     args.floatSet = true;
-    args.floatResult = pitchScale(app, cpu, cents);
-    return e.back(cpu, args, reg32(cents <= 0 ? imul(cents, -1) : cents));
+    args.floatResult = pitchScale(app, ts, cents);
+    return e.back(ts, args, u32(cents <= 0 ? imul(cents, -1) : cents));
 }
 
-x86::reg32 mixStep(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 mixStep(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.back(cpu, args, reg32(stepFor(app, cpu, int32_t(e.eax), int32_t(e.edx), int32_t(e.ebx))));
+    const Entry e(ts, args);
+    return e.back(ts, args, u32(stepFor(app, ts, int32_t(e.eax), int32_t(e.edx), int32_t(e.ebx))));
 }
 
-x86::reg32 setMixStep(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 setMixStep(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, channelStep(app, cpu, e.esp, int32_t(e.eax), e.edx));
+    const Entry e(ts, args);
+    return e.finish(ts, args, channelStep(app, ts, e.esp, int32_t(e.eax), e.edx));
 }
 
-x86::reg32 iSNDplatformdetune(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 iSNDplatformdetune(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, detuneVoice(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx)));
+    const Entry e(ts, args);
+    return e.finish(ts, args, detuneVoice(app, ts, e.esp, int32_t(e.eax), int32_t(e.edx)));
 }
 
-x86::reg32 iSNDplatform3dpos(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 iSNDplatform3dpos(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, placeVoice(app, cpu, e.esp, int32_t(e.eax), e.edx, int32_t(e.ebx)));
+    const Entry e(ts, args);
+    return e.finish(ts, args, placeVoice(app, ts, e.esp, int32_t(e.eax), e.edx, int32_t(e.ebx)));
 }
 
-x86::reg32 iSNDpan(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 iSNDpan(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, panVoice(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx)));
+    const Entry e(ts, args);
+    return e.finish(ts, args, panVoice(app, ts, e.esp, int32_t(e.eax), int32_t(e.edx)));
 }
 
-x86::reg32 iSNDmixstop(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 iSNDmixstop(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, silenceChannel(app, cpu, e.esp, int32_t(e.eax)));
+    const Entry e(ts, args);
+    return e.finish(ts, args, silenceChannel(app, ts, e.esp, int32_t(e.eax)));
 }
 
-x86::reg32 iSNDstop(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 iSNDstop(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, stopVoice(app, cpu, e.esp, int32_t(e.eax)));
+    const Entry e(ts, args);
+    return e.finish(ts, args, stopVoice(app, ts, e.esp, int32_t(e.eax)));
 }
 
 /* 0x4e257c: the ret ending the driver's restore -- the tick calls it for
  * nothing. */
-x86::reg32 soundIdle(App*, CPU& cpu, x86::Args& args)
+nfs::u32 soundIdle(App*, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.back(cpu, args, e.eax);
+    const Entry e(ts, args);
+    return e.back(ts, args, e.eax);
 }
 
-x86::reg32 soundTick(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 soundTick(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, tickSoundFrom(app, cpu, e.esp, e.eax, e.edx, e.ecx, e.ebp));
+    const Entry e(ts, args);
+    return e.finish(ts, args, tickSoundFrom(app, ts, e.esp, e.eax, e.edx, e.ecx, e.ebp));
 }
 
-x86::reg32 SNDstop(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 SNDstop(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, stopSound(app, cpu, e.esp, e.eax));
+    const Entry e(ts, args);
+    return e.finish(ts, args, stopSound(app, ts, e.esp, e.eax));
 }
 
-x86::reg32 SNDstatus(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 SNDstatus(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, soundStatus(app, cpu, e.esp, e.eax));
+    const Entry e(ts, args);
+    return e.finish(ts, args, soundStatus(app, ts, e.esp, e.eax));
 }
 
-x86::reg32 SNDstopall(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 SNDstopall(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, stopAllSounds(app, cpu, e.esp));
+    const Entry e(ts, args);
+    return e.finish(ts, args, stopAllSounds(app, ts, e.esp));
 }
 
-x86::reg32 SNDautovol(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 SNDautovol(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, fadeSound(app, cpu, e.esp, e.eax, int32_t(e.edx), int32_t(e.ebx)));
+    const Entry e(ts, args);
+    return e.finish(ts, args, fadeSound(app, ts, e.esp, e.eax, int32_t(e.edx), int32_t(e.ebx)));
 }
 
-x86::reg32 setSoundVolume(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 setSoundVolume(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, volumeNow(app, cpu, e.esp, e.eax, int32_t(e.edx), e.ebp));
+    const Entry e(ts, args);
+    return e.finish(ts, args, volumeNow(app, ts, e.esp, e.eax, int32_t(e.edx), e.ebp));
 }
 
-x86::reg32 SNDvol(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 SNDvol(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, setVolumeFrom(app, cpu, e.esp, e.eax, int32_t(e.edx), e.ebp));
+    const Entry e(ts, args);
+    return e.finish(ts, args, setVolumeFrom(app, ts, e.esp, e.eax, int32_t(e.edx), e.ebp));
 }
 
-x86::reg32 setSoundBend(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 setSoundBend(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, bendNow(app, cpu, e.esp, e.eax, int32_t(e.edx)));
+    const Entry e(ts, args);
+    return e.finish(ts, args, bendNow(app, ts, e.esp, e.eax, int32_t(e.edx)));
 }
 
-x86::reg32 SNDpitchbend(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 SNDpitchbend(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, setBendFrom(app, cpu, e.esp, e.eax, int32_t(e.edx), e.ebx, e.esi, e.edi));
+    const Entry e(ts, args);
+    return e.finish(ts, args, setBendFrom(app, ts, e.esp, e.eax, int32_t(e.edx), e.ebx, e.esi, e.edi));
 }
 
-x86::reg32 SNDpos3d(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 SNDpos3d(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, placeSound(app, cpu, e.esp, e.eax, e.edx, int32_t(e.ebx)));
+    const Entry e(ts, args);
+    return e.finish(ts, args, placeSound(app, ts, e.esp, e.eax, e.edx, int32_t(e.ebx)));
 }
 
-x86::reg32 SNDpan(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 SNDpan(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, panSound(app, cpu, e.esp, e.eax, int32_t(e.edx)));
+    const Entry e(ts, args);
+    return e.finish(ts, args, panSound(app, ts, e.esp, e.eax, int32_t(e.edx)));
 }
 
 /* The options at eax -- an error for none, and the defaults written there
  * all the same. */
-x86::reg32 SNDplaysetdef(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 SNDplaysetdef(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    if (e.eax == 0 && !fail(app, cpu, e.esp - 0x10, kSetdef, 0x37, {kSetdefText}))
+    const Entry e(ts, args);
+    if (e.eax == 0 && !fail(app, ts, e.esp - 0x10, kSetdef, 0x37, {kSetdefText}))
         return args.eax;
     playDefaults(record<PlayOptions>(app, e.eax));
-    return e.back(cpu, args, 0);
+    return e.back(ts, args, 0);
 }
 
-x86::reg32 playOptions(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 playOptions(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, playByOptions(app, cpu, e.esp, record<PlayOptions>(app, e.eax)));
+    const Entry e(ts, args);
+    return e.finish(ts, args, playByOptions(app, ts, e.esp, record<PlayOptions>(app, e.eax)));
 }
 
 /* The options at eax; an error for none, after SNDinit's check, and played
  * from there all the same. */
-x86::reg32 SNDplay(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 SNDplay(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    if (kInited(app) != 0 && e.eax == 0 && !fail(app, cpu, e.esp - 0x10, kPlay, 0x9f, {kPlayText}))
+    const Entry e(ts, args);
+    if (kInited(app) != 0 && e.eax == 0 && !fail(app, ts, e.esp - 0x10, kPlay, 0x9f, {kPlayText}))
         return args.eax;
-    return e.finish(cpu, args, playSound(app, cpu, e.esp, record<PlayOptions>(app, e.eax)));
+    return e.finish(ts, args, playSound(app, ts, e.esp, record<PlayOptions>(app, e.eax)));
 }
 
-x86::reg32 soundVolume(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 soundVolume(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, playingLevel(app, cpu, e.esp, e.eax));
+    const Entry e(ts, args);
+    return e.finish(ts, args, playingLevel(app, ts, e.esp, e.eax));
 }
 
-x86::reg32 newGroup(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 newGroup(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.back(cpu, args, nextGroup(app));
+    const Entry e(ts, args);
+    return e.back(ts, args, nextGroup(app));
 }
 
 }  // namespace port

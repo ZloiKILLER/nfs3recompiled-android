@@ -21,9 +21,9 @@ namespace
 using fe::Guest;
 
 // The match of a codelink with a name: port::menus::codelinkMatches.
-constexpr x86::reg32 kCodelinkMatches = 0x4429c0;
+constexpr nfs::u32 kCodelinkMatches = 0x4429c0;
 
-x86::reg32 itemAt(std::uint32_t index)
+nfs::u32 itemAt(std::uint32_t index)
 {
     return fe::item::kTable + index * fe::item::kSize;
 }
@@ -32,17 +32,17 @@ x86::reg32 itemAt(std::uint32_t index)
 
 /* sub_442a40: a screen's item by its codelink, 0 when it has none: its items
  * from its first to the end of the screen, an item of type 0. */
-x86::reg32 frontend::menus::findItem(App* app, CPU& cpu, reg32 menu, reg32 name)
+nfs::u32 frontend::menus::findItem(App* app, ThreadState& ts, u32 menu, u32 name)
 {
-    Guest guest(app, cpu);
-    const fe::Frame frame(guest, cpu, 20);
+    Guest guest(app, ts);
+    const fe::Frame frame(guest, ts, 20);
     const std::int16_t first = std::int16_t(guest.word(menu + fe::menu::kFirstItem));
-    for (x86::reg32 index = x86::reg32(std::int32_t(first));; ++index)
+    for (nfs::u32 index = nfs::u32(std::int32_t(first));; ++index)
     {
-        const x86::reg32 item = itemAt(index);
+        const nfs::u32 item = itemAt(index);
         if (guest.dword(item + fe::item::kType) == 0)
             return 0;
-        const x86::reg32 codelink = guest.dword(item + fe::item::kCodelink);
+        const nfs::u32 codelink = guest.dword(item + fe::item::kCodelink);
         // By address: edx goes back to the caller as the match leaves it.
         if (codelink != 0 && guest.call(kCodelinkMatches, fe::args({ codelink, name })) != 0)
             return item;
@@ -58,11 +58,11 @@ using fe::kRestoreEdi;
 namespace frontend
 {
 
-x86::reg32 menuFindItem(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 menuFindItem(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site{ "sub_442a40", 0, 0, nullptr, 0, kRestoreEbx | kRestoreEcx | kRestoreEsi | kRestoreEdi };
-    const x86::reg32 menu = args.eax, name = args.edx;
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return menus::findItem(app, cpu, menu, name); });
+    const nfs::u32 menu = args.eax, name = args.edx;
+    return fe::runThunk(app, ts, args, site, [&](Guest&) { return menus::findItem(app, ts, menu, name); });
 }
 
 }  // namespace frontend

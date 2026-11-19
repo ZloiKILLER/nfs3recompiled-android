@@ -1,7 +1,7 @@
 #ifndef EACSND_H_
 #define EACSND_H_
-#include <x86.h>
-#include <lib/winapp.h>
+#include <game_types.h>
+#include <lib/app.h>
 #include <lib/library.h>
 
 /* eacsnd.dll is native: its exports are the port's functions
@@ -10,12 +10,12 @@
 namespace eacsnd
 {
 
-extern const x86::reg8 s_AUTOSegment[];
-extern const x86::reg8 s__idataSegment[];
-extern const x86::reg8 s_DGROUPSegment[];
-extern const x86::reg8 s__edataSegment[];
+extern const nfs::u8 s_AUTOSegment[];
+extern const nfs::u8 s__idataSegment[];
+extern const nfs::u8 s_DGROUPSegment[];
+extern const nfs::u8 s__edataSegment[];
 
-extern win32::Library* s_registry;
+extern nfs::Library* s_registry;
 
 }
 

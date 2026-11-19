@@ -1,32 +1,32 @@
 #include "eacsnd.h"
-#include <x86.h>
-#include <winapi/wrapper.h>
+#include <game_types.h>
+#include <lib/app.h>
 
 namespace nfs3hp
 {
-x86::reg32 iSNDdirectcaps(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 iSNDdirectcreate3dbuf(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 iSNDdirectplay3d(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 iSNDdirectpos3d(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 iSNDdirectrate(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 iSNDdirectrecordpacket(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 iSNDdirectrecordstart(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 iSNDdirectrecordstop(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 iSNDdirectremovebuf(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 iSNDdirectserve(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 iSNDdirectsetfunctions(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 iSNDdirectstart(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 iSNDdirectstop(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 iSNDdirectstopbuf(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 iSNDdirectvol(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 iSNDdllversion(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+nfs::u32 iSNDdirectcaps(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 iSNDdirectcreate3dbuf(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 iSNDdirectplay3d(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 iSNDdirectpos3d(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 iSNDdirectrate(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 iSNDdirectrecordpacket(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 iSNDdirectrecordstart(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 iSNDdirectrecordstop(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 iSNDdirectremovebuf(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 iSNDdirectserve(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 iSNDdirectsetfunctions(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 iSNDdirectstart(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 iSNDdirectstop(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 iSNDdirectstopbuf(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 iSNDdirectvol(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 iSNDdllversion(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
 }
 
 namespace eacsnd
 {
 
-win32::Library s_library = win32::Library("eacsnd.dll");
-win32::Library* s_registry = &(s_library
+nfs::Library s_library = nfs::Library("eacsnd.dll");
+nfs::Library* s_registry = &(s_library
         .registerSymbol("_iSNDdirectcaps@4", &nfs3hp::iSNDdirectcaps)
         .registerSymbol("_iSNDdirectcreate3dbuf@28", &nfs3hp::iSNDdirectcreate3dbuf)
         .registerSymbol("_iSNDdirectplay3d@28", &nfs3hp::iSNDdirectplay3d)

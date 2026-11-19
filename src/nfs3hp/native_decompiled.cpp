@@ -24,54 +24,54 @@ using guest::at;
 using guest::byte;
 using guest::put;
 using guest::putByte;
-using x86::reg16;
-using x86::reg32;
-using x86::reg8;
-using x86::sreg32;
+using nfs::u16;
+using nfs::u32;
+using nfs::u8;
+using nfs::s32;
 
-void push(win32::WinApplication* app, x86::CPU& cpu, reg32 value)
+void push(nfs::App* app, nfs::ThreadState& ts, u32 value)
 {
-    cpu.esp -= 4;
-    put(app, cpu.esp, value);
+    ts.sp -= 4;
+    put(app, ts.sp, value);
 }
 
-reg32 pop(win32::WinApplication* app, x86::CPU& cpu)
+u32 pop(nfs::App* app, nfs::ThreadState& ts)
 {
-    const reg32 value = at(app, cpu.esp);
-    cpu.esp += 4;
+    const u32 value = at(app, ts.sp);
+    ts.sp += 4;
     return value;
 }
 
-reg16 half(win32::WinApplication* app, reg32 address)
+u16 half(nfs::App* app, u32 address)
 {
-    return app->getMemory<reg16>(address);
+    return app->getMemory<u16>(address);
 }
 
-void putHalf(win32::WinApplication* app, reg32 address, reg16 value)
+void putHalf(nfs::App* app, u32 address, u16 value)
 {
-    app->getMemory<reg16>(address) = value;
+    app->getMemory<u16>(address) = value;
 }
 
 }  // namespace
 
 /* The menus' help line (native_frontend_loop.cpp's) and the pointer where the
  * menus have it, on a 640 by 480 screen (native_frontend_screen.cpp's). */
-constexpr reg32 kHelpNeedsMove = 0x559238;    // not before the pointer moves on a new screen
-constexpr reg32 kHelpLastX = 0x55923c;        // where the pointer was
-constexpr reg32 kHelpLastY = 0x559240;
-constexpr reg32 kHelpItem = 0x559244;         // the item it is shown for, -1 for none
-constexpr reg32 kHelpText = 0x55924c;
-constexpr reg32 kMouseX = 0x55e5e4, kMouseY = 0x55e5e8;
+constexpr u32 kHelpNeedsMove = 0x559238;    // not before the pointer moves on a new screen
+constexpr u32 kHelpLastX = 0x55923c;        // where the pointer was
+constexpr u32 kHelpLastY = 0x559240;
+constexpr u32 kHelpItem = 0x559244;         // the item it is shown for, -1 for none
+constexpr u32 kHelpText = 0x55924c;
+constexpr u32 kMouseX = 0x55e5e4, kMouseY = 0x55e5e8;
 
 /* 0x449a60: the help line cleared for a new screen: no item, no text, and
  * none until the pointer moves from where it is now. */
-x86::reg32 resetMenuHelp(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 resetMenuHelp(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    push(app, cpu, args.ebx);
-    push(app, cpu, args.ecx);
-    push(app, cpu, args.edx);
-    push(app, cpu, args.ebp);
-    args.ebp = cpu.esp;
+    push(app, ts, args.ebx);
+    push(app, ts, args.ecx);
+    push(app, ts, args.edx);
+    push(app, ts, args.ebp);
+    args.ebp = ts.sp;
     args.ecx = 0xffffffff;
     args.edx = 1;
     args.eax = at(app, kMouseX);
@@ -82,28 +82,28 @@ x86::reg32 resetMenuHelp(win32::WinApplication* app, x86::CPU& cpu, x86::Args& a
     args.eax = at(app, kMouseY);
     put(app, kHelpNeedsMove, args.edx);
     put(app, kHelpLastY, args.eax);
-    args.ebp = pop(app, cpu);
-    args.edx = pop(app, cpu);
-    args.ecx = pop(app, cpu);
-    args.ebx = pop(app, cpu);
-    cpu.esp += 4;
+    args.ebp = pop(app, ts);
+    args.edx = pop(app, ts);
+    args.ecx = pop(app, ts);
+    args.ebx = pop(app, ts);
+    ts.sp += 4;
     return args.eax;
 }
 
 /* The settings' effects and engine volumes, and a race's own, which its pause
  * screen moves (native_frontend_options.cpp's names). */
-constexpr reg32 kRaceEffectsVolume = 0x552920, kRaceEngineVolume = 0x552924;
-constexpr reg32 kRaceVolumesToSettings = 0x552909;  // byte: the race's volumes go back to the settings next
+constexpr u32 kRaceEffectsVolume = 0x552920, kRaceEngineVolume = 0x552924;
+constexpr u32 kRaceVolumesToSettings = 0x552909;  // byte: the race's volumes go back to the settings next
 
 /* 0x418840: the effects and engine volumes handed between the settings and
  * the race: with kRaceVolumesToSettings set, the settings' are kept as the
  * race's and silenced (edx 0); with it clear, the race's go back into the
  * settings (dl 1).  The byte is left the other way round. */
-x86::reg32 swapRaceVolumes(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 swapRaceVolumes(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    push(app, cpu, args.edx);
-    push(app, cpu, args.ebp);
-    args.ebp = cpu.esp;
+    push(app, ts, args.edx);
+    push(app, ts, args.ebp);
+    args.ebp = ts.sp;
     std::uint8_t dl;  // edx's low byte, while it runs: edx is pushed and popped round it
     dl = byte(app, kRaceVolumesToSettings);
     if (dl != 0)
@@ -126,16 +126,16 @@ x86::reg32 swapRaceVolumes(win32::WinApplication* app, x86::CPU& cpu, x86::Args&
         gameSettings(app).engineVolume = args.eax;
     }
     putByte(app, kRaceVolumesToSettings, dl);
-    args.ebp = pop(app, cpu);
-    args.edx = pop(app, cpu);
-    cpu.esp += 4;
+    args.ebp = pop(app, ts);
+    args.edx = pop(app, ts);
+    ts.sp += 4;
     return args.eax;
 }
 
 /* Whether the driver draws on a 3D card: 0 for the software renderers, 1 for
  * the others, as the driver starts (sub_4b59c0, startDriverNative).  With it
  * clear the polygons are sorted by sub_4c7480, not into depth buckets. */
-constexpr reg32 kDriverOnCard = 0x7a3a60;
+constexpr u32 kDriverOnCard = 0x7a3a60;
 
 /* The depth offsets, 10 floats from 0x7dcfdc, each handed to the code that
  * draws one kind of thing, or added to or taken from a depth by it:
@@ -146,13 +146,13 @@ constexpr reg32 kDriverOnCard = 0x7a3a60;
  *   +0x1c  to sub_4c7940, twice, in a view's pass
  *   +0x20  the lights' glows and the headlights' beams (sub_491190, sub_492370, sub_492980)
  *   +0x24  sub_494170, sub_4cc5c0 */
-constexpr reg32 kDepthOffsets = 0x7dcfdc;
-constexpr reg32 kFloat4 = 0x40800000, kFloat5Half = 0x40b00000, kFloat6 = 0x40c00000;
-constexpr reg32 kFloat9Half = 0x41180000, kFloat10 = 0x41200000;
+constexpr u32 kDepthOffsets = 0x7dcfdc;
+constexpr u32 kFloat4 = 0x40800000, kFloat5Half = 0x40b00000, kFloat6 = 0x40c00000;
+constexpr u32 kFloat9Half = 0x41180000, kFloat10 = 0x41200000;
 
 /* 0x4c7a60: the depth offsets for the driver (kDriverOnCard): on a card most
  * are 0, the far ones 10 and 6; in software, 9.5 nearly throughout. */
-void depthOffsetsSet(win32::WinApplication* app)
+void depthOffsetsSet(nfs::App* app)
 {
     if (at(app, kDriverOnCard) == 0)
     {
@@ -184,13 +184,13 @@ void depthOffsetsSet(win32::WinApplication* app)
 
 /* 0x4c7a60: depthOffsetsSet; every register but eax kept, which a software driver leaves 4.0's bits (the
  * code pushed its registers below esp and popped them again: nothing written there now). */
-x86::reg32 setDepthOffsets(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 setDepthOffsets(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     const bool cardBranch = at(app, kDriverOnCard) == 0;
     depthOffsetsSet(app);
     if (!cardBranch)
         args.eax = kFloat4;
-    cpu.esp += 4;
+    ts.sp += 4;
     return args.eax;
 }
 
@@ -199,25 +199,25 @@ x86::reg32 setDepthOffsets(win32::WinApplication* app, x86::CPU& cpu, x86::Args&
  * red, green and blue the base colour plus the dot times the slope, capped.
  * The sun's colour as it was given (sub_49d8f0) makes the cap (twice it, 255
  * at most) and the slope (the cap less the base). */
-constexpr reg32 kSunShadingMode = 0x55e69c;     // sub_49d750's; sub_49de20 does otherwise when it is 1
-constexpr reg32 kSunDirection = 0x55e6a0;       // three floats, x y z (sub_49d760)
-constexpr reg32 kSunRed = 0x55e6ac, kSunGreen = 0x55e6b0, kSunBlue = 0x55e6b4;  // the colour given
-constexpr reg32 kSunBaseRed = 0x55e6b8, kSunBaseGreen = 0x55e6bc, kSunBaseBlue = 0x55e6c0;
-constexpr reg32 kSunCapRed = 0x55e6c4, kSunCapGreen = 0x55e6c8, kSunCapBlue = 0x55e6cc;
-constexpr reg32 kSunSlopeRed = 0x55e6d0, kSunSlopeGreen = 0x55e6d4, kSunSlopeBlue = 0x55e6d8;
+constexpr u32 kSunShadingMode = 0x55e69c;     // sub_49d750's; sub_49de20 does otherwise when it is 1
+constexpr u32 kSunDirection = 0x55e6a0;       // three floats, x y z (sub_49d760)
+constexpr u32 kSunRed = 0x55e6ac, kSunGreen = 0x55e6b0, kSunBlue = 0x55e6b4;  // the colour given
+constexpr u32 kSunBaseRed = 0x55e6b8, kSunBaseGreen = 0x55e6bc, kSunBaseBlue = 0x55e6c0;
+constexpr u32 kSunCapRed = 0x55e6c4, kSunCapGreen = 0x55e6c8, kSunCapBlue = 0x55e6cc;
+constexpr u32 kSunSlopeRed = 0x55e6d0, kSunSlopeGreen = 0x55e6d4, kSunSlopeBlue = 0x55e6d8;
 // The two colours sub_49d800 sets (darkened by the glare): a polygon's
 // without its flag 8, and with it (sub_49de20, into the vertex's +0x74).
-constexpr reg32 kSunPlainColour = 0x55e6dc, kSunFlaggedColour = 0x55e6e0;
-constexpr reg32 kSunAlpha = 0x55e6e4;           // alpha in the top byte (sub_49d720's eax)
-constexpr reg32 kSunAlphaMask = 0x55e6e8;       // sub_49d720's edx in the top byte, over 0xffffff
-constexpr reg32 kSunMatrix = 0x55e6ec;          // three rows of three floats
-constexpr reg32 kFloatOne = 0x3f800000, kFloatMinusOne = 0xbf800000;
+constexpr u32 kSunPlainColour = 0x55e6dc, kSunFlaggedColour = 0x55e6e0;
+constexpr u32 kSunAlpha = 0x55e6e4;           // alpha in the top byte (sub_49d720's eax)
+constexpr u32 kSunAlphaMask = 0x55e6e8;       // sub_49d720's edx in the top byte, over 0xffffff
+constexpr u32 kSunMatrix = 0x55e6ec;          // three rows of three floats
+constexpr u32 kFloatOne = 0x3f800000, kFloatMinusOne = 0xbf800000;
 
 /* 0x49d640's work: the sun's lighting back to the game's defaults: straight down,
  * a mid grey sun (127) on no base colour, so caps and slopes of 255; the
  * plain colour grey, the flagged one white, alpha opaque; its matrix the
  * identity.  The writes in the order the code makes them. */
-void sunLightingReset(win32::WinApplication* app)
+void sunLightingReset(nfs::App* app)
 {
     put(app, kSunGreen, 0x7f);
     put(app, kSunBlue, 0x7f);
@@ -253,23 +253,23 @@ void sunLightingReset(win32::WinApplication* app)
 
 /* 0x49d640: sunLightingReset; the registers the code keeps (ebx, ecx, edx, esi, edi, ebp pushed and popped,
  * their values on the stack below), eax 0. */
-x86::reg32 resetSunLighting(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 resetSunLighting(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    push(app, cpu, args.ebx);
-    push(app, cpu, args.ecx);
-    push(app, cpu, args.edx);
-    push(app, cpu, args.esi);
-    push(app, cpu, args.edi);
-    push(app, cpu, args.ebp);
+    push(app, ts, args.ebx);
+    push(app, ts, args.ecx);
+    push(app, ts, args.edx);
+    push(app, ts, args.esi);
+    push(app, ts, args.edi);
+    push(app, ts, args.ebp);
     sunLightingReset(app);
     args.eax = 0;
-    args.ebp = pop(app, cpu);
-    args.edi = pop(app, cpu);
-    args.esi = pop(app, cpu);
-    args.edx = pop(app, cpu);
-    args.ecx = pop(app, cpu);
-    args.ebx = pop(app, cpu);
-    cpu.esp += 4;
+    args.ebp = pop(app, ts);
+    args.edi = pop(app, ts);
+    args.esi = pop(app, ts);
+    args.edx = pop(app, ts);
+    args.ecx = pop(app, ts);
+    args.ebx = pop(app, ts);
+    ts.sp += 4;
     return args.eax;
 }
 
@@ -293,18 +293,18 @@ x86::reg32 resetSunLighting(win32::WinApplication* app, x86::CPU& cpu, x86::Args
  *   +0x38 1/240    kSteerScale (native_controls_race.cpp): the steering's
  *   +0x3c 1/160    kSpringScale: the body roll spring's, against the cornering load
  *   +0x40 10.0     read by no address of its own */
-constexpr reg32 kHandlingTunings = 0x5efda8;
+constexpr u32 kHandlingTunings = 0x5efda8;
 
 /* 0x42c590: the race's handling tunings set to the game's own (above). */
-x86::reg32 resetHandlingTunings(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 resetHandlingTunings(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    push(app, cpu, args.ebx);
-    push(app, cpu, args.ecx);
-    push(app, cpu, args.edx);
-    push(app, cpu, args.esi);
-    push(app, cpu, args.edi);
-    push(app, cpu, args.ebp);
-    args.ebp = cpu.esp;
+    push(app, ts, args.ebx);
+    push(app, ts, args.ecx);
+    push(app, ts, args.edx);
+    push(app, ts, args.esi);
+    push(app, ts, args.edi);
+    push(app, ts, args.ebp);
+    args.ebp = ts.sp;
     args.edx = 0x3f99999a;
     args.ecx = 0x40400000;
     args.ebx = 0x3f800000;
@@ -339,13 +339,13 @@ x86::reg32 resetHandlingTunings(win32::WinApplication* app, x86::CPU& cpu, x86::
     put(app, kHandlingTunings + 0x40, args.ebx);
     put(app, kHandlingTunings + 0x38, args.esi);
     put(app, kHandlingTunings + 0x3c, args.edi);
-    args.ebp = pop(app, cpu);
-    args.edi = pop(app, cpu);
-    args.esi = pop(app, cpu);
-    args.edx = pop(app, cpu);
-    args.ecx = pop(app, cpu);
-    args.ebx = pop(app, cpu);
-    cpu.esp += 4;
+    args.ebp = pop(app, ts);
+    args.edi = pop(app, ts);
+    args.esi = pop(app, ts);
+    args.edx = pop(app, ts);
+    args.ecx = pop(app, ts);
+    args.ebx = pop(app, ts);
+    ts.sp += 4;
     return args.eax;
 }
 

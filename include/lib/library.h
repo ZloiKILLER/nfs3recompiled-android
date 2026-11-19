@@ -1,17 +1,17 @@
 #ifndef LIB_LIBRARY_H_
 #define LIB_LIBRARY_H_
 
-#include <lib/winapp.h>
+#include <lib/app.h>
 #include <string>
 #include <map>
 
-namespace win32
+namespace nfs
 {
 
 class Library
 {
 public:
-    typedef std::pair<x86::reg32, Method> Symbol;
+    typedef std::pair<nfs::u32, Method> Symbol;
     Library(const char* name);
     ~Library();
 
@@ -27,10 +27,10 @@ public:
     }
 
     static Library* findLibrary(std::string name);
-    void registerSymbols(WinApplication* app);
+    void registerSymbols(App* app);
 
 private:
-    static x86::reg32 getSymbolIndex();
+    static nfs::u32 getSymbolIndex();
 
 private:
     Library* m_next;
@@ -46,7 +46,7 @@ public:
 
     inline operator void*() const { return m_library; }
     inline Library* getLibrary() { return m_library; }
-    void registerSymbols(win32::WinApplication* application);
+    void registerSymbols(nfs::App* application);
 
 private:
     Library* m_library;

@@ -3,7 +3,7 @@ r"""Generate the install.win file that NFS III: Hot Pursuit requires at startup.
 
 Why this exists
 ---------------
-The original 1998 nfs3.exe -- the binary this project statically recompiles --
+The original 1998 nfs3.exe -- the game this project ports --
 reads `install.win` from the game directory before doing anything else.  Without
 it the game shows "Need For Speed 3 files are corrupted; please re-install." and
 exits.  The file is normally written by the original CD installer, so it is
@@ -54,9 +54,6 @@ Slots 1, 4, 11-14, 26-39 are still never touched by any of the above.  They are
 filled with self-identifying markers so that any future use shows up in the log
 as "unable to open .../SLOTnn/<file>" instead of silently resolving to the wrong
 directory.  Pass --no-markers to fill them with ".\\" instead.
-
-Also required next to install.win: nfs3.exe itself (the game stats it during the
-integrity check) plus eacsnd.dll, voodoo2a.dll and softtria.dll.
 """
 
 import argparse

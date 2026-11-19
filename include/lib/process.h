@@ -1,9 +1,9 @@
 #ifndef LIB_PROCESS_H_
 #define LIB_PROCESS_H_
 
-#include <lib/winapp.h>
+#include <lib/app.h>
 
-namespace win32
+namespace nfs
 {
 
 class Process : public GenericResource

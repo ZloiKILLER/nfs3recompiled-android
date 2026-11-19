@@ -123,7 +123,7 @@ i16 mulHigh(i16 a, i16 b)
 struct Mixer
 {
     App* app;
-    CPU& cpu;
+    ThreadState& ts;
     u8* m;
     u32 esp;  // the game's stack where the mix was called: its calls and scratch lie below it
 
@@ -161,7 +161,7 @@ struct Mixer
     u32 guest(u32 address, u32 eax, u32 edx, u32 ebx, u32 ecx, std::initializer_list<u32> stack = {})
     {
         u32 result = 0;
-        pointerGame(app, cpu, esp, address, {eax, edx, ebx, ecx}, stack, result);
+        pointerGame(app, ts, esp, address, {eax, edx, ebx, ecx}, stack, result);
         return result;
     }
 
@@ -1418,36 +1418,36 @@ struct Mixer
 /* sub_500864's: `frames` frames mixed into the output at `target`, a block at
  * a time.  The code's eax at the end: the bytes of the last block, or `eax`
  * as it was where there was none. */
-reg32 mixFrames(App* app, CPU& cpu, reg32 esp, reg32 target, int32_t frames, reg32 eax)
+u32 mixFrames(App* app, ThreadState& ts, u32 esp, u32 target, int32_t frames, u32 eax)
 {
-    Mixer mixer{app, cpu, &app->getMemory<uint8_t>(0), esp};
+    Mixer mixer{app, ts, &app->getMemory<uint8_t>(0), esp};
     if (frames > 0)
-        eax = reg32(app->getMemory<uint16_t>(kBlockBytes));
+        eax = u32(app->getMemory<uint16_t>(kBlockBytes));
     mixer.mix(target, frames);
     return eax;
 }
 
 /* sub_5004c8's: channel `channel`'s volume ramped towards its target over at
  * most `frames` frames, each mixed by itself.  The frames it took. */
-reg32 rampChannel(App* app, CPU& cpu, reg32 esp, reg32 channel, reg32 frames)
+u32 rampChannel(App* app, ThreadState& ts, u32 esp, u32 channel, u32 frames)
 {
-    Mixer mixer{app, cpu, &app->getMemory<uint8_t>(0), esp};
+    Mixer mixer{app, ts, &app->getMemory<uint8_t>(0), esp};
     return mixer.ramp(channel, frames);
 }
 
 /* The game's entries: the mix (0x500864, eax the output, edx the frames) and a
  * channel's ramp (0x5004c8, eax the channel, edx the frames). */
 
-x86::reg32 mixerServe(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 mixerServe(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.back(cpu, args, mixFrames(app, cpu, e.esp, e.eax, int32_t(e.edx), e.eax));
+    const Entry e(ts, args);
+    return e.back(ts, args, mixFrames(app, ts, e.esp, e.eax, int32_t(e.edx), e.eax));
 }
 
-x86::reg32 mixerRamp(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 mixerRamp(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.back(cpu, args, rampChannel(app, cpu, e.esp, e.eax, e.edx));
+    const Entry e(ts, args);
+    return e.back(ts, args, rampChannel(app, ts, e.esp, e.eax, e.edx));
 }
 
 }  // namespace port

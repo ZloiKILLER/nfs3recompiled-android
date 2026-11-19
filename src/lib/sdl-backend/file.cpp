@@ -22,18 +22,21 @@
 #endif
 #include <algorithm>
 #include <cerrno>
+#include <cstring>
 #include <unordered_map>
 #include <unordered_set>
 #include <SDL3/SDL.h>
 
 
-namespace win32
+namespace nfs
 {
 
 static std::string s_currentDirectory = "c:\\nfs2se\\";
 static std::string s_dataDirectory = "./";
 static std::string s_cdDirectory = "./";
 static File::ReadSubstitute s_readSubstitute = nullptr;
+/* The longest name a search hands back: what fitted the original's 260 bytes. */
+static const size_t kNameLength = 259;
 
 static std::string moveToRoot(const std::string& path)
 {
@@ -84,7 +87,7 @@ static std::string moveToRoot(const std::string& path)
  * (directory, lowercased component) pair so a repeat is a hash lookup instead
  * of a directory scan.  Every File::File()/File::remove() call -- the only
  * callers of resolvePathCaseInsensitive() -- runs with the guest execution
- * context locked (only one guest thread is ever inside win32:: API code at a
+ * context locked (only one guest thread is ever inside the port's file code at a
  * time), so this needs no locking of its own; the rest of this file's statics
  * (s_currentDirectory etc.) already rely on that same guarantee. */
 static std::unordered_map<std::string, std::unordered_set<std::string>> s_missingComponentCache;
@@ -193,21 +196,25 @@ FileEnumerator::FileEnumerator(const char* filename)
     std::transform(m_pattern.begin(), m_pattern.end(), m_pattern.begin(), ::tolower);
     SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Enumerate %s", m_pattern.c_str());
 #ifdef _WIN32
-    NFS2_ASSERT(sizeof(::WIN32_FIND_DATAA) == sizeof(WIN32_FIND_DATAA));
+    /* A Windows host's own search, its answers as the port's entries. */
     ::WIN32_FIND_DATAA findData;
-    WIN32_FIND_DATAA result;
+    auto entryOf = [](const ::WIN32_FIND_DATAA& data) {
+        FileEntry entry;
+        entry.name = data.cFileName;
+        entry.directory = (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+        entry.size = nfs::u32(data.nFileSizeLow);
+        return entry;
+    };
     ::HANDLE h = ::FindFirstFileA(m_pattern.c_str(), &findData);
-    if (h != ::HANDLE(-1))
+    if (h != INVALID_HANDLE_VALUE)
     {
-        memcpy(&result, &findData, sizeof(result));
-        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "  ->  %s", result.cFileName);
-        m_files.push_back(result);
+        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "  ->  %s", findData.cFileName);
+        m_files.push_back(entryOf(findData));
     }
     while (::FindNextFileA(h, &findData))
     {
-        memcpy(&result, &findData, sizeof(result));
-        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "  ->  %s", result.cFileName);
-        m_files.push_back(result);
+        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "  ->  %s", findData.cFileName);
+        m_files.push_back(entryOf(findData));
     }
     ::FindClose(h);
 #else
@@ -249,15 +256,14 @@ FileEnumerator::FileEnumerator(const char* filename)
                  * than leaving the entry out. */
                 if (stat(fullPath.c_str(), &buffer) != 0)
                     continue;
-                WIN32_FIND_DATAA data;
-                memset(&data, 0, sizeof(data));
+                FileEntry found;
                 /* S_IFDIR is a value of the S_IFMT field, not a standalone bit:
                  * masking against it alone calls symlinks directories too. */
-                data.dwFileAttributes = S_ISDIR(buffer.st_mode) ? 16 : 0;
-                data.nFileSizeHigh = 0;
-                data.nFileSizeLow = buffer.st_size;
-                strncpy(data.cFileName, entry->d_name, sizeof(data.cFileName)-1);
-                m_files.push_back(data);
+                found.directory = S_ISDIR(buffer.st_mode);
+                found.size = nfs::u32(buffer.st_size);
+                /* At most kNameLength characters, as the search has always cut them. */
+                found.name.assign(entry->d_name, strnlen(entry->d_name, kNameLength));
+                m_files.push_back(std::move(found));
             }
         }
         closedir(d);
@@ -289,7 +295,7 @@ FileEnumerator::~FileEnumerator()
 {
 }
 
-bool FileEnumerator::findNext(WIN32_FIND_DATAA *data)
+bool FileEnumerator::findNext(FileEntry& entry)
 {
     m_index++;
     if (size_t(m_index) >= m_files.size())
@@ -298,13 +304,13 @@ bool FileEnumerator::findNext(WIN32_FIND_DATAA *data)
     }
     else
     {
-        memcpy(data, &m_files[m_index], sizeof(*data));
+        entry = m_files[m_index];
         return true;
     }
 }
 
-/* Win32 CreateFileA fails on a directory unless FILE_FLAG_BACKUP_SEMANTICS is
- * given, which the game never does.  POSIX open() happily returns a descriptor
+/* The original's CreateFileA fails on a directory unless FILE_FLAG_BACKUP_SEMANTICS
+ * is given, which the game never does.  POSIX open() happily returns a descriptor
  * for one, and the failure only shows up later as EISDIR from read() -- which
  * the game reads as "file present but empty" instead of "file missing".  That
  * is how an empty filename turned into "showmad - no MAD chunks found": it
@@ -374,53 +380,47 @@ File::File(const File& other)
     SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "opening file %s for Map", m_filename.c_str());
 }
 
-File::File(const char* path, x86::reg32 mode, x86::reg32 flags, x86::reg32 creationFlags)
+File::File(const char* path, Mode mode, Disposition disposition)
     :   m_file()
     ,   m_filename(moveToRoot(path))
 {
-    NFS2_USE(flags);
     std::transform(m_filename.begin(), m_filename.end(), m_filename.begin(), ::tolower);
-    //NFS2_ASSERT((flags & FILE_FLAG_OVERLAPPED) == 0);
     for (std::string::iterator it = m_filename.begin(); it != m_filename.end(); ++it)
         if (*it == '\\') *it = '/';
     m_filename = resolvePathCaseInsensitive(m_filename);
     int openFlags = O_BINARY;
     switch(mode)
     {
-    case GENERIC_READ:
+    case Mode::read:
         openFlags |= O_RDONLY;
         break;
-    case GENERIC_WRITE:
+    case Mode::write:
         openFlags |= O_WRONLY;
         break;
-    case GENERIC_READ|GENERIC_WRITE:
+    case Mode::readWrite:
         openFlags |= O_RDWR;
         break;
-    default:
-        NFS2_ASSERT(false);
     }
-    switch(creationFlags)
+    switch(disposition)
     {
-    case CREATE_NEW:
+    case Disposition::createNew:
         openFlags |= O_CREAT;
         break;
-    case CREATE_ALWAYS:
+    case Disposition::createAlways:
         openFlags |= O_CREAT | O_TRUNC;
         break;
-    case OPEN_ALWAYS:
+    case Disposition::openAlways:
         openFlags |= O_CREAT;
         break;
-    case OPEN_EXISTING:
+    case Disposition::openExisting:
         break;
-    case TRUNCATE_EXISTING:
+    case Disposition::truncateExisting:
         openFlags |= O_TRUNC;
         break;
-    default:
-        NFS2_ASSERT(false);
     }
 
 #ifndef _WIN32
-    /* openFlags carries O_CREAT for CREATE_NEW/CREATE_ALWAYS/OPEN_ALWAYS: the
+    /* openFlags carries O_CREAT for createNew/createAlways/openAlways: the
      * directory this file lives in may now contain something the negative
      * cache above doesn't know about, so drop it.  Cheap and rare next to the
      * lookups it protects. */
@@ -493,7 +493,7 @@ File::~File()
     }
 }
 
-x86::reg32 File::seek(x86::reg32 mode, x86::sreg32 offset)
+nfs::u32 File::seek(nfs::u32 mode, nfs::s32 offset)
 {
     int seekMode = 0;
     switch(mode)
@@ -511,11 +511,11 @@ x86::reg32 File::seek(x86::reg32 mode, x86::sreg32 offset)
         NFS2_ASSERT(false);
         break;
     }
-    x86::reg32 result = _lseek(m_file, offset, seekMode);
+    nfs::u32 result = _lseek(m_file, offset, seekMode);
     return result;
 }
 
-x86::reg32 File::read(void* buffer, x86::reg32 max, x86::reg32* totalRead)
+nfs::u32 File::read(void* buffer, nfs::u32 max, nfs::u32* totalRead)
 {
     /* A single read() is not guaranteed to fill the buffer even without
      * hitting EOF or an error -- POSIX explicitly allows short reads for
@@ -526,14 +526,14 @@ x86::reg32 File::read(void* buffer, x86::reg32 max, x86::reg32* totalRead)
      * costs nothing extra when a single read() already satisfies it, so it
      * stays.  NFS_TRACE_API also logs every call here now to see the actual
      * byte counts on device instead of guessing again. */
-    x86::reg8* dst = static_cast<x86::reg8*>(buffer);
-    x86::reg32 done = 0;
+    nfs::u8* dst = static_cast<nfs::u8*>(buffer);
+    nfs::u32 done = 0;
     int iterations = 0;
     while (done < max)
     {
         ++iterations;
         const int n = ::_read(m_file, dst + done, max - done);
-        if (WinApplication::traceApi())
+        if (App::traceApi())
         {
             SDL_Log("[API] File::read iter=%d requested=%u thisCall=%d done=%u errno=%d",
                     iterations, unsigned(max - done), n, unsigned(done), n < 0 ? errno : 0);
@@ -547,25 +547,25 @@ x86::reg32 File::read(void* buffer, x86::reg32 max, x86::reg32* totalRead)
         }
         if (n == 0)
             break; /* EOF */
-        done += x86::reg32(n);
+        done += nfs::u32(n);
     }
     *totalRead = done;
     return true;
 }
 
-x86::reg32 File::write(const void* buffer, x86::reg32 max, x86::reg32* totalWritten)
+nfs::u32 File::write(const void* buffer, nfs::u32 max, nfs::u32* totalWritten)
 {
     *totalWritten = ::_write(m_file, buffer, max);
     return *totalWritten == max;
 }
 
-x86::reg32 File::truncate()
+nfs::u32 File::truncate()
 {
     SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Truncating file %s", m_filename.c_str());
     return _chsize(m_file, _lseek(m_file, 0, 1)) == 0;
 }
 
-x86::reg32 File::size() const
+nfs::u32 File::size() const
 {
     struct stat buffer;
     fstat(m_file, &buffer);
@@ -609,7 +609,7 @@ void File::setCdDirectory(const char* path)
         s_cdDirectory.append("/");
 }
 
-x86::reg32 File::remove(const char *filename)
+nfs::u32 File::remove(const char *filename)
 {
     std::string f = moveToRoot(filename);
     std::transform(f.begin(), f.end(), f.begin(), ::tolower);
@@ -636,7 +636,7 @@ x86::reg32 File::remove(const char *filename)
  * every later save into it failed to open.  Only the leaf is created, and an
  * existing directory reports failure, both matching Win32 -- the game already
  * copes with that, since on a normal install the directory is always there. */
-x86::reg32 File::createDirectory(const char* path)
+nfs::u32 File::createDirectory(const char* path)
 {
     std::string f = moveToRoot(path);
     std::transform(f.begin(), f.end(), f.begin(), ::tolower);

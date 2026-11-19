@@ -28,10 +28,10 @@ constexpr Table<int32_t> kChaseLevels{0x552844}, kBeeps{0x55283c}, kBeepSounds{0
 constexpr Var<int32_t> kMusicLevel{0x552838}, kChaseMusic{0x55284c}, kCopBank{0x571160};
 constexpr Var<int32_t> kMusicOn{0x552910}, kMenuMusic{0x552914};
 constexpr Var<uint8_t> kCalmEvent{0x552834}, kOwnTune{0x552590};
-constexpr reg32 kTrace = 0x42d510, kSoundStatus = 0x4e8fd0, kBeepStart = 0x418930;
+constexpr u32 kTrace = 0x42d510, kSoundStatus = 0x4e8fd0, kBeepStart = 0x418930;
 
 // The pan of the player's side in the split screen, else the middle.
-reg32 sideOf(App* app, reg32 player)
+u32 sideOf(App* app, u32 player)
 {
     if (gameSettings(app).playMode != 1)
         return 0;
@@ -43,165 +43,165 @@ reg32 sideOf(App* app, reg32 player)
 /* 0x4188a0's: player `player`'s beeps: when the last is done and there are
  * more, the next -- the high one (0x31) while below the chase's level.  eax as
  * the last call leaves it (else the player). */
-Result copBeepsTicked(App* app, CPU& cpu, reg32 esp, reg32 player)
+Result copBeepsTicked(App* app, ThreadState& ts, u32 esp, u32 player)
 {
-    const reg32 frame = esp - 6 * 4;
-    Game g(app, cpu, frame);
+    const u32 frame = esp - 6 * 4;
+    Game g(app, ts, frame);
     const int32_t p = int32_t(player);
-    const reg32 side = sideOf(app, player);
-    reg32 eax = player;
+    const u32 side = sideOf(app, player);
+    u32 eax = player;
     if (kBeeps(app, p) != 0)
     {
         g.atCall();
-        if (!tookEax(guest::direct<kSoundStatus, soundStatus>(app, cpu, g.esp - 4, reg32(kBeepSounds(app, p))), eax))
+        if (!tookEax(guest::direct<kSoundStatus, soundStatus>(app, ts, g.esp - 4, u32(kBeepSounds(app, p))), eax))
             return {};
         if (eax != 0)
         {
-            const reg32 effect = kChaseLevels(app, p) < kBeeps(app, p) ? 0x31 : 0x30;
+            const u32 effect = kChaseLevels(app, p) < kBeeps(app, p) ? 0x31 : 0x30;
             g.atCall();
-            if (!tookEax(guest::direct<kEffectBank, bankEffect>(app, cpu, g.esp - 8, kCopBank(app), int32_t(effect),
+            if (!tookEax(guest::direct<kEffectBank, bankEffect>(app, ts, g.esp - 8, kCopBank(app), int32_t(effect),
                                                                  0x7f, side, uint8_t(0x40)),
                          eax))
                 return {};
             kBeepSounds.set(app, p, int32_t(eax));
-            kBeeps.set(app, p, int32_t(reg32(kBeeps(app, p)) - 1));
+            kBeeps.set(app, p, int32_t(u32(kBeeps(app, p)) - 1));
         }
     }
     return int32_t(eax);
 }
 
 /* 0x4188a0: player eax's beeps. */
-x86::reg32 copBeepTick(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 copBeepTick(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, copBeepsTicked(app, cpu, e.esp, e.eax));
+    const Entry e(ts, args);
+    return e.finish(ts, args, copBeepsTicked(app, ts, e.esp, e.eax));
 }
 
 /* 0x418930: player `player`'s beeps started: `count` of them, the first
  * high.  The beep's handle; esp the frame base. */
-Result beepsStarted(App* app, CPU& cpu, reg32 esp, int32_t count, int32_t player)
+Result beepsStarted(App* app, ThreadState& ts, u32 esp, int32_t count, int32_t player)
 {
-    const reg32 frame = esp - 4 * 4;
-    Game g(app, cpu, frame);
+    const u32 frame = esp - 4 * 4;
+    Game g(app, ts, frame);
     kBeeps.set(app, player, count);
     g.atCall();
-    const Result sound = guest::direct<kEffectBank, bankEffect>(app, cpu, g.esp - 8, kCopBank(app), 0x31, 0x7f,
-                                                                 sideOf(app, reg32(player)), uint8_t(0x40));
+    const Result sound = guest::direct<kEffectBank, bankEffect>(app, ts, g.esp - 8, kCopBank(app), 0x31, 0x7f,
+                                                                 sideOf(app, u32(player)), uint8_t(0x40));
     if (!sound)
         return std::nullopt;
     kBeepSounds.set(app, player, *sound);
     return sound;
 }
 
-x86::reg32 copBeepStart(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 copBeepStart(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, beepsStarted(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx)));
+    const Entry e(ts, args);
+    return e.finish(ts, args, beepsStarted(app, ts, e.esp, int32_t(e.eax), int32_t(e.edx)));
 }
 
 /* 0x418c30: effect eax of the cops' bank, at full volume. */
-x86::reg32 copEffect(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 copEffect(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, copEffectPlayed(app, cpu, e.esp, int32_t(e.eax)));
+    const Entry e(ts, args);
+    return e.finish(ts, args, copEffectPlayed(app, ts, e.esp, int32_t(e.eax)));
 }
 
 /* 0x418c30's core: copEffect for `effect`; esp the frame base. */
-Result copEffectPlayed(App* app, CPU& cpu, reg32 esp, int32_t effect)
+Result copEffectPlayed(App* app, ThreadState& ts, u32 esp, int32_t effect)
 {
-    const reg32 frame = esp - 4 * 5;
-    const HeldEbp ebp(cpu, frame);
-    Game g(app, cpu, frame);
+    const u32 frame = esp - 4 * 5;
+    const HeldEbp ebp(ts, frame);
+    Game g(app, ts, frame);
     const int32_t bank = kCopBank(app);
     g.atCall();
-    return guest::direct<kEffectBank, bankEffect>(app, cpu, g.esp - 8, bank, effect, 0x7f, 0u, uint8_t(0x40));
+    return guest::direct<kEffectBank, bankEffect>(app, ts, g.esp - 8, bank, effect, 0x7f, 0u, uint8_t(0x40));
 }
 
 /* 0x418c60: the music's event back after an interruption (the race's own
  * music on, playing, not muted): the chase's, or the calm one. */
-Result musicEventResumed(App* app, CPU& cpu, reg32 esp, reg32 eax, reg32 edx)
+Result musicEventResumed(App* app, ThreadState& ts, u32 esp, u32 eax, u32 edx)
 {
-    const reg32 frame = esp - 2 * 4;
-    Game g(app, cpu, frame);
+    const u32 frame = esp - 2 * 4;
+    Game g(app, ts, frame);
     if (kMenuMusic(app) != 0 && kMusicOn(app) != 0 && gameSettings(app).installIsRemote == 0 && gameSettings(app).raceMusicVolume != 0
         && kOwnTune(app) == 0)
     {
         // (`edx` the interruption's end is handed: it reads only the event.)
         (void)edx;
         g.atCall();
-        if (!tookEax(guest::direct<kPathEventInterrupt, stream::pathEventInterrupt>(app, cpu, g.esp - 4, 0), eax))
+        if (!tookEax(guest::direct<kPathEventInterrupt, stream::pathEventInterrupt>(app, ts, g.esp - 4, 0), eax))
             return std::nullopt;
         // The chase's event while the music has a level of its own, else the calm one.
-        const reg32 event = kMusicLevel(app) != -1 ? 1 : reg32(kCalmEvent(app));
+        const u32 event = kMusicLevel(app) != -1 ? 1 : u32(kCalmEvent(app));
         g.atCall();
-        if (!tookEax(guest::direct<kPathEvent, stream::pathEvent>(app, cpu, g.esp - 4, int32_t(event), 0), eax))
+        if (!tookEax(guest::direct<kPathEvent, stream::pathEvent>(app, ts, g.esp - 4, int32_t(event), 0), eax))
             return std::nullopt;
     }
     return int32_t(eax);
 }
 
-x86::reg32 musicEventResume(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 musicEventResume(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, musicEventResumed(app, cpu, e.esp, e.eax, e.edx));
+    const Entry e(ts, args);
+    return e.finish(ts, args, musicEventResumed(app, ts, e.esp, e.eax, e.edx));
 }
 
 /* 0x418990: player edx's chase at level eax: the beeps when it rises; the
  * race's music (player one's, its own music on) following -- the chase's
  * event when the chase starts, its level up at 4 and on, down at 2, the
  * calm event back when it ends.  eax as the code leaves it. */
-x86::reg32 chaseLevel(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 chaseLevel(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    const reg32 frame = e.frame(5);
-    const HeldEbp ebp(cpu, frame);
-    Game g(app, cpu, frame);
+    const Entry e(ts, args);
+    const u32 frame = e.frame(5);
+    const HeldEbp ebp(ts, frame);
+    Game g(app, ts, frame);
     const int32_t level = int32_t(e.eax);
     const int32_t player = int32_t(e.edx);
-    reg32 eax = e.eax;
+    u32 eax = e.eax;
     // The game's trace, compiled out (its words, 0x64, 1 and the text, the caller's to push): nothing.
-    const auto trace = [&](reg32) {
+    const auto trace = [&](u32) {
         g.atCall();
-        guest::direct<kTrace, ea::traceOff>(app, cpu);
-        return !cpu.terminate;
+        guest::direct<kTrace, ea::traceOff>(app, ts);
+        return !ts.terminate;
     };
     // Pathfinder's event and control, as C++ (the player and the level the code keeps in ebx and ecx are not
     // read by them).
-    const auto event = [&](reg32 first, reg32 second) {
+    const auto event = [&](u32 first, u32 second) {
         g.atCall();
-        return tookEax(guest::direct<kPathEvent, stream::pathEvent>(app, cpu, g.esp - 4, int32_t(first),
+        return tookEax(guest::direct<kPathEvent, stream::pathEvent>(app, ts, g.esp - 4, int32_t(first),
                                                                     int32_t(second)),
                        eax);
     };
-    const auto control = [&](reg32 first) {
+    const auto control = [&](u32 first) {
         g.atCall();
-        return tookEax(guest::direct<kPathControl, stream::pathControl>(app, cpu, g.esp - 4, int32_t(first)), eax);
+        return tookEax(guest::direct<kPathControl, stream::pathControl>(app, ts, g.esp - 4, int32_t(first)), eax);
     };
     /* The beeps for a rise: false when the level is as it was (nothing more
      * to do); `stopped` when the game stopped. */
     bool stopped = false;
     const auto rise = [&]() {
         const int32_t was = kChaseLevels(app, player);
-        eax = reg32(player) * 4;
+        eax = u32(player) * 4;
         if (level == was)
             return false;
         if (level > was)
         {
             g.atCall();
-            stopped = !tookEax(guest::direct<kBeepStart, beepsStarted>(app, cpu, g.esp - 4, level, player), eax);
+            stopped = !tookEax(guest::direct<kBeepStart, beepsStarted>(app, ts, g.esp - 4, level, player), eax);
         }
         return true;
     };
     const auto keep = [&] {
         kChaseLevels.set(app, player, level);
-        return e.back(cpu, args, eax);
+        return e.back(ts, args, eax);
     };
     const bool music = kMusicOn(app) != 0 && gameSettings(app).installIsRemote == 0 && gameSettings(app).raceMusicVolume != 0 && kOwnTune(app) == 0
                        && player != 1;
     if (!music)
     {
         if (!rise())
-            return e.back(cpu, args, eax);
+            return e.back(ts, args, eax);
         if (stopped)
             return args.eax;
         return keep();
@@ -218,7 +218,7 @@ x86::reg32 chaseLevel(App* app, CPU& cpu, x86::Args& args)
             if (!event(eax, e.edx))
                 return args.eax;
             if (level == kChaseLevels(app, player))
-                return e.back(cpu, args, eax);
+                return e.back(ts, args, eax);
         }
         if (level != 0 && kMusicLevel(app) == -1 && kChaseMusic(app) != 0)
         {
@@ -235,14 +235,14 @@ x86::reg32 chaseLevel(App* app, CPU& cpu, x86::Args& args)
                     return args.eax;
                 kMusicLevel.set(app, 0);
             }
-            if (!event(1, 0) || !control(reg32(kMusicLevel(app))))
+            if (!event(1, 0) || !control(u32(kMusicLevel(app))))
                 return args.eax;
             if (level == kChaseLevels(app, player))
-                return e.back(cpu, args, eax);
+                return e.back(ts, args, eax);
         }
     }
     if (!rise())
-        return e.back(cpu, args, eax);
+        return e.back(ts, args, eax);
     if (stopped)
         return args.eax;
     if (kMenuMusic(app) == 0)

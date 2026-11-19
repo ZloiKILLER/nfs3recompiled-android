@@ -1,10 +1,10 @@
 #ifndef LIB_EVENT_H_
 #define LIB_EVENT_H_
-#include <lib/winapp.h>
+#include <lib/app.h>
 #include <string>
 #include <vector>
 
-namespace win32
+namespace nfs
 {
 
 class Event : public GenericResource
@@ -14,8 +14,8 @@ public:
     ~Event();
 
     void set();
-    x86::reg32 pulse();
-    static x86::reg32 wait(x86::CPU& cpu, Event** begin, Event** end, bool waitAll, x86::sreg32 timeout);
+    nfs::u32 pulse();
+    static nfs::u32 wait(nfs::ThreadState& ts, Event** begin, Event** end, bool waitAll, nfs::s32 timeout);
     static void broadcastTerminate();
 
     static void init();
@@ -23,7 +23,7 @@ public:
 
 private:
     std::string             m_name;
-    std::vector<x86::reg32> m_waitingThreads;
+    std::vector<nfs::u32> m_waitingThreads;
     bool                    m_manualReset;
     bool                    m_isSet;
     bool                    m_pulse;

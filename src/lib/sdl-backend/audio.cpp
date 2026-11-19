@@ -4,12 +4,12 @@
 #include <vector>
 #include <algorithm>
 
-namespace win32
+namespace nfs
 {
 
-static const x86::reg32 s_channelCount = 2;
-static const x86::reg32 s_sampleCount = 4096;
-static const x86::reg32 s_sampleSize = s_sampleCount * s_channelCount;
+static const nfs::u32 s_channelCount = 2;
+static const nfs::u32 s_sampleCount = 4096;
+static const nfs::u32 s_sampleSize = s_sampleCount * s_channelCount;
 
 /* The game mixes at 22050 Hz and the stream takes it at that rate; the device
  * runs at the phone's own rate (NFS_AUDIO_RATE, from AudioManager), and SDL
@@ -97,7 +97,7 @@ void AudioDevice::stop(AudioBuffer* buffer)
 void AudioDevice::audioCallback22050(void* userdata, SDL_AudioStream* stream, int additional_amount, int /*total_amount*/)
 {
     AudioDevice* audio = reinterpret_cast<AudioDevice*>(userdata);
-    std::vector<x86::reg8> buffer(additional_amount, 0);
+    std::vector<nfs::u8> buffer(additional_amount, 0);
     for (std::vector<AudioBuffer*>::iterator it = audio->m_playingBuffers.begin();
         it != audio->m_playingBuffers.end();
         ++it)
@@ -109,19 +109,19 @@ void AudioDevice::audioCallback22050(void* userdata, SDL_AudioStream* stream, in
 }
 
 
-AudioBuffer::AudioBuffer(AudioDevice* device, WinApplication* app, x86::reg32 bufferSize)
+AudioBuffer::AudioBuffer(AudioDevice* device, App* app, nfs::u32 bufferSize)
     :   m_device(device)
-    ,   m_bufferSize(bufferSize ? bufferSize : s_sampleSize  * sizeof(x86::sreg16))
+    ,   m_bufferSize(bufferSize ? bufferSize : s_sampleSize  * sizeof(nfs::s16))
     ,   m_memmap(new MemMap(m_bufferSize))
     ,   m_bufferMap(new MemMap(m_bufferSize))
-    ,   m_buffer(&app->getMemory<x86::sreg16>(m_memmap->getBlockStart()))
+    ,   m_buffer(&app->getMemory<nfs::s16>(m_memmap->getBlockStart()))
     ,   m_playStart(0)
     ,   m_playStop(0)
     ,   m_primary(bufferSize == 0)
 {
 }
 
-x86::reg32 AudioBuffer::bufferSize() const
+nfs::u32 AudioBuffer::bufferSize() const
 {
     return m_bufferSize;
 }
@@ -145,23 +145,23 @@ void AudioBuffer::stop()
 /* Adds what is written and not yet played, up to `len` bytes, to `stream`.  The
  * device's callback hands every buffer the same block: a buffer that zeroed it
  * first, as this one used to, wiped out the buffers mixed before it. */
-void AudioBuffer::audioCallback22050(x86::reg8* stream, int len)
+void AudioBuffer::audioCallback22050(nfs::u8* stream, int len)
 {
-    x86::sreg16* destData = reinterpret_cast<x86::sreg16*>(stream);
-    x86::reg32 start = m_playStart;
-    x86::reg32 stop = start + len;
+    nfs::s16* destData = reinterpret_cast<nfs::s16*>(stream);
+    nfs::u32 start = m_playStart;
+    nfs::u32 stop = start + len;
     if (stop > m_playStop)
     {
         stop = m_playStop;
     }
     if (stop <= start) return;
-    x86::reg32 samples = (stop - start) / sizeof(x86::sreg16);
-    x86::reg32 at = (start % m_bufferSize) / sizeof(x86::sreg16);
-    const x86::reg32 ring = m_bufferSize / sizeof(x86::sreg16);
+    nfs::u32 samples = (stop - start) / sizeof(nfs::s16);
+    nfs::u32 at = (start % m_bufferSize) / sizeof(nfs::s16);
+    const nfs::u32 ring = m_bufferSize / sizeof(nfs::s16);
     for (; samples; --samples, ++destData)
     {
         const int mixed = int(*destData) + int(m_buffer[at]);
-        *destData = x86::sreg16(mixed > 32767 ? 32767 : mixed < -32768 ? -32768 : mixed);
+        *destData = nfs::s16(mixed > 32767 ? 32767 : mixed < -32768 ? -32768 : mixed);
         if (++at == ring)
             at = 0;
     }
@@ -169,25 +169,25 @@ void AudioBuffer::audioCallback22050(x86::reg8* stream, int len)
     return;
 }
 
-/*void AudioBuffer::audioCallback44100(void *userdata, x86::reg8 *stream, int len)
+/*void AudioBuffer::audioCallback44100(void *userdata, nfs::u8 *stream, int len)
 {
     AudioBuffer* audio = reinterpret_cast<AudioBuffer*>(userdata);
-    x86::sreg16* destData = reinterpret_cast<x86::sreg16*>(stream);
+    nfs::s16* destData = reinterpret_cast<nfs::s16*>(stream);
     NFS2_ASSERT((len/4) % s_sampleSize == 0);
-    for (x86::reg32 chunk = 0; chunk < (len/4) / s_sampleSize; ++chunk)
+    for (nfs::u32 chunk = 0; chunk < (len/4) / s_sampleSize; ++chunk)
     {
-        x86::CPU cpu;
-        cpu.edx = s_sampleCount;
-        cpu.eax = audio->m_memmap->getBlockStart();
-        cpu.esp = audio->m_memmap->getBlockStart() + audio->m_memmap->getBlockSize() - 4;
-        audio->m_app->runThread(cpu, audio->m_bufferCallback);
+        nfs::ThreadState ts;
+        ts.edx = s_sampleCount;
+        ts.eax = audio->m_memmap->getBlockStart();
+        ts.sp = audio->m_memmap->getBlockStart() + audio->m_memmap->getBlockSize() - 4;
+        audio->m_app->runThread(ts, audio->m_bufferCallback);
 
-        x86::sreg16* srcData = audio->m_buffer;
+        nfs::s16* srcData = audio->m_buffer;
         destData[0] = srcData[0];
         destData[1] = srcData[1];
         destData[2] = (srcData[0] + srcData[2]) / 2;
         destData[3] = (srcData[1] + srcData[3]) / 2;
-        for (x86::reg32 i = 1; i < s_sampleCount; i ++)
+        for (nfs::u32 i = 1; i < s_sampleCount; i ++)
         {
             destData[i * 4 + 0] = srcData[i * 2];
             destData[i * 4 + 1] = srcData[i * 2 + 1];
@@ -196,11 +196,11 @@ void AudioBuffer::audioCallback22050(x86::reg8* stream, int len)
         }
         destData += s_sampleSize * 2;
     }
-    NFS2_ASSERT(reinterpret_cast<x86::reg8*>(destData) == stream + len);
+    NFS2_ASSERT(reinterpret_cast<nfs::u8*>(destData) == stream + len);
     return;
 }*/
 
-x86::reg32 AudioBuffer::lock()
+nfs::u32 AudioBuffer::lock()
 {
     return m_memmap->getBlockStart();
 }
@@ -210,7 +210,7 @@ x86::reg32 AudioBuffer::lock()
  * way in the menus: skipping the difference, as was tried on 2026-09-29, made
  * the menu's sound run fast and the movies, which keep time by it, run at
  * several times their speed. */
-void AudioBuffer::unlock(x86::reg32 bufferWritten)
+void AudioBuffer::unlock(nfs::u32 bufferWritten)
 {
     SDL_AudioStream* stream = m_device->stream();
     if (stream)

@@ -12,7 +12,7 @@ namespace loader
 
 // The game's 0x49cfa0: the FCE model in memory at `fce` turned into the game's polygon records; the FCE
 // (nullopt when the game stopped).  Called with esp at its return address's slot.
-std::optional<x86::reg32> fceModelReady(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 fce);
+std::optional<nfs::u32> fceModelReady(nfs::App* app, nfs::ThreadState& ts, nfs::u32 fce);
 
 }  // namespace loader
 

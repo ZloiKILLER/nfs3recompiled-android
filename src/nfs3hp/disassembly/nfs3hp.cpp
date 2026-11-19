@@ -1,6 +1,6 @@
 #include "nfs3hp.h"
-#include <x86.h>
-#include <winapi/wrapper.h>
+#include <game_types.h>
+#include <lib/app.h>
 #include "eacsnd.h"
 #include "voodoo2a.h"
 
@@ -8,7 +8,7 @@ namespace nfs3hp
 {
 
 Application::Application(const char* appName)
-    :   WinApplication(appName, 0x401000, { { s_AUTOSegment, 0x401000, 1257472 }, { s__idataSegment, 0x534000, 5632 }, { s_DGROUPSegment, 0x536000, 226816 }, { nullptr, 0x56e000, 4891648 }, { s__rsrcSegment, 0xa31000, 2048 }, { eacsnd::s_AUTOSegment, 0xa32800, 29696 }, { eacsnd::s__idataSegment, 0xa3a800, 1536 }, { eacsnd::s_DGROUPSegment, 0xa3b800, 6656 }, { nullptr, 0xa3d800, 2560 }, { eacsnd::s__edataSegment, 0xa3e800, 1024 }, { voodoo2a::s_AUTOSegment, 0xa83200, 52224 }, { voodoo2a::s__idataSegment, 0xa90200, 2048 }, { voodoo2a::s_DGROUPSegment, 0xa91200, 7680 }, { nullptr, 0xa93200, 6656 }, { voodoo2a::s__edataSegment, 0xa95200, 1536 }, { voodoo2a::s__rsrcSegment, 0xa97200, 1024 } })
+    :   App(appName, 0x401000, { { s_AUTOSegment, 0x401000, 1257472 }, { s__idataSegment, 0x534000, 5632 }, { s_DGROUPSegment, 0x536000, 226816 }, { nullptr, 0x56e000, 4891648 }, { s__rsrcSegment, 0xa31000, 2048 }, { eacsnd::s_AUTOSegment, 0xa32800, 29696 }, { eacsnd::s__idataSegment, 0xa3a800, 1536 }, { eacsnd::s_DGROUPSegment, 0xa3b800, 6656 }, { nullptr, 0xa3d800, 2560 }, { eacsnd::s__edataSegment, 0xa3e800, 1024 }, { voodoo2a::s_AUTOSegment, 0xa83200, 52224 }, { voodoo2a::s__idataSegment, 0xa90200, 2048 }, { voodoo2a::s_DGROUPSegment, 0xa91200, 7680 }, { nullptr, 0xa93200, 6656 }, { voodoo2a::s__edataSegment, 0xa95200, 1536 }, { voodoo2a::s__rsrcSegment, 0xa97200, 1024 } })
 {
         eacsnd::s_registry->registerSymbols(this);
         voodoo2a::s_registry->registerSymbols(this);
@@ -3576,11 +3576,9 @@ Application::Application(const char* appName)
     registerMethod(0x004eb420, {"<nfs3hp>pieces::stub_0x4eb420", &nfs3hp::pieces::stub_0x4eb420});
     registerMethod(0x004eb430, {"<nfs3hp>frontend::ddrawCreate", &nfs3hp::frontend::ddrawCreate});
     registerMethod(0x004eb490, {"<nfs3hp>frontend::ddrawMakePrimary", &nfs3hp::frontend::ddrawMakePrimary});
-    registerMethod(0x004eb5e0, {"<nfs3hp>frontend::ddrawLockSurface", &nfs3hp::frontend::ddrawLockSurface});
     registerMethod(0x004eb810, {"<nfs3hp>dead::stub_0x4eb810", &nfs3hp::dead::stub_0x4eb810});
     registerMethod(0x004eb830, {"<nfs3hp>dead::stub_0x4eb830", &nfs3hp::dead::stub_0x4eb830});
     registerMethod(0x004eb880, {"<nfs3hp>frontend::countBits", &nfs3hp::frontend::countBits});
-    registerMethod(0x004eb8a0, {"<nfs3hp>frontend::ddrawNoteMode", &nfs3hp::frontend::ddrawNoteMode});
     registerMethod(0x004eba30, {"<nfs3hp>dead::stub_0x4eba30", &nfs3hp::dead::stub_0x4eba30});
     registerMethod(0x004eba70, {"<nfs3hp>AcquireWindow", &nfs3hp::AcquireWindow});
     registerMethod(0x004eba80, {"<nfs3hp>frontend::movieScreenDevice", &nfs3hp::frontend::movieScreenDevice});
@@ -3619,7 +3617,6 @@ Application::Application(const char* appName)
     registerMethod(0x004ed990, {"<nfs3hp>dead::stub_0x4ed990", &nfs3hp::dead::stub_0x4ed990});
     registerMethod(0x004eda10, {"<nfs3hp>dead::stub_0x4eda10", &nfs3hp::dead::stub_0x4eda10});
     registerMethod(0x004edb80, {"<nfs3hp>dead::stub_0x4edb80", &nfs3hp::dead::stub_0x4edb80});
-    registerMethod(0x004edbc0, {"<nfs3hp>frontend::ddrawEnumModeCallback", &nfs3hp::frontend::ddrawEnumModeCallback});
     registerMethod(0x004edd80, {"<nfs3hp>watcom::open_flags", &nfs3hp::watcom::open_flags});
     registerMethod(0x004edebc, {"<nfs3hp>watcom::doopen", &nfs3hp::watcom::doopen});
     registerMethod(0x004edfa4, {"<nfs3hp>watcom::fsopen", &nfs3hp::watcom::fsopen});
@@ -6116,7 +6113,7 @@ Application::Application(const char* appName)
 
 void Application::execute()
 {
-    runThread(m_cpu, 0x4f7fa0);
+    runThread(m_ts, 0x4f7fa0);
 }
 
 }

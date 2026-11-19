@@ -20,23 +20,23 @@ namespace
 /* A call through a pointer or to a function of the game's that has no typed core: Watcom's register
  * arguments (eax, edx, ebx, ecx in turn) and the stack words as `arguments` have them, through
  * guest::pointerCall; its eax, and Terminated when the game stopped in it. */
-x86::reg32 callAt(fe::Guest& guest, x86::reg32 target, const fe::Arguments& arguments = fe::Arguments())
+nfs::u32 callAt(fe::Guest& guest, nfs::u32 target, const fe::Arguments& arguments = fe::Arguments())
 {
-    x86::CPU& cpu = guest.cpu();
-    x86::Args registers;
-    x86::reg32* const into[4] = { &registers.eax, &registers.edx, &registers.ebx, &registers.ecx };
+    nfs::ThreadState& ts = guest.ts();
+    nfs::Args registers;
+    nfs::u32* const into[4] = { &registers.eax, &registers.edx, &registers.ebx, &registers.ecx };
     for (std::size_t i = 0; i < arguments.registerCount; ++i)
         *into[i] = arguments.registers[i];
-    const x86::reg32 esp = cpu.esp;
+    const nfs::u32 esp = ts.sp;
     for (std::size_t i = arguments.stackCount; i-- > 0;)
     {
-        cpu.esp -= 4;
-        guest.setDword(cpu.esp, arguments.stack[i]);
+        ts.sp -= 4;
+        guest.setDword(ts.sp, arguments.stack[i]);
     }
-    const std::optional<x86::reg32> result = guest::pointerCall(guest.app(), cpu, target, registers);
+    const std::optional<nfs::u32> result = guest::pointerCall(guest.app(), ts, target, registers);
     if (!result)
         throw fe::Terminated();
-    cpu.esp = esp;
+    ts.sp = esp;
     return *result;
 }
 
@@ -68,12 +68,12 @@ namespace
 using fe::Guest;
 using fe::GuestString;
 using fe::Item;
-using App = win32::WinApplication;
-using CPU = x86::CPU;
-using x86::reg32;
+using App = nfs::App;
+using ThreadState = nfs::ThreadState;
+using nfs::u32;
 
-constexpr x86::reg32 kNetworkConnected = 0x7a22e0;
-constexpr x86::reg32 kSprintf = 0x4df690;
+constexpr nfs::u32 kNetworkConnected = 0x7a22e0;
+constexpr nfs::u32 kSprintf = 0x4df690;
 
 /* ---------------------------------------------------------------------------
  * location
@@ -91,10 +91,10 @@ constexpr GuestString kLocationItems[] = {
 }  // namespace
 
 /* sub_4487e0, location as it opens: everything greyed out in a series. */
-x86::reg32 frontend::tracks::locationEnter(App* app, CPU& cpu, reg32 menu)
+nfs::u32 frontend::tracks::locationEnter(App* app, ThreadState& ts, u32 menu)
 {
-    Guest guest(app, cpu);
-    const fe::Frame frame(guest, cpu, 24);
+    Guest guest(app, ts);
+    const fe::Frame frame(guest, ts, 24);
     for (const GuestString& codelink : kLocationItems)
     {
         if (Item item = fe::findItem(guest, menu, codelink))
@@ -107,11 +107,11 @@ x86::reg32 frontend::tracks::locationEnter(App* app, CPU& cpu, reg32 menu)
 }
 
 /* sub_4487d0, location's every pass: the developer's recorder. */
-x86::reg32 frontend::tracks::locationFrame(App* app, CPU& cpu)
+nfs::u32 frontend::tracks::locationFrame(App* app, ThreadState& ts)
 {
-    Guest guest(app, cpu);
-    const fe::Frame frame(guest, cpu, 4);
-    fe::direct<0x426b00, frontend::cars::recordTrack>(app, cpu, 0);  // its result is not read
+    Guest guest(app, ts);
+    const fe::Frame frame(guest, ts, 4);
+    fe::direct<0x426b00, frontend::cars::recordTrack>(app, ts, 0);  // its result is not read
     return 0;
 }
 
@@ -123,42 +123,42 @@ namespace
 {
 
 // The screen's state: shown, the description still to be spoken.
-constexpr x86::reg32 kSpeakDescription = 0x559828;
-constexpr x86::reg32 kInfoTrack = 0x677d8c;
-constexpr x86::reg32 kInfo818 = 0x559818;
-constexpr x86::reg32 kInfo81c = 0x55981c;
-constexpr x86::reg32 kInfoD78 = 0x677d78;
-constexpr x86::reg32 kFlagShape = 0x677d92;        // int16
-constexpr x86::reg32 kInfoArt = 0x677d80;          // the track's .qfs, loaded
-constexpr x86::reg32 kInfoD90 = 0x677d90;          // int16
+constexpr nfs::u32 kSpeakDescription = 0x559828;
+constexpr nfs::u32 kInfoTrack = 0x677d8c;
+constexpr nfs::u32 kInfo818 = 0x559818;
+constexpr nfs::u32 kInfo81c = 0x55981c;
+constexpr nfs::u32 kInfoD78 = 0x677d78;
+constexpr nfs::u32 kFlagShape = 0x677d92;        // int16
+constexpr nfs::u32 kInfoArt = 0x677d80;          // the track's .qfs, loaded
+constexpr nfs::u32 kInfoD90 = 0x677d90;          // int16
 // The tracks' art files and their map's places: a count for each track, and
 // for each place the name of its shape (a format, with nothing to fill in).
-constexpr x86::reg32 kTrackArtNames = 0x559620;
-constexpr x86::reg32 kTrackPlaceCounts = 0x5597f4;
-constexpr x86::reg32 kTrackPlaceNames = 0x5596d4;  // four for each track
+constexpr nfs::u32 kTrackArtNames = 0x559620;
+constexpr nfs::u32 kTrackPlaceCounts = 0x5597f4;
+constexpr nfs::u32 kTrackPlaceNames = 0x5596d4;  // four for each track
 constexpr std::int32_t kTracksWithPlaces = 9;
 // The places' shapes and where they stand, int16 each.
-constexpr x86::reg32 kPlaceShapes = 0x677d70;
-constexpr x86::reg32 kPlaceX = 0x677d50;
-constexpr x86::reg32 kPlaceY = 0x677d58;
-constexpr x86::reg32 kPlaceCentreX = 0x677d68;
-constexpr x86::reg32 kPlaceCentreY = 0x677d60;
-constexpr x86::reg32 kArtFolder = 0x7a31b4;
-constexpr x86::reg32 kDisplayFlags = 0x7a3a58;     // byte
+constexpr nfs::u32 kPlaceShapes = 0x677d70;
+constexpr nfs::u32 kPlaceX = 0x677d50;
+constexpr nfs::u32 kPlaceY = 0x677d58;
+constexpr nfs::u32 kPlaceCentreX = 0x677d68;
+constexpr nfs::u32 kPlaceCentreY = 0x677d60;
+constexpr nfs::u32 kArtFolder = 0x7a31b4;
+constexpr nfs::u32 kDisplayFlags = 0x7a3a58;     // byte
 constexpr std::uint8_t kNoTranslucency = 0x02;
-constexpr x86::reg32 kMaskShape = 0x44;            // int16 of the mask's item: its texture
+constexpr nfs::u32 kMaskShape = 0x44;            // int16 of the mask's item: its texture
 
 // The game's.
-constexpr x86::reg32 kFindShapeFormat = 0x4ef270;  // eax the file, edx a name: the places'
+constexpr nfs::u32 kFindShapeFormat = 0x4ef270;  // eax the file, edx a name: the places'
 // The description, a stream.
-constexpr x86::reg32 kStartStream = 0x4c9240;      // eax a path
+constexpr nfs::u32 kStartStream = 0x4c9240;      // eax a path
 constexpr std::uint32_t kDescriptionVolume = 0x33;
-constexpr x86::reg32 kSpeaking = 0x7dd838;
-constexpr x86::reg32 kStreamHandle = 0x7dd844;
-constexpr x86::reg32 kStreamBuffer = 0x7dd84c;
+constexpr nfs::u32 kSpeaking = 0x7dd838;
+constexpr nfs::u32 kStreamHandle = 0x7dd844;
+constexpr nfs::u32 kStreamBuffer = 0x7dd84c;
 // The languages' folders (the 6th is the first's) and their speakers' names.
-constexpr x86::reg32 kLanguageFolders[] = { 0x7a2b34, 0x7a2bb4, 0x7a2c34, 0x7a2cb4, 0x7a2d34, 0x7a2b34 };
-constexpr x86::reg32 kLanguageSpeakers = 0x560b34;
+constexpr nfs::u32 kLanguageFolders[] = { 0x7a2b34, 0x7a2bb4, 0x7a2c34, 0x7a2cb4, 0x7a2d34, 0x7a2b34 };
+constexpr nfs::u32 kLanguageSpeakers = 0x560b34;
 
 constexpr GuestString kFlag{ 0x539a88, "flag" };
 constexpr GuestString kArtName{ 0x539a90, "%s%s.qfs" };
@@ -177,30 +177,30 @@ std::int32_t half(std::int32_t value)
 /* sub_456200: the track's places on its map -- each one's shape, where it
  * stands and its centre; none for the tracks past the first nine, nor for the
  * first in a network race. */
-x86::reg32 frontend::tracks::placeTrackPlaces(App* app, CPU& cpu, reg32 eax)
+nfs::u32 frontend::tracks::placeTrackPlaces(App* app, ThreadState& ts, u32 eax)
 {
-    Guest guest(app, cpu);
-    const fe::Frame frame(guest, cpu, 24 + 0x50);
+    Guest guest(app, ts);
+    const fe::Frame frame(guest, ts, 24 + 0x50);
     const std::int32_t track = std::int32_t(gameSettings(guest).track);
     if (track >= kTracksWithPlaces || (guest.dword(kNetworkConnected) != 0 && track == 0))
     {
-        for (const x86::reg32 at : { 0x677d74u, 0x677d72u, 0x677d70u, 0x677d76u })
+        for (const nfs::u32 at : { 0x677d74u, 0x677d72u, 0x677d70u, 0x677d76u })
             guest.setWord(at, 0);
         return eax;
     }
-    const x86::reg32 name = guest.frame();   // char[0x50]
-    for (x86::reg32 i = 0;; ++i)
+    const nfs::u32 name = guest.frame();   // char[0x50]
+    for (nfs::u32 i = 0;; ++i)
     {
-        const x86::reg32 t = gameSettings(guest).track;
+        const nfs::u32 t = gameSettings(guest).track;
         if (std::int32_t(i) >= std::int32_t(guest.dword(kTrackPlaceCounts + 4 * t)))
             return t;
-        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), name, guest.dword(kTrackPlaceNames + 16 * t + 4 * i), guest::Words({}));
-        const x86::reg32 shape = callAt(guest, kFindShapeFormat, fe::args({ guest.dword(kInfoArt), name }));
-        const x86::reg32 opaque = (guest.byte(kDisplayFlags) & kNoTranslucency) ? 0xffffffff : 0;
-        const auto texture = fe::direct<0x4d6390, port::shapes::artTexturesOf>(app, cpu, cpu.esp - 4, shape,
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.ts(), name, guest.dword(kTrackPlaceNames + 16 * t + 4 * i), guest::Words({}));
+        const nfs::u32 shape = callAt(guest, kFindShapeFormat, fe::args({ guest.dword(kInfoArt), name }));
+        const nfs::u32 opaque = (guest.byte(kDisplayFlags) & kNoTranslucency) ? 0xffffffff : 0;
+        const auto texture = fe::direct<0x4d6390, port::shapes::artTexturesOf>(app, ts, ts.sp - 4, shape,
                                                                                std::int32_t(opaque), 0);
         guest.setWord(kPlaceShapes + 2 * i, std::uint16_t(*texture));
-        const x86::reg32 place = guest.dword(shape + 0xc);
+        const nfs::u32 place = guest.dword(shape + 0xc);
         const std::int32_t x = std::int32_t(place << 20) >> 20;
         const std::int32_t y = std::int32_t(place << 4) >> 20;
         guest.setWord(kPlaceX + 2 * i, std::uint16_t(x));
@@ -211,86 +211,86 @@ x86::reg32 frontend::tracks::placeTrackPlaces(App* app, CPU& cpu, reg32 eax)
 }
 
 /* sub_4568d0, trkinfo as it opens: the track's art, its mask, its places. */
-x86::reg32 frontend::tracks::infoEnter(App* app, CPU& cpu, reg32 menu)
+nfs::u32 frontend::tracks::infoEnter(App* app, ThreadState& ts, u32 menu)
 {
-    Guest guest(app, cpu);
-    const fe::Frame frame(guest, cpu, 16 + 0x50);
+    Guest guest(app, ts);
+    const fe::Frame frame(guest, ts, 16 + 0x50);
     guest.setDword(kSpeakDescription, 1);
     guest.setDword(kInfoTrack, gameSettings(guest).track);
     guest.setDword(kInfo818, 0);
     guest.setDword(kInfo81c, 0);
     guest.setDword(kInfoD78, 0);
     guest.setWord(kFlagShape,
-                  std::uint16_t(*fe::direct<0x4d5db0, port::shapes::shapeNamed>(app, cpu, cpu.esp - 4, kFlag.address)));
-    const x86::reg32 name = guest.frame();   // char[0x50]
-    fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), name, kArtName.address, guest::Words{kArtFolder, guest.dword(kTrackArtNames + 4 * gameSettings(guest).track)});
+                  std::uint16_t(*fe::direct<0x4d5db0, port::shapes::shapeNamed>(app, ts, ts.sp - 4, kFlag.address)));
+    const nfs::u32 name = guest.frame();   // char[0x50]
+    fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.ts(), name, kArtName.address, guest::Words{kArtFolder, guest.dword(kTrackArtNames + 4 * gameSettings(guest).track)});
     // The game's code hands it "trkinfomask" in edx too, which it does not read.
     guest.setDword(kInfoArt,
-                   reg32(*fe::direct<0x44ac90, port::buttons::shapesLoaded>(app, cpu, cpu.esp - 4, name, 0)));
+                   u32(*fe::direct<0x44ac90, port::buttons::shapesLoaded>(app, ts, ts.sp - 4, name, 0)));
     if (Item mask = fe::findItem(guest, menu, kInfoMask))
     {
-        const x86::reg32 shape =
-            fe::direct<0x4ef1e0, frontend::eab::shapeFileFind>(app, cpu, guest.dword(kInfoArt), kMask.address);
+        const nfs::u32 shape =
+            fe::direct<0x4ef1e0, frontend::eab::shapeFileFind>(app, ts, guest.dword(kInfoArt), kMask.address);
         const auto texture =
-            fe::direct<0x4d6390, port::shapes::artTexturesOf>(app, cpu, cpu.esp - 4, shape, 0, 0);
+            fe::direct<0x4d6390, port::shapes::artTexturesOf>(app, ts, ts.sp - 4, shape, 0, 0);
         guest.setWord(mask.address() + kMaskShape, std::uint16_t(*texture));
     }
-    const auto mapShape = fe::direct<0x456800, port::buttons::mapShape>(app, cpu, cpu.esp - 4, 0, 0);
+    const auto mapShape = fe::direct<0x456800, port::buttons::mapShape>(app, ts, ts.sp - 4, 0, 0);
     guest.setWord(kInfoD90, std::uint16_t(*mapShape));
-    guest::direct<0x456200, placeTrackPlaces>(app, cpu, 0);  // its result is not read
+    guest::direct<0x456200, placeTrackPlaces>(app, ts, 0);  // its result is not read
     return 0;
 }
 
 /* sub_4c94e0: the track's description spoken, from the language's folder. */
-x86::reg32 frontend::tracks::speak(App* app, CPU& cpu, reg32 language, reg32 track)
+nfs::u32 frontend::tracks::speak(App* app, ThreadState& ts, u32 language, u32 track)
 {
-    Guest guest(app, cpu);
-    const fe::Frame frame(guest, cpu, 16 + 0x200);
-    const x86::reg32 path = guest.frame();          // char[0x100]
-    const x86::reg32 folder = guest.frame() + 0x100;
-    const x86::reg32 shown = gameSettings(guest).language;
+    Guest guest(app, ts);
+    const fe::Frame frame(guest, ts, 16 + 0x200);
+    const nfs::u32 path = guest.frame();          // char[0x100]
+    const nfs::u32 folder = guest.frame() + 0x100;
+    const nfs::u32 shown = gameSettings(guest).language;
     if (shown < std::size(kLanguageFolders))
         guest.copyString(folder, kLanguageFolders[shown]);
-    const x86::reg32 speaker = guest.dword(kLanguageSpeakers + 4 * language);
-    fe::direct<kSprintf, watcom::clib::sprintf>(app, cpu, path, kDescriptionName.address,
+    const nfs::u32 speaker = guest.dword(kLanguageSpeakers + 4 * language);
+    fe::direct<kSprintf, watcom::clib::sprintf>(app, ts, path, kDescriptionName.address,
                                                 guest::Words{folder, speaker, track});
-    const x86::reg32 started = callAt(guest, kStartStream, fe::args({ path }));
+    const nfs::u32 started = callAt(guest, kStartStream, fe::args({ path }));
     if (started != 0)
         guest.setDword(kSpeaking, 1);
     return started;
 }
 
 /* sub_456890, trkinfo on every pass: the description, once. */
-x86::reg32 frontend::tracks::infoFrame(App* app, CPU& cpu)
+nfs::u32 frontend::tracks::infoFrame(App* app, ThreadState& ts)
 {
-    Guest guest(app, cpu);
-    const fe::Frame frame(guest, cpu, 16);
+    Guest guest(app, ts);
+    const fe::Frame frame(guest, ts, 16);
     if (guest.dword(kSpeakDescription) != 0)
     {
         guest.setDword(kSpeakDescription, 0);
-        guest::direct<0x4c94e0, speak>(app, cpu, gameSettings(guest).language, gameSettings(guest).track);
-        fe::direct<0x4c95f0, port::descriptionStarted>(app, cpu, cpu.esp - 4, 0, kDescriptionVolume,
+        guest::direct<0x4c94e0, speak>(app, ts, gameSettings(guest).language, gameSettings(guest).track);
+        fe::direct<0x4c95f0, port::descriptionStarted>(app, ts, ts.sp - 4, 0, kDescriptionVolume,
                                                        gameSettings(guest).language);
     }
     return 0;
 }
 
 /* sub_4c9590: the description stopped, if it is spoken. */
-x86::reg32 frontend::tracks::stopSpeaking(App* app, CPU& cpu, reg32 eax)
+nfs::u32 frontend::tracks::stopSpeaking(App* app, ThreadState& ts, u32 eax)
 {
-    Guest guest(app, cpu);
-    const fe::Frame frame(guest, cpu, 16);
+    Guest guest(app, ts);
+    const fe::Frame frame(guest, ts, 16);
     if (guest.dword(kSpeaking) == 0)
         return eax;
-    fe::direct<0x4c9490, port::descriptionStopped>(app, cpu, cpu.esp - 4, eax);
+    fe::direct<0x4c9490, port::descriptionStopped>(app, ts, ts.sp - 4, eax);
     // What the calls leave in eax, the last one's: the cores hand theirs back.
-    x86::reg32 left =
-        reg32(*fe::direct<0x4e8c1c, port::removeEveryBank>(app, cpu, cpu.esp - 4, guest.dword(kStreamHandle)));
-    if (const x86::reg32 buffer = guest.dword(kStreamBuffer))
+    nfs::u32 left =
+        u32(*fe::direct<0x4e8c1c, port::removeEveryBank>(app, ts, ts.sp - 4, guest.dword(kStreamHandle)));
+    if (const nfs::u32 buffer = guest.dword(kStreamBuffer))
     {
         // The game's code hands it the edx the call before left, 0 in ebx and the buffer in ecx too,
         // which it does not read.
-        left = *fe::direct<0x4e1890, ea::purgeBlock>(app, cpu, buffer);
+        left = *fe::direct<0x4e1890, ea::purgeBlock>(app, ts, buffer);
         guest.setDword(kStreamBuffer, 0);
     }
     guest.setDword(kSpeaking, 0);
@@ -298,11 +298,11 @@ x86::reg32 frontend::tracks::stopSpeaking(App* app, CPU& cpu, reg32 eax)
 }
 
 /* sub_456990, trkinfo as it closes: the description stopped. */
-x86::reg32 frontend::tracks::infoExit(App* app, CPU& cpu)
+nfs::u32 frontend::tracks::infoExit(App* app, ThreadState& ts)
 {
-    Guest guest(app, cpu);
-    const fe::Frame frame(guest, cpu, 4);
-    guest::direct<0x4c9590, stopSpeaking>(app, cpu, 0);  // its result is not read
+    Guest guest(app, ts);
+    const fe::Frame frame(guest, ts, 4);
+    guest::direct<0x4c9590, stopSpeaking>(app, ts, 0);  // its result is not read
     return 0;
 }
 
@@ -319,65 +319,65 @@ const GuestString kSpeakStrings[] = { kDescriptionName };
 
 }  // namespace
 
-x86::reg32 frontend::locationOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 frontend::locationOnEnter(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site{ "sub_4487e0", 0, 0, kLocationStrings, std::size(kLocationStrings) };
-    const x86::reg32 menu = args.eax;
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return tracks::locationEnter(app, cpu, menu); });
+    const nfs::u32 menu = args.eax;
+    return fe::runThunk(app, ts, args, site, [&](Guest&) { return tracks::locationEnter(app, ts, menu); });
 }
 
-x86::reg32 frontend::locationOnFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 frontend::locationOnFrame(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site{ "sub_4487d0", 0, 0, nullptr, 0, 0 };
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return tracks::locationFrame(app, cpu); });
+    return fe::runThunk(app, ts, args, site, [&](Guest&) { return tracks::locationFrame(app, ts); });
 }
 
-x86::reg32 frontend::locationOnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 frontend::locationOnExit(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     // sub_4489e0: nothing to undo.
     static fe::Site site{ "sub_4489e0", 0, 4, nullptr, 0, 0 };
-    return fe::runThunk(app, cpu, args, site, [](Guest&) { return x86::reg32(0); });
+    return fe::runThunk(app, ts, args, site, [](Guest&) { return nfs::u32(0); });
 }
 
-x86::reg32 frontend::infoPlaceTrackPlaces(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 frontend::infoPlaceTrackPlaces(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site{ "sub_456200", 0, 0, nullptr, 0 };
-    const x86::reg32 eax = args.eax;
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return tracks::placeTrackPlaces(app, cpu, eax); });
+    const nfs::u32 eax = args.eax;
+    return fe::runThunk(app, ts, args, site, [&](Guest&) { return tracks::placeTrackPlaces(app, ts, eax); });
 }
 
-x86::reg32 frontend::infoOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 frontend::infoOnEnter(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site{ "sub_4568d0", 0, 0, kInfoEnterStrings, std::size(kInfoEnterStrings),
                           fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx };
-    const x86::reg32 menu = args.eax;
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return tracks::infoEnter(app, cpu, menu); });
+    const nfs::u32 menu = args.eax;
+    return fe::runThunk(app, ts, args, site, [&](Guest&) { return tracks::infoEnter(app, ts, menu); });
 }
 
-x86::reg32 frontend::infoOnFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 frontend::infoOnFrame(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site{ "sub_456890", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx };
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return tracks::infoFrame(app, cpu); });
+    return fe::runThunk(app, ts, args, site, [&](Guest&) { return tracks::infoFrame(app, ts); });
 }
 
-x86::reg32 frontend::infoOnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 frontend::infoOnExit(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site{ "sub_456990", 0, 0, nullptr, 0, 0 };
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return tracks::infoExit(app, cpu); });
+    return fe::runThunk(app, ts, args, site, [&](Guest&) { return tracks::infoExit(app, ts); });
 }
 
-x86::reg32 frontend::infoSpeak(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 frontend::infoSpeak(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site{ "sub_4c94e0", 0, 0, kSpeakStrings, std::size(kSpeakStrings),
                           fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const x86::reg32 language = args.eax, track = args.edx;
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return tracks::speak(app, cpu, language, track); });
+    const nfs::u32 language = args.eax, track = args.edx;
+    return fe::runThunk(app, ts, args, site, [&](Guest&) { return tracks::speak(app, ts, language, track); });
 }
 
-x86::reg32 frontend::infoStopSpeaking(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 frontend::infoStopSpeaking(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site{ "sub_4c9590", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi };
-    const x86::reg32 eax = args.eax;
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return tracks::stopSpeaking(app, cpu, eax); });
+    const nfs::u32 eax = args.eax;
+    return fe::runThunk(app, ts, args, site, [&](Guest&) { return tracks::stopSpeaking(app, ts, eax); });
 }
 }

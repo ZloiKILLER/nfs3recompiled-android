@@ -3,7 +3,7 @@
 
 #include <functional>
 
-namespace win32
+namespace nfs
 {
 
 class Renderer;

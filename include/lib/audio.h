@@ -1,11 +1,11 @@
 #ifndef LIB_AUDIO_H_
 #define LIB_AUDIO_H_
-#include <lib/winapp.h>
+#include <lib/app.h>
 #include <lib/memmap.h>
 #include <SDL3/SDL.h>
 
 
-namespace win32
+namespace nfs
 {
 
 class AudioBuffer;
@@ -33,30 +33,30 @@ class AudioBuffer : public GenericResource
 {
     friend class AudioDevice;
 public:
-    AudioBuffer(AudioDevice* device, WinApplication* app, x86::reg32 bufferSize);
+    AudioBuffer(AudioDevice* device, App* app, nfs::u32 bufferSize);
     ~AudioBuffer();
 
-    x86::reg32 bufferSize() const;
+    nfs::u32 bufferSize() const;
     void play();
     void stop();
-    x86::reg32 lock();
-    void unlock(x86::reg32 bufferWritten);
-    x86::reg32 playStart() const        { return m_playStart; }
-    x86::reg32 playStop() const         { return m_playStop; }
-    x86::reg32 getBackBuffer() const    { return m_bufferMap->getBlockStart(); }
+    nfs::u32 lock();
+    void unlock(nfs::u32 bufferWritten);
+    nfs::u32 playStart() const        { return m_playStart; }
+    nfs::u32 playStop() const         { return m_playStop; }
+    nfs::u32 getBackBuffer() const    { return m_bufferMap->getBlockStart(); }
     bool primary() const                { return m_primary; }
 
 private:
-    void audioCallback22050(x86::reg8* stream, int len);
+    void audioCallback22050(nfs::u8* stream, int len);
 
 private:
     AudioDevice*    m_device;
-    x86::reg32      m_bufferSize;
+    nfs::u32      m_bufferSize;
     MemMap*         m_memmap;
     MemMap*         m_bufferMap;
-    x86::sreg16*    m_buffer;
-    x86::reg32      m_playStart;
-    x86::reg32      m_playStop;
+    nfs::s16*    m_buffer;
+    nfs::u32      m_playStart;
+    nfs::u32      m_playStop;
     bool            m_primary;
 };
 

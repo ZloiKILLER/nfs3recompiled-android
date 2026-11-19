@@ -29,24 +29,24 @@ namespace watcom
 namespace hooks
 {
 
-constexpr x86::reg32 kGetThreadPtr = 0x567764;   // __GetThreadPtr: the thread's data in eax
-constexpr x86::reg32 kAccessFile = 0x567768;     // a file's lock taken, eax the handle
-constexpr x86::reg32 kReleaseFile = 0x56776c;    // and given back
-constexpr x86::reg32 kAllocHandle = 0x567770;    // __allocPOSIXHandle: eax Windows' HANDLE; the handle
-constexpr x86::reg32 kFreeHandle = 0x567774;     // __freePOSIXHandle: eax the handle
-constexpr x86::reg32 kAccessIob = 0x567778;      // the streams' lock taken
-constexpr x86::reg32 kReleaseIob = 0x56777c;     // and given back
-constexpr x86::reg32 kHeapLock = 0x567780;       // the heap's lock taken
-constexpr x86::reg32 kHeapUnlock = 0x567788;     // and given back
-constexpr x86::reg32 kAccessHandles = 0x567798;  // the handles' table's lock taken
-constexpr x86::reg32 kReleaseHandles = 0x56779c; // and given back
-constexpr x86::reg32 kExitDone = 0x5677a0;       // __exit's last step: the threads' end
-constexpr x86::reg32 kThreadStart = 0x5677a4;    // a thread's start: eax what the initializers left
-constexpr x86::reg32 kExitHook = 0x564484;       // _exit's and exit's first
-constexpr x86::reg32 kExitHook2 = 0x564488;      // _exit's second
-constexpr x86::reg32 kFloatFormat = 0x56ac64;    // __EFG_printf: eax the buffer, edx the arguments, ebx the SPECS
-constexpr x86::reg32 kScanFloat = 0x56ac68;      // __EFG_scanf: eax the text, edx where the double goes
-constexpr x86::reg32 kMatherr = 0x56b16c;        // _matherr: eax and ebx the struct exception
+constexpr nfs::u32 kGetThreadPtr = 0x567764;   // __GetThreadPtr: the thread's data in eax
+constexpr nfs::u32 kAccessFile = 0x567768;     // a file's lock taken, eax the handle
+constexpr nfs::u32 kReleaseFile = 0x56776c;    // and given back
+constexpr nfs::u32 kAllocHandle = 0x567770;    // __allocPOSIXHandle: eax Windows' HANDLE; the handle
+constexpr nfs::u32 kFreeHandle = 0x567774;     // __freePOSIXHandle: eax the handle
+constexpr nfs::u32 kAccessIob = 0x567778;      // the streams' lock taken
+constexpr nfs::u32 kReleaseIob = 0x56777c;     // and given back
+constexpr nfs::u32 kHeapLock = 0x567780;       // the heap's lock taken
+constexpr nfs::u32 kHeapUnlock = 0x567788;     // and given back
+constexpr nfs::u32 kAccessHandles = 0x567798;  // the handles' table's lock taken
+constexpr nfs::u32 kReleaseHandles = 0x56779c; // and given back
+constexpr nfs::u32 kExitDone = 0x5677a0;       // __exit's last step: the threads' end
+constexpr nfs::u32 kThreadStart = 0x5677a4;    // a thread's start: eax what the initializers left
+constexpr nfs::u32 kExitHook = 0x564484;       // _exit's and exit's first
+constexpr nfs::u32 kExitHook2 = 0x564488;      // _exit's second
+constexpr nfs::u32 kFloatFormat = 0x56ac64;    // __EFG_printf: eax the buffer, edx the arguments, ebx the SPECS
+constexpr nfs::u32 kScanFloat = 0x56ac68;      // __EFG_scanf: eax the text, edx where the double goes
+constexpr nfs::u32 kMatherr = 0x56b16c;        // _matherr: eax and ebx the struct exception
 
 }  // namespace hooks
 }  // namespace watcom

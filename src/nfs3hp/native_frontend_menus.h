@@ -5,7 +5,7 @@
 #include "native_guest.h"
 
 /* native_frontend_menus.cpp's typed function (the item lookup), which other files call as C++
- * (guest::direct), and how the game's code calls it by address.  It calls the game's other functions by address on `cpu` and throws fe::Terminated
+ * (guest::direct), and how the game's code calls it by address.  It calls the game's other functions by address on `ts` and throws fe::Terminated
  * when the game stopped in one, as a call by address does; its result is what the game's function
  * leaves in eax. */
 namespace nfs3hp
@@ -15,12 +15,12 @@ namespace frontend
 namespace menus
 {
 
-using App = win32::WinApplication;
-using CPU = x86::CPU;
-using reg32 = x86::reg32;
+using App = nfs::App;
+using ThreadState = nfs::ThreadState;
+using u32 = nfs::u32;
 
 // The game's 0x442a40: a screen's item by its codelink (name), 0 when it has none.
-reg32 findItem(App* app, CPU& cpu, reg32 menu, reg32 name);
+u32 findItem(App* app, ThreadState& ts, u32 menu, u32 name);
 
 }  // namespace menus
 }  // namespace frontend

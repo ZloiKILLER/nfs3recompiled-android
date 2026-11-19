@@ -2,7 +2,6 @@
 #define NFS3HP_PORT_SND_STREAM_H
 
 #include "port_snd.h"
-#include "host_threads.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -105,102 +104,100 @@ struct ChunkHeader
 
 /* The game's code the streams call by address: these two, which
  * port_snd.h names as well, are named here. */
-constexpr reg32 kSurface = 0x4f9070;  // whether a DirectDraw surface is locked
-constexpr reg32 kMemmove = 0x4ea4f0;  // EA's memmove: eax from, edx to, ebx bytes
+constexpr u32 kSurface = 0x4f9070;  // whether a DirectDraw surface is locked
+constexpr u32 kMemmove = 0x4ea4f0;  // EA's memmove: eax from, edx to, ebx bytes
 
 // The streams (cdstream.c's): the first, and the one the reader is at.
-constexpr Var<reg32> kStreams{0x5645b8}, kStreamWalk{0x5645bc};
+constexpr Var<u32> kStreams{0x5645b8}, kStreamWalk{0x5645bc};
 constexpr Var<int32_t> kTimer{0x79c1a4};  // the game's timer, 60 a second
 
 // The wrapper commands and ids of a ring's chunks.
-constexpr reg32 kWrap = 0xffffffff, kGivenBack = 0xfffffffe, kDropped = 0xfffffffd;
+constexpr u32 kWrap = 0xffffffff, kGivenBack = 0xfffffffe, kDropped = 0xfffffffd;
 
-inline CdStream& cdStream(App* app, reg32 at) { return record<CdStream>(app, at); }
+inline CdStream& cdStream(App* app, u32 at) { return record<CdStream>(app, at); }
 
 /* One of the game's critical sections, entered or left (its address pushed),
  * from `esp` where the game's code has it at the call.  The code pushes it
- * from eax: what eax holds after it (callWindowsEax). */
-inline Result enterSection(App* app, CPU& cpu, reg32 esp, reg32 section)
+ * from eax: what eax holds after it, which the lock's functions leave as it is. */
+inline Result enterSection(App* app, ThreadState& ts, u32 esp, u32 section)
 {
-    reg32 eax = section;
-    if (!callWindowsEax<kEnterCriticalSection, &host::enterLock>(app, cpu, esp, eax, section))
+    if (!lockEnter(app, ts, esp, section))
         return {};
-    return int32_t(eax);
+    return int32_t(section);
 }
 
-inline Result leaveSection(App* app, CPU& cpu, reg32 esp, reg32 section)
+inline Result leaveSection(App* app, ThreadState& ts, u32 esp, u32 section)
 {
-    reg32 eax = section;
-    if (!callWindowsEax<kLeaveCriticalSection, &host::leaveLock>(app, cpu, esp, eax, section))
+    if (!lockLeave(app, ts, esp, section))
         return {};
-    return int32_t(eax);
+    return int32_t(section);
 }
 
 /* A typed core of another file's (or of these) called as C++ in place of the
  * game's call of `Address` (guest::direct): esp first set where the game's
  * code has it at the call, so the callee's frames lie where the game's do. */
-template <reg32 Address, auto Core, typename... A>
-inline auto directFrom(App* app, CPU& cpu, reg32 esp, A... a)
+template <u32 Address, auto Core, typename... A>
+inline auto directFrom(App* app, ThreadState& ts, u32 esp, A... a)
 {
-    cpu.esp = esp;
-    return guest::direct<Address, Core>(app, cpu, a...);
+    ts.sp = esp;
+    return guest::direct<Address, Core>(app, ts, a...);
 }
 
 /* A typed core's result as the game's code has it in eax after the call:
  * false when the game stopped in it. */
 template <class T>
-inline bool took(const std::optional<T>& result, reg32& eax)
+inline bool took(const std::optional<T>& result, u32& eax)
 {
     if (!result)
         return false;
-    eax = reg32(*result);
+    eax = u32(*result);
     return true;
 }
-inline bool took(const CPU& cpu, reg32 result, reg32& eax)
+inline bool took(const ThreadState& ts, u32 result, u32& eax)
 {
     eax = result;
-    return !cpu.terminate;
+    return !ts.terminate;
 }
 
 /* The game's 0x4dfb20 (native_ea_threads.cpp's eventPosted): event `event`
  * set, `posted` what the game's code has in eax with it -- which the code
  * does not read.  What the
  * setting gives back. */
-std::optional<reg32> eventPostedWith(App* app, CPU& cpu, reg32 posted, reg32 event);
+std::optional<u32> eventPostedWith(App* app, ThreadState& ts, u32 posted, u32 event);
 
 /* A loop's safepoint, as the game's code has one at each loop's head: the
  * guest's context handed over when another thread waits for it; and a busy
  * wait's turn, the thread's slice given up so that the thread the wait waits
  * on runs. */
-void safepoint(App* app, CPU& cpu);
-void giveWay(App* app, CPU& cpu);
+void safepoint(App* app, ThreadState& ts);
+void giveWay(App* app, ThreadState& ts);
 
 /* The CD stream (port_snd_cdstream.cpp) as the streamer calls it. */
 
 // The chunk (a header in the ring) given back to the reader, which is woken.
-Result giveBackChunk(App* app, CPU& cpu, reg32 esp, reg32 stream, reg32 chunk);
+Result giveBackChunk(App* app, ThreadState& ts, u32 esp, u32 stream, u32 chunk);
 // What the player has taken in all (0 for no stream).
-reg32 bytesBuffered(App* app, reg32 stream);
+u32 bytesBuffered(App* app, u32 stream);
 // Whether the reader has nothing to do.
 bool readerIsIdle(App* app);
 // Whether the stream's reader waits for room.
-reg32 readerIsWaiting(App* app, reg32 stream);
+u32 readerIsWaiting(App* app, u32 stream);
 // The next chunk of the stream to play, whole (0 none, -1 one dropped, -2 stopped).
-Result nextChunkToPlay(App* app, CPU& cpu, reg32 esp, reg32 stream);
+Result nextChunkToPlay(App* app, ThreadState& ts, u32 esp, u32 stream);
 // Whether `count` command blocks are free (1 or 0).
-Result commandBlocksAvailable(App* app, CPU& cpu, reg32 esp, reg32 count);
+Result commandBlocksAvailable(App* app, ThreadState& ts, u32 esp, u32 count);
 
 /* The streamer (port_snd_stream.cpp) as Pathfinder calls it. */
 
 // 0x4e7750 (SNDstreamsetup): the streamer set up on CD stream `stream`, the play's options at `options`.
-Result setUpStreamer(App* app, CPU& cpu, reg32 esp, reg32 stream, reg32 options);
+Result setUpStreamer(App* app, ThreadState& ts, u32 esp, u32 stream, u32 options);
 // 0x4e78a0 (SNDstreamqueue): file `name` queued to play from `offset`.
-Result queueStreamFile(App* app, CPU& cpu, reg32 esp, reg32 name, reg32 offset);
+Result queueStreamFile(App* app, ThreadState& ts, u32 esp, u32 name, u32 offset);
 // 0x4e7ce0 (SNDstreambuftime): the stream's buffered time in ms.
-Result bufferedTime(App* app, CPU& cpu, reg32 esp);
+Result bufferedTime(App* app, ThreadState& ts, u32 esp);
 
 // The reader's commands by their names.
-enum class Command : reg32
+enum class Command : u32
 {
     Open = 1,
     Seek = 2,
@@ -215,11 +212,11 @@ enum class Command : reg32
 
 /* streamcommanda's and purgestreamcommanda's wrappers (the commands named
  * one by one): `esp` is the wrapper's own, at its return address. */
-Result queueNamed(App* app, CPU& cpu, reg32 esp, reg32 stream, reg32 file, Command command, bool urgent, bool mind);
-Result queueArgument(App* app, CPU& cpu, reg32 esp, reg32 stream, reg32 argument, Command command, bool urgent,
+Result queueNamed(App* app, ThreadState& ts, u32 esp, u32 stream, u32 file, Command command, bool urgent, bool mind);
+Result queueArgument(App* app, ThreadState& ts, u32 esp, u32 stream, u32 argument, Command command, bool urgent,
                      bool mind);
-Result purgeNamed(App* app, CPU& cpu, reg32 esp, reg32 stream, reg32 file, Command command, bool mind);
-Result purgeArgument(App* app, CPU& cpu, reg32 esp, reg32 stream, reg32 argument, Command command, bool mind);
+Result purgeNamed(App* app, ThreadState& ts, u32 esp, u32 stream, u32 file, Command command, bool mind);
+Result purgeArgument(App* app, ThreadState& ts, u32 esp, u32 stream, u32 argument, Command command, bool mind);
 
 }  // namespace stream
 }  // namespace port

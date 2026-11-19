@@ -1,6 +1,6 @@
 #include <lib/process.h>
 
-namespace win32
+namespace nfs
 {
 
 Process::Process()

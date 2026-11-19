@@ -36,67 +36,67 @@ using guest::at;
 using guest::byte;
 using guest::put;
 using guest::putByte;
-using x86::reg32;
-using x86::sreg32;
+using nfs::u32;
+using nfs::s32;
 
 // The pointer, on a 640 by 480 screen.
-constexpr reg32 kPointerX = 0x55e5e4, kPointerY = 0x55e5e8;
+constexpr u32 kPointerX = 0x55e5e4, kPointerY = 0x55e5e8;
 // The menus' clock, in ticks.
-constexpr reg32 kClock = 0x79c1a4;
+constexpr u32 kClock = 0x79c1a4;
 // The sliders' kinds: their parts' count (a word each, at 0x55a4e0 + 2 * kind),
 // their parts' colours and those of a part under the pointer (0xc0 bytes a
 // kind, 0x20 a part), their parts' shapes (0x18 bytes a kind, 4 a part).
-constexpr reg32 kSliderParts = 0x55a4de;
-constexpr reg32 kPartColours = 0x55a4ec, kHotPartColours = 0x55a96c;
-constexpr reg32 kPartShapes = 0x678aae;
+constexpr u32 kSliderParts = 0x55a4de;
+constexpr u32 kPartColours = 0x55a4ec, kHotPartColours = 0x55a96c;
+constexpr u32 kPartShapes = 0x678aae;
 // What the menus' code and the graphics' natives do.
-constexpr reg32 kChop = 0x4dfd56;            // __CHP: st(0) rounded toward 0
-constexpr reg32 kFloor = 0x4f1c30;           // floor of the double on the stack
-constexpr reg32 kSprintf = 0x4df690;
-constexpr reg32 kViewport = 0x4beb80, kSetClip = 0x4bebe0;
-constexpr reg32 kSelectFont = 0x452100;
+constexpr u32 kChop = 0x4dfd56;            // __CHP: st(0) rounded toward 0
+constexpr u32 kFloor = 0x4f1c30;           // floor of the double on the stack
+constexpr u32 kSprintf = 0x4df690;
+constexpr u32 kViewport = 0x4beb80, kSetClip = 0x4bebe0;
+constexpr u32 kSelectFont = 0x452100;
 // The menus' code of frontend_glue's and the formats': a list's line, a text
 // scale for the 2D screens, a 2D screen's text, the quads of a font drawn,
 // whether the mouse holds a control, a shape of an .fsh by its name, a .qfs
 // file loaded.
-constexpr reg32 kScreenText = 0x452190;
-constexpr reg32 kMouseHolds = 0x49c080;
-constexpr reg32 kLoadQfsFile = 0x4f2e20;
+constexpr u32 kScreenText = 0x452190;
+constexpr u32 kMouseHolds = 0x49c080;
+constexpr u32 kLoadQfsFile = 0x4f2e20;
 // This file's functions that are called by address.
-constexpr reg32 kSetSliderValue = 0x469480, kShapeByName = 0x4d5db0;
+constexpr u32 kSetSliderValue = 0x469480, kShapeByName = 0x4d5db0;
 // The screen's size.
-constexpr reg32 kScreenWidth = 0x7cdac8, kScreenHeight = 0x7cdacc;
+constexpr u32 kScreenWidth = 0x7cdac8, kScreenHeight = 0x7cdacc;
 // The renderer's state bits: 2 for a 3D card's alpha.
-constexpr reg32 kRenderFlags = 0x7a3a58;
+constexpr u32 kRenderFlags = 0x7a3a58;
 // The menus' text in the fonts' quads rather than on the 2D screens (not 0).
-constexpr reg32 kMenu3d = 0x559234;
+constexpr u32 kMenu3d = 0x559234;
 
-x86::Float loadFloat(win32::WinApplication* app, reg32 address)
+nfs::Float loadFloat(nfs::App* app, u32 address)
 {
-    return x86::Float(app->getMemory<float>(address));
+    return nfs::Float(app->getMemory<float>(address));
 }
 
-void ret(x86::CPU& cpu)
+void ret(nfs::ThreadState& ts)
 {
-    if (!cpu.terminate)
-        cpu.esp += 4;
+    if (!ts.terminate)
+        ts.sp += 4;
 }
 
 /* The string at `from` copied to `to`, its 0 too. */
-void copyString(win32::WinApplication* app, reg32 to, reg32 from)
+void copyString(nfs::App* app, u32 to, u32 from)
 {
     for (;; ++to, ++from)
     {
-        const x86::reg8 c = byte(app, from);
+        const nfs::u8 c = byte(app, from);
         putByte(app, to, c);
         if (c == 0)
             break;
     }
 }
 
-reg32 stringLength(win32::WinApplication* app, reg32 string)
+u32 stringLength(nfs::App* app, u32 string)
 {
-    reg32 length = 0;
+    u32 length = 0;
     while (byte(app, string + length) != 0)
         ++length;
     return length;
@@ -105,73 +105,73 @@ reg32 stringLength(win32::WinApplication* app, reg32 string)
 }  // namespace
 
 /* 0x469520: the value of the slider at eax (its thunk leaves it on the x87's stack). */
-double draw::sliderStoredValue(App* app, CPU& cpu, reg32 slider)
+double draw::sliderStoredValue(App* app, ThreadState& ts, u32 slider)
 {
-    NFS2_USE(cpu);  // ebp pushed and popped by the code: no value kept
+    NFS2_USE(ts);  // ebp pushed and popped by the code: no value kept
     return loadFloat(app, slider + 0x54);
 }
 
 /* 0x46afd0: the value of the slider at eax, end edx's. */
-double draw::twoAxisValue(App* app, CPU& cpu, reg32 slider, reg32 end)
+double draw::twoAxisValue(App* app, ThreadState& ts, u32 slider, u32 end)
 {
-    NFS2_USE(cpu);
+    NFS2_USE(ts);
     return loadFloat(app, slider + end * 4 + 0x54);
 }
 
 /* 0x4956f0: the .qfs file named at eax loaded (the formats' 0x4f2e20,
  * eax its result): the name copied into the frame, [0x55e544]'s extension put
  * after it where it has none of its own.   edx holds the loader's flags. */
-x86::reg32 draw::loadQfsFlags(App* app, CPU& cpu, reg32 fileName, reg32 flags)
+nfs::u32 draw::loadQfsFlags(App* app, ThreadState& ts, u32 fileName, u32 flags)
 {
     // ebx, ecx, esi, edi and ebp pushed by the code, then 0x200 bytes: the frame, whose bottom the
     // name is built at.
-    cpu.esp -= 4 * 5 + 0x200;
-    const reg32 name = cpu.esp;
+    ts.sp -= 4 * 5 + 0x200;
+    const u32 name = ts.sp;
     copyString(app, name, fileName);
-    reg32 at_ = name + stringLength(app, name);
+    u32 at_ = name + stringLength(app, name);
     // Back from its end to a '.', ':', '/' or '\\', or its start.
     for (;;)
     {
         at_ -= 1;
         if (at_ <= name)
             break;
-        const x86::reg8 c = byte(app, at_);
+        const nfs::u8 c = byte(app, at_);
         if (c == '.' || c == ':' || c == '/' || c == '\\')
             break;
     }
     if (byte(app, at_) != '.')
         copyString(app, name + stringLength(app, name), at(app, 0x55e544));
-    x86::Args loader;
+    nfs::Args loader;
     loader.eax = name;
     loader.edx = flags;
-    const std::optional<reg32> block = guest::pointerCall(app, cpu, kLoadQfsFile, loader);
+    const std::optional<u32> block = guest::pointerCall(app, ts, kLoadQfsFile, loader);
     if (!block)
         return 0;
-    cpu.esp += 4 * 5 + 0x200;
+    ts.sp += 4 * 5 + 0x200;
     return *block;
 }
 
-x86::reg32 sliderStoredValue(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 sliderStoredValue(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     args.floatSet = true;
-    args.floatResult = draw::sliderStoredValue(app, cpu, args.eax);
-    ret(cpu);
+    args.floatResult = draw::sliderStoredValue(app, ts, args.eax);
+    ret(ts);
     return args.eax;
 }
 
-x86::reg32 twoAxisValue(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 twoAxisValue(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     args.floatSet = true;
-    args.floatResult = draw::twoAxisValue(app, cpu, args.eax, args.edx);
-    ret(cpu);
+    args.floatResult = draw::twoAxisValue(app, ts, args.eax, args.edx);
+    ret(ts);
     return args.eax;
 }
 
-x86::reg32 loadQfs(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 loadQfs(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    const x86::reg32 block = draw::loadQfsFlags(app, cpu, args.eax, args.edx);
+    const nfs::u32 block = draw::loadQfsFlags(app, ts, args.eax, args.edx);
     args.eax = block;
-    ret(cpu);
+    ret(ts);
     return args.eax;
 }
 

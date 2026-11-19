@@ -91,53 +91,53 @@ using guest::at;
 using guest::byte;
 using guest::put;
 using guest::putByte;
-using x86::reg16;
-using x86::reg32;
-using x86::reg8;
-using x86::sreg16;
-using x86::sreg32;
-using App = win32::WinApplication;
-using CPU = x86::CPU;
-using Float = x86::Float;
+using nfs::u16;
+using nfs::u32;
+using nfs::u8;
+using nfs::s16;
+using nfs::s32;
+using App = nfs::App;
+using ThreadState = nfs::ThreadState;
+using Float = nfs::Float;
 using i32 = std::int32_t;
 
 // The cars: the list and its count, the per-type list, the players' cars.
-constexpr reg32 kCars = 0x5efac8, kCarCount = 0x5efd9c, kCarCountB = 0x5efd8c;
-constexpr reg32 kCarsByType = 0x5efb48, kPlayerCars = 0x5efa48, kCarsByPlace = 0x5efa88, kPlaceCount = 0x5efd88;
-constexpr reg32 kAiCount = 0x5efda4, kPlayerCarsB = 0x56ebb8;
+constexpr u32 kCars = 0x5efac8, kCarCount = 0x5efd9c, kCarCountB = 0x5efd8c;
+constexpr u32 kCarsByType = 0x5efb48, kPlayerCars = 0x5efa48, kCarsByPlace = 0x5efa88, kPlaceCount = 0x5efd88;
+constexpr u32 kAiCount = 0x5efda4, kPlayerCarsB = 0x56ebb8;
 // The track's nodes and their count.
-constexpr reg32 kNodeCount = 0x5dd940, kNodes = 0x5dd948;
+constexpr u32 kNodeCount = 0x5dd940, kNodes = 0x5dd948;
 // The race: reversed, split screen, the track, the type, the variant.
-constexpr reg32 kClock = 0x7d3684;
+constexpr u32 kClock = 0x7d3684;
 // The lane planner's globals (0x56ee90..): 14 rows of votes for the three lanes about the car (left,
 // its own, right; sumLaneVotes adds them up) -- row 0 the present lane's, 1 the close cars', 2 the
 // road's edge, 3 the road's shape and the roadside, 4 the way ahead, 5 the obstacles, 6 the oncoming
 // cars, 7 the cars ahead; the lane taken; the cars sensed ahead in the three lanes and behind (their
 // gaps after each, then whether each is in that lane by its middle, as words); the way ahead's
 // side (1 left, -1 right); a car behind driving against the track.
-constexpr reg32 kLaneCostA = 0x56ee90, kLaneCostB = 0x56ee94, kLaneCostC = 0x56ee98;
-constexpr reg32 kLaneCostLo = 0x56ee9c, kLaneCostHi = 0x56eea4, kLaneCostObj = 0x56eea8, kLaneCostObjB = 0x56eeb0;
-constexpr reg32 kNodeCostB = 0x56eeb4, kNodeCostC = 0x56eeb8, kNodeCostD = 0x56eebc, kNodeCostE = 0x56eec0;
-constexpr reg32 kObjCost = 0x56eecc, kCarCostLeft = 0x56eed8, kCarCostRight = 0x56eee4;
-constexpr reg32 kChosenLane = 0x56ef74;
-constexpr reg32 kSensed = 0x56ef38, kSensedRight = 0x56ef50;
-constexpr reg32 kSensedFlag = 0x56ef7c, kSensedEdge = 0x56ef68, kSensedEdgeB = 0x56ef6e;
-constexpr reg32 kSensedDir = 0x56ef78;
+constexpr u32 kLaneCostA = 0x56ee90, kLaneCostB = 0x56ee94, kLaneCostC = 0x56ee98;
+constexpr u32 kLaneCostLo = 0x56ee9c, kLaneCostHi = 0x56eea4, kLaneCostObj = 0x56eea8, kLaneCostObjB = 0x56eeb0;
+constexpr u32 kNodeCostB = 0x56eeb4, kNodeCostC = 0x56eeb8, kNodeCostD = 0x56eebc, kNodeCostE = 0x56eec0;
+constexpr u32 kObjCost = 0x56eecc, kCarCostLeft = 0x56eed8, kCarCostRight = 0x56eee4;
+constexpr u32 kChosenLane = 0x56ef74;
+constexpr u32 kSensed = 0x56ef38, kSensedRight = 0x56ef50;
+constexpr u32 kSensedFlag = 0x56ef7c, kSensedEdge = 0x56ef68, kSensedEdgeB = 0x56ef6e;
+constexpr u32 kSensedDir = 0x56ef78;
 // The lane-width table (80 floats), the obstacles (8 of 0x50 bytes).
-constexpr reg32 kLaneWidths = 0x56f0e0, kObstacles = 0x7dd850;
+constexpr u32 kLaneWidths = 0x56f0e0, kObstacles = 0x7dd850;
 // The track's speed table loaded, its half, the failure flag.
-constexpr reg32 kSpeeds = 0x552558, kSpeedsHalf = 0x55255c, kSpeedsFailed = 0x56f22c, kSpeedsReady = 0x56f228;
-constexpr reg32 kTrafficSide = 0x56f230, kTrackWalked = 0x56f220;
+constexpr u32 kSpeeds = 0x552558, kSpeedsHalf = 0x55255c, kSpeedsFailed = 0x56f22c, kSpeedsReady = 0x56f228;
+constexpr u32 kTrafficSide = 0x56f230, kTrackWalked = 0x56f220;
 // The catch-up tables (0x56ef80.. per track-number slot of 0x20), the start.
-constexpr reg32 kTuning = 0x56ef80, kStartFlags = 0x55eb2e;
+constexpr u32 kTuning = 0x56ef80, kStartFlags = 0x55eb2e;
 // The animation players (0x18 bytes each) and the seven paths loaded.
-constexpr reg32 kAnims = 0x56f234, kAnimPaths = 0x570a34;
+constexpr u32 kAnims = 0x56f234, kAnimPaths = 0x570a34;
 // The sound config: effects on, music on, the options, the result flag.
-constexpr reg32 kEffectsOn = 0x55290c, kMusicOn = 0x552910, kMusicSerial = 0x552918;
-constexpr reg32 kSoundInitOK = 0x5525a4;
-constexpr reg32 kVoiceRecords = 0x571124;
+constexpr u32 kEffectsOn = 0x55290c, kMusicOn = 0x552910, kMusicSerial = 0x552918;
+constexpr u32 kSoundInitOK = 0x5525a4;
+constexpr u32 kVoiceRecords = 0x571124;
 // Constants of the game's.
-constexpr reg32 kVolume = 0x53684c, kTicks = 0x79c1a4;
+constexpr u32 kVolume = 0x53684c, kTicks = 0x79c1a4;
 
 // What is called by address: the AI-votes trace hook (0x40de30, its
 // thunk's NFS_CAR_TRACE record), the police chase (0x411750, no core), the
@@ -152,38 +152,38 @@ constexpr reg32 kVolume = 0x53684c, kTicks = 0x79c1a4;
 // elsewhere are called as C++ (guest::direct); the menu files' (a car put on
 // the road 0x4a0aa0, the poses 0x4b70f0, 0x4b7590, 0x4b6a30, 0x4b6ca0) too
 // (feCore).
-constexpr reg32 kChop = 0x4dfd56;
-constexpr reg32 kSndCaps = 0x4e21b0;  // native_game.cpp's SNDcaps: no typed core
+constexpr u32 kChop = 0x4dfd56;
+constexpr u32 kSndCaps = 0x4e21b0;  // native_game.cpp's SNDcaps: no typed core
 
 // The game's floats and doubles where it keeps them, as the x87 loads them.
-Float f32(App* app, reg32 a) { return Float(app->getMemory<float>(a)); }
-Float f64(App* app, reg32 a) { return Float(app->getMemory<double>(a)); }
+Float f32(App* app, u32 a) { return Float(app->getMemory<float>(a)); }
+Float f64(App* app, u32 a) { return Float(app->getMemory<double>(a)); }
 
-reg32 nodeAddr(App* app, reg32 index)
+u32 nodeAddr(App* app, u32 index)
 {
     // lea eax,[index*8]; add eax,index; shl eax,2; add [0x5dd948]: index*0x24.
     return at(app, kNodes) + index * 0x24;
 }
 
-void putFloat(App* app, reg32 a, float f) { app->getMemory<float>(a) = f; }
+void putFloat(App* app, u32 a, float f) { app->getMemory<float>(a) = f; }
 
 /* A float of the bits given, as the code's mov [frame], bits; fld [frame] has it. */
-float floatOf(reg32 bits)
+float floatOf(u32 bits)
 {
     float f;
     std::memcpy(&f, &bits, sizeof f);
     return f;
 }
 
-reg32 bitsOf(float f)
+u32 bitsOf(float f)
 {
-    reg32 bits;
+    u32 bits;
     std::memcpy(&bits, &f, sizeof bits);
     return bits;
 }
 
 /* A signed byte, as movsx has it. */
-i32 signedByte(App* app, reg32 a) { return i32(std::int8_t(byte(app, a))); }
+i32 signedByte(App* app, u32 a) { return i32(std::int8_t(byte(app, a))); }
 
 /* A thunk's run of its core: every register but eax as the caller had it after it (the game's
  * code pops what it pushed; its other registers are its arguments, which no caller reads), eax what
@@ -201,11 +201,11 @@ struct IsOptional<std::optional<T>> : std::true_type
 };
 
 template <typename Core>
-bool asThunk(CPU& cpu, x86::Args& args, Core&& core, reg32 popped = 0)
+bool asThunk(ThreadState& ts, nfs::Args& args, Core&& core, u32 popped = 0)
 {
     using Result = std::decay_t<decltype(core())>;
-    const reg32 esp = cpu.esp;
-    std::optional<reg32> left;
+    const u32 esp = ts.sp;
+    std::optional<u32> left;
     {
         if constexpr (std::is_void_v<Result>)
             core();
@@ -219,55 +219,55 @@ bool asThunk(CPU& cpu, x86::Args& args, Core&& core, reg32 popped = 0)
             const Result result = core();
             if (!result)
                 return false;
-            left = reg32(*result);
+            left = u32(*result);
         }
         else
-            left = reg32(core());
+            left = u32(core());
     }
-    cpu.esp = esp;
+    ts.sp = esp;
     if (left)
         args.eax = *left;
-    cpu.esp += 4 + popped;
+    ts.sp += 4 + popped;
     return true;
 }
 
 /* The caller's word `n` (from 1) on the guest's stack, above the return address: a stdcall
  * thunk's. */
-reg32 word(App* app, const CPU& cpu, reg32 n) { return at(app, cpu.esp + 4 * n); }
+u32 word(App* app, const ThreadState& ts, u32 n) { return at(app, ts.sp + 4 * n); }
 
 /* 0x4e1890 (ea::purgememadr): the handle freed; the eax the free leaves, what it gives back; nullopt
  * when the game stopped. */
-std::optional<reg32> freeHandle(App* app, CPU& cpu, reg32 handle)
+std::optional<u32> freeHandle(App* app, ThreadState& ts, u32 handle)
 {
-    return guest::direct<0x4e1890, ea::purgeBlock>(app, cpu, handle);
+    return guest::direct<0x4e1890, ea::purgeBlock>(app, ts, handle);
 }
 
 // The game's constants the code reads where it has them.
-constexpr reg32 kSixth = 0x5367b4;          // a double: 1/6
-constexpr reg32 kFixedToFloat = 0x5367bc;   // a double: 1/65536
-constexpr reg32 kQuarterLanes = 0x5367c4;   // a float: 4, the lane-width table's steps per unit
-constexpr reg32 kHalfSlice = 0x5367cc;      // a double: 0.5
-constexpr reg32 kLessHalfSlice = 0x5367d4;  // a double: -0.5
-constexpr reg32 kDirectionScale = 0x5367f4; // a double: 1/65536
+constexpr u32 kSixth = 0x5367b4;          // a double: 1/6
+constexpr u32 kFixedToFloat = 0x5367bc;   // a double: 1/65536
+constexpr u32 kQuarterLanes = 0x5367c4;   // a float: 4, the lane-width table's steps per unit
+constexpr u32 kHalfSlice = 0x5367cc;      // a double: 0.5
+constexpr u32 kLessHalfSlice = 0x5367d4;  // a double: -0.5
+constexpr u32 kDirectionScale = 0x5367f4; // a double: 1/65536
 
 // A node's record (0x24 bytes): its lane bits' dword (the high half the bits), its edge slices (high
 // nibble left, low right), its forward direction's x and z (signed bytes), its halves' widths.
-constexpr reg32 kNodeLaneBits = 0xa, kNodeEdges = 0x13, kNodeDirectionX = 0x14, kNodeDirectionZ = 0x16,
+constexpr u32 kNodeLaneBits = 0xa, kNodeEdges = 0x13, kNodeDirectionX = 0x14, kNodeDirectionZ = 0x16,
                 kNodeLeftWidth = 0x17, kNodeRightWidth = 0x1b, kNodeSize = 0x24;
 // A track's tuning record (0x20 bytes at 0x56ef80 by the track): as fillTrackTuning fills it.
-constexpr reg32 kTuningFirst = 0, kTuningDistance = 4, kTuningRoadWide = 8, kTuningSide = 0xc,
+constexpr u32 kTuningFirst = 0, kTuningDistance = 4, kTuningRoadWide = 8, kTuningSide = 0xc,
                 kTuningSpeed = 0x14, kTuningSeriesSpeed = 0x18, kTuningLast = 0x1c, kTuningSize = 0x20;
 constexpr i32 kTrackCount = 0xb;  // the tracks with a record, as the code bounds them
 // The race's laps.
-constexpr reg32 kLaps = 0x5efd94;
+constexpr u32 kLaps = 0x5efd94;
 // A car's fields this code reads: its node, its place along the track and its speed along it, its
 // flags (+0x621 bit 4: it drives against the track's direction), its slices, its place across the road
 // (+0x7b8), its half width as a slice offset (+0x21c), its look-ahead (+0x7c4), its way (+0x7d4 1
 // backwards).
-constexpr reg32 kCarNode = 0x1c, kCarAlong = 8, kCarSpeedAlong = 0x1fc, kCarHalfWidth = 0x21c,
+constexpr u32 kCarNode = 0x1c, kCarAlong = 8, kCarSpeedAlong = 0x1fc, kCarHalfWidth = 0x21c,
                 kCarWayFlags = 0x621, kCarSlice = 0x638, kCarLeftSlice = 0x63c, kCarRightSlice = 0x640,
                 kCarAcross = 0x7b8, kCarLookAhead = 0x7c4, kCarBackwards = 0x7d4;
-constexpr reg8 kAgainstTrack = 0x10;
+constexpr u8 kAgainstTrack = 0x10;
 // The road's slices across, 0..13.
 constexpr i32 kSlices = 0xe;
 // A traffic car's (and a racer's) fields more: its forward vector, its velocity, its spin, its grip
@@ -276,85 +276,85 @@ constexpr i32 kSlices = 0xe;
 // its horn's end and tone, the player car it keeps near, its state (4 pulled over), the police's
 // siren (+0x710 bit 4) and chase (+0x734), its speed asked (+0x7b0), its target place across (+0x7b4),
 // its speed (+0x7c0).
-constexpr reg32 kCarForward = 0xd8, kCarVelocity = 0xa4, kCarSpin = 0xe4, kCarGrip = 0x10c, kCarAirborne = 0x164,
+constexpr u32 kCarForward = 0xd8, kCarVelocity = 0xa4, kCarSpin = 0xe4, kCarGrip = 0x10c, kCarAirborne = 0x164,
                 kCarKindFlags = 0x200, kCarBrake = 0x509, kCarTrafficFlags = 0x620, kCarLoading = 0x630,
                 kCarHornEnd = 0x644, kCarHornTone = 0x660, kCarFollows = 0x6d8, kCarState = 0x6dc,
                 kCarSirenFlags = 0x710, kCarChasing = 0x734, kCarTargetSpeed = 0x7b0, kCarTargetAcross = 0x7b4,
                 kCarSpeed = 0x7c0;
-constexpr reg8 kKindPlayer = 4, kTrafficInactive = 4, kTrafficHorn = 8, kSirenOn = 0x10;
-constexpr reg32 kStateDriving = 1, kStatePullingOver = 3, kStatePulledOver = 4;
+constexpr u8 kKindPlayer = 4, kTrafficInactive = 4, kTrafficHorn = 8, kSirenOn = 0x10;
+constexpr u32 kStateDriving = 1, kStatePullingOver = 3, kStatePulledOver = 4;
 // More of a car's: its index among the cars, whether it is in play (a byte), its half length.
-constexpr reg32 kCarIndex = 0x1f0, kCarInPlay = 0x89, kCarHalfLength = 0x114;
+constexpr u32 kCarIndex = 0x1f0, kCarInPlay = 0x89, kCarHalfLength = 0x114;
 // A node's road edges (16.16 from its middle).
-constexpr reg32 kNodeLeftEdge = 0x1c, kNodeRightEdge = 0x20;
+constexpr u32 kNodeLeftEdge = 0x1c, kNodeRightEdge = 0x20;
 // The sensed cars' gaps ahead (three dwords after the three cars at 0x56ef38) and behind (after the
 // three behind at 0x56ef50).
-constexpr reg32 kSensedGaps = 0x56ef44, kSensedBehindGaps = 0x56ef5c;
+constexpr u32 kSensedGaps = 0x56ef44, kSensedBehindGaps = 0x56ef5c;
 // The parked obstacles (8 of 0x50 bytes at 0x7dd850): +0 in use, +0x34 the node, +0x38 the slice.
-constexpr reg32 kObstacleSize = 0x50, kObstacleNode = 0x34, kObstacleSlice = 0x38;
+constexpr u32 kObstacleSize = 0x50, kObstacleNode = 0x34, kObstacleSlice = 0x38;
 // The lane planner's constants, as the code reads them (doubles but the one float).
-constexpr reg32 kSenseScale = 0x53670c, kSenseSixth = 0x536714;  // 2, 1/6: the sensing window
-constexpr reg32 kToFixedC = 0x53671c;                            // 65536: the half length as 16.16
-constexpr reg32 kEaseObstacle = 0x536724;                        // 0.9: the speed by an obstacle
-constexpr reg32 kMeetScale = 0x53672c, kToFixedD = 0x536734;     // 6, 65536: the time to meet
-constexpr reg32 kFromFixed = 0x53673c;                           // 1/65536
-constexpr reg32 kMeetWeight = 0x536744;                          // a float: -35
-constexpr reg32 kEighth = 0x53674c, kMeetLessHalf = 0x536754;    // 1/8, -0.5
-constexpr reg32 kOutrunMost = 0x53675c, kOutrunWeight = 0x536764, kThird = 0x53676c;  // 3, -5, 1/3
-constexpr reg32 kLaneFixed = 0x536774, kHalfWidthBack = 0x53677c;  // 1/65536, 0.5: the place across
-constexpr reg32 kLaneReach = 0x536784, kLaneSixth = 0x53678c, kLaneLessHalf = 0x536794;  // 2.5, 1/6, -0.5
+constexpr u32 kSenseScale = 0x53670c, kSenseSixth = 0x536714;  // 2, 1/6: the sensing window
+constexpr u32 kToFixedC = 0x53671c;                            // 65536: the half length as 16.16
+constexpr u32 kEaseObstacle = 0x536724;                        // 0.9: the speed by an obstacle
+constexpr u32 kMeetScale = 0x53672c, kToFixedD = 0x536734;     // 6, 65536: the time to meet
+constexpr u32 kFromFixed = 0x53673c;                           // 1/65536
+constexpr u32 kMeetWeight = 0x536744;                          // a float: -35
+constexpr u32 kEighth = 0x53674c, kMeetLessHalf = 0x536754;    // 1/8, -0.5
+constexpr u32 kOutrunMost = 0x53675c, kOutrunWeight = 0x536764, kThird = 0x53676c;  // 3, -5, 1/3
+constexpr u32 kLaneFixed = 0x536774, kHalfWidthBack = 0x53677c;  // 1/65536, 0.5: the place across
+constexpr u32 kLaneReach = 0x536784, kLaneSixth = 0x53678c, kLaneLessHalf = 0x536794;  // 2.5, 1/6, -0.5
 // The tuning's: the handicap's step (a float, -0.005), a quarter (a float), 0.98 and 0.99 (doubles); the
 // opponents' speeds loaded (load::loadOpponentSpeeds); the highest target speed on the track.
-constexpr reg32 kHandicapStep = 0x5367dc, kQuarter = 0x5367e0, kHandicapSlower = 0x5367e4, kHandicapSlow = 0x5367ec;
-constexpr reg32 kTopTargetSpeed = 0x56f224;
+constexpr u32 kHandicapStep = 0x5367dc, kQuarter = 0x5367e0, kHandicapSlower = 0x5367e4, kHandicapSlow = 0x5367ec;
+constexpr u32 kTopTargetSpeed = 0x56f224;
 // The animation players: 256 slots of 0x18 bytes.  A path: +4 its points (a word), +6 its frames per
 // point (a word), from +8 its points of 0x14 bytes -- a place of three 16.16 dwords, an orientation of
 // four shorts at +0xc.  1/65536 as a double, for the poses.
-constexpr reg32 kAnimSlots = 0x100, kAnimSize = 0x18;
-constexpr reg32 kPathPoints = 4, kPathFrames = 6, kPathPointList = 8, kPointSize = 0x14, kPointOrientation = 0xc;
-constexpr reg32 kPoseScale = 0x536814;
+constexpr u32 kAnimSlots = 0x100, kAnimSize = 0x18;
+constexpr u32 kPathPoints = 4, kPathFrames = 6, kPathPointList = 8, kPointSize = 0x14, kPointOrientation = 0xc;
+constexpr u32 kPoseScale = 0x536814;
 // The game's random numbers: the seed, the product, the multiplier.
-constexpr reg32 kRandomSeed = 0x554f10, kRandomProduct = 0x554f14, kRandomMultiplier = 0x554f18;
+constexpr u32 kRandomSeed = 0x554f10, kRandomProduct = 0x554f14, kRandomMultiplier = 0x554f18;
 // A word the sensed cars' clearing zeroes with them.
-constexpr reg32 kSensedRound = 0x56ebc0;
+constexpr u32 kSensedRound = 0x56ebc0;
 // The data among the code: the place's last part for placeOnTrack, the grid's place.
-constexpr reg32 kPlaceOnTrackHeight = 0x40cb08, kGridPlace = 0x40cb0c;
+constexpr u32 kPlaceOnTrackHeight = 0x40cb08, kGridPlace = 0x40cb0c;
 // The game's constants: 20 and 23 (doubles: how fast the cars close for the horn, for a chase),
 // 65536 twice (doubles), 0.9 (a double: a firm grip), 6.7 and 0.5 as float bits.
-constexpr reg32 kHornClosing = 0x5366e4, kChaseClosing = 0x5366ec, kToFixedA = 0x5366f4, kToFixedB = 0x5366fc,
+constexpr u32 kHornClosing = 0x5366e4, kChaseClosing = 0x5366ec, kToFixedA = 0x5366f4, kToFixedB = 0x5366fc,
                 kFirmGrip = 0x536704;
-constexpr reg32 kPullOverSpeed = 0x40d6930c, kHalf = 0x3f000000;
+constexpr u32 kPullOverSpeed = 0x40d6930c, kHalf = 0x3f000000;
 
 /* fcom of a and b, as fnstsw leaves the status word: what a code that ends on a compare leaves in ax. */
-reg16 statusWord(const Float& a, const Float& b)
+u16 statusWord(const Float& a, const Float& b)
 {
     return fp::compare(a, b);
 }
 
 /* 0x4dfd56 (__CHP): value to an integer towards 0, as a whole value; never nullopt (the optional
  * is the callers' stop signal). */
-std::optional<Float> chop(App* app, CPU& cpu, const Float& value)
+std::optional<Float> chop(App* app, ThreadState& ts, const Float& value)
 {
-    return Float(guest::direct<kChop, watcom::clib::chop>(app, cpu, double(value)));
+    return Float(guest::direct<kChop, watcom::clib::chop>(app, ts, double(value)));
 }
 
 /* A call by address (the callee has no typed core) as the code makes it: the registers handed over
  * (eax, edx, ebx, ecx in that order) and the words pushed (the first lowest); every register but eax
  * kept.  The eax the callee leaves; nullopt when the game stopped. */
-std::optional<reg32> callGame(App* app, CPU& cpu, reg32 target, std::initializer_list<reg32> registers,
-                              std::initializer_list<reg32> words = {})
+std::optional<u32> callGame(App* app, ThreadState& ts, u32 target, std::initializer_list<u32> registers,
+                              std::initializer_list<u32> words = {})
 {
-    return guest::pointerCall(app, cpu, target, registers, words);
+    return guest::pointerCall(app, ts, target, registers, words);
 }
 
 /* A native_frontend_* file's typed core called as C++ (guest::direct): nothing (false) when the
  * game stopped in it (its calls into the game throw fe::Terminated), every register but eax kept.
- * A reg32 result is the eax the function leaves, set to it; after any other, eax is left alone. */
-template <reg32 Address, auto Core, typename... Args>
-auto feCore(App* app, CPU& cpu, Args... args)
+ * A u32 result is the eax the function leaves, set to it; after any other, eax is left alone. */
+template <u32 Address, auto Core, typename... Args>
+auto feCore(App* app, ThreadState& ts, Args... args)
 {
     const auto run = [&] {
-        return guest::direct<Address, Core>(app, cpu, args...);
+        return guest::direct<Address, Core>(app, ts, args...);
     };
     using Result = decltype(run());
     const auto spoil = [&] {};
@@ -369,18 +369,18 @@ auto feCore(App* app, CPU& cpu, Args... args)
             return false;
         }
         spoil();
-        return !cpu.terminate;
+        return !ts.terminate;
     }
     else
     {
         try
         {
             const Result result = run();
-            if constexpr (std::is_same_v<Result, x86::reg32>)
+            if constexpr (std::is_same_v<Result, nfs::u32>)
                 (void)result;  // a menu core's result: the eax it leaves is no longer set (no caller reads it)
             else
                 spoil();
-            return cpu.terminate ? std::optional<Result>() : std::optional<Result>(result);
+            return ts.terminate ? std::optional<Result>() : std::optional<Result>(result);
         }
         catch (const fe::Terminated&)
         {
@@ -391,10 +391,10 @@ auto feCore(App* app, CPU& cpu, Args... args)
 
 /* 0x404690 (airace::setRammingRules, below this file) on car (eax), by address: the eax it leaves
  * is resetTrafficCar's, and its core gives nothing back.  Nullopt when the game stopped. */
-std::optional<reg32> linkTraffic(App* app, CPU& cpu, reg32 car)
+std::optional<u32> linkTraffic(App* app, ThreadState& ts, u32 car)
 {
-    const reg32 left = guest::direct<0x404690, airace::setRammingRulesLeaving>(app, cpu, car);
-    if (cpu.terminate)
+    const u32 left = guest::direct<0x404690, airace::setRammingRulesLeaving>(app, ts, car);
+    if (ts.terminate)
         return std::nullopt;
     return left;
 }
@@ -403,56 +403,56 @@ std::optional<reg32> linkTraffic(App* app, CPU& cpu, reg32 car)
 struct TopSpeed
 {
     Float speed;
-    reg32 eax;
+    u32 eax;
 };
 
 /* 0x40bfe0: the traffic's top speed; nullopt when the game stopped.  Its eax: the car it was handed
  * (slowForPolice leaves it). */
-std::optional<TopSpeed> trafficTopSpeed(App* app, CPU& cpu, reg32 car)
+std::optional<TopSpeed> trafficTopSpeed(App* app, ThreadState& ts, u32 car)
 {
-    const x86::Float speed = guest::direct<0x40bfe0, pursuit::trafficTopSpeed>(app, cpu);
-    if (cpu.terminate)
+    const nfs::Float speed = guest::direct<0x40bfe0, pursuit::trafficTopSpeed>(app, ts);
+    if (ts.terminate)
         return std::nullopt;
     return TopSpeed{speed, car};
 }
 
 /* 0x40de30: the lane votes of car added up and acted on (`kind` 0 driving, 2 pulling over). */
-bool actOnVotes(App* app, CPU& cpu, reg32 car, reg32 kind)
+bool actOnVotes(App* app, ThreadState& ts, u32 car, u32 kind)
 {
     (void)kind;  // (0x40de30 reads only eax)
-    return feCore<0x40de30, frontend::sima::laneSteer>(app, cpu, car).has_value();
+    return feCore<0x40de30, frontend::sima::laneSteer>(app, ts, car).has_value();
 }
 
 /* 0x411750: a police chase called for car: 1, 100, 8. */
-bool callChase(App* app, CPU& cpu, reg32 car)
+bool callChase(App* app, ThreadState& ts, u32 car)
 {
-    guest::direct<0x411750, port::copChaseSetOf>(app, cpu, car, 1, 0x64, 8);
-    return !cpu.terminate;
+    guest::direct<0x411750, port::copChaseSetOf>(app, ts, car, 1, 0x64, 8);
+    return !ts.terminate;
 }
 
 /* 0x4a0aa0: car put on the road at node, at the place (three dwords) at `place`, its direction 1
  * against the track. */
-bool placeOnRoad(App* app, CPU& cpu, reg32 car, reg32 node, reg32 place, reg32 direction)
+bool placeOnRoad(App* app, ThreadState& ts, u32 car, u32 node, u32 place, u32 direction)
 {
-    return feCore<0x4a0aa0, frontend::simb::placeOnRoad>(app, cpu, car, node, place, direction).has_value();
+    return feCore<0x4a0aa0, frontend::simb::placeOnRoad>(app, ts, car, node, place, direction).has_value();
 }
 
-bool scaleVectorsDirect(App* app, CPU& cpu, reg32 count, reg32 from, reg32 scale, reg32 to);
+bool scaleVectorsDirect(App* app, ThreadState& ts, u32 count, u32 from, u32 scale, u32 to);
 
 /* 0x4e0050 (stdcall): `count` vectors from `from` scaled by the float of `scale`'s bits into `to`,
  * by address, for a caller that leaves the eax it leaves (brakeToStop): that eax. */
-std::optional<reg32> scaleVectors(App* app, CPU& cpu, reg32 count, reg32 from, reg32 scale, reg32 to)
+std::optional<u32> scaleVectors(App* app, ThreadState& ts, u32 count, u32 from, u32 scale, u32 to)
 {
-    if (!scaleVectorsDirect(app, cpu, count, from, scale, to))
+    if (!scaleVectorsDirect(app, ts, count, from, scale, to))
         return std::nullopt;
     return i32(count) > 0 ? to + count * 12 : to;  // the vectors past the last, as the callee leaves it
 }
 
 /* 0x4e0050 (vertices'): the same as C++ (guest::direct).  False when the game stopped. */
-bool scaleVectorsDirect(App* app, CPU& cpu, reg32 count, reg32 from, reg32 scale, reg32 to)
+bool scaleVectorsDirect(App* app, ThreadState& ts, u32 count, u32 from, u32 scale, u32 to)
 {
-    guest::direct<0x4e0050, vertices::scaleVectorsBy>(app, cpu, i32(count), from, floatOf(scale), to);
-    return !cpu.terminate;
+    guest::direct<0x4e0050, vertices::scaleVectorsBy>(app, ts, i32(count), from, floatOf(scale), to);
+    return !ts.terminate;
 }
 
 /* Room on the guest's stack for what a callee is handed the address of: the code's frame (`pushed`
@@ -461,19 +461,19 @@ bool scaleVectorsDirect(App* app, CPU& cpu, reg32 count, reg32 from, reg32 scale
 class GuestFrame
 {
 public:
-    GuestFrame(CPU& cpu, reg32 pushed, reg32 bytes) : cpu_(cpu), esp_(cpu.esp), base_(cpu.esp - pushed)
+    GuestFrame(ThreadState& ts, u32 pushed, u32 bytes) : ts_(ts), esp_(ts.sp), base_(ts.sp - pushed)
     {
-        cpu.esp = base_ - bytes;
+        ts.sp = base_ - bytes;
     }
-    ~GuestFrame() { cpu_.esp = esp_; }
+    ~GuestFrame() { ts_.sp = esp_; }
     GuestFrame(const GuestFrame&) = delete;
     GuestFrame& operator=(const GuestFrame&) = delete;
-    reg32 operator-(reg32 offset) const { return base_ - offset; }
+    u32 operator-(u32 offset) const { return base_ - offset; }
 
 private:
-    CPU& cpu_;
-    const reg32 esp_;
-    const reg32 base_;
+    ThreadState& ts_;
+    const u32 esp_;
+    const u32 base_;
 };
 
 /* The return address's slot (and `words` pushed before it) under esp, as a call to a sibling makes
@@ -481,123 +481,123 @@ private:
 class ReturnSlot
 {
 public:
-    explicit ReturnSlot(CPU& cpu, reg32 words = 0) : cpu_(cpu), esp_(cpu.esp) { cpu.esp -= 4 + 4 * words; }
-    ~ReturnSlot() { cpu_.esp = esp_; }
+    explicit ReturnSlot(ThreadState& ts, u32 words = 0) : ts_(ts), esp_(ts.sp) { ts.sp -= 4 + 4 * words; }
+    ~ReturnSlot() { ts_.sp = esp_; }
     ReturnSlot(const ReturnSlot&) = delete;
     ReturnSlot& operator=(const ReturnSlot&) = delete;
 
 private:
-    CPU& cpu_;
-    const reg32 esp_;
+    ThreadState& ts_;
+    const u32 esp_;
 };
 
 }  // namespace
 
 // Forward declarations, in address order (address -> name).
-x86::reg32 leastTrafficPlayer(App* app, x86::CPU& cpu, x86::Args& args);  // 0x40c4f0
-x86::reg32 placeTrafficCar(App* app, x86::CPU& cpu, x86::Args& args);           // 0x40c590
-x86::reg32 reactToTraffic(App* app, x86::CPU& cpu, x86::Args& args);       // 0x40c630
-x86::reg32 slowForPolice(App* app, x86::CPU& cpu, x86::Args& args);             // 0x40c780
-x86::reg32 countStopped(App* app, x86::CPU& cpu, x86::Args& args);       // 0x40c7f0
-x86::reg32 nearPoliceCar(App* app, x86::CPU& cpu, x86::Args& args);      // 0x40c830
-x86::reg32 weighLaneVotes(App* app, x86::CPU& cpu, x86::Args& args);        // 0x40c8a0
-x86::reg32 voteRoadside(App* app, x86::CPU& cpu, x86::Args& args);        // 0x40c8d0
-x86::reg32 atRoadside(App* app, x86::CPU& cpu, x86::Args& args);        // 0x40c950
-x86::reg32 advanceCarAi(App* app, x86::CPU& cpu, x86::Args& args);          // 0x40c9f0
-x86::reg32 clearSensedCars(App* app, x86::CPU& cpu, x86::Args& args);       // 0x40cb20
-x86::reg32 cacheTrafficSide(App* app, x86::CPU& cpu, x86::Args& args);       // 0x40cb50
-x86::reg32 resetTrafficCar(App* app, x86::CPU& cpu, x86::Args& args);              // 0x40cb70
-x86::reg32 clearTrafficRecord(App* app, x86::CPU& cpu, x86::Args& args);        // 0x40cb90
-x86::reg32 placeOnTrack(App* app, x86::CPU& cpu, x86::Args& args);        // 0x40cd80
-x86::reg32 brakeToStop(App* app, x86::CPU& cpu, x86::Args& args);       // 0x40ce70
-x86::reg32 voteCurrentLane(App* app, x86::CPU& cpu, x86::Args& args);       // 0x40cee0
-x86::reg32 senseTraffic(App* app, x86::CPU& cpu, x86::Args& args);          // 0x40cfc0
-x86::reg32 planLaneChange(App* app, x86::CPU& cpu, x86::Args& args);        // 0x40d1f0
-x86::reg32 edgeLaneCost(App* app, x86::CPU& cpu, x86::Args& args);          // 0x40d2e0
-x86::reg32 scoreLanesByRoad(App* app, x86::CPU& cpu, x86::Args& args);      // 0x40d3d0
-x86::reg32 scoreLanesByObstacles(App* app, x86::CPU& cpu, x86::Args& args); // 0x40d720
-x86::reg32 scoreLanesByCars(App* app, x86::CPU& cpu, x86::Args& args);      // 0x40d800
-x86::reg32 edgePenalty(App* app, x86::CPU& cpu, x86::Args& args);           // 0x40d9f0
-x86::reg32 sumLaneVotes(App* app, x86::CPU& cpu, x86::Args& args);          // 0x40da30
-x86::reg32 steerToLane(App* app, x86::CPU& cpu, x86::Args& args);           // 0x40daf0
-x86::reg32 beginLanePlanning(App* app, x86::CPU& cpu, x86::Args& args);     // 0x40dd60
-x86::reg32 chooseLane(App* app, x86::CPU& cpu, x86::Args& args);            // 0x40ddb0
-x86::reg32 startHorn(App* app, x86::CPU& cpu, x86::Args& args);         // 0x40de50
-x86::reg32 stopHorn(App* app, x86::CPU& cpu, x86::Args& args);        // 0x40deb0
-x86::reg32 stepTrafficLoading(App* app, x86::CPU& cpu, x86::Args& args);         // 0x40df10
-x86::reg32 targetSpeedAt(App* app, x86::CPU& cpu, x86::Args& args);         // 0x40e080
-x86::reg32 roadKindAt(App* app, x86::CPU& cpu, x86::Args& args);         // 0x40e0c0
-x86::reg32 cacheRoadWidth(App* app, x86::CPU& cpu, x86::Args& args);        // 0x40e0f0
-x86::reg32 nodeGap(App* app, x86::CPU& cpu, x86::Args& args);               // 0x40e120
-x86::reg32 nodeOffset(App* app, x86::CPU& cpu, x86::Args& args);            // 0x40e160
-x86::reg32 nodesAheadBySpeed(App* app, x86::CPU& cpu, x86::Args& args);     // 0x40e1b0
-x86::reg32 nodeLaneBits(App* app, x86::CPU& cpu, x86::Args& args);               // 0x40e200
-x86::reg32 nodeHasLane(App* app, x86::CPU& cpu, x86::Args& args);      // 0x40e220
-x86::reg32 laneBit(App* app, x86::CPU& cpu, x86::Args& args);        // 0x40e270
-x86::reg32 roadSliceIndex(App* app, x86::CPU& cpu, x86::Args& args);        // 0x40e2b0
-x86::reg32 carSlices(App* app, x86::CPU& cpu, x86::Args& args);            // 0x40e350
-x86::reg32 fillTrackTuning(App* app, x86::CPU& cpu, x86::Args& args);      // 0x40e3c0
-x86::reg32 setupTrackTuning(App* app, x86::CPU& cpu, x86::Args& args);          // 0x40e410
-x86::reg32 freeSpeedTable(App* app, x86::CPU& cpu, x86::Args& args);        // 0x40ec40
-x86::reg32 trafficSide(App* app, x86::CPU& cpu, x86::Args& args);       // 0x40ec70
-x86::reg32 roadIsWide(App* app, x86::CPU& cpu, x86::Args& args);            // 0x40eca0
-x86::reg32 trafficSpeedAt(App* app, x86::CPU& cpu, x86::Args& args);    // 0x40ed40
-x86::reg32 tuningSpeed(App* app, x86::CPU& cpu, x86::Args& args);         // 0x40ee80
-x86::reg32 tuningDistance(App* app, x86::CPU& cpu, x86::Args& args);           // 0x40eed0
-x86::reg32 tuningFirst(App* app, x86::CPU& cpu, x86::Args& args);          // 0x40ef10
-x86::reg32 nodeDirectionDot(App* app, x86::CPU& cpu, x86::Args& args);      // 0x40ef70
-x86::reg32 nodeWithinRange(App* app, x86::CPU& cpu, x86::Args& args);       // 0x40f000
-x86::reg32 carWithinReach(App* app, x86::CPU& cpu, x86::Args& args);        // 0x40f050
-x86::reg32 alwaysOne(App* app, x86::CPU& cpu, x86::Args& args);             // 0x40f100
-x86::reg32 carBoxedIn(App* app, x86::CPU& cpu, x86::Args& args);       // 0x40f110
-x86::reg32 freeAnimationPaths(App* app, x86::CPU& cpu, x86::Args& args);       // 0x40f330
-x86::reg32 findFreeAnimation(App* app, x86::CPU& cpu, x86::Args& args);          // 0x40f370
-x86::reg32 startAnimation(App* app, x86::CPU& cpu, x86::Args& args);               // 0x40f3b0
-x86::reg32 setAnimationMode(App* app, x86::CPU& cpu, x86::Args& args);         // 0x40f430
-x86::reg32 stopAnimation(App* app, x86::CPU& cpu, x86::Args& args);            // 0x40f460
-x86::reg32 animationPose(App* app, x86::CPU& cpu, x86::Args& args);       // 0x40f4b0
-x86::reg32 animationPlace(App* app, x86::CPU& cpu, x86::Args& args);        // 0x40f6d0
-x86::reg32 animationProgress(App* app, x86::CPU& cpu, x86::Args& args);      // 0x40f800
-x86::reg32 animationLastPose(App* app, x86::CPU& cpu, x86::Args& args);     // 0x40f880
-x86::reg32 pathEndPose(App* app, x86::CPU& cpu, x86::Args& args);            // 0x40f8d0
-x86::reg32 animationStep(App* app, x86::CPU& cpu, x86::Args& args);              // 0x40f940
-x86::reg32 animationPlaying(App* app, x86::CPU& cpu, x86::Args& args);            // 0x40fac0
-x86::reg32 startSound(App* app, x86::CPU& cpu, x86::Args& args);      // 0x40fb10
-x86::reg32 restartSound(App* app, x86::CPU& cpu, x86::Args& args);    // 0x40fcf0
+nfs::u32 leastTrafficPlayer(App* app, nfs::ThreadState& ts, nfs::Args& args);  // 0x40c4f0
+nfs::u32 placeTrafficCar(App* app, nfs::ThreadState& ts, nfs::Args& args);           // 0x40c590
+nfs::u32 reactToTraffic(App* app, nfs::ThreadState& ts, nfs::Args& args);       // 0x40c630
+nfs::u32 slowForPolice(App* app, nfs::ThreadState& ts, nfs::Args& args);             // 0x40c780
+nfs::u32 countStopped(App* app, nfs::ThreadState& ts, nfs::Args& args);       // 0x40c7f0
+nfs::u32 nearPoliceCar(App* app, nfs::ThreadState& ts, nfs::Args& args);      // 0x40c830
+nfs::u32 weighLaneVotes(App* app, nfs::ThreadState& ts, nfs::Args& args);        // 0x40c8a0
+nfs::u32 voteRoadside(App* app, nfs::ThreadState& ts, nfs::Args& args);        // 0x40c8d0
+nfs::u32 atRoadside(App* app, nfs::ThreadState& ts, nfs::Args& args);        // 0x40c950
+nfs::u32 advanceCarAi(App* app, nfs::ThreadState& ts, nfs::Args& args);          // 0x40c9f0
+nfs::u32 clearSensedCars(App* app, nfs::ThreadState& ts, nfs::Args& args);       // 0x40cb20
+nfs::u32 cacheTrafficSide(App* app, nfs::ThreadState& ts, nfs::Args& args);       // 0x40cb50
+nfs::u32 resetTrafficCar(App* app, nfs::ThreadState& ts, nfs::Args& args);              // 0x40cb70
+nfs::u32 clearTrafficRecord(App* app, nfs::ThreadState& ts, nfs::Args& args);        // 0x40cb90
+nfs::u32 placeOnTrack(App* app, nfs::ThreadState& ts, nfs::Args& args);        // 0x40cd80
+nfs::u32 brakeToStop(App* app, nfs::ThreadState& ts, nfs::Args& args);       // 0x40ce70
+nfs::u32 voteCurrentLane(App* app, nfs::ThreadState& ts, nfs::Args& args);       // 0x40cee0
+nfs::u32 senseTraffic(App* app, nfs::ThreadState& ts, nfs::Args& args);          // 0x40cfc0
+nfs::u32 planLaneChange(App* app, nfs::ThreadState& ts, nfs::Args& args);        // 0x40d1f0
+nfs::u32 edgeLaneCost(App* app, nfs::ThreadState& ts, nfs::Args& args);          // 0x40d2e0
+nfs::u32 scoreLanesByRoad(App* app, nfs::ThreadState& ts, nfs::Args& args);      // 0x40d3d0
+nfs::u32 scoreLanesByObstacles(App* app, nfs::ThreadState& ts, nfs::Args& args); // 0x40d720
+nfs::u32 scoreLanesByCars(App* app, nfs::ThreadState& ts, nfs::Args& args);      // 0x40d800
+nfs::u32 edgePenalty(App* app, nfs::ThreadState& ts, nfs::Args& args);           // 0x40d9f0
+nfs::u32 sumLaneVotes(App* app, nfs::ThreadState& ts, nfs::Args& args);          // 0x40da30
+nfs::u32 steerToLane(App* app, nfs::ThreadState& ts, nfs::Args& args);           // 0x40daf0
+nfs::u32 beginLanePlanning(App* app, nfs::ThreadState& ts, nfs::Args& args);     // 0x40dd60
+nfs::u32 chooseLane(App* app, nfs::ThreadState& ts, nfs::Args& args);            // 0x40ddb0
+nfs::u32 startHorn(App* app, nfs::ThreadState& ts, nfs::Args& args);         // 0x40de50
+nfs::u32 stopHorn(App* app, nfs::ThreadState& ts, nfs::Args& args);        // 0x40deb0
+nfs::u32 stepTrafficLoading(App* app, nfs::ThreadState& ts, nfs::Args& args);         // 0x40df10
+nfs::u32 targetSpeedAt(App* app, nfs::ThreadState& ts, nfs::Args& args);         // 0x40e080
+nfs::u32 roadKindAt(App* app, nfs::ThreadState& ts, nfs::Args& args);         // 0x40e0c0
+nfs::u32 cacheRoadWidth(App* app, nfs::ThreadState& ts, nfs::Args& args);        // 0x40e0f0
+nfs::u32 nodeGap(App* app, nfs::ThreadState& ts, nfs::Args& args);               // 0x40e120
+nfs::u32 nodeOffset(App* app, nfs::ThreadState& ts, nfs::Args& args);            // 0x40e160
+nfs::u32 nodesAheadBySpeed(App* app, nfs::ThreadState& ts, nfs::Args& args);     // 0x40e1b0
+nfs::u32 nodeLaneBits(App* app, nfs::ThreadState& ts, nfs::Args& args);               // 0x40e200
+nfs::u32 nodeHasLane(App* app, nfs::ThreadState& ts, nfs::Args& args);      // 0x40e220
+nfs::u32 laneBit(App* app, nfs::ThreadState& ts, nfs::Args& args);        // 0x40e270
+nfs::u32 roadSliceIndex(App* app, nfs::ThreadState& ts, nfs::Args& args);        // 0x40e2b0
+nfs::u32 carSlices(App* app, nfs::ThreadState& ts, nfs::Args& args);            // 0x40e350
+nfs::u32 fillTrackTuning(App* app, nfs::ThreadState& ts, nfs::Args& args);      // 0x40e3c0
+nfs::u32 setupTrackTuning(App* app, nfs::ThreadState& ts, nfs::Args& args);          // 0x40e410
+nfs::u32 freeSpeedTable(App* app, nfs::ThreadState& ts, nfs::Args& args);        // 0x40ec40
+nfs::u32 trafficSide(App* app, nfs::ThreadState& ts, nfs::Args& args);       // 0x40ec70
+nfs::u32 roadIsWide(App* app, nfs::ThreadState& ts, nfs::Args& args);            // 0x40eca0
+nfs::u32 trafficSpeedAt(App* app, nfs::ThreadState& ts, nfs::Args& args);    // 0x40ed40
+nfs::u32 tuningSpeed(App* app, nfs::ThreadState& ts, nfs::Args& args);         // 0x40ee80
+nfs::u32 tuningDistance(App* app, nfs::ThreadState& ts, nfs::Args& args);           // 0x40eed0
+nfs::u32 tuningFirst(App* app, nfs::ThreadState& ts, nfs::Args& args);          // 0x40ef10
+nfs::u32 nodeDirectionDot(App* app, nfs::ThreadState& ts, nfs::Args& args);      // 0x40ef70
+nfs::u32 nodeWithinRange(App* app, nfs::ThreadState& ts, nfs::Args& args);       // 0x40f000
+nfs::u32 carWithinReach(App* app, nfs::ThreadState& ts, nfs::Args& args);        // 0x40f050
+nfs::u32 alwaysOne(App* app, nfs::ThreadState& ts, nfs::Args& args);             // 0x40f100
+nfs::u32 carBoxedIn(App* app, nfs::ThreadState& ts, nfs::Args& args);       // 0x40f110
+nfs::u32 freeAnimationPaths(App* app, nfs::ThreadState& ts, nfs::Args& args);       // 0x40f330
+nfs::u32 findFreeAnimation(App* app, nfs::ThreadState& ts, nfs::Args& args);          // 0x40f370
+nfs::u32 startAnimation(App* app, nfs::ThreadState& ts, nfs::Args& args);               // 0x40f3b0
+nfs::u32 setAnimationMode(App* app, nfs::ThreadState& ts, nfs::Args& args);         // 0x40f430
+nfs::u32 stopAnimation(App* app, nfs::ThreadState& ts, nfs::Args& args);            // 0x40f460
+nfs::u32 animationPose(App* app, nfs::ThreadState& ts, nfs::Args& args);       // 0x40f4b0
+nfs::u32 animationPlace(App* app, nfs::ThreadState& ts, nfs::Args& args);        // 0x40f6d0
+nfs::u32 animationProgress(App* app, nfs::ThreadState& ts, nfs::Args& args);      // 0x40f800
+nfs::u32 animationLastPose(App* app, nfs::ThreadState& ts, nfs::Args& args);     // 0x40f880
+nfs::u32 pathEndPose(App* app, nfs::ThreadState& ts, nfs::Args& args);            // 0x40f8d0
+nfs::u32 animationStep(App* app, nfs::ThreadState& ts, nfs::Args& args);              // 0x40f940
+nfs::u32 animationPlaying(App* app, nfs::ThreadState& ts, nfs::Args& args);            // 0x40fac0
+nfs::u32 startSound(App* app, nfs::ThreadState& ts, nfs::Args& args);      // 0x40fb10
+nfs::u32 restartSound(App* app, nfs::ThreadState& ts, nfs::Args& args);    // 0x40fcf0
 
 // The typed cores the thunks above call, where one is used before it is defined.
-reg32 trackTrafficSide(App* app);
-reg32 trackRoadWide(App* app);
-reg32 sliceBit(reg32 slice);
-void soundHorn(App* app, reg32 car);
-void endHorn(App* app, reg32 car);
-void clearRecord(App* app, reg32 car);
-i32 nodesBetween(App* app, reg32 node, reg32 from);
-void findCarSlices(App* app, reg32 car);
-reg32 nodeAhead(App* app, reg32 car, reg32 steps);
-reg32 laneBitsAt(App* app, reg32 node, reg32 mask);
-void scoreRoad(App* app, reg32 car);
-reg32 roadScoreLeft(App* app, reg32 car);
-void scoreObstacles(App* app, reg32 car);
-bool scoreCars(App* app, CPU& cpu, reg32 car);
-bool beginPlanning(App* app, CPU& cpu, reg32 car);
+u32 trackTrafficSide(App* app);
+u32 trackRoadWide(App* app);
+u32 sliceBit(u32 slice);
+void soundHorn(App* app, u32 car);
+void endHorn(App* app, u32 car);
+void clearRecord(App* app, u32 car);
+i32 nodesBetween(App* app, u32 node, u32 from);
+void findCarSlices(App* app, u32 car);
+u32 nodeAhead(App* app, u32 car, u32 steps);
+u32 laneBitsAt(App* app, u32 node, u32 mask);
+void scoreRoad(App* app, u32 car);
+u32 roadScoreLeft(App* app, u32 car);
+void scoreObstacles(App* app, u32 car);
+bool scoreCars(App* app, ThreadState& ts, u32 car);
+bool beginPlanning(App* app, ThreadState& ts, u32 car);
 void weighVotes(App* app);
-bool reactToCars(App* app, CPU& cpu, reg32 car);
-bool pickLane(App* app, CPU& cpu, reg32 car);
-bool policeNear(App* app, reg32 car, reg32 distance);
-void voteForRoadside(App* app, reg32 car);
-bool reachedRoadside(App* app, reg32 car);
+bool reactToCars(App* app, ThreadState& ts, u32 car);
+bool pickLane(App* app, ThreadState& ts, u32 car);
+bool policeNear(App* app, u32 car, u32 distance);
+void voteForRoadside(App* app, u32 car);
+bool reachedRoadside(App* app, u32 car);
 void penaliseCloseCars(App* app);
-std::optional<reg32> stepLoading(App* app, CPU& cpu, reg32 car);
-std::optional<bool> stopPulledOver(App* app, CPU& cpu, reg32 car);
-bool animationOn(App* app, reg32 slot);
+std::optional<u32> stepLoading(App* app, ThreadState& ts, u32 car);
+std::optional<bool> stopPulledOver(App* app, ThreadState& ts, u32 car);
+bool animationOn(App* app, u32 slot);
 
 /* The player car fewest traffic cars keep near: for each of the [0x5efda4] players' cars (0x5efa48)
  * the active traffic cars (0x5efb48: +0x620 bit 2 clear) whose +0x6d8 is it are counted; the first
  * with the least (from 10000), or the first car [0x5efac8] when there are no players.  The players'
  * count written back, as the code does.  The code counts in a frame of 15; the game has 4 players at
  * most, and a count past 15 (which would run over the code's own frame) counts the first 15. */
-reg32 leastFollowedPlayer(App* app)
+u32 leastFollowedPlayer(App* app)
 {
     constexpr i32 kFrameCounts = 15;
     const i32 players = i32(at(app, kAiCount));
@@ -606,28 +606,28 @@ reg32 leastFollowedPlayer(App* app)
     for (i32 player = 0; player < counted; ++player)
         for (i32 i = 0; i < i32(at(app, kCarCountB)); ++i)
         {
-            const reg32 car = at(app, reg32(i) * 4 + kCarsByType);
+            const u32 car = at(app, u32(i) * 4 + kCarsByType);
             if ((byte(app, car + kCarTrafficFlags) & kTrafficInactive) != 0)
                 continue;
-            if (at(app, car + kCarFollows) == at(app, reg32(player) * 4 + kPlayerCars))
+            if (at(app, car + kCarFollows) == at(app, u32(player) * 4 + kPlayerCars))
                 ++counts[player];
         }
-    reg32 least = at(app, kCars);
+    u32 least = at(app, kCars);
     i32 fewest = 10000;
     for (i32 player = 0; player < counted; ++player)
         if (fewest > counts[player])
         {
             fewest = counts[player];
-            least = at(app, reg32(player) * 4 + kPlayerCars);
+            least = at(app, u32(player) * 4 + kPlayerCars);
         }
-    put(app, kAiCount, reg32(players));
+    put(app, kAiCount, u32(players));
     return least;
 }
 
 /* 0x40c4f0: leastFollowedPlayer; every register but eax kept. */
-x86::reg32 leastTrafficPlayer(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 leastTrafficPlayer(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&] { return leastFollowedPlayer(app); });
+    asThunk(ts, args, [&] { return leastFollowedPlayer(app); });
     return args.eax;
 }
 
@@ -637,34 +637,34 @@ x86::reg32 leastTrafficPlayer(App* app, x86::CPU& cpu, x86::Args& args)
  * leastFollowedPlayer, or [0x56ebb8] with one player); then 0x40c160 and 0x40c2f0 (below this file)
  * place it.  The eax 0x40c2f0 leaves, what it gives back: placeTrafficCar's; nullopt when the game
  * stopped. */
-std::optional<reg32> placeTrafficEax(App* app, CPU& cpu, reg32 car)
+std::optional<u32> placeTrafficEax(App* app, ThreadState& ts, u32 car)
 {
-    const reg32 product = at(app, kRandomSeed) * at(app, kRandomMultiplier);
+    const u32 product = at(app, kRandomSeed) * at(app, kRandomMultiplier);
     put(app, kRandomProduct, product);
-    const reg32 middle = (at(app, kRandomProduct) & 0xffff00) >> 8;
+    const u32 middle = (at(app, kRandomProduct) & 0xffff00) >> 8;
     put(app, kRandomSeed, product & 0xffff);
-    const reg32 roll = (middle * 100) >> 16;
+    const u32 roll = (middle * 100) >> 16;
     if (roll <= 0x45 && at(app, kSpeedsReady) == 0)
-        putByte(app, car + kCarWayFlags, reg8(byte(app, car + kCarWayFlags) | kAgainstTrack));
+        putByte(app, car + kCarWayFlags, u8(byte(app, car + kCarWayFlags) | kAgainstTrack));
     else
-        putByte(app, car + kCarWayFlags, reg8(byte(app, car + kCarWayFlags) & ~kAgainstTrack));
-    const reg32 follows = i32(at(app, kAiCount)) <= 1 ? at(app, kPlayerCarsB) : leastFollowedPlayer(app);
+        putByte(app, car + kCarWayFlags, u8(byte(app, car + kCarWayFlags) & ~kAgainstTrack));
+    const u32 follows = i32(at(app, kAiCount)) <= 1 ? at(app, kPlayerCarsB) : leastFollowedPlayer(app);
     put(app, car + kCarFollows, follows);
-    if (!guest::direct<0x40c160, pursuit::followCarOf>(app, cpu, car))
+    if (!guest::direct<0x40c160, pursuit::followCarOf>(app, ts, car))
         return std::nullopt;
-    return guest::direct<0x40c2f0, pursuit::trafficStepOf>(app, cpu, car);
+    return guest::direct<0x40c2f0, pursuit::trafficStepOf>(app, ts, car);
 }
 
 /* placeTrafficEax: the eax it leaves; nullopt when the game stopped. */
-std::optional<reg32> placeTraffic(App* app, CPU& cpu, reg32 car)
+std::optional<u32> placeTraffic(App* app, ThreadState& ts, u32 car)
 {
-    return placeTrafficEax(app, cpu, car);
+    return placeTrafficEax(app, ts, car);
 }
 
 /* 0x40c590: placeTraffic for car eax; eax as 0x40c2f0 leaves it. */
-x86::reg32 placeTrafficCar(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 placeTrafficCar(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&, car = args.eax] { return placeTrafficEax(app, cpu, car); });
+    asThunk(ts, args, [&, car = args.eax] { return placeTrafficEax(app, ts, car); });
     return args.eax;
 }
 
@@ -680,7 +680,7 @@ float sizeOf(float value)
  * (+0x200 bit 2): the horn when they close faster than 20, and faster than 23 a police chase called
  * (0x411750: 1, 100, 8).  Then, when a car about it drives against it [0x56ef7c], the horn for the
  * first player's car among the three sensed.  False when the game stopped. */
-bool reactToCars(App* app, CPU& cpu, reg32 car)
+bool reactToCars(App* app, ThreadState& ts, u32 car)
 {
     if ((byte(app, car + kCarTrafficFlags) & kTrafficHorn) != 0)
     {
@@ -689,7 +689,7 @@ bool reactToCars(App* app, CPU& cpu, reg32 car)
     }
     if ((byte(app, car + kCarWayFlags) & kAgainstTrack) == 0)
         return true;
-    const reg32 ahead = at(app, kSensed + 4);
+    const u32 ahead = at(app, kSensed + 4);
     if (ahead != 0 && at(app, kSensedGaps + 4) == 7)
     {
         // fcompp of 0 with each speed: going back (0 over it) or not.
@@ -700,15 +700,15 @@ bool reactToCars(App* app, CPU& cpu, reg32 car)
             const float closing = float(fp::sub(f32(app, car + kCarSpeed), f32(app, ahead + kCarSpeed)));
             if (Float(sizeOf(closing)) > f64(app, kHornClosing))
                 soundHorn(app, car);
-            if (Float(sizeOf(closing)) > f64(app, kChaseClosing) && !callChase(app, cpu, car))
+            if (Float(sizeOf(closing)) > f64(app, kChaseClosing) && !callChase(app, ts, car))
                 return false;
         }
     }
     if (at(app, kSensedFlag) == 0)
         return true;
-    for (reg32 i = 0; i < 3; ++i)
+    for (u32 i = 0; i < 3; ++i)
     {
-        const reg32 sensed = at(app, i * 4 + kSensed);
+        const u32 sensed = at(app, i * 4 + kSensed);
         if (sensed != 0 && (byte(app, sensed + kCarKindFlags) & kKindPlayer) != 0)
         {
             soundHorn(app, car);
@@ -721,9 +721,9 @@ bool reactToCars(App* app, CPU& cpu, reg32 car)
 /* 0x40c630: reactToCars for car eax.  What the code leaves in eax (a compare's status word, the
  * sensed cars' index) no caller reads: its one caller is advanceCarAi's core; aiplan.inc's promise
  * says so. */
-x86::reg32 reactToTraffic(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 reactToTraffic(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&, car = args.eax] { return reactToCars(app, cpu, car); });
+    asThunk(ts, args, [&, car = args.eax] { return reactToCars(app, ts, car); });
     return args.eax;
 }
 
@@ -734,16 +734,16 @@ struct PullOver
     float asked;
     float topSpeed;
     bool cut;
-    reg32 eax;  // 0x40bfe0's
+    u32 eax;  // 0x40bfe0's
 };
 
 /* Traffic car slowed to pull over: its speed +0x7b0 6.7, or 0x40bfe0's when that is less; its sign
  * flipped for a reversed race and again for a car against the track's direction.  Nullopt when the
  * game stopped. */
-std::optional<PullOver> slowToPullOver(App* app, CPU& cpu, reg32 car)
+std::optional<PullOver> slowToPullOver(App* app, ThreadState& ts, u32 car)
 {
     put(app, car + kCarTargetSpeed, kPullOverSpeed);
-    const std::optional<TopSpeed> top = trafficTopSpeed(app, cpu, car);
+    const std::optional<TopSpeed> top = trafficTopSpeed(app, ts, car);
     if (!top)
         return std::nullopt;
     const float asked = app->getMemory<float>(car + kCarTargetSpeed);
@@ -751,27 +751,27 @@ std::optional<PullOver> slowToPullOver(App* app, CPU& cpu, reg32 car)
     if (pullOver.cut)
         putFloat(app, car + kCarTargetSpeed, pullOver.topSpeed);
     if (gameSettings(app).backwards != 0)
-        putByte(app, car + kCarTargetSpeed + 3, reg8(byte(app, car + kCarTargetSpeed + 3) ^ 0x80));
+        putByte(app, car + kCarTargetSpeed + 3, u8(byte(app, car + kCarTargetSpeed + 3) ^ 0x80));
     if ((byte(app, car + kCarWayFlags) & kAgainstTrack) != 0)
-        putByte(app, car + kCarTargetSpeed + 3, reg8(byte(app, car + kCarTargetSpeed + 3) ^ 0x80));
+        putByte(app, car + kCarTargetSpeed + 3, u8(byte(app, car + kCarTargetSpeed + 3) ^ 0x80));
     return pullOver;
 }
 
 /* 0x40c780: slowToPullOver for car eax; eax as the code leaves it: 0x40bfe0's with the compare's
  * status word in ax, or the top speed's bits where the speed was cut to it; ah the speed's top byte
  * as the reversed race's flip left it. */
-x86::reg32 slowForPolice(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 slowForPolice(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&, car = args.eax]() -> std::optional<reg32> {
-        const std::optional<PullOver> pullOver = slowToPullOver(app, cpu, car);
+    asThunk(ts, args, [&, car = args.eax]() -> std::optional<u32> {
+        const std::optional<PullOver> pullOver = slowToPullOver(app, ts, car);
         if (!pullOver)
             return std::nullopt;
-        reg32 left = (pullOver->eax & 0xffff0000u) | statusWord(Float(pullOver->asked), Float(pullOver->topSpeed));
+        u32 left = (pullOver->eax & 0xffff0000u) | statusWord(Float(pullOver->asked), Float(pullOver->topSpeed));
         if (pullOver->cut)
             left = bitsOf(pullOver->topSpeed);
         if (gameSettings(app).backwards != 0)
             left = (left & 0xffff00ffu)
-                   | reg32(reg8(byte(app, car + kCarTargetSpeed + 3)
+                   | u32(u8(byte(app, car + kCarTargetSpeed + 3)
                                 ^ ((byte(app, car + kCarWayFlags) & kAgainstTrack) != 0 ? 0x80 : 0)))
                          << 8;
         return left;
@@ -780,12 +780,12 @@ x86::reg32 slowForPolice(App* app, x86::CPU& cpu, x86::Args& args)
 }
 
 /* How many active traffic cars have pulled over (+0x6dc 4). */
-reg32 stoppedCount(App* app)
+u32 stoppedCount(App* app)
 {
-    reg32 stopped = 0;
+    u32 stopped = 0;
     for (i32 i = 0; i < i32(at(app, kCarCountB)); ++i)
     {
-        const reg32 car = at(app, reg32(i) * 4 + kCarsByType);
+        const u32 car = at(app, u32(i) * 4 + kCarsByType);
         if ((byte(app, car + kCarTrafficFlags) & kTrafficInactive) == 0 && at(app, car + kCarState) == kStatePulledOver)
             ++stopped;
     }
@@ -793,27 +793,27 @@ reg32 stoppedCount(App* app)
 }
 
 /* 0x40c7f0: stoppedCount. */
-x86::reg32 countStopped(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 countStopped(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&] { return stoppedCount(app); });
+    asThunk(ts, args, [&] { return stoppedCount(app); });
     return args.eax;
 }
 
 /* Whether a police car with its siren on (0x5efa88's, [0x5efd88] of them: +0x734 chasing or +0x710
  * bit 4) is within `distance` + 0x16 nodes of car -- two more for each car already pulled over
  * (stoppedCount). */
-bool policeNear(App* app, reg32 car, reg32 distance)
+bool policeNear(App* app, u32 car, u32 distance)
 {
-    const reg32 node = at(app, car + kCarNode);
-    const reg32 margin = stoppedCount(app) * 2;
+    const u32 node = at(app, car + kCarNode);
+    const u32 margin = stoppedCount(app) * 2;
     for (i32 i = 0; i < i32(at(app, kPlaceCount)); ++i)
     {
-        const reg32 police = at(app, reg32(i) * 4 + kCarsByPlace);
+        const u32 police = at(app, u32(i) * 4 + kCarsByPlace);
         if (at(app, police + kCarChasing) == 0 && (byte(app, police + kCarSirenFlags) & kSirenOn) == 0)
             continue;
         i32 gap = nodesBetween(app, at(app, police + kCarNode), node);
         if (gap <= 0)
-            gap = i32(0u - reg32(gap));
+            gap = i32(0u - u32(gap));
         if (gap < i32(distance + 0x16 + margin))
             return true;
     }
@@ -821,23 +821,23 @@ bool policeNear(App* app, reg32 car, reg32 distance)
 }
 
 /* 0x40c830: policeNear for car eax within edx. */
-x86::reg32 nearPoliceCar(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 nearPoliceCar(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&, car = args.eax, distance = args.edx] { return policeNear(app, car, distance) ? 1 : 0; });
+    asThunk(ts, args, [&, car = args.eax, distance = args.edx] { return policeNear(app, car, distance) ? 1 : 0; });
     return args.eax;
 }
 
 /* The three lane votes (0x56ee90..98) weighed ten times. */
 void weighVotes(App* app)
 {
-    for (reg32 i = 0; i < 3; ++i)
+    for (u32 i = 0; i < 3; ++i)
         put(app, i * 4 + kLaneCostA, at(app, i * 4 + kLaneCostA) * 10);
 }
 
 /* 0x40c8a0: weighVotes; eax the last vote, as the code leaves it. */
-x86::reg32 weighLaneVotes(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 weighLaneVotes(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&] {
+    asThunk(ts, args, [&] {
         weighVotes(app);
         return at(app, kLaneCostC);
     });
@@ -845,14 +845,14 @@ x86::reg32 weighLaneVotes(App* app, x86::CPU& cpu, x86::Args& args)
 }
 
 /* A node's left and right edge slices: 6 less the high nibble of its +0x13, 7 more the low. */
-i32 leftEdgeSlice(App* app, reg32 record) { return 6 - ((byte(app, record + kNodeEdges) >> 4) & 0xf); }
-i32 rightEdgeSlice(App* app, reg32 record) { return (byte(app, record + kNodeEdges) & 0xf) + 7; }
+i32 leftEdgeSlice(App* app, u32 record) { return 6 - ((byte(app, record + kNodeEdges) >> 4) & 0xf); }
+i32 rightEdgeSlice(App* app, u32 record) { return (byte(app, record + kNodeEdges) & 0xf) + 7; }
 
 /* A vote (+100) for pulling over: for the middle (0x56eeb8) when car's slice +0x638 is off its node's
  * road, else for the nearer roadside -- the left (0x56eeb4) or the right (0x56eebc). */
-void voteForRoadside(App* app, reg32 car)
+void voteForRoadside(App* app, u32 car)
 {
-    const reg32 record = nodeAddr(app, at(app, car + kCarNode));
+    const u32 record = nodeAddr(app, at(app, car + kCarNode));
     const i32 slice = i32(at(app, car + kCarSlice));
     if (leftEdgeSlice(app, record) > slice || rightEdgeSlice(app, record) < slice)
         put(app, kNodeCostC, at(app, kNodeCostC) + 0x64);
@@ -864,34 +864,34 @@ void voteForRoadside(App* app, reg32 car)
 
 /* 0x40c8d0: voteForRoadside for car eax; eax as the code leaves it: the node's record when the slice
  * is left of the left edge, else the right edge slice. */
-x86::reg32 voteRoadside(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 voteRoadside(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&, car = args.eax] {
+    asThunk(ts, args, [&, car = args.eax] {
         voteForRoadside(app, car);
-        const reg32 record = nodeAddr(app, at(app, car + kCarNode));
-        return leftEdgeSlice(app, record) > i32(at(app, car + kCarSlice)) ? record : reg32(rightEdgeSlice(app, record));
+        const u32 record = nodeAddr(app, at(app, car + kCarNode));
+        return leftEdgeSlice(app, record) > i32(at(app, car + kCarSlice)) ? record : u32(rightEdgeSlice(app, record));
     });
     return args.eax;
 }
 
 /* Whether car has reached the roadside: its place across (+0x7b8, as 16.16) beyond its node's left
  * edge (0x10000 less the left edge's slices times the left half's width) or right edge. */
-bool reachedRoadside(App* app, reg32 car)
+bool reachedRoadside(App* app, u32 car)
 {
     const i32 across = fp::toInteger<i32>(fp::mul(f32(app, car + kCarAcross), f64(app, kToFixedA)));
-    const reg32 record = nodeAddr(app, at(app, car + kCarNode));
-    const reg32 edges = byte(app, record + kNodeEdges);
-    const reg32 left = 0x10000 - ((edges >> 4) & 0xf) * (reg32(byte(app, record + kNodeLeftWidth)) << 0xf);
+    const u32 record = nodeAddr(app, at(app, car + kCarNode));
+    const u32 edges = byte(app, record + kNodeEdges);
+    const u32 left = 0x10000 - ((edges >> 4) & 0xf) * (u32(byte(app, record + kNodeLeftWidth)) << 0xf);
     if (across < i32(left))
         return true;
-    const reg32 right = (edges & 0xf) * (reg32(byte(app, record + kNodeRightWidth)) << 0xf) - 0x10000;
+    const u32 right = (edges & 0xf) * (u32(byte(app, record + kNodeRightWidth)) << 0xf) - 0x10000;
     return across > i32(right);
 }
 
 /* 0x40c950: reachedRoadside for car eax. */
-x86::reg32 atRoadside(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 atRoadside(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&, car = args.eax] { return reachedRoadside(app, car) ? 1 : 0; });
+    asThunk(ts, args, [&, car = args.eax] { return reachedRoadside(app, car) ? 1 : 0; });
     return args.eax;
 }
 
@@ -903,30 +903,30 @@ x86::reg32 atRoadside(App* app, x86::CPU& cpu, x86::Args& args)
  * the obstacles, the cars, the close ones, 0x40de30 with 2) -- back to 1 when the police car has gone
  * (by 2), to 4 at the roadside; 4 stands (its speed asked 0, stopPulledOver) until the police car has
  * gone (1); 2 and 5 nothing.  False when the game stopped. */
-bool driveTraffic(App* app, CPU& cpu, reg32 car)
+bool driveTraffic(App* app, ThreadState& ts, u32 car)
 {
-    std::optional<reg32> onRoad;
+    std::optional<u32> onRoad;
     {
-        const GuestFrame frame(cpu, 0xc, 0);
-        const ReturnSlot slot(cpu);
-        onRoad = stepLoading(app, cpu, car);
+        const GuestFrame frame(ts, 0xc, 0);
+        const ReturnSlot slot(ts);
+        onRoad = stepLoading(app, ts, car);
     }
     if (!onRoad)
         return false;
     if (*onRoad == 0)
         return true;
-    const reg32 state = at(app, car + kCarState);
+    const u32 state = at(app, car + kCarState);
     if (state == 0 || state == 1 || state > 5)
     {
         if (state != 1)
             put(app, car + kCarState, kStateDriving);
-        if (!guest::direct<0x40c270, pursuit::trafficTargetOf>(app, cpu, car) || !beginPlanning(app, cpu, car))
+        if (!guest::direct<0x40c270, pursuit::trafficTargetOf>(app, ts, car) || !beginPlanning(app, ts, car))
             return false;
         weighVotes(app);
-        if (!reactToCars(app, cpu, car))
+        if (!reactToCars(app, ts, car))
             return false;
-        guest::direct<0x40bff0, pursuit::followChasedCar>(app, cpu, car);
-        if (cpu.terminate || !pickLane(app, cpu, car) || !actOnVotes(app, cpu, car, 0))
+        guest::direct<0x40bff0, pursuit::followChasedCar>(app, ts, car);
+        if (ts.terminate || !pickLane(app, ts, car) || !actOnVotes(app, ts, car, 0))
             return false;
         if (policeNear(app, car, 0))
             put(app, car + kCarState, kStatePullingOver);
@@ -934,14 +934,14 @@ bool driveTraffic(App* app, CPU& cpu, reg32 car)
     }
     if (state == kStatePullingOver)
     {
-        if (!beginPlanning(app, cpu, car) || !slowToPullOver(app, cpu, car))
+        if (!beginPlanning(app, ts, car) || !slowToPullOver(app, ts, car))
             return false;
         voteForRoadside(app, car);
         scoreObstacles(app, car);
-        if (!scoreCars(app, cpu, car))
+        if (!scoreCars(app, ts, car))
             return false;
         penaliseCloseCars(app);
-        if (!actOnVotes(app, cpu, car, 2))
+        if (!actOnVotes(app, ts, car, 2))
             return false;
         if (!policeNear(app, car, 2))
             put(app, car + kCarState, kStateDriving);
@@ -952,7 +952,7 @@ bool driveTraffic(App* app, CPU& cpu, reg32 car)
     if (state == kStatePulledOver)
     {
         put(app, car + kCarTargetSpeed, 0);
-        if (!stopPulledOver(app, cpu, car))
+        if (!stopPulledOver(app, ts, car))
             return false;
         if (!policeNear(app, car, 2))
             put(app, car + kCarState, kStateDriving);
@@ -962,73 +962,73 @@ bool driveTraffic(App* app, CPU& cpu, reg32 car)
 
 /* 0x40c9f0: driveTraffic for car eax.  What the code leaves in eax (the last yes or no it had) no
  * caller reads: it is the car's tick hook (+0x600); aiplan.inc's promise says so. */
-x86::reg32 advanceCarAi(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 advanceCarAi(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&, car = args.eax] { return driveTraffic(app, cpu, car); });
+    asThunk(ts, args, [&, car = args.eax] { return driveTraffic(app, ts, car); });
     return args.eax;
 }
 
 /* The sensed cars (0x48 bytes at 0x56ef38) cleared (0x4e0640) and [0x56ebc0] zeroed.  The eax the
  * clearing leaves, the buffer; nullopt when the game stopped. */
-std::optional<reg32> clearSensed(App* app, CPU& cpu)
+std::optional<u32> clearSensed(App* app, ThreadState& ts)
 {
-    const reg32 cleared = guest::direct<0x4e0640, watcom::clib::memset>(app, cpu, kSensed, 0, 0x48);
-    if (cpu.terminate)
+    const u32 cleared = guest::direct<0x4e0640, watcom::clib::memset>(app, ts, kSensed, 0, 0x48);
+    if (ts.terminate)
         return std::nullopt;
     put(app, kSensedRound, 0);
     return cleared;
 }
 
 /* 0x40cb20: clearSensed; eax as the clearing leaves it. */
-x86::reg32 clearSensedCars(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 clearSensedCars(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&] { return clearSensed(app, cpu); });
+    asThunk(ts, args, [&] { return clearSensed(app, ts); });
     return args.eax;
 }
 
 /* The track's traffic side [0x56f230] (trackTrafficSide) kept and [0x56ebc0] zeroed; the side. */
-reg32 keepTrafficSide(App* app)
+u32 keepTrafficSide(App* app)
 {
-    const reg32 side = trackTrafficSide(app);
+    const u32 side = trackTrafficSide(app);
     put(app, kTrafficSide, side);
     put(app, kSensedRound, 0);
     return side;
 }
 
 /* 0x40cb50: keepTrafficSide. */
-x86::reg32 cacheTrafficSide(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 cacheTrafficSide(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&] { return keepTrafficSide(app); });
+    asThunk(ts, args, [&] { return keepTrafficSide(app); });
     return args.eax;
 }
 
 /* Traffic car reset: its record (clearRecord), then 0x404690 (below this file).  The eax 0x404690
  * leaves; nullopt when the game stopped. */
-std::optional<reg32> resetTrafficEax(App* app, CPU& cpu, reg32 car)
+std::optional<u32> resetTrafficEax(App* app, ThreadState& ts, u32 car)
 {
     clearRecord(app, car);
-    return linkTraffic(app, cpu, car);
+    return linkTraffic(app, ts, car);
 }
 
 /* resetTrafficEax for the callers that ask only whether the game went on.  False when it stopped. */
-bool resetTraffic(App* app, CPU& cpu, reg32 car)
+bool resetTraffic(App* app, ThreadState& ts, u32 car)
 {
-    return resetTrafficEax(app, cpu, car).has_value();
+    return resetTrafficEax(app, ts, car).has_value();
 }
 
 /* 0x40cb70: resetTraffic for car eax; eax as 0x404690 leaves it. */
-x86::reg32 resetTrafficCar(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 resetTrafficCar(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&, car = args.eax] { return resetTrafficEax(app, cpu, car); });
+    asThunk(ts, args, [&, car = args.eax] { return resetTrafficEax(app, ts, car); });
     return args.eax;
 }
 
 /* Traffic car's driving state cleared: states, targets, lanes and speeds zeroed, +0x7bc 1.0, its next
  * decision +0x634 the clock [0x7d3684] + 0x500, +0x710 bit 4 cleared; +0x620 bit 1 for a car of the
  * kinds +0x200 bit 4 or 5, +0x200 bit 1 cleared for a player's car (bit 2).  In the code's order. */
-void clearRecord(App* app, reg32 car)
+void clearRecord(App* app, u32 car)
 {
-    for (const reg32 off : {0x630u, 0x6d8u, 0x64cu, 0x650u, 0x654u, 0x658u, 0x65cu, 0x6dcu, 0x6e0u, 0x6e4u, 0x6e8u,
+    for (const u32 off : {0x630u, 0x6d8u, 0x64cu, 0x650u, 0x654u, 0x658u, 0x65cu, 0x6dcu, 0x6e0u, 0x6e4u, 0x6e8u,
                             0x2c8u, 0x6f0u, 0x704u, 0x708u, 0x70cu, 0x710u, 0x714u, 0x718u, 0x730u, 0x71cu, 0x720u,
                             0x724u, 0x734u, 0x7acu, 0x7b4u, 0x7b0u, 0x7c0u, 0x7c4u})
         put(app, car + off, 0);
@@ -1038,28 +1038,28 @@ void clearRecord(App* app, reg32 car)
     put(app, car + 0x7c8, 0);
     put(app, car + 0x624, 0);
     put(app, car + 0x628, 0);
-    const reg32 decision = at(app, kClock) + 0x500;
+    const u32 decision = at(app, kClock) + 0x500;
     put(app, car + kCarBackwards, 0);
     put(app, car + 0x634, decision);
-    const reg8 sirenFlags = byte(app, car + kCarSirenFlags);
+    const u8 sirenFlags = byte(app, car + kCarSirenFlags);
     put(app, car + 0x62c, 0);
-    putByte(app, car + kCarSirenFlags, reg8(sirenFlags & 0xef));
+    putByte(app, car + kCarSirenFlags, u8(sirenFlags & 0xef));
     put(app, car + kCarTrafficFlags, 0);
-    const reg8 kind = byte(app, car + kCarKindFlags);
+    const u8 kind = byte(app, car + kCarKindFlags);
     put(app, car + 0x7d0, 0);
     if ((kind & 0x10) != 0)
-        putByte(app, car + kCarTrafficFlags, reg8(byte(app, car + kCarTrafficFlags) | 2));
+        putByte(app, car + kCarTrafficFlags, u8(byte(app, car + kCarTrafficFlags) | 2));
     if ((byte(app, car + kCarKindFlags) & 0x20) != 0)
-        putByte(app, car + kCarTrafficFlags, reg8(byte(app, car + kCarTrafficFlags) | 2));
-    const reg8 kindNow = byte(app, car + kCarKindFlags);
+        putByte(app, car + kCarTrafficFlags, u8(byte(app, car + kCarTrafficFlags) | 2));
+    const u8 kindNow = byte(app, car + kCarKindFlags);
     if ((kindNow & kKindPlayer) != 0)
-        putByte(app, car + kCarKindFlags, reg8(kindNow & 0xfd));
+        putByte(app, car + kCarKindFlags, u8(kindNow & 0xfd));
 }
 
 /* 0x40cb90: clearRecord for car eax. */
-x86::reg32 clearTrafficRecord(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 clearTrafficRecord(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&, car = args.eax] { clearRecord(app, car); });
+    asThunk(ts, args, [&, car = args.eax] { clearRecord(app, car); });
     return args.eax;
 }
 
@@ -1068,26 +1068,26 @@ x86::reg32 clearTrafficRecord(App* app, x86::CPU& cpu, x86::Args& args)
  * bit 4), its velocity +0xa4 its forward vector +0xd8 scaled by its look-ahead +0x7c4 (0x4e0050), its
  * spin and slips zeroed.  The place and the vector in the code's frame, whose addresses the two are
  * handed.  False when the game stopped. */
-bool putOnTrack(App* app, CPU& cpu, reg32 car)
+bool putOnTrack(App* app, ThreadState& ts, u32 car)
 {
-    const GuestFrame frame(cpu, 0x18, 0x1c);
-    const reg32 place = frame - 0x10, vector = frame - 0x1c;
-    const reg32 direction = ((byte(app, car + kCarWayFlags) & kAgainstTrack) != 0 ? 1 : 0) ^ gameSettings(app).backwards;
-    put(app, place, reg32(fp::toInteger<i32>(fp::mul(f32(app, car + kCarTargetAcross), f64(app, kToFixedB)))));
+    const GuestFrame frame(ts, 0x18, 0x1c);
+    const u32 place = frame - 0x10, vector = frame - 0x1c;
+    const u32 direction = ((byte(app, car + kCarWayFlags) & kAgainstTrack) != 0 ? 1 : 0) ^ gameSettings(app).backwards;
+    put(app, place, u32(fp::toInteger<i32>(fp::mul(f32(app, car + kCarTargetAcross), f64(app, kToFixedB)))));
     put(app, place + 4, 0x10000);
     put(app, place + 8, at(app, kPlaceOnTrackHeight));
-    if (!placeOnRoad(app, cpu, car, at(app, car + kCarNode), place, direction))
+    if (!placeOnRoad(app, ts, car, at(app, car + kCarNode), place, direction))
         return false;
-    for (reg32 i = 0; i < 0xc; i += 4)
+    for (u32 i = 0; i < 0xc; i += 4)
         put(app, vector + i, at(app, car + kCarForward + i));
-    if (!scaleVectorsDirect(app, cpu, 1, vector, at(app, car + kCarLookAhead), vector))
+    if (!scaleVectorsDirect(app, ts, 1, vector, at(app, car + kCarLookAhead), vector))
         return false;
-    for (reg32 i = 0; i < 0xc; i += 4)
+    for (u32 i = 0; i < 0xc; i += 4)
         put(app, car + kCarVelocity + i, at(app, vector + i));
     put(app, car + kCarSpin, 0);
     put(app, car + kCarSpin + 4, 0);
     put(app, car + kCarSpin + 8, 0);
-    app->getMemory<reg16>(car + kCarAirborne) = 0;
+    app->getMemory<u16>(car + kCarAirborne) = 0;
     put(app, car + 0x5c0, 0);
     put(app, car + 0x5c4, 0);
     put(app, car + 0x64c, 0);
@@ -1095,10 +1095,10 @@ bool putOnTrack(App* app, CPU& cpu, reg32 car)
 }
 
 /* 0x40cd80: putOnTrack for car eax, left in eax. */
-x86::reg32 placeOnTrack(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 placeOnTrack(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&, car = args.eax]() -> std::optional<reg32> {
-        if (!putOnTrack(app, cpu, car))
+    asThunk(ts, args, [&, car = args.eax]() -> std::optional<u32> {
+        if (!putOnTrack(app, ts, car))
             return std::nullopt;
         return car;
     });
@@ -1111,26 +1111,26 @@ x86::reg32 placeOnTrack(App* app, x86::CPU& cpu, x86::Args& args)
 struct Stop
 {
     bool stopped;
-    reg32 eax;
+    u32 eax;
 };
 
 /* The pulled-over car brought to a stop: once on the ground (+0x164 0) and well on the road's grip
  * (+0x10c over 0.9), its drive reset (0x4aa79f), its spin +0xe4 and velocity +0xa4 halved (0x4e0050),
  * +0x509 0xff.  Nullopt when the game stopped. */
-std::optional<Stop> stopPulledOverEax(App* app, CPU& cpu, reg32 car)
+std::optional<Stop> stopPulledOverEax(App* app, ThreadState& ts, u32 car)
 {
-    if (app->getMemory<reg16>(car + kCarAirborne) != 0)
+    if (app->getMemory<u16>(car + kCarAirborne) != 0)
         return Stop{false, car};
     if (!(f32(app, car + kCarGrip) > f64(app, kFirmGrip)))
         return Stop{false, (car & 0xffff0000u) | statusWord(f32(app, car + kCarGrip), f64(app, kFirmGrip))};
     put(app, car + 0x64c, 0);
-    guest::direct<0x4aa79f, handling::resetDrive>(app, cpu, car);
-    if (cpu.terminate)
+    guest::direct<0x4aa79f, handling::resetDrive>(app, ts, car);
+    if (ts.terminate)
         return std::nullopt;
-    if (!scaleVectorsDirect(app, cpu, 1, car + kCarSpin, kHalf, car + kCarSpin))
+    if (!scaleVectorsDirect(app, ts, 1, car + kCarSpin, kHalf, car + kCarSpin))
         return std::nullopt;
     // By address: its eax is what brakeToStop leaves.
-    const std::optional<reg32> scaled = scaleVectors(app, cpu, 1, car + kCarVelocity, kHalf, car + kCarVelocity);
+    const std::optional<u32> scaled = scaleVectors(app, ts, 1, car + kCarVelocity, kHalf, car + kCarVelocity);
     if (!scaled)
         return std::nullopt;
     putByte(app, car + kCarBrake, 0xff);
@@ -1138,9 +1138,9 @@ std::optional<Stop> stopPulledOverEax(App* app, CPU& cpu, reg32 car)
 }
 
 /* stopPulledOverEax: whether the car was stopped; nullopt when the game stopped. */
-std::optional<bool> stopPulledOver(App* app, CPU& cpu, reg32 car)
+std::optional<bool> stopPulledOver(App* app, ThreadState& ts, u32 car)
 {
-    const std::optional<Stop> stop = stopPulledOverEax(app, cpu, car);
+    const std::optional<Stop> stop = stopPulledOverEax(app, ts, car);
     if (!stop)
         return std::nullopt;
     return stop->stopped;
@@ -1148,16 +1148,16 @@ std::optional<bool> stopPulledOver(App* app, CPU& cpu, reg32 car)
 
 /* 0x40ce70: stopPulledOver for car eax; eax as the code leaves it: the car, with the grip's compare's
  * status word in ax when that ended it, or the last scaling's. */
-x86::reg32 brakeToStop(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 brakeToStop(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&, car = args.eax] { return stopPulledOverLeaving(app, cpu, car); });
+    asThunk(ts, args, [&, car = args.eax] { return stopPulledOverLeaving(app, ts, car); });
     return args.eax;
 }
 
 /* stopPulledOver with the eax the code leaves; nullopt when the game stopped. */
-std::optional<reg32> stopPulledOverLeaving(App* app, CPU& cpu, reg32 car)
+std::optional<u32> stopPulledOverLeaving(App* app, ThreadState& ts, u32 car)
 {
-    const std::optional<Stop> stop = stopPulledOverEax(app, cpu, car);
+    const std::optional<Stop> stop = stopPulledOverEax(app, ts, car);
     if (!stop)
         return std::nullopt;
     return stop->eax;
@@ -1168,17 +1168,17 @@ std::optional<reg32> stopPulledOverLeaving(App* app, CPU& cpu, reg32 car)
  * side [0x56f230]: with the track's direction on a side of 1, or against it on a side of -1, it keeps
  * right -- a lane left of slice 7 loses 3, the others gain 1; else it keeps left, the other way
  * round (the code's own few exceptions kept). */
-void voteForCurrentLane(App* app, reg32 car)
+void voteForCurrentLane(App* app, u32 car)
 {
     const bool against = (byte(app, car + kCarWayFlags) & kAgainstTrack) != 0;
-    const reg32 side = at(app, kTrafficSide);
+    const u32 side = at(app, kTrafficSide);
     const bool keepRight = ((((against ? 0u : 1u) ^ gameSettings(app).backwards) != 0 && side == 1)
                           || (((against ? 1u : 0u) ^ gameSettings(app).backwards) != 0 && side == 0xffffffff));
-    const auto add = [&](reg32 vote, reg32 by) { put(app, vote, at(app, vote) + by); };
+    const auto add = [&](u32 vote, u32 by) { put(app, vote, at(app, vote) + by); };
     if (keepRight)
     {
-        add(kLaneCostA, i32(at(app, car + kCarSlice) - 1) < 7 ? reg32(-3) : 1);
-        add(kLaneCostB, i32(at(app, car + kCarSlice)) < 7 ? reg32(-3) : 1);
+        add(kLaneCostA, i32(at(app, car + kCarSlice) - 1) < 7 ? u32(-3) : 1);
+        add(kLaneCostB, i32(at(app, car + kCarSlice)) < 7 ? u32(-3) : 1);
         if (i32(at(app, car + kCarSlice) + 1) >= 7)
             add(kLaneCostC, 1);
     }
@@ -1187,16 +1187,16 @@ void voteForCurrentLane(App* app, reg32 car)
         if (i32(at(app, car + kCarSlice) - 1) < 7)
             add(kLaneCostA, 1);
         else
-            add(kLaneCostB, i32(at(app, car + kCarSlice)) < 7 ? 1 : reg32(-3));
-        add(kLaneCostC, i32(at(app, car + kCarSlice) + 1) < 7 ? 1 : reg32(-3));
+            add(kLaneCostB, i32(at(app, car + kCarSlice)) < 7 ? 1 : u32(-3));
+        add(kLaneCostC, i32(at(app, car + kCarSlice) + 1) < 7 ? 1 : u32(-3));
     }
 }
 
 /* 0x40cee0: voteForCurrentLane for car eax; eax the slice right of the car's, as the code leaves
  * it. */
-x86::reg32 voteCurrentLane(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 voteCurrentLane(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&, car = args.eax] {
+    asThunk(ts, args, [&, car = args.eax] {
         voteForCurrentLane(app, car);
         return at(app, car + kCarSlice) + 1;
     });
@@ -1211,46 +1211,46 @@ x86::reg32 voteCurrentLane(App* app, x86::CPU& cpu, x86::Args& args)
  * kept, and [0x56ef7c] raised for a car behind that drives against the track (+0x200 bit 5).  The
  * code gathers into a frame of 16; a C++ list here, the same for any count the game has.  False when
  * the game stopped. */
-bool senseCars(App* app, CPU& cpu, reg32 car)
+bool senseCars(App* app, ThreadState& ts, u32 car)
 {
     const std::optional<Float> reach = chop(
-        app, cpu, fp::mul(fp::mul(f32(app, car + kCarLookAhead), f64(app, kSenseScale)), f64(app, kSenseSixth)));
+        app, ts, fp::mul(fp::mul(f32(app, car + kCarLookAhead), f64(app, kSenseScale)), f64(app, kSenseSixth)));
     if (!reach)
         return false;
     i32 window = fp::toInteger<i32>(*reach);
     if (window < 0xa)
         window = 0xa;
-    const reg32 way = (((byte(app, car + kCarWayFlags) & kAgainstTrack) != 0 ? 0u : 1u) ^ gameSettings(app).backwards) == 0
+    const u32 way = (((byte(app, car + kCarWayFlags) & kAgainstTrack) != 0 ? 0u : 1u) ^ gameSettings(app).backwards) == 0
                           ? 0xffffffff
                           : 1;
-    const reg32 node = at(app, car + kCarNode);
-    std::vector<reg32> cars;
+    const u32 node = at(app, car + kCarNode);
+    std::vector<u32> cars;
     std::vector<i32> gaps;
     for (i32 i = 0; i < i32(at(app, kCarCount)); ++i)
     {
-        if (reg32(i) == at(app, car + kCarIndex))
+        if (u32(i) == at(app, car + kCarIndex))
             continue;
-        const reg32 other = at(app, reg32(i) * 4 + kCars);
+        const u32 other = at(app, u32(i) * 4 + kCars);
         if (byte(app, other + kCarInPlay) == 0 || (byte(app, other + kCarKindFlags) & 0x40) != 0)
             continue;
-        const i32 gap = i32(reg32(nodesBetween(app, at(app, other + kCarNode), node)) * way);
-        const i32 size = gap > 0 ? gap : i32(0u - reg32(gap));
+        const i32 gap = i32(u32(nodesBetween(app, at(app, other + kCarNode), node)) * way);
+        const i32 size = gap > 0 ? gap : i32(0u - u32(gap));
         if (size > window)
             continue;
         cars.push_back(other);
         gaps.push_back(gap);
     }
-    put(app, kSensedGaps + 4, reg32(window));
-    put(app, kSensedGaps + 8, reg32(window));
-    put(app, kSensedBehindGaps, reg32(window));
-    put(app, kSensedGaps, reg32(window));
-    put(app, kSensedBehindGaps, 0u - reg32(window));
-    put(app, kSensedBehindGaps + 4, 0u - reg32(window));
-    put(app, kSensedBehindGaps + 8, 0u - reg32(window));
-    const reg32 slice = at(app, car + kCarSlice);
+    put(app, kSensedGaps + 4, u32(window));
+    put(app, kSensedGaps + 8, u32(window));
+    put(app, kSensedBehindGaps, u32(window));
+    put(app, kSensedGaps, u32(window));
+    put(app, kSensedBehindGaps, 0u - u32(window));
+    put(app, kSensedBehindGaps + 4, 0u - u32(window));
+    put(app, kSensedBehindGaps + 8, 0u - u32(window));
+    const u32 slice = at(app, car + kCarSlice);
     for (std::size_t s = 0; s < cars.size(); ++s)
     {
-        const reg32 other = cars[s];
+        const u32 other = cars[s];
         const i32 middle = i32(at(app, other + kCarSlice) - slice + 1);
         i32 first = middle, last = middle;
         if (at(app, other + kCarLeftSlice) != at(app, other + kCarRightSlice))
@@ -1265,20 +1265,20 @@ bool senseCars(App* app, CPU& cpu, reg32 car)
             const i32 gap = gaps[s];
             if (gap >= 0)
             {
-                if (gap >= i32(at(app, reg32(lane) * 4 + kSensedGaps)))
+                if (gap >= i32(at(app, u32(lane) * 4 + kSensedGaps)))
                     continue;
-                put(app, reg32(lane) * 4 + kSensed, other);
-                put(app, reg32(lane) * 4 + kSensedGaps, reg32(gap));
-                app->getMemory<reg16>(reg32(lane) * 2 + kSensedEdge) = reg16(lane == middle ? 1 : 0);
+                put(app, u32(lane) * 4 + kSensed, other);
+                put(app, u32(lane) * 4 + kSensedGaps, u32(gap));
+                app->getMemory<u16>(u32(lane) * 2 + kSensedEdge) = u16(lane == middle ? 1 : 0);
             }
             else
             {
-                if (gap <= i32(at(app, reg32(lane) * 4 + kSensedBehindGaps)))
+                if (gap <= i32(at(app, u32(lane) * 4 + kSensedBehindGaps)))
                     continue;
-                put(app, reg32(lane) * 4 + kSensedBehindGaps, reg32(gap));
-                put(app, reg32(lane) * 4 + kSensedRight, other);
-                app->getMemory<reg16>(reg32(lane) * 2 + kSensedEdgeB) = reg16(lane == middle ? 1 : 0);
-                if ((byte(app, at(app, reg32(lane) * 4 + kSensedRight) + kCarKindFlags) & 0x20) != 0)
+                put(app, u32(lane) * 4 + kSensedBehindGaps, u32(gap));
+                put(app, u32(lane) * 4 + kSensedRight, other);
+                app->getMemory<u16>(u32(lane) * 2 + kSensedEdgeB) = u16(lane == middle ? 1 : 0);
+                if ((byte(app, at(app, u32(lane) * 4 + kSensedRight) + kCarKindFlags) & 0x20) != 0)
                     put(app, kSensedFlag, 1);
             }
         }
@@ -1288,9 +1288,9 @@ bool senseCars(App* app, CPU& cpu, reg32 car)
 
 /* 0x40cfc0: senseCars for car eax.  What the code leaves in eax (the last lane's index) no caller
  * reads; aiplan.inc's promise says so. */
-x86::reg32 senseTraffic(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 senseTraffic(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&, car = args.eax] { return senseCars(app, cpu, car); });
+    asThunk(ts, args, [&, car = args.eax] { return senseCars(app, ts, car); });
     return args.eax;
 }
 
@@ -1299,20 +1299,20 @@ x86::reg32 senseTraffic(App* app, x86::CPU& cpu, x86::Args& args)
  * 0, +1): no road there at the car's node, that lane's route cost [0x56eec0 + lane] cut by 1000 and the
  * way [0x56ef78] set (1 left, 0, -1 right) -- the rest not looked at; else the first node of the chain
  * without it cuts 0x41. */
-void costLaneChange(App* app, reg32 car, reg32 target)
+void costLaneChange(App* app, u32 car, u32 target)
 {
-    reg32 masks[3];
+    u32 masks[3];
     masks[0] = sliceBit(at(app, car + kCarSlice) - 1);
     masks[1] = sliceBit(at(app, car + kCarSlice));
     masks[2] = sliceBit(at(app, car + kCarSlice) + 1);
-    reg32 chain[0x14];
+    u32 chain[0x14];
     chain[0] = at(app, car + kCarNode);
     if (target == chain[0])
         return;
     i32 length = 1;
     while (true)
     {
-        chain[length] = nodeAhead(app, car, reg32(length));
+        chain[length] = nodeAhead(app, car, u32(length));
         if (target == chain[length])
             break;
         ++length;
@@ -1321,7 +1321,7 @@ void costLaneChange(App* app, reg32 car, reg32 target)
     }
     for (i32 lane = 0; lane < 3; ++lane)
     {
-        const reg32 cost = reg32(lane) * 4 + kNodeCostE;
+        const u32 cost = u32(lane) * 4 + kNodeCostE;
         if (laneBitsAt(app, chain[0], masks[lane]) == 0)
         {
             put(app, cost, at(app, cost) - 0x3e8);
@@ -1339,24 +1339,24 @@ void costLaneChange(App* app, reg32 car, reg32 target)
 
 /* 0x40d1f0: costLaneChange for car eax towards node edx.  What the code leaves in eax no caller
  * reads; aiplan.inc's promise says so. */
-x86::reg32 planLaneChange(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 planLaneChange(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&, car = args.eax, target = args.edx] { costLaneChange(app, car, target); });
+    asThunk(ts, args, [&, car = args.eax, target = args.edx] { costLaneChange(app, car, target); });
     return args.eax;
 }
 
 /* A node's edge slices as edgeLaneCost has them: 7 less the high nibble of its +0x13, 6 more the
  * low. */
-i32 innerLeftSlice(App* app, reg32 record) { return 7 - ((byte(app, record + kNodeEdges) >> 4) & 0xf); }
-i32 innerRightSlice(App* app, reg32 record) { return (byte(app, record + kNodeEdges) & 0xf) + 6; }
+i32 innerLeftSlice(App* app, u32 record) { return 7 - ((byte(app, record + kNodeEdges) >> 4) & 0xf); }
+i32 innerRightSlice(App* app, u32 record) { return (byte(app, record + kNodeEdges) & 0xf) + 6; }
 
 /* Car heading to node `target`: a player's car (+0x200 bit 0) on track 6 run forwards between its
  * nodes 0x127 and 0x168 has the second row's left vote (0x56eea8) cut by 0x28; else, when car's slice
  * +0x638 is off the target node's inner edges but within its own node's, that row's right (0x56eeb0,
  * slices 7 on) or left vote gains 0x28. */
-void costEdgeLane(App* app, reg32 car, reg32 target)
+void costEdgeLane(App* app, u32 car, u32 target)
 {
-    const reg8 kind = byte(app, car + kCarKindFlags);
+    const u8 kind = byte(app, car + kCarKindFlags);
     const i32 slice = i32(at(app, car + kCarSlice));
     if ((kind & 1) != 0 && gameSettings(app).backwards == 0 && gameSettings(app).track == 6)
     {
@@ -1367,10 +1367,10 @@ void costEdgeLane(App* app, reg32 car, reg32 target)
             return;
         }
     }
-    const reg32 targetRecord = nodeAddr(app, target);
+    const u32 targetRecord = nodeAddr(app, target);
     if (!(slice < innerLeftSlice(app, targetRecord)) && slice <= innerRightSlice(app, targetRecord))
         return;
-    const reg32 record = nodeAddr(app, at(app, car + kCarNode));
+    const u32 record = nodeAddr(app, at(app, car + kCarNode));
     if (slice < innerLeftSlice(app, record))
         return;
     if (slice <= innerRightSlice(app, record))
@@ -1384,9 +1384,9 @@ void costEdgeLane(App* app, reg32 car, reg32 target)
 
 /* 0x40d2e0: costEdgeLane for car eax towards node edx.  What the code leaves in eax no caller reads;
  * aiplan.inc's promise says so. */
-x86::reg32 edgeLaneCost(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 edgeLaneCost(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&, car = args.eax, target = args.edx] { costEdgeLane(app, car, target); });
+    asThunk(ts, args, [&, car = args.eax, target = args.edx] { costEdgeLane(app, car, target); });
     return args.eax;
 }
 
@@ -1401,22 +1401,22 @@ void penaliseCloseCars(App* app)
 }
 
 /* 0x40d9f0: penaliseCloseCars. */
-x86::reg32 edgePenalty(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 edgePenalty(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&] { penaliseCloseCars(app); });
+    asThunk(ts, args, [&] { penaliseCloseCars(app); });
     return args.eax;
 }
 
 /* The 14 rows of lane votes summed by lane. */
 struct LaneSums
 {
-    reg32 left, middle, right;
+    u32 left, middle, right;
 };
 
 LaneSums laneSums(App* app)
 {
     LaneSums sums{0, 0, 0};
-    for (reg32 row = 0; row < 0xe; ++row)
+    for (u32 row = 0; row < 0xe; ++row)
     {
         sums.left += at(app, row * 0xc + kLaneCostA);
         sums.middle += at(app, row * 0xc + kLaneCostB);
@@ -1427,7 +1427,7 @@ LaneSums laneSums(App* app)
 
 /* The lane [0x56ef74] car takes: its slice +0x638, one left when the left lane's sum beats the
  * middle's, one right when the right's beats the better of the two, kept within 0..13. */
-void takeLane(App* app, reg32 car)
+void takeLane(App* app, u32 car)
 {
     const LaneSums sums = laneSums(app);
     put(app, kChosenLane, at(app, car + kCarSlice));
@@ -1448,13 +1448,13 @@ void takeLane(App* app, reg32 car)
 
 /* 0x40da30: takeLane for car eax; eax as the code leaves it: the better sum of the left two, the
  * slice right of the car's when the right lane won, 0 when the lane came under 0. */
-x86::reg32 sumLaneVotes(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 sumLaneVotes(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&, car = args.eax] {
+    asThunk(ts, args, [&, car = args.eax] {
         const LaneSums sums = laneSums(app);
         takeLane(app, car);
-        const reg32 slice = at(app, car + kCarSlice);
-        reg32 left = sums.middle, lane = slice;
+        const u32 slice = at(app, car + kCarSlice);
+        u32 left = sums.middle, lane = slice;
         if (i32(sums.left) > i32(sums.middle))
         {
             lane = slice - 1;
@@ -1475,22 +1475,22 @@ x86::reg32 sumLaneVotes(App* app, x86::CPU& cpu, x86::Args& args)
 /* The lane planner started for car: the votes (0xa8 bytes at 0x56ee90) and the sensed cars (0x48
  * at 0x56ef38) cleared (0x4e0640), its road slices found (findCarSlices), its present lane voted
  * (voteForCurrentLane) and the traffic sensed (senseCars).  False when the game stopped. */
-bool beginPlanning(App* app, CPU& cpu, reg32 car)
+bool beginPlanning(App* app, ThreadState& ts, u32 car)
 {
-    guest::direct<0x4e0640, watcom::clib::memset>(app, cpu, kLaneCostA, 0, 0xa8);
-    guest::direct<0x4e0640, watcom::clib::memset>(app, cpu, kSensed, 0, 0x48);
-    if (cpu.terminate)
+    guest::direct<0x4e0640, watcom::clib::memset>(app, ts, kLaneCostA, 0, 0xa8);
+    guest::direct<0x4e0640, watcom::clib::memset>(app, ts, kSensed, 0, 0x48);
+    if (ts.terminate)
         return false;
     findCarSlices(app, car);
     voteForCurrentLane(app, car);
-    return senseCars(app, cpu, car);
+    return senseCars(app, ts, car);
 }
 
 /* 0x40dd60: beginPlanning for car eax.  What the code leaves in eax (senseTraffic's) no caller
  * reads; aiplan.inc's promise says so. */
-x86::reg32 beginLanePlanning(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 beginLanePlanning(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&, car = args.eax] { return beginPlanning(app, cpu, car); });
+    asThunk(ts, args, [&, car = args.eax] { return beginPlanning(app, ts, car); });
     return args.eax;
 }
 
@@ -1498,18 +1498,18 @@ x86::reg32 beginLanePlanning(App* app, x86::CPU& cpu, x86::Args& args)
  * less a half, rounded; 9 at least: nodeAhead), weighs the edge (costEdgeLane) and the way there
  * (costLaneChange), scores the lanes by the road (scoreRoad) and, but for a player's car (+0x200 bit
  * 2), by the obstacles, the cars and the close ones.  False when the game stopped. */
-bool pickLane(App* app, CPU& cpu, reg32 car)
+bool pickLane(App* app, ThreadState& ts, u32 car)
 {
     const i32 reach = fp::toInteger<i32>(fp::add(
         fp::mul(fp::mul(f32(app, car + kCarLookAhead), f64(app, kLaneReach)), f64(app, kLaneSixth)), f64(app, kLaneLessHalf)));
-    const reg32 target = nodeAhead(app, car, reg32(reach <= 9 ? 9 : reach));
+    const u32 target = nodeAhead(app, car, u32(reach <= 9 ? 9 : reach));
     costEdgeLane(app, car, target);
     costLaneChange(app, car, target);
     scoreRoad(app, car);
     if ((byte(app, car + kCarKindFlags) & kKindPlayer) != 0)
         return true;
     scoreObstacles(app, car);
-    if (!scoreCars(app, cpu, car))
+    if (!scoreCars(app, ts, car))
         return false;
     penaliseCloseCars(app);
     return true;
@@ -1517,10 +1517,10 @@ bool pickLane(App* app, CPU& cpu, reg32 car)
 
 /* 0x40ddb0: pickLane for car eax; eax as the code leaves it: the car, or for a player's car what
  * scoreLanesByRoad leaves. */
-x86::reg32 chooseLane(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 chooseLane(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&, car = args.eax]() -> std::optional<reg32> {
-        if (!pickLane(app, cpu, car))
+    asThunk(ts, args, [&, car = args.eax]() -> std::optional<u32> {
+        if (!pickLane(app, ts, car))
             return std::nullopt;
         return (byte(app, car + kCarKindFlags) & kKindPlayer) != 0 ? roadScoreLeft(app, car) : car;
     });
@@ -1529,31 +1529,31 @@ x86::reg32 chooseLane(App* app, x86::CPU& cpu, x86::Args& args)
 
 /* Car's horn sounded for 0x40 ticks (+0x620 bit 3, its end +0x644 past the clock), its tone +0x660
  * on 0 -> 1 -> 2, any other back to 0. */
-void soundHorn(App* app, reg32 car)
+void soundHorn(App* app, u32 car)
 {
-    putByte(app, car + kCarTrafficFlags, reg8(byte(app, car + kCarTrafficFlags) | kTrafficHorn));
+    putByte(app, car + kCarTrafficFlags, u8(byte(app, car + kCarTrafficFlags) | kTrafficHorn));
     put(app, car + kCarHornEnd, at(app, kClock) + 0x40);
-    const reg32 tone = at(app, car + kCarHornTone);
+    const u32 tone = at(app, car + kCarHornTone);
     put(app, car + kCarHornTone, tone == 0 ? 1 : tone == 1 ? 2 : 0);
 }
 
 /* 0x40de50: soundHorn for car eax. */
-x86::reg32 startHorn(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 startHorn(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&, car = args.eax] { soundHorn(app, car); });
+    asThunk(ts, args, [&, car = args.eax] { soundHorn(app, car); });
     return args.eax;
 }
 
 /* Car's horn ended once the clock passes +0x644: +0x620 bit 3 cleared, its tone +0x660 back (1 -> 0,
  * 2 -> 1). */
-void endHorn(App* app, reg32 car)
+void endHorn(App* app, u32 car)
 {
     if ((byte(app, car + kCarTrafficFlags) & kTrafficHorn) == 0)
         return;
     if (!(i32(at(app, kClock)) > i32(at(app, car + kCarHornEnd))))
         return;
-    putByte(app, car + kCarTrafficFlags, reg8(byte(app, car + kCarTrafficFlags) & ~kTrafficHorn));
-    const reg32 tone = at(app, car + kCarHornTone);
+    putByte(app, car + kCarTrafficFlags, u8(byte(app, car + kCarTrafficFlags) & ~kTrafficHorn));
+    const u32 tone = at(app, car + kCarHornTone);
     if (tone == 1)
         put(app, car + kCarHornTone, 0);
     else if (tone == 2)
@@ -1561,9 +1561,9 @@ void endHorn(App* app, reg32 car)
 }
 
 /* 0x40deb0: endHorn for car eax. */
-x86::reg32 stopHorn(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 stopHorn(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&, car = args.eax] { endHorn(app, car); });
+    asThunk(ts, args, [&, car = args.eax] { endHorn(app, car); });
     return args.eax;
 }
 
@@ -1572,49 +1572,49 @@ x86::reg32 stopHorn(App* app, x86::CPU& cpu, x86::Args& args)
  * with the place at 0x40cb0c, in the code's frame, then 0x405d40) -- 0; 1 started (0x405e20,
  * 0x405dc0) -- 1, or 0 until it can; 2 running -- 1, or taken off (0x405cd0, 0x405d40) -- 0.  Nullopt
  * when the game stopped. */
-std::optional<reg32> stepLoading(App* app, CPU& cpu, reg32 car)
+std::optional<u32> stepLoading(App* app, ThreadState& ts, u32 car)
 {
-    const GuestFrame frame(cpu, 0x18, 0x10);
-    const std::optional<bool> inPlay = guest::direct<0x401240, airace::wasReleased>(app, cpu, car);
+    const GuestFrame frame(ts, 0x18, 0x10);
+    const std::optional<bool> inPlay = guest::direct<0x401240, airace::wasReleased>(app, ts, car);
     if (!inPlay)
         return std::nullopt;
     if (!*inPlay)
         return 0;
-    const reg32 step = at(app, car + kCarLoading);
+    const u32 step = at(app, car + kCarLoading);
     if (step == 1)
     {
-        const std::optional<reg32> canStart = guest::direct<0x405e20, aidrive::stepExtraCar>(app, cpu, car);
+        const std::optional<u32> canStart = guest::direct<0x405e20, aidrive::stepExtraCar>(app, ts, car);
         if (!canStart)
             return std::nullopt;
         if (*canStart == 0)
             return 0;
-        if (!guest::direct<0x405dc0, aidrive::takeOff>(app, cpu, car))
+        if (!guest::direct<0x405dc0, aidrive::takeOff>(app, ts, car))
             return std::nullopt;
         put(app, car + kCarLoading, 2);
         return 1;
     }
     if (step == 2)
     {
-        const bool done = guest::direct<0x405cd0, aidrive::unwatched>(app, cpu, car);
-        if (cpu.terminate)
+        const bool done = guest::direct<0x405cd0, aidrive::unwatched>(app, ts, car);
+        if (ts.terminate)
             return std::nullopt;
         if (!done)
             return 1;
-        if (!guest::direct<0x405d40, aidrive::trafficStartDone>(app, cpu, car))
+        if (!guest::direct<0x405d40, aidrive::trafficStartDone>(app, ts, car))
             return std::nullopt;
         put(app, car + kCarLoading, 1);
         return 0;
     }
-    const reg8 flags = byte(app, car + kCarTrafficFlags);
+    const u8 flags = byte(app, car + kCarTrafficFlags);
     put(app, car + kCarLoading, 2);
     if ((flags & 2) != 0)
     {
-        const reg32 place = frame - 0x10;
-        for (reg32 i = 0; i < 0xc; i += 4)
+        const u32 place = frame - 0x10;
+        for (u32 i = 0; i < 0xc; i += 4)
             put(app, place + i, at(app, kGridPlace + i));
-        if (!placeOnRoad(app, cpu, car, 0, place, gameSettings(app).backwards))
+        if (!placeOnRoad(app, ts, car, 0, place, gameSettings(app).backwards))
             return std::nullopt;
-        if (!guest::direct<0x405d40, aidrive::trafficStartDone>(app, cpu, car))
+        if (!guest::direct<0x405d40, aidrive::trafficStartDone>(app, ts, car))
             return std::nullopt;
         put(app, car + kCarLoading, 1);
     }
@@ -1622,37 +1622,37 @@ std::optional<reg32> stepLoading(App* app, CPU& cpu, reg32 car)
 }
 
 /* 0x40df10: stepLoading for car eax. */
-x86::reg32 stepTrafficLoading(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 stepTrafficLoading(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&, car = args.eax] { return stepLoading(app, cpu, car); });
+    asThunk(ts, args, [&, car = args.eax] { return stepLoading(app, ts, car); });
     return args.eax;
 }
 
 /* What scoreLanesByRoad's code leaves in eax: its node's record, or its right edge slice when it got
  * as far as reading it. */
-reg32 roadScoreLeft(App* app, reg32 car)
+u32 roadScoreLeft(App* app, u32 car)
 {
-    const reg32 record = nodeAddr(app, at(app, car + kCarNode));
-    return i32(at(app, car + kCarSlice)) + 1 < leftEdgeSlice(app, record) ? record : reg32(rightEdgeSlice(app, record));
+    const u32 record = nodeAddr(app, at(app, car + kCarNode));
+    return i32(at(app, car + kCarSlice)) + 1 < leftEdgeSlice(app, record) ? record : u32(rightEdgeSlice(app, record));
 }
 
 /* Car's lanes scored by the road's shape (the fourth row, 0x56eeb4/b8/bc).  At its node, a lane on an
  * edge slice is cut by 0x1e, and by 0x32 more when that edge (+0x1c or +0x20 less its slices times the
  * half's width) is nearer than the car's half length +0x114 (as 16.16, rounded, worked out where the
  * code does); a lane off the road is cut hard (1000). */
-void scoreRoad(App* app, reg32 car)
+void scoreRoad(App* app, u32 car)
 {
-    const reg32 record = nodeAddr(app, at(app, car + kCarNode));
+    const u32 record = nodeAddr(app, at(app, car + kCarNode));
     const i32 edges = byte(app, record + kNodeEdges);
     const i32 high = (edges >> 4) & 0xf, low = edges & 0xf;
     const i32 edgeLeft = 6 - high, edgeRight = low + 7;
     const i32 slice = i32(at(app, car + kCarSlice));
     const i32 left = slice - 1, right = slice + 1;
-    const i32 leftEdge = i32(at(app, record + kNodeLeftEdge) - (reg32(byte(app, record + kNodeLeftWidth)) << 15) * reg32(high));
+    const i32 leftEdge = i32(at(app, record + kNodeLeftEdge) - (u32(byte(app, record + kNodeLeftWidth)) << 15) * u32(high));
     const i32 rightEdge =
-        i32(at(app, record + kNodeRightEdge) - (reg32(byte(app, record + kNodeRightWidth)) << 15) * reg32(low));
+        i32(at(app, record + kNodeRightEdge) - (u32(byte(app, record + kNodeRightWidth)) << 15) * u32(low));
     const auto length = [&] { return fp::toInteger<i32>(fp::mul(f32(app, car + kCarHalfLength), f64(app, kToFixedC))); };
-    const auto cut = [&](reg32 vote, reg32 by) { put(app, vote, at(app, vote) - by); };
+    const auto cut = [&](u32 vote, u32 by) { put(app, vote, at(app, vote) - by); };
     if (left == edgeLeft || left == edgeRight)
     {
         cut(kNodeCostB, 0x1e);
@@ -1685,9 +1685,9 @@ void scoreRoad(App* app, reg32 car)
 }
 
 /* 0x40d3d0: scoreRoad for car eax; eax as the code leaves it (roadScoreLeft). */
-x86::reg32 scoreLanesByRoad(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 scoreLanesByRoad(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&, car = args.eax] {
+    asThunk(ts, args, [&, car = args.eax] {
         scoreRoad(app, car);
         return roadScoreLeft(app, car);
     });
@@ -1698,19 +1698,19 @@ x86::reg32 scoreLanesByRoad(App* app, x86::CPU& cpu, x86::Args& args)
  * node, +0x38 its slice): for each in use 1 to 5 nodes ahead in the car's direction of travel, the
  * lane (of the three about the car's slice +0x638) it stands in has its obstacle vote (0x56eecc +
  * lane) cut by 0x32, and in the car's own lane its speed asked +0x7b0 is eased to nine tenths. */
-void scoreObstacles(App* app, reg32 car)
+void scoreObstacles(App* app, u32 car)
 {
-    for (reg32 i = 0; i < 8; ++i)
+    for (u32 i = 0; i < 8; ++i)
     {
-        const reg32 obstacle = i * kObstacleSize + kObstacles;
+        const u32 obstacle = i * kObstacleSize + kObstacles;
         if (at(app, obstacle) == 0)
             continue;
-        const reg32 way =
+        const u32 way =
             (((byte(app, car + kCarWayFlags) & kAgainstTrack) != 0 ? 0u : 1u) ^ gameSettings(app).backwards) == 0 ? 0xffffffff : 1;
-        const i32 ahead = i32(reg32(nodesBetween(app, at(app, obstacle + kObstacleNode), at(app, car + kCarNode))) * way);
+        const i32 ahead = i32(u32(nodesBetween(app, at(app, obstacle + kObstacleNode), at(app, car + kCarNode))) * way);
         if (ahead <= 0 || ahead > 5)
             continue;
-        for (reg32 lane = 0; lane < 3; ++lane)
+        for (u32 lane = 0; lane < 3; ++lane)
         {
             if (at(app, car + kCarSlice) + lane - 1 != at(app, obstacle + kObstacleSlice))
                 continue;
@@ -1723,16 +1723,16 @@ void scoreObstacles(App* app, reg32 car)
 
 /* 0x40d720: scoreObstacles for car eax.  What the code leaves in eax no caller reads; aiplan.inc's
  * promise says so. */
-x86::reg32 scoreLanesByObstacles(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 scoreLanesByObstacles(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&, car = args.eax] { scoreObstacles(app, car); });
+    asThunk(ts, args, [&, car = args.eax] { scoreObstacles(app, car); });
     return args.eax;
 }
 
 /* A cut halved towards 0, as the code's mov, sar 31, sub, sar 1 has it. */
-reg32 halved(reg32 cut)
+u32 halved(u32 cut)
 {
-    return reg32(i32(cut - reg32(i32(cut) >> 31)) >> 1);
+    return u32(i32(cut - u32(i32(cut) >> 31)) >> 1);
 }
 
 /* Car's lanes scored against the cars sensed ahead in each of the three lanes (0x56ef38).  One coming
@@ -1742,11 +1742,11 @@ reg32 halved(reg32 cut)
  * +0x7b0 outruns, within 10 nodes: -8, or less the more it outruns under 3 (by -5/3, rounded, less 3),
  * with up to the gap past 5 back, cuts its ahead vote (0x56eee4 + lane).  Halved where the car is not
  * in that lane by its middle (0x56ef68).  False when the game stopped. */
-bool scoreCars(App* app, CPU& cpu, reg32 car)
+bool scoreCars(App* app, ThreadState& ts, u32 car)
 {
-    for (reg32 lane = 0; lane < 3; ++lane)
+    for (u32 lane = 0; lane < 3; ++lane)
     {
-        const reg32 other = at(app, lane * 4 + kSensed);
+        const u32 other = at(app, lane * 4 + kSensed);
         if (other == 0)
             continue;
         const bool backwards = 0.0 > f32(app, car + kCarSpeed);
@@ -1757,15 +1757,15 @@ bool scoreCars(App* app, CPU& cpu, reg32 car)
             if (1.0 >= Float(sizeOf(closing)))
                 continue;
             const std::optional<Float> meet = chop(
-                app, cpu, fp::mul(fp::mul(Float(i32(at(app, lane * 4 + kSensedGaps))), f64(app, kMeetScale)), f64(app, kToFixedD)));
+                app, ts, fp::mul(fp::mul(Float(i32(at(app, lane * 4 + kSensedGaps))), f64(app, kMeetScale)), f64(app, kToFixedD)));
             if (!meet)
                 return false;
             const i32 meetFixed = fp::toInteger<i32>(*meet);
             const Float time = fp::div(fp::mul(Float(meetFixed), f64(app, kFromFixed)), Float(closing));
             const i32 scaled = fp::toInteger<i32>(
                 fp::add(fp::mul(fp::mul(time, f32(app, kMeetWeight)), f64(app, kEighth)), f64(app, kMeetLessHalf)));
-            reg32 cut = reg32(-35) - reg32(scaled);
-            if (app->getMemory<reg16>(lane * 2 + kSensedEdge) == 0)
+            u32 cut = u32(-35) - u32(scaled);
+            if (app->getMemory<u16>(lane * 2 + kSensedEdge) == 0)
                 cut = halved(cut);
             if (i32(cut) < 0)
                 put(app, lane * 4 + kCarCostLeft, at(app, lane * 4 + kCarCostLeft) + cut);
@@ -1778,13 +1778,13 @@ bool scoreCars(App* app, CPU& cpu, reg32 car)
         const i32 gap = i32(at(app, lane * 4 + kSensedGaps));
         if (gap >= 0xa)
             continue;
-        reg32 cut = 0xfffffff8;
+        u32 cut = 0xfffffff8;
         if (!(outrun >= f64(app, kOutrunMost)))
-            cut = reg32(fp::toInteger<i32>(fp::add(fp::mul(fp::mul(outrun, f64(app, kOutrunWeight)), f64(app, kThird)),
+            cut = u32(fp::toInteger<i32>(fp::add(fp::mul(fp::mul(outrun, f64(app, kOutrunWeight)), f64(app, kThird)),
                                                    f64(app, kMeetLessHalf))))
                   - 3;
-        cut += reg32(gap - 5 <= 0 ? 0 : gap - 5);
-        if (app->getMemory<reg16>(lane * 2 + kSensedEdge) == 0)
+        cut += u32(gap - 5 <= 0 ? 0 : gap - 5);
+        if (app->getMemory<u16>(lane * 2 + kSensedEdge) == 0)
             cut = halved(cut);
         if (i32(cut) < 0)
             put(app, lane * 4 + kCarCostRight, at(app, lane * 4 + kCarCostRight) + cut);
@@ -1794,9 +1794,9 @@ bool scoreCars(App* app, CPU& cpu, reg32 car)
 
 /* 0x40d800: scoreCars for car eax.  What the code leaves in eax (a compare's status word and the
  * like) no caller reads; aiplan.inc's promise says so. */
-x86::reg32 scoreLanesByCars(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 scoreLanesByCars(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&, car = args.eax] { return scoreCars(app, cpu, car); });
+    asThunk(ts, args, [&, car = args.eax] { return scoreCars(app, ts, car); });
     return args.eax;
 }
 
@@ -1807,11 +1807,11 @@ x86::reg32 scoreLanesByCars(App* app, x86::CPU& cpu, x86::Args& args)
  * the node's right edge (+0x20, as 1/65536) less the half length and its left edge (+0x1c) plus it,
  * and moved by the half length the planner's way [0x56ef78] (the other way for a car against the
  * track).  The nodes' pointer written back, as the code does. */
-void steerForLane(App* app, reg32 car)
+void steerForLane(App* app, u32 car)
 {
-    const reg32 nodes = at(app, kNodes);
-    const reg32 record = nodes + at(app, car + kCarNode) * kNodeSize;
-    const reg32 target = car + kCarTargetAcross;
+    const u32 nodes = at(app, kNodes);
+    const u32 record = nodes + at(app, car + kCarNode) * kNodeSize;
+    const u32 target = car + kCarTargetAcross;
     const i32 edges = byte(app, record + kNodeEdges);
     const i32 high = (edges >> 4) & 0xf, low = edges & 0xf;
     const i32 chosen = i32(at(app, kChosenLane));
@@ -1849,7 +1849,7 @@ void steerForLane(App* app, reg32 car)
         putFloat(app, target, float(leftBound));
     if (at(app, kSensedDir) != 0)
     {
-        const reg32 way = (byte(app, car + kCarWayFlags) & kAgainstTrack) != 0 ? 0u - at(app, kSensedDir) : at(app, kSensedDir);
+        const u32 way = (byte(app, car + kCarWayFlags) & kAgainstTrack) != 0 ? 0u - at(app, kSensedDir) : at(app, kSensedDir);
         putFloat(app, target, float(fp::add(fp::mul(Float(i32(way)), f32(app, car + kCarHalfLength)), f32(app, target))));
     }
     put(app, kNodes, nodes);
@@ -1857,15 +1857,15 @@ void steerForLane(App* app, reg32 car)
 
 /* 0x40daf0: steerForLane for car eax.  What the code leaves in eax (the nodes' pointer, a compare's
  * status word in its low half) no caller reads; aiplan.inc's promise says so. */
-x86::reg32 steerToLane(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 steerToLane(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&, car = args.eax] { steerForLane(app, car); });
+    asThunk(ts, args, [&, car = args.eax] { steerForLane(app, car); });
     return args.eax;
 }
 
 /* The computer cars' target speed at slice `slice`: the byte of the track's speed table [0x552558]
  * at slice / 2, or 64 when that table failed to load [0x56f22c]. */
-float targetSpeed(App* app, reg32 slice)
+float targetSpeed(App* app, u32 slice)
 {
     if (at(app, kSpeedsFailed) != 0)
         return 64.0f;
@@ -1874,12 +1874,12 @@ float targetSpeed(App* app, reg32 slice)
 
 /* 0x40e080: targetSpeed at slice eax onto the x87's stack; eax the table's byte, as the code leaves
  * it. */
-x86::reg32 targetSpeedAt(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 targetSpeedAt(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     float speed = 0;
-    asThunk(cpu, args, [&, slice = args.eax] {
+    asThunk(ts, args, [&, slice = args.eax] {
         speed = targetSpeed(app, slice);
-        return at(app, kSpeedsFailed) == 0 ? reg32(byte(app, at(app, kSpeeds) + (slice >> 1))) : slice;
+        return at(app, kSpeedsFailed) == 0 ? u32(byte(app, at(app, kSpeeds) + (slice >> 1))) : slice;
     });
     args.floatSet = true;
     args.floatResult = double(Float(speed));
@@ -1888,70 +1888,70 @@ x86::reg32 targetSpeedAt(App* app, x86::CPU& cpu, x86::Args& args)
 
 /* The road's kind at slice `slice`: the high nibble of the speed table's second half's (0x55255c)
  * byte there; 7 when the table failed to load. */
-reg32 roadKind(App* app, reg32 slice)
+u32 roadKind(App* app, u32 slice)
 {
     if (at(app, kSpeedsFailed) != 0)
         return 7;
-    return reg32(byte(app, at(app, kSpeedsHalf) + slice) >> 4);
+    return u32(byte(app, at(app, kSpeedsHalf) + slice) >> 4);
 }
 
 /* 0x40e0c0: roadKind at slice eax. */
-x86::reg32 roadKindAt(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 roadKindAt(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&, slice = args.eax] { return roadKind(app, slice); });
+    asThunk(ts, args, [&, slice = args.eax] { return roadKind(app, slice); });
     return args.eax;
 }
 
 /* The track's road kind kept for the race: whether it is wide ([0x56f228], trackRoadWide), its
  * traffic side ([0x56f230], trackTrafficSide), the walk's counter [0x56f220] reset.  The side. */
-reg32 cacheRoad(App* app)
+u32 cacheRoad(App* app)
 {
     put(app, kSpeedsReady, trackRoadWide(app));
-    const reg32 side = trackTrafficSide(app);
+    const u32 side = trackTrafficSide(app);
     put(app, kTrafficSide, side);
     put(app, kTrackWalked, 0);
     return side;
 }
 
 /* 0x40e0f0: cacheRoad, the side in eax. */
-x86::reg32 cacheRoadWidth(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 cacheRoadWidth(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&] { return cacheRoad(app); });
+    asThunk(ts, args, [&] { return cacheRoad(app); });
     return args.eax;
 }
 
 /* Node `node` less node `from`, wrapped round the track's [0x5dd940] nodes into -n/2..n/2; the
  * count written back, as the code does. */
-i32 nodesBetween(App* app, reg32 node, reg32 from)
+i32 nodesBetween(App* app, u32 node, u32 from)
 {
     const i32 count = i32(at(app, kNodeCount));
     const i32 half = count / 2;  // (n - (n >> 31)) >> 1: towards 0
     i32 gap = i32(node - from);
     if (gap > half)
-        gap = i32(reg32(gap) - reg32(count));
+        gap = i32(u32(gap) - u32(count));
     else if (gap < -half)
-        gap = i32(reg32(gap) + reg32(count));
-    put(app, kNodeCount, reg32(count));
+        gap = i32(u32(gap) + u32(count));
+    put(app, kNodeCount, u32(count));
     return gap;
 }
 
 /* 0x40e120: nodesBetween node eax and node edx. */
-x86::reg32 nodeGap(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 nodeGap(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&, node = args.eax, from = args.edx] { return reg32(nodesBetween(app, node, from)); });
+    asThunk(ts, args, [&, node = args.eax, from = args.edx] { return u32(nodesBetween(app, node, from)); });
     return args.eax;
 }
 
 /* The node `steps` nodes on from car's node +0x1c in its direction of travel -- back for a car with
  * the track in a forward race, or one against it in a reversed race -- wrapped round the track; the
  * count written back, as the code does. */
-reg32 nodeAhead(App* app, reg32 car, reg32 steps)
+u32 nodeAhead(App* app, u32 car, u32 steps)
 {
-    const reg32 count = at(app, kNodeCount);
-    const reg32 forward = ((byte(app, car + kCarWayFlags) & kAgainstTrack) != 0 ? 0 : 1) ^ gameSettings(app).backwards;
+    const u32 count = at(app, kNodeCount);
+    const u32 forward = ((byte(app, car + kCarWayFlags) & kAgainstTrack) != 0 ? 0 : 1) ^ gameSettings(app).backwards;
     if (forward == 0)
         steps = 0u - steps;
-    reg32 node = steps + at(app, car + kCarNode);
+    u32 node = steps + at(app, car + kCarNode);
     if (i32(steps) < 0)
     {
         if (i32(node) < 0)
@@ -1964,15 +1964,15 @@ reg32 nodeAhead(App* app, reg32 car, reg32 steps)
 }
 
 /* 0x40e160: nodeAhead for car eax by edx nodes. */
-x86::reg32 nodeOffset(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 nodeOffset(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&, car = args.eax, steps = args.edx] { return nodeAhead(app, car, steps); });
+    asThunk(ts, args, [&, car = args.eax, steps = args.edx] { return nodeAhead(app, car, steps); });
     return args.eax;
 }
 
 /* The node car will reach: its look-ahead +0x7c4 times `scale` and 1/6, rounded, kept within `least`
  * and `most` (the most winning), backwards when +0x7d4 is 1 (nodeAhead). */
-reg32 nodeAheadBySpeed(App* app, reg32 car, float scale, i32 least, i32 most)
+u32 nodeAheadBySpeed(App* app, u32 car, float scale, i32 least, i32 most)
 {
     const i32 reach = fp::toInteger<i32>(
         fp::mul(fp::mul(f32(app, car + kCarLookAhead), Float(scale)), f64(app, kSixth)));
@@ -1981,63 +1981,63 @@ reg32 nodeAheadBySpeed(App* app, reg32 car, float scale, i32 least, i32 most)
         steps = most;
     if (at(app, car + kCarBackwards) == 1)
         steps = -steps;
-    return nodeAhead(app, car, reg32(steps));
+    return nodeAhead(app, car, u32(steps));
 }
 
 /* 0x40e1b0 (stdcall, 3 words: the scale, the least, the most): nodeAheadBySpeed for car eax. */
-x86::reg32 nodesAheadBySpeed(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 nodesAheadBySpeed(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     asThunk(
-        cpu, args,
-        [&, car = args.eax, scale = floatOf(word(app, cpu, 1)), least = i32(word(app, cpu, 2)),
-         most = i32(word(app, cpu, 3))] { return nodeAheadBySpeed(app, car, scale, least, most); },
+        ts, args,
+        [&, car = args.eax, scale = floatOf(word(app, ts, 1)), least = i32(word(app, ts, 2)),
+         most = i32(word(app, ts, 3))] { return nodeAheadBySpeed(app, car, scale, least, most); },
         0xc);
     return args.eax;
 }
 
 /* Node `node`'s lane bits (the high half of its dword at +0xa, arithmetically) masked by `mask` --
  * which of the 16 lanes are road there. */
-reg32 laneBitsAt(App* app, reg32 node, reg32 mask)
+u32 laneBitsAt(App* app, u32 node, u32 mask)
 {
-    return reg32(i32(at(app, nodeAddr(app, node) + kNodeLaneBits)) >> 16) & mask;
+    return u32(i32(at(app, nodeAddr(app, node) + kNodeLaneBits)) >> 16) & mask;
 }
 
 /* 0x40e200: laneBitsAt node eax by mask edx. */
-x86::reg32 nodeLaneBits(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 nodeLaneBits(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&, node = args.eax, mask = args.edx] { return laneBitsAt(app, node, mask); });
+    asThunk(ts, args, [&, node = args.eax, mask = args.edx] { return laneBitsAt(app, node, mask); });
     return args.eax;
 }
 
 /* Whether node `node` has road in slice `slice`: laneBitsAt with the slice's bit (sliceBit). */
-reg32 hasLane(App* app, reg32 node, reg32 slice)
+u32 hasLane(App* app, u32 node, u32 slice)
 {
     return laneBitsAt(app, node, sliceBit(slice));
 }
 
 /* 0x40e220: hasLane at node eax in slice edx. */
-x86::reg32 nodeHasLane(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 nodeHasLane(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&, node = args.eax, slice = args.edx] { return hasLane(app, node, slice); });
+    asThunk(ts, args, [&, node = args.eax, slice = args.edx] { return hasLane(app, node, slice); });
     return args.eax;
 }
 
 /* Slice `slice`'s bit among a node's 16 lane bits: bit 15 - (slice + 1), slice + 1 (as the code's
  * 8 - (7 - slice)) kept within 0..15. */
-reg32 sliceBit(reg32 slice)
+u32 sliceBit(u32 slice)
 {
     i32 lane = i32(8u - (7u - slice));
     if (lane < 0)
         lane = 0;
     else if (lane >= 0x10)
         lane = 0xf;
-    return reg32(1) << (0xf - lane);
+    return u32(1) << (0xf - lane);
 }
 
 /* 0x40e270: sliceBit of slice eax. */
-x86::reg32 laneBit(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 laneBit(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&, slice = args.eax] { return sliceBit(slice); });
+    asThunk(ts, args, [&, slice = args.eax] { return sliceBit(slice); });
     return args.eax;
 }
 
@@ -2045,54 +2045,54 @@ x86::reg32 laneBit(App* app, x86::CPU& cpu, x86::Args& args)
  * (6 left of it, 7 right), the half's width (+0x17 / +0x1b, << 15, as 1/65536) by four the index
  * into the lane-width table 0x56f0e0, whose entry times the offset is the slices from the centre.
  * Left is an offset under 0 (fcom: a NaN goes right). */
-reg32 roadSlice(App* app, reg32 node, float offset)
+u32 roadSlice(App* app, u32 node, float offset)
 {
-    const reg32 record = at(app, kNodes) + node * kNodeSize;
+    const u32 record = at(app, kNodes) + node * kNodeSize;
     const bool left = 0.0 > Float(offset);
     const i32 centre = left ? 6 : 7;
-    const reg32 width = byte(app, record + (left ? kNodeLeftWidth : kNodeRightWidth));
+    const u32 width = byte(app, record + (left ? kNodeLeftWidth : kNodeRightWidth));
     const float halfWidth = float(fp::mul(Float(i32(width << 0xf)), f64(app, kFixedToFloat)));
     const i32 index = fp::toInteger<i32>(fp::mul(Float(halfWidth), f32(app, kQuarterLanes)));
-    const i32 slices = fp::toInteger<i32>(fp::mul(f32(app, reg32(index) * 4 + kLaneWidths), Float(offset)));
+    const i32 slices = fp::toInteger<i32>(fp::mul(f32(app, u32(index) * 4 + kLaneWidths), Float(offset)));
     i32 slice = centre + slices;
     if (slice < 0)
         slice = 0;
     if (slice > kSlices - 1)
         slice = kSlices - 1;
-    return reg32(slice);
+    return u32(slice);
 }
 
 /* 0x40e2b0 (stdcall, 1 word: the offset across the road): roadSlice at node eax. */
-x86::reg32 roadSliceIndex(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 roadSliceIndex(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&, node = args.eax, offset = floatOf(word(app, cpu, 1))] { return roadSlice(app, node, offset); }, 4);
+    asThunk(ts, args, [&, node = args.eax, offset = floatOf(word(app, ts, 1))] { return roadSlice(app, node, offset); }, 4);
     return args.eax;
 }
 
 /* Car's three road slices at its node +0x1c (roadSlice): of its place across the road +0x7b8
  * (+0x638), and of its two sides, -+0x21c with half a slice back in (+0x63c, +0x640). */
-void findCarSlices(App* app, reg32 car)
+void findCarSlices(App* app, u32 car)
 {
-    const reg32 node = at(app, car + kCarNode);
-    const reg32 middle = roadSlice(app, node, app->getMemory<float>(car + kCarAcross));
+    const u32 node = at(app, car + kCarNode);
+    const u32 middle = roadSlice(app, node, app->getMemory<float>(car + kCarAcross));
     const Float leftSide = fp::sub(f32(app, car + kCarAcross), f32(app, car + kCarHalfWidth));
     put(app, car + kCarSlice, middle);
-    const reg32 left = roadSlice(app, node, float(fp::add(leftSide, f64(app, kHalfSlice))));
+    const u32 left = roadSlice(app, node, float(fp::add(leftSide, f64(app, kHalfSlice))));
     const Float rightSide = fp::add(f32(app, car + kCarAcross), f32(app, car + kCarHalfWidth));
     put(app, car + kCarLeftSlice, left);
-    const reg32 right = roadSlice(app, node, float(fp::add(rightSide, f64(app, kLessHalfSlice))));
+    const u32 right = roadSlice(app, node, float(fp::add(rightSide, f64(app, kLessHalfSlice))));
     put(app, car + kCarRightSlice, right);
 }
 
 /* 0x40e350: findCarSlices for car eax; eax the last slice, as the code leaves it. */
-x86::reg32 carSlices(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 carSlices(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&, car = args.eax] { return findCarSlicesLeaving(app, car); });
+    asThunk(ts, args, [&, car = args.eax] { return findCarSlicesLeaving(app, car); });
     return args.eax;
 }
 
 /* findCarSlices with the eax the code leaves: the last slice. */
-reg32 findCarSlicesLeaving(App* app, reg32 car)
+u32 findCarSlicesLeaving(App* app, u32 car)
 {
     findCarSlices(app, car);
     return at(app, car + kCarRightSlice);
@@ -2100,8 +2100,8 @@ reg32 findCarSlicesLeaving(App* app, reg32 car)
 
 /* A track's tuning record at `record`: `first` and `distance` (0xf and 0 in a knock-out race,
  * [0x6fd4fc] bit 3), whether the road is wide, the traffic's side, the two speeds and the last. */
-void fillTuning(App* app, reg32 record, reg32 first, reg32 distance, reg32 roadWide, reg32 side, reg32 speed,
-                reg32 seriesSpeed, reg32 last)
+void fillTuning(App* app, u32 record, u32 first, u32 distance, u32 roadWide, u32 side, u32 speed,
+                u32 seriesSpeed, u32 last)
 {
     if ((std::uint8_t(gameSettings(app).raceFlags) & 8) != 0)
     {
@@ -2122,12 +2122,12 @@ void fillTuning(App* app, reg32 record, reg32 first, reg32 distance, reg32 roadW
 
 /* 0x40e3c0 (stdcall, 4 words: the side, the speeds, the last): fillTuning of the record at eax with
  * edx, ebx and ecx. */
-x86::reg32 fillTrackTuning(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 fillTrackTuning(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     asThunk(
-        cpu, args,
-        [&, record = args.eax, first = args.edx, distance = args.ebx, roadWide = args.ecx, side = word(app, cpu, 1),
-         speed = word(app, cpu, 2), seriesSpeed = word(app, cpu, 3), last = word(app, cpu, 4)] {
+        ts, args,
+        [&, record = args.eax, first = args.edx, distance = args.ebx, roadWide = args.ecx, side = word(app, ts, 1),
+         speed = word(app, ts, 2), seriesSpeed = word(app, ts, 3), last = word(app, ts, 4)] {
             fillTuning(app, record, first, distance, roadWide, side, speed, seriesSpeed, last);
         },
         0x10);
@@ -2142,23 +2142,23 @@ x86::reg32 fillTrackTuning(App* app, x86::CPU& cpu, x86::Args& args)
  * variant 1, fixed values else -- the fourth record overridden by an option [0x55eb2e] bit 5; the
  * opponents' speeds loaded (0x40e000) and the highest of the computer's target speeds over the track's
  * nodes kept in [0x56f224].  False when the game stopped. */
-bool setupTuning(App* app, CPU& cpu)
+bool setupTuning(App* app, ThreadState& ts)
 {
-    constexpr reg32 kLast = 0x4156930c;  // 13.41
-    const auto tune = [&](reg32 record, reg32 distance, reg32 first, reg32 speed, reg32 seriesSpeed) {
+    constexpr u32 kLast = 0x4156930c;  // 13.41
+    const auto tune = [&](u32 record, u32 distance, u32 first, u32 speed, u32 seriesSpeed) {
         fillTuning(app, record, first, distance, 0, 1, speed, seriesSpeed, kLast);
     };
     float handicap = floatOf(gameSettings(app).night != 0 ? 0xbba3d70a : 0);
-    for (reg32 GameSettings::*flag : {&GameSettings::weather, &GameSettings::mirrored, &GameSettings::backwards})
+    for (u32 GameSettings::*flag : {&GameSettings::weather, &GameSettings::mirrored, &GameSettings::backwards})
         if (gameSettings(app).*flag != 0)
             handicap = float(fp::add(Float(handicap), f32(app, kHandicapStep)));
     put(app, kLaneWidths, 0);
     for (i32 i = 1; i < 0x50; ++i)
-        putFloat(app, reg32(i) * 4 + kLaneWidths, float(fp::div(1.0, fp::mul(Float(i), f32(app, kQuarter)))));
-    const reg32 raceType = gameSettings(app).raceType;
+        putFloat(app, u32(i) * 4 + kLaneWidths, float(fp::div(1.0, fp::mul(Float(i), f32(app, kQuarter)))));
+    const u32 raceType = gameSettings(app).raceType;
     if (raceType == 0)
     {
-        static const reg32 rows[9][5] = {
+        static const u32 rows[9][5] = {
             {0x56ef80, 0x28, 8, 0x3f51eb85, 0x3f70a3d7}, {0x56efa0, 0x78, 6, 0x3f570a3d, 0x3f75c28f},
             {0x56efc0, 0x50, 9, 0x3f570a3d, 0x3f75c28f}, {0x56efe0, 0x64, 5, 0x3f51eb85, 0x3f70a3d7},
             {0x56f000, 0x28, 7, 0x3f570a3d, 0x3f75c28f}, {0x56f020, 0x78, 6, 0x3f51eb85, 0x3f70a3d7},
@@ -2169,7 +2169,7 @@ bool setupTuning(App* app, CPU& cpu)
     }
     else if (raceType == 3)
     {
-        static const reg32 rows[9][5] = {
+        static const u32 rows[9][5] = {
             {0x56ef80, 0x28, 8, 0x3f47ae14, 0x3f6147ae}, {0x56efa0, 0x78, 6, 0x3f51eb85, 0x3f666666},
             {0x56efc0, 0x50, 9, 0x3f4ccccd, 0x3f59999a}, {0x56efe0, 0x64, 5, 0x3f4ccccd, 0x3f59999a},
             {0x56f000, 0x28, 7, 0x3f4ccccd, 0x3f59999a}, {0x56f020, 0x78, 6, 0x3f4ccccd, 0x3f59999a},
@@ -2184,9 +2184,9 @@ bool setupTuning(App* app, CPU& cpu)
         const bool knockout = raceType == 2;
         if (gameSettings(app).seriesVariant == 1)
         {
-            const reg32 slower = bitsOf(float(fp::add(Float(handicap), f64(app, kHandicapSlower))));
-            const reg32 slow = bitsOf(float(fp::add(Float(handicap), f64(app, kHandicapSlow))));
-            const reg32 even = bitsOf(float(fp::add(1.0, Float(handicap))));
+            const u32 slower = bitsOf(float(fp::add(Float(handicap), f64(app, kHandicapSlower))));
+            const u32 slow = bitsOf(float(fp::add(Float(handicap), f64(app, kHandicapSlow))));
+            const u32 even = bitsOf(float(fp::add(1.0, Float(handicap))));
             tune(0x56ef80, 0, 0, 0, slower);
             tune(0x56efa0, 0, 0, 0, slow);
             tune(0x56efc0, 0, 0, 0, even);
@@ -2199,23 +2199,23 @@ bool setupTuning(App* app, CPU& cpu)
         }
         else
         {
-            static const reg32 knockouts[9] = {0x3f6b851f, 0x3f70a3d7, 0x3f70a3d7, 0x3f6b851f, 0x3f70a3d7,
+            static const u32 knockouts[9] = {0x3f6b851f, 0x3f70a3d7, 0x3f70a3d7, 0x3f6b851f, 0x3f70a3d7,
                                                0x3f6b851f, 0x3f70a3d7, 0x3f70a3d7, 0x3f800000};
-            static const reg32 tournaments[9] = {0x3f6b851f, 0x3f70a3d7, 0x3f70a3d7, 0x3f6b851f, 0x3f70a3d7,
+            static const u32 tournaments[9] = {0x3f6b851f, 0x3f70a3d7, 0x3f70a3d7, 0x3f6b851f, 0x3f70a3d7,
                                                  0x3f6b851f, 0x3f70a3d7, 0x3f6b851f, 0x3f70a3d7};
-            for (reg32 i = 0; i < 9; ++i)
+            for (u32 i = 0; i < 9; ++i)
                 tune(kTuning + kTuningSize * i, 0, 0, 0, knockout ? knockouts[i] : tournaments[i]);
         }
     }
     if ((byte(app, kStartFlags) & 0x20) != 0)
         tune(0x56efe0, 0x64, 1, 0x3f666666, 0x3f800000);
-    if (!guest::direct<0x40e000, load::loadSpeeds>(app, cpu))
+    if (!guest::direct<0x40e000, load::loadSpeeds>(app, ts))
         return false;
     const i32 nodes = i32(at(app, kNodeCount));
     put(app, kTopTargetSpeed, 0);
     for (i32 node = 0; node < nodes; ++node)
     {
-        const float speed = targetSpeed(app, reg32(node));
+        const float speed = targetSpeed(app, u32(node));
         if (Float(speed) > f32(app, kTopTargetSpeed))
             putFloat(app, kTopTargetSpeed, speed);
     }
@@ -2224,20 +2224,20 @@ bool setupTuning(App* app, CPU& cpu)
 
 /* 0x40e410: setupTuning.  What the code leaves in eax (a compare's status word) no caller reads;
  * aiplan.inc's promise says so. */
-x86::reg32 setupTrackTuning(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 setupTrackTuning(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&] { return setupTuning(app, cpu); });
+    asThunk(ts, args, [&] { return setupTuning(app, ts); });
     return args.eax;
 }
 
 /* The opponents' speed table [0x552558] freed and forgotten.  What the code leaves in eax: the free's,
  * else `eax` as it was; nullopt when the game stopped. */
-std::optional<reg32> freeSpeeds(App* app, CPU& cpu, reg32 eax)
+std::optional<u32> freeSpeeds(App* app, ThreadState& ts, u32 eax)
 {
-    const reg32 table = at(app, kSpeeds);
+    const u32 table = at(app, kSpeeds);
     if (table != 0)
     {
-        const std::optional<reg32> freed = freeHandle(app, cpu, table);
+        const std::optional<u32> freed = freeHandle(app, ts, table);
         if (!freed)
             return std::nullopt;
         put(app, kSpeeds, 0);
@@ -2247,51 +2247,51 @@ std::optional<reg32> freeSpeeds(App* app, CPU& cpu, reg32 eax)
 }
 
 /* 0x40ec40: freeSpeeds; eax as the free leaves it. */
-x86::reg32 freeSpeedTable(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 freeSpeedTable(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&, eax = args.eax] { return freeSpeeds(app, cpu, eax); });
+    asThunk(ts, args, [&, eax = args.eax] { return freeSpeeds(app, ts, eax); });
     return args.eax;
 }
 
 /* The track's traffic side: its tuning record's +0xc; 1 past the records. */
-reg32 trackTrafficSide(App* app)
+u32 trackTrafficSide(App* app)
 {
     const i32 track = i32(gameSettings(app).track);
     if (track < kTrackCount)
-        return at(app, reg32(track) * kTuningSize + kTuning + kTuningSide);
+        return at(app, u32(track) * kTuningSize + kTuning + kTuningSide);
     return 1;
 }
 
 /* 0x40ec70: trackTrafficSide. */
-x86::reg32 trafficSide(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 trafficSide(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&] { return trackTrafficSide(app); });
+    asThunk(ts, args, [&] { return trackTrafficSide(app); });
     return args.eax;
 }
 
 /* Whether the track's road is wide: its tuning record's +8; past the records, whether the second
  * node's left edge slices (the high nibble of its +0x13) are none. */
-reg32 trackRoadWide(App* app)
+u32 trackRoadWide(App* app)
 {
     const i32 track = i32(gameSettings(app).track);
     if (track < kTrackCount)
-        return at(app, reg32(track) * kTuningSize + kTuning + kTuningRoadWide);
+        return at(app, u32(track) * kTuningSize + kTuning + kTuningRoadWide);
     return (byte(app, at(app, kNodes) + kNodeSize + kNodeEdges) >> 4) == 0 ? 1 : 0;
 }
 
 /* 0x40eca0: trackRoadWide. */
-x86::reg32 roadIsWide(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 roadIsWide(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&] { return trackRoadWide(app); });
+    asThunk(ts, args, [&] { return trackRoadWide(app); });
     return args.eax;
 }
 
 /* The traffic's speed at node `node` by the track [0x6fd4ac] (the jump table at 0x40ed14) and the
  * stretch of it: slower through each track's hard stretches.  The speeds as the code has their
  * bits. */
-float trafficSpeed(App* app, reg32 node)
+float trafficSpeed(App* app, u32 node)
 {
-    reg32 bits = 0x41a0ee49;
+    u32 bits = 0x41a0ee49;
     switch (gameSettings(app).track)
     {
     case 0: bits = node > 0x276 || node <= 0x1e8 ? 0x41b2cfdf : 0x4156930c; break;
@@ -2310,10 +2310,10 @@ float trafficSpeed(App* app, reg32 node)
 }
 
 /* 0x40ed40: trafficSpeed at node eax onto the x87's stack. */
-x86::reg32 trafficSpeedAt(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 trafficSpeedAt(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     float speed = 0;
-    asThunk(cpu, args, [&, node = args.eax] { speed = trafficSpeed(app, node); });
+    asThunk(ts, args, [&, node = args.eax] { speed = trafficSpeed(app, node); });
     args.floatSet = true;
     args.floatResult = double(Float(speed));
     return args.eax;
@@ -2323,17 +2323,17 @@ x86::reg32 trafficSpeedAt(App* app, x86::CPU& cpu, x86::Args& args)
  * +0x14. */
 float trackTuningSpeed(App* app)
 {
-    const reg32 raceType = gameSettings(app).raceType;
-    const reg32 record = gameSettings(app).track * kTuningSize + kTuning;
+    const u32 raceType = gameSettings(app).raceType;
+    const u32 record = gameSettings(app).track * kTuningSize + kTuning;
     const bool series = raceType == 1 || raceType == 2 || gameSettings(app).seriesRace != 0;
     return app->getMemory<float>(record + (series ? kTuningSeriesSpeed : kTuningSpeed));
 }
 
 /* 0x40ee80: trackTuningSpeed onto the x87's stack; every register kept. */
-x86::reg32 tuningSpeed(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 tuningSpeed(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     float speed = 0;
-    asThunk(cpu, args, [&] { speed = trackTuningSpeed(app); });
+    asThunk(ts, args, [&] { speed = trackTuningSpeed(app); });
     args.floatSet = true;
     args.floatResult = double(Float(speed));
     return args.eax;
@@ -2341,9 +2341,9 @@ x86::reg32 tuningSpeed(App* app, x86::CPU& cpu, x86::Args& args)
 
 /* The track's tuning distance (its record's +4), +200 with the weather on and +400 at night, as
  * game_settings.h names the two. */
-reg32 trackTuningDistance(App* app)
+u32 trackTuningDistance(App* app)
 {
-    reg32 distance = at(app, gameSettings(app).track * kTuningSize + kTuning + kTuningDistance);
+    u32 distance = at(app, gameSettings(app).track * kTuningSize + kTuning + kTuningDistance);
     if (gameSettings(app).weather != 0)
         distance += 0xc8;
     if (gameSettings(app).night != 0)
@@ -2352,37 +2352,37 @@ reg32 trackTuningDistance(App* app)
 }
 
 /* 0x40eed0: trackTuningDistance. */
-x86::reg32 tuningDistance(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 tuningDistance(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&] { return trackTuningDistance(app); });
+    asThunk(ts, args, [&] { return trackTuningDistance(app); });
     return args.eax;
 }
 
 /* The track's tuning record's +0. */
-reg32 trackTuningFirst(App* app)
+u32 trackTuningFirst(App* app)
 {
     return at(app, gameSettings(app).track * kTuningSize + kTuning + kTuningFirst);
 }
 
 /* 0x40ef10: trackTuningFirst. */
-x86::reg32 tuningFirst(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 tuningFirst(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&] { return trackTuningFirst(app); });
+    asThunk(ts, args, [&] { return trackTuningFirst(app); });
     return args.eax;
 }
 
 /* A node's forward direction's part at +0x14 or +0x16 as the code loads it: the signed byte << 9. */
-i32 directionPart(App* app, reg32 record, reg32 part)
+i32 directionPart(App* app, u32 record, u32 part)
 {
-    return i32(reg32(signedByte(app, record + part)) << 9);
+    return i32(u32(signedByte(app, record + part)) << 9);
 }
 
 /* The dot product of nodes `a`'s and `b`'s forward directions (directionPart, as 1/65536), in the
  * code's order: z's product, then x's added. */
-Float directionDot(App* app, reg32 a, reg32 b)
+Float directionDot(App* app, u32 a, u32 b)
 {
-    const reg32 nodes = at(app, kNodes);
-    const reg32 recordB = nodes + b * kNodeSize, recordA = nodes + a * kNodeSize;
+    const u32 nodes = at(app, kNodes);
+    const u32 recordB = nodes + b * kNodeSize, recordA = nodes + a * kNodeSize;
     const Float scale = f64(app, kDirectionScale);
     const Float xB = fp::mul(Float(directionPart(app, recordB, kNodeDirectionX)), scale);
     const Float xA = fp::mul(Float(directionPart(app, recordA, kNodeDirectionX)), scale);
@@ -2394,12 +2394,12 @@ Float directionDot(App* app, reg32 a, reg32 b)
 
 /* 0x40ef70: directionDot of nodes eax and edx onto the x87's stack; eax node eax's z part, as the
  * code leaves it. */
-x86::reg32 nodeDirectionDot(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 nodeDirectionDot(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     Float dot;
-    asThunk(cpu, args, [&, a = args.eax, b = args.edx] {
+    asThunk(ts, args, [&, a = args.eax, b = args.edx] {
         dot = directionDot(app, a, b);
-        return reg32(directionPart(app, at(app, kNodes) + a * kNodeSize, kNodeDirectionZ));
+        return u32(directionPart(app, at(app, kNodes) + a * kNodeSize, kNodeDirectionZ));
     });
     args.floatSet = true;
     args.floatResult = double(dot);
@@ -2408,10 +2408,10 @@ x86::reg32 nodeDirectionDot(App* app, x86::CPU& cpu, x86::Args& args)
 
 /* Whether node `node` lies in the run of `run` nodes from node `from` (wrapped round the track; a
  * negative run counts back), the ends' compares unsigned as the code's; the count written back. */
-bool nodeInRun(App* app, reg32 node, reg32 from, reg32 run)
+bool nodeInRun(App* app, u32 node, u32 from, u32 run)
 {
-    const reg32 count = at(app, kNodeCount);
-    reg32 end = from + run;
+    const u32 count = at(app, kNodeCount);
+    u32 end = from + run;
     if (i32(run) >= 0)
     {
         if (i32(end) >= i32(count))
@@ -2425,55 +2425,55 @@ bool nodeInRun(App* app, reg32 node, reg32 from, reg32 run)
 }
 
 /* 0x40f000: nodeInRun for node eax, from edx, ebx long. */
-x86::reg32 nodeWithinRange(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 nodeWithinRange(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&, node = args.eax, from = args.edx, run = args.ebx] { return nodeInRun(app, node, from, run) ? 1 : 0; });
+    asThunk(ts, args, [&, node = args.eax, from = args.edx, run = args.ebx] { return nodeInRun(app, node, from, run) ? 1 : 0; });
     return args.eax;
 }
 
 /* Whether car is within reach of `distance`: its place along the track +8 and 14 times its speed
  * along it +0x1fc against the distance and a margin by the race's laps [0x5efd94] (26 less in a
  * reversed race). */
-bool carInReach(App* app, reg32 car, reg32 distance)
+bool carInReach(App* app, u32 car, u32 distance)
 {
-    reg32 margin = 0x190;
+    u32 margin = 0x190;
     if (i32(at(app, kLaps)) < 5)
         margin = 0xc8;
     if (i32(at(app, kLaps)) < 2)
         margin = 0x32;
     if (gameSettings(app).backwards != 0)
         margin -= 0x1a;
-    const reg32 reached = at(app, car + kCarSpeedAlong) * 14 + at(app, car + kCarAlong);
+    const u32 reached = at(app, car + kCarSpeedAlong) * 14 + at(app, car + kCarAlong);
     return !(i32(reached) > i32(margin + distance));
 }
 
 /* 0x40f050: carInReach for car eax of distance edx. */
-x86::reg32 carWithinReach(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 carWithinReach(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&, car = args.eax, distance = args.edx] { return carInReach(app, car, distance) ? 1 : 0; });
+    asThunk(ts, args, [&, car = args.eax, distance = args.edx] { return carInReach(app, car, distance) ? 1 : 0; });
     return args.eax;
 }
 
 /* 1, whatever it is asked. */
-reg32 answerOne(App* app)
+u32 answerOne(App* app)
 {
     (void)app;
     return 1;
 }
 
 /* 0x40f100: answerOne. */
-x86::reg32 alwaysOne(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 alwaysOne(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&] { return answerOne(app); });
+    asThunk(ts, args, [&] { return answerOne(app); });
     return args.eax;
 }
 
 /* Whether car is boxed in: its slice +0x638 off the 14, or not within its node's edge slices and
  * neither neighbouring slice within them (and the 14); the nodes' pointer written back, as the code
  * does. */
-bool boxedIn(App* app, reg32 car)
+bool boxedIn(App* app, u32 car)
 {
-    const reg32 nodes = at(app, kNodes);
+    const u32 nodes = at(app, kNodes);
     const i32 slice = i32(at(app, car + kCarSlice));
     const i32 edges = byte(app, nodes + at(app, car + kCarNode) * kNodeSize + kNodeEdges);
     const i32 edgeLeft = 6 - ((edges >> 4) & 0xf), edgeRight = (edges & 0xf) + 7;
@@ -2491,9 +2491,9 @@ bool boxedIn(App* app, reg32 car)
 }
 
 /* 0x40f110: boxedIn for car eax. */
-x86::reg32 carBoxedIn(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 carBoxedIn(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&, car = args.eax] { return boxedIn(app, car) ? 1 : 0; });
+    asThunk(ts, args, [&, car = args.eax] { return boxedIn(app, car) ? 1 : 0; });
     return args.eax;
 }
 
@@ -2504,19 +2504,19 @@ x86::reg32 carBoxedIn(App* app, x86::CPU& cpu, x86::Args& args)
  * points' count, +6 the frames per point (1..400, else 6), from +8 its points
  * of 0x14 bytes -- a place of three fixed-point dwords and an orientation of
  * four shorts (+0xc). */
-constexpr reg32 kAnimStart = 0x56f238, kAnimMark = 0x56f23c, kAnimMode = 0x56f240, kAnimFlags = 0x56f244;
-constexpr reg32 kAnimThird = 0x56f248;
+constexpr u32 kAnimStart = 0x56f238, kAnimMark = 0x56f23c, kAnimMode = 0x56f240, kAnimFlags = 0x56f244;
+constexpr u32 kAnimThird = 0x56f248;
 
 /* The seven animation paths (0x570a34) freed (0x4e1890) and forgotten; false when the game
  * stopped. */
-std::optional<reg32> freePathsEax(App* app, CPU& cpu, reg32 eax)
+std::optional<u32> freePathsEax(App* app, ThreadState& ts, u32 eax)
 {
-    for (reg32 i = 0; i < 7; ++i)
+    for (u32 i = 0; i < 7; ++i)
     {
-        const reg32 path = at(app, i * 4 + kAnimPaths);
+        const u32 path = at(app, i * 4 + kAnimPaths);
         if (path == 0)
             continue;
-        const std::optional<reg32> freed = freeHandle(app, cpu, path);
+        const std::optional<u32> freed = freeHandle(app, ts, path);
         if (!freed)
             return std::nullopt;
         eax = *freed;
@@ -2526,46 +2526,46 @@ std::optional<reg32> freePathsEax(App* app, CPU& cpu, reg32 eax)
 }
 
 /* freePathsEax for the callers that ask only whether the game went on.  False when it stopped. */
-bool freePaths(App* app, CPU& cpu)
+bool freePaths(App* app, ThreadState& ts)
 {
-    return freePathsEax(app, cpu, 0).has_value();
+    return freePathsEax(app, ts, 0).has_value();
 }
 
 /* 0x40f330: freePaths; eax as the last free leaves it. */
-x86::reg32 freeAnimationPaths(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 freeAnimationPaths(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&, eax = args.eax] { return freePathsEax(app, cpu, eax); });
+    asThunk(ts, args, [&, eax = args.eax] { return freePathsEax(app, ts, eax); });
     return args.eax;
 }
 
 /* The first free animation slot (its path +0 none), or -1. */
-reg32 freeAnimation(App* app)
+u32 freeAnimation(App* app)
 {
-    for (reg32 slot = 0; slot < kAnimSlots; ++slot)
+    for (u32 slot = 0; slot < kAnimSlots; ++slot)
         if (at(app, slot * kAnimSize + kAnims) == 0)
             return slot;
     return 0xffffffff;
 }
 
 /* 0x40f370: freeAnimation. */
-x86::reg32 findFreeAnimation(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 findFreeAnimation(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&] { return freeAnimation(app); });
+    asThunk(ts, args, [&] { return freeAnimation(app); });
     return args.eax;
 }
 
 /* Path `path` (0..6 of the handles) started in a free slot at the clock, mode 2, flags 1, the third
  * word 0 -- the slot, or -1 when none is free or the path is not loaded (its slot's path written 0
  * then, as the code does). */
-reg32 playAnimation(App* app, reg32 path)
+u32 playAnimation(App* app, u32 path)
 {
-    const reg32 slot = freeAnimation(app);
+    const u32 slot = freeAnimation(app);
     if (slot == 0xffffffff)
         return slot;
     if (i32(path) >= i32(kAnimSlots))
         return 0xffffffff;
-    const reg32 record = slot * kAnimSize;
-    const reg32 handle = at(app, path * 4 + kAnimPaths);
+    const u32 record = slot * kAnimSize;
+    const u32 handle = at(app, path * 4 + kAnimPaths);
     put(app, record + kAnims, handle);
     if (handle == 0)
         return 0xffffffff;
@@ -2577,14 +2577,14 @@ reg32 playAnimation(App* app, reg32 path)
 }
 
 /* 0x40f3b0: playAnimation of path eax. */
-x86::reg32 startAnimation(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 startAnimation(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&, path = args.eax] { return playAnimation(app, path); });
+    asThunk(ts, args, [&, path = args.eax] { return playAnimation(app, path); });
     return args.eax;
 }
 
 /* Slot's mode, flags and third word set. */
-void setAnimation(App* app, reg32 slot, reg32 mode, reg32 flags, reg32 third)
+void setAnimation(App* app, u32 slot, u32 mode, u32 flags, u32 third)
 {
     put(app, slot * kAnimSize + kAnimMode, mode);
     put(app, slot * kAnimSize + kAnimFlags, flags);
@@ -2593,9 +2593,9 @@ void setAnimation(App* app, reg32 slot, reg32 mode, reg32 flags, reg32 third)
 
 /* 0x40f430: setAnimation of slot eax to edx, ebx, ecx; eax three times the slot, as the code leaves
  * it. */
-x86::reg32 setAnimationMode(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 setAnimationMode(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&, slot = args.eax, mode = args.edx, flags = args.ebx, third = args.ecx] {
+    asThunk(ts, args, [&, slot = args.eax, mode = args.edx, flags = args.ebx, third = args.ecx] {
         setAnimation(app, slot, mode, flags, third);
         return slot * 3;
     });
@@ -2603,9 +2603,9 @@ x86::reg32 setAnimationMode(App* app, x86::CPU& cpu, x86::Args& args)
 }
 
 /* Slot stopped -- 1, or -1 when it was not playing. */
-reg32 endAnimation(App* app, reg32 slot)
+u32 endAnimation(App* app, u32 slot)
 {
-    const reg32 record = slot * kAnimSize;
+    const u32 record = slot * kAnimSize;
     if (at(app, record + kAnims) == 0)
         return 0xffffffff;
     put(app, record + kAnimStart, 0xffffffff);
@@ -2615,23 +2615,23 @@ reg32 endAnimation(App* app, reg32 slot)
 }
 
 /* 0x40f460: endAnimation of slot eax. */
-x86::reg32 stopAnimation(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 stopAnimation(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&, slot = args.eax] { return endAnimation(app, slot); });
+    asThunk(ts, args, [&, slot = args.eax] { return endAnimation(app, slot); });
     return args.eax;
 }
 
 /* A path's frames per point (+6: 1..400, else 6). */
-i32 pathFrames(App* app, reg32 path)
+i32 pathFrames(App* app, u32 path)
 {
-    const reg16 frames = app->getMemory<reg16>(path + kPathFrames);
+    const u16 frames = app->getMemory<u16>(path + kPathFrames);
     return frames >= 1 && frames <= 0x190 ? i32(frames) : 6;
 }
 
 /* A path's points less one (+4, a word). */
-i32 pathSpans(App* app, reg32 path)
+i32 pathSpans(App* app, u32 path)
 {
-    return i32(reg32(app->getMemory<reg16>(path + kPathPoints)) - 1);
+    return i32(u32(app->getMemory<u16>(path + kPathPoints)) - 1);
 }
 
 /* cdq; idiv: the quotient and the remainder, as x86 has them. */
@@ -2639,9 +2639,9 @@ i32 quotient(i32 n, i32 by) { return i32(std::int64_t(n) / by); }
 i32 remainder(i32 n, i32 by) { return i32(std::int64_t(n) % by); }
 
 /* A point's orientation's part (one of four shorts from +0xc) as the code loads it: << 2. */
-i32 orientationPart(App* app, reg32 point, reg32 part)
+i32 orientationPart(App* app, u32 point, u32 part)
 {
-    return i32(reg32(i32(sreg16(app->getMemory<reg16>(point + kPointOrientation + part * 2)))) << 2);
+    return i32(u32(i32(s16(app->getMemory<u16>(point + kPointOrientation + part * 2)))) << 2);
 }
 
 /* Path's pose at `time` (in frames; mode 2 plays once): the two points the time falls between
@@ -2650,35 +2650,35 @@ i32 orientationPart(App* app, reg32 point, reg32 part)
  * frame (0x4b70f0, `blendWord` handed on as its last word) and made a matrix at `matrix` (0x4b7590).
  * The orientations, the places and the blend's room in the code's frame, whose addresses the blend is
  * handed (and logs).  1; nullopt when the game stopped. */
-std::optional<reg32> poseAt(App* app, CPU& cpu, reg32 path, reg32 mode, i32 time, reg32 blendWord, reg32 matrix)
+std::optional<u32> poseAt(App* app, ThreadState& ts, u32 path, u32 mode, i32 time, u32 blendWord, u32 matrix)
 {
-    const GuestFrame frame(cpu, 0xc, 0x7c);
+    const GuestFrame frame(ts, 0xc, 0x7c);
     const i32 frames = pathFrames(app, path);
     const i32 step = quotient(time, frames);
-    if (mode == 2 && step >= i32(reg32(app->getMemory<reg16>(path + kPathPoints)) - 1))
+    if (mode == 2 && step >= i32(u32(app->getMemory<u16>(path + kPathPoints)) - 1))
         return 0;
     const i32 index = remainder(step, pathSpans(app, path));
     const i32 rest = remainder(time, frames);
-    const reg32 point = path + kPathPointList + reg32(index) * kPointSize;
-    const reg32 nextPoint = path + kPathPointList + reg32(index + 1) * kPointSize;
+    const u32 point = path + kPathPointList + u32(index) * kPointSize;
+    const u32 nextPoint = path + kPathPointList + u32(index + 1) * kPointSize;
     const Float scale = f64(app, kPoseScale);
-    const reg32 first = frame - 0x5c, second = frame - 0x6c, firstPlace = frame - 0x4c, secondPlace = frame - 0x34;
+    const u32 first = frame - 0x5c, second = frame - 0x6c, firstPlace = frame - 0x4c, secondPlace = frame - 0x34;
     // The first orientation, at -0x5c down to -0x50.
     Float parts[4];
-    for (reg32 i = 0; i < 4; ++i)
+    for (u32 i = 0; i < 4; ++i)
         parts[i] = fp::mul(Float(orientationPart(app, point, i)), scale);
-    for (reg32 i = 0; i < 4; ++i)
+    for (u32 i = 0; i < 4; ++i)
         putFloat(app, first + 4 * i, float(parts[i]));
     // The second, at -0x6c down to -0x60; the fraction of the frame between.
     const Float part0 = fp::mul(Float(orientationPart(app, nextPoint, 0)), scale);
     const Float fraction = fp::div(Float(rest), Float(frames));
-    for (reg32 i = 1; i < 4; ++i)
+    for (u32 i = 1; i < 4; ++i)
         parts[i] = fp::mul(Float(orientationPart(app, nextPoint, i)), scale);
     putFloat(app, second, float(part0));
-    for (reg32 i = 1; i < 4; ++i)
+    for (u32 i = 1; i < 4; ++i)
         putFloat(app, second + 4 * i, float(parts[i]));
     // The places, at -0x4c and -0x34 (the last part's product the other way round, as the code's).
-    const auto place = [&](reg32 at_, reg32 to) {
+    const auto place = [&](u32 at_, u32 to) {
         const Float x = fp::mul(Float(i32(at(app, at_))), scale);
         const Float y = fp::mul(Float(i32(at(app, at_ + 4))), scale);
         const Float z = fp::mul(scale, Float(i32(at(app, at_ + 8))));
@@ -2688,22 +2688,22 @@ std::optional<reg32> poseAt(App* app, CPU& cpu, reg32 path, reg32 mode, i32 time
     };
     place(point, firstPlace);
     place(nextPoint, secondPlace);
-    if (!feCore<0x4b70f0, frontend::simc::poseBlend>(app, cpu, first, second, firstPlace, secondPlace,
+    if (!feCore<0x4b70f0, frontend::simc::poseBlend>(app, ts, first, second, firstPlace, secondPlace,
                                                      bitsOf(float(fraction)), frame - 0x7c, blendWord))
         return std::nullopt;
-    if (!feCore<0x4b7590, frontend::simc::matrixFromQuat>(app, cpu, frame - 0x7c, matrix))
+    if (!feCore<0x4b7590, frontend::simc::matrixFromQuat>(app, ts, frame - 0x7c, matrix))
         return std::nullopt;
     return 1;
 }
 
 /* 0x40f4b0 (stdcall, 1 word: where the pose's matrix goes): poseAt for path eax at time ebx in mode
  * edx, ecx handed on. */
-x86::reg32 animationPose(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 animationPose(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     asThunk(
-        cpu, args,
-        [&, path = args.eax, mode = args.edx, time = i32(args.ebx), blendWord = args.ecx, matrix = word(app, cpu, 1)] {
-            return poseAt(app, cpu, path, mode, time, blendWord, matrix);
+        ts, args,
+        [&, path = args.eax, mode = args.edx, time = i32(args.ebx), blendWord = args.ecx, matrix = word(app, ts, 1)] {
+            return poseAt(app, ts, path, mode, time, blendWord, matrix);
         },
         4);
     return args.eax;
@@ -2713,60 +2713,60 @@ x86::reg32 animationPose(App* app, x86::CPU& cpu, x86::Args& args)
  * at the frame's 16.16 fraction (0x4b6a30, `blendWord` handed on; the places and the blend's room in
  * the code's frame, whose addresses it is handed); the time within the path's length and the length
  * (both in frames) to `timeOut` and `lengthOut`.  1; nullopt when the game stopped. */
-std::optional<reg32> placeAt(App* app, CPU& cpu, reg32 path, reg32 mode, i32 time, reg32 blendWord, reg32 timeOut,
-                             reg32 lengthOut)
+std::optional<u32> placeAt(App* app, ThreadState& ts, u32 path, u32 mode, i32 time, u32 blendWord, u32 timeOut,
+                             u32 lengthOut)
 {
-    const GuestFrame frame(cpu, 0xc, 0x44);
+    const GuestFrame frame(ts, 0xc, 0x44);
     const i32 frames = pathFrames(app, path);
     const i32 step = quotient(time, frames);
-    if ((mode & 2) != 0 && step >= i32(reg32(app->getMemory<reg16>(path + kPathPoints)) - 1))
+    if ((mode & 2) != 0 && step >= i32(u32(app->getMemory<u16>(path + kPathPoints)) - 1))
         return 0;
     const i32 index = remainder(step, pathSpans(app, path));
-    const i32 fraction = quotient(i32(reg32(remainder(time, frames)) << 0x10), frames);
-    const reg32 first = frame - 0x44, second = frame - 0x38;
-    for (reg32 i = 0; i < 0xc; i += 4)
-        put(app, first + i, at(app, path + kPathPointList + reg32(index) * kPointSize + i));
-    for (reg32 i = 0; i < 0xc; i += 4)
-        put(app, second + i, at(app, path + kPathPointList + reg32(index + 1) * kPointSize + i));
-    if (!feCore<0x4b6a30, frontend::loopa::blend>(app, cpu, frame - 0x1c, frame - 0x24, first, second,
-                                                  reg32(fraction), frame - 0x2c, blendWord))
+    const i32 fraction = quotient(i32(u32(remainder(time, frames)) << 0x10), frames);
+    const u32 first = frame - 0x44, second = frame - 0x38;
+    for (u32 i = 0; i < 0xc; i += 4)
+        put(app, first + i, at(app, path + kPathPointList + u32(index) * kPointSize + i));
+    for (u32 i = 0; i < 0xc; i += 4)
+        put(app, second + i, at(app, path + kPathPointList + u32(index + 1) * kPointSize + i));
+    if (!feCore<0x4b6a30, frontend::loopa::blend>(app, ts, frame - 0x1c, frame - 0x24, first, second,
+                                                  u32(fraction), frame - 0x2c, blendWord))
         return std::nullopt;
-    const i32 length = i32(reg32(frames) * reg32(pathSpans(app, path)));
-    put(app, timeOut, reg32(remainder(time, length)));
-    put(app, lengthOut, reg32(frames) * reg32(pathSpans(app, path)));
+    const i32 length = i32(u32(frames) * u32(pathSpans(app, path)));
+    put(app, timeOut, u32(remainder(time, length)));
+    put(app, lengthOut, u32(frames) * u32(pathSpans(app, path)));
     return 1;
 }
 
 /* 0x40f6d0 (stdcall, 2 words: where the time into the path goes, where its length goes): placeAt for
  * path eax at time ebx in mode edx, ecx handed on. */
-x86::reg32 animationPlace(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 animationPlace(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     asThunk(
-        cpu, args,
-        [&, path = args.eax, mode = args.edx, time = i32(args.ebx), blendWord = args.ecx, timeOut = word(app, cpu, 1),
-         lengthOut = word(app, cpu, 2)] { return placeAt(app, cpu, path, mode, time, blendWord, timeOut, lengthOut); },
+        ts, args,
+        [&, path = args.eax, mode = args.edx, time = i32(args.ebx), blendWord = args.ecx, timeOut = word(app, ts, 1),
+         lengthOut = word(app, ts, 2)] { return placeAt(app, ts, path, mode, time, blendWord, timeOut, lengthOut); },
         8);
     return args.eax;
 }
 
 /* Slot's progress: its frame (the clock since it started, by its path's frames per point) within the
  * path's spans to `frameOut`, the spans (its points less one) to `spansOut`; the spans. */
-reg32 animationSpans(App* app, reg32 slot, reg32 frameOut, reg32 spansOut)
+u32 animationSpans(App* app, u32 slot, u32 frameOut, u32 spansOut)
 {
-    const reg32 record = slot * kAnimSize;
+    const u32 record = slot * kAnimSize;
     const i32 elapsed = i32(at(app, kClock) - at(app, record + kAnimStart));
-    const reg32 path = at(app, record + kAnims);
+    const u32 path = at(app, record + kAnims);
     const i32 step = quotient(elapsed, pathFrames(app, path));
-    put(app, frameOut, reg32(remainder(step, pathSpans(app, path))));
-    const reg32 spans = reg32(pathSpans(app, path));
+    put(app, frameOut, u32(remainder(step, pathSpans(app, path))));
+    const u32 spans = u32(pathSpans(app, path));
     put(app, spansOut, spans);
     return spans;
 }
 
 /* 0x40f800: animationSpans of slot eax to [edx] and [ebx]. */
-x86::reg32 animationProgress(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 animationProgress(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&, slot = args.eax, frameOut = args.edx, spansOut = args.ebx] {
+    asThunk(ts, args, [&, slot = args.eax, frameOut = args.edx, spansOut = args.ebx] {
         return animationSpans(app, slot, frameOut, spansOut);
     });
     return args.eax;
@@ -2775,23 +2775,23 @@ x86::reg32 animationProgress(App* app, x86::CPU& cpu, x86::Args& args)
 /* Path's last point: its place copied to `placeOut`, its orientation (in the code's frame, whose
  * address it is handed) made a matrix at `matrix` (0x4b6ca0).  The eax 0x4b6ca0 leaves (animationLastPose
  * leaves it); nullopt when the game stopped. */
-std::optional<reg32> lastPose(App* app, CPU& cpu, reg32 path, reg32 placeOut, reg32 matrix)
+std::optional<u32> lastPose(App* app, ThreadState& ts, u32 path, u32 placeOut, u32 matrix)
 {
-    const GuestFrame frame(cpu, 0xc, 8);
-    const reg32 point = path + kPathPointList + (reg32(app->getMemory<reg16>(path + kPathPoints)) - 1) * kPointSize;
+    const GuestFrame frame(ts, 0xc, 8);
+    const u32 point = path + kPathPointList + (u32(app->getMemory<u16>(path + kPathPoints)) - 1) * kPointSize;
     put(app, frame - 8, at(app, point + kPointOrientation));
     put(app, frame - 4, at(app, point + kPointOrientation + 4));
-    for (reg32 i = 0; i < 0xc; i += 4)
+    for (u32 i = 0; i < 0xc; i += 4)
         put(app, placeOut + i, at(app, point + i));
-    return feCore<0x4b6ca0, frontend::loopa::matrixOfRotation>(app, cpu, frame - 8, matrix);
+    return feCore<0x4b6ca0, frontend::loopa::matrixOfRotation>(app, ts, frame - 8, matrix);
 }
 
 /* 0x40f880 (stdcall, 1 word: where the matrix goes): lastPose of path eax, its place to [ecx]; eax as
  * 0x4b6ca0 leaves it. */
-x86::reg32 animationLastPose(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 animationLastPose(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&, path = args.eax, placeOut = args.ecx, matrix = word(app, cpu, 1)] {
-        return lastPose(app, cpu, path, placeOut, matrix);
+    asThunk(ts, args, [&, path = args.eax, placeOut = args.ecx, matrix = word(app, ts, 1)] {
+        return lastPose(app, ts, path, placeOut, matrix);
     }, 4);
     return args.eax;
 }
@@ -2799,19 +2799,19 @@ x86::reg32 animationLastPose(App* app, x86::CPU& cpu, x86::Args& args)
 /* Path `index`'s (of the handles) end pose (lastPose, at the code's depth, its place to `placeOut`,
  * its matrix to `pose`); mirrored when `flags` bit 0 is set: the matrix's first two rows swapped, the
  * second's negated -- as integers, the code's own way.  False when the game stopped. */
-bool endPose(App* app, CPU& cpu, reg32 index, reg32 flags, reg32 placeOut, reg32 pose)
+bool endPose(App* app, ThreadState& ts, u32 index, u32 flags, u32 placeOut, u32 pose)
 {
     {
-        const GuestFrame frame(cpu, 8, 4);
-        const ReturnSlot slot(cpu, 1);
-        if (!lastPose(app, cpu, at(app, index * 4 + kAnimPaths), placeOut, pose))
+        const GuestFrame frame(ts, 8, 4);
+        const ReturnSlot slot(ts, 1);
+        if (!lastPose(app, ts, at(app, index * 4 + kAnimPaths), placeOut, pose))
             return false;
     }
     if ((flags & 1) == 0)
         return true;
-    for (reg32 column = 0; column < 0xc; column += 4)
+    for (u32 column = 0; column < 0xc; column += 4)
     {
-        const reg32 second = at(app, pose + 0x18 + column), first = at(app, pose + 0xc + column);
+        const u32 second = at(app, pose + 0x18 + column), first = at(app, pose + 0xc + column);
         put(app, pose + 0xc + column, second);
         put(app, pose + 0x18 + column, first);
         put(app, pose + 0x18 + column, 0u - first);
@@ -2821,12 +2821,12 @@ bool endPose(App* app, CPU& cpu, reg32 index, reg32 flags, reg32 placeOut, reg32
 
 /* 0x40f8d0 (stdcall, 1 word: the pose's matrix): endPose of path eax by flags ebx, its place to
  * [ecx]. */
-x86::reg32 pathEndPose(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 pathEndPose(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     asThunk(
-        cpu, args,
-        [&, index = args.eax, flags = args.ebx, placeOut = args.ecx, pose = word(app, cpu, 1)]() -> std::optional<reg32> {
-            if (!endPose(app, cpu, index, flags, placeOut, pose))
+        ts, args,
+        [&, index = args.eax, flags = args.ebx, placeOut = args.ecx, pose = word(app, ts, 1)]() -> std::optional<u32> {
+            if (!endPose(app, ts, index, flags, placeOut, pose))
                 return std::nullopt;
             return 1;
         },
@@ -2838,17 +2838,17 @@ x86::reg32 pathEndPose(App* app, x86::CPU& cpu, x86::Args& args)
  * the code's depth, its mode, `blendWord` handed on, the pose to `pose`) -- when that is past the end
  * the slot stops (0); mirrored by its flags' bit 0 (the pose's first two rows swapped, the second's
  * negated, as floats).  1; nullopt when the game stopped. */
-std::optional<reg32> stepAnimation(App* app, CPU& cpu, reg32 slot, reg32 blendWord, reg32 pose)
+std::optional<u32> stepAnimation(App* app, ThreadState& ts, u32 slot, u32 blendWord, u32 pose)
 {
     if (!animationOn(app, slot))
         return 0xffffffff;
-    const reg32 record = slot * kAnimSize;
-    std::optional<reg32> posed;
+    const u32 record = slot * kAnimSize;
+    std::optional<u32> posed;
     {
-        const GuestFrame frame(cpu, 0x10, 8);
-        const ReturnSlot returnSlot(cpu, 1);
+        const GuestFrame frame(ts, 0x10, 8);
+        const ReturnSlot returnSlot(ts, 1);
         const i32 time = i32(at(app, kClock) - at(app, record + kAnimStart));
-        posed = poseAt(app, cpu, at(app, record + kAnims), at(app, record + kAnimMode), time, blendWord, pose);
+        posed = poseAt(app, ts, at(app, record + kAnims), at(app, record + kAnimMode), time, blendWord, pose);
     }
     if (!posed)
         return std::nullopt;
@@ -2861,14 +2861,14 @@ std::optional<reg32> stepAnimation(App* app, CPU& cpu, reg32 slot, reg32 blendWo
     if ((byte(app, record + kAnimFlags) & 1) != 0)
     {
         const Float a = f32(app, pose + 0x18), b = f32(app, pose + 0x1c);
-        const reg32 c = at(app, pose + 0xc);
+        const u32 c = at(app, pose + 0xc);
         const Float d = f32(app, pose + 0x20);
         putFloat(app, pose + 0xc, float(a));
         putFloat(app, pose + 0x18, float(-Float(floatOf(c))));
-        const reg32 e = at(app, pose + 0x10);
+        const u32 e = at(app, pose + 0x10);
         putFloat(app, pose + 0x10, float(b));
         putFloat(app, pose + 0x1c, float(-Float(floatOf(e))));
-        const reg32 g = at(app, pose + 0x14);
+        const u32 g = at(app, pose + 0x14);
         putFloat(app, pose + 0x14, float(d));
         putFloat(app, pose + 0x20, float(-Float(floatOf(g))));
     }
@@ -2876,30 +2876,30 @@ std::optional<reg32> stepAnimation(App* app, CPU& cpu, reg32 slot, reg32 blendWo
 }
 
 /* 0x40f940: stepAnimation of slot eax, edx handed on, the pose to [ebx]. */
-x86::reg32 animationStep(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 animationStep(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&, slot = args.eax, blendWord = args.edx, pose = args.ebx] {
-        return stepAnimation(app, cpu, slot, blendWord, pose);
+    asThunk(ts, args, [&, slot = args.eax, blendWord = args.edx, pose = args.ebx] {
+        return stepAnimation(app, ts, slot, blendWord, pose);
     });
     return args.eax;
 }
 
 /* Whether slot is playing (its path +0 set). */
-bool animationOn(App* app, reg32 slot)
+bool animationOn(App* app, u32 slot)
 {
     return at(app, slot * kAnimSize + kAnims) != 0;
 }
 
 /* 0x40fac0: animationOn for slot eax. */
-x86::reg32 animationPlaying(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 animationPlaying(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&, slot = args.eax] { return animationOn(app, slot) ? 1 : 0; });
+    asThunk(ts, args, [&, slot = args.eax] { return animationOn(app, slot) ? 1 : 0; });
     return args.eax;
 }
 
 /* The caps the library is started with for the speaker setup: 0x808 for setup 0 and speakers 0, 0x804
  * for 0/1, 0x802 for 1/0, 0x801 for 1/1; none for any other. */
-std::optional<reg32> setupCaps(reg32 setup, reg32 speakers)
+std::optional<u32> setupCaps(u32 setup, u32 speakers)
 {
     if (speakers == 0 && setup == 0)
         return 0x808;
@@ -2916,40 +2916,40 @@ std::optional<reg32> setupCaps(reg32 setup, reg32 speakers)
  * (0x20000 more in a 3D setup [0x5525a4]), else with -1; its answer.  For a setup none of the four the
  * library is left be and the code tests what its caller had in edx: `callerEdx`.  Nullopt when the game
  * stopped. */
-std::optional<reg32> startLibrary(App* app, CPU& cpu, reg32 caps, reg32 setup, reg32 speakers, reg32 callerEdx)
+std::optional<u32> startLibrary(App* app, ThreadState& ts, u32 caps, u32 setup, u32 speakers, u32 callerEdx)
 {
-    const std::optional<reg32> wanted = setupCaps(setup, speakers);
+    const std::optional<u32> wanted = setupCaps(setup, speakers);
     if (!wanted)
         return callerEdx;
-    reg32 asked = 0xffffffff;
+    u32 asked = 0xffffffff;
     if ((caps & *wanted) == *wanted)
         asked = at(app, kSoundInitOK) != 0 ? 0x20000 | *wanted : *wanted;
-    const port::Result started = guest::direct<0x4e2630, port::libraryStarted>(app, cpu, cpu.esp - 4, asked, 0xffffffff);
-    if (cpu.terminate || !started)
+    const port::Result started = guest::direct<0x4e2630, port::libraryStarted>(app, ts, ts.sp - 4, asked, 0xffffffff);
+    if (ts.terminate || !started)
         return std::nullopt;
-    return reg32(*started);
+    return u32(*started);
 }
 
 /* 0x418740 (the effect bus set up) as C++; false when the game stopped. */
-bool busInitDone(App* app, CPU& cpu)
+bool busInitDone(App* app, ThreadState& ts)
 {
-    const port::Result done = guest::direct<0x418740, port::busInitOf>(app, cpu, cpu.esp - 4);
-    return !cpu.terminate && done;
+    const port::Result done = guest::direct<0x418740, port::busInitOf>(app, ts, ts.sp - 4);
+    return !ts.terminate && done;
 }
 
 /* The 3D setup's trace line (0x42d510, cdecl: 100, 1, 0x53684c): its words pushed as the code
  * pushes them, the trace (ea::gameTrace, compiled out) called as C++. */
-bool traceSetup(App* app, CPU& cpu)
+bool traceSetup(App* app, ThreadState& ts)
 {
-    const reg32 esp = cpu.esp;
+    const u32 esp = ts.sp;
     put(app, esp - 12, 0x64);
     put(app, esp - 8, 1);
     put(app, esp - 4, kVolume);
-    cpu.esp = esp - 12;
-    guest::direct<0x42d510, ea::traceOff>(app, cpu);
-    if (cpu.terminate)
+    ts.sp = esp - 12;
+    guest::direct<0x42d510, ea::traceOff>(app, ts);
+    if (ts.terminate)
         return false;
-    cpu.esp = esp;
+    ts.sp = esp;
     return true;
 }
 
@@ -2958,16 +2958,16 @@ bool traceSetup(App* app, CPU& cpu)
  * are on, the library started (startLibrary, from the caps 0x4e21b0 gives); failing that both are
  * turned off, else the rate set (SNDsetrate 0x4e2228: 0, or -50 unless the rate's kind is set) and the
  * effect bus set up (0x418740).  `callerEdx` as startLibrary has it.  False when the game stopped. */
-bool bringUpSound(App* app, CPU& cpu, reg32 callerEdx)
+bool bringUpSound(App* app, ThreadState& ts, u32 callerEdx)
 {
-    const GuestFrame frame(cpu, 0x18, 0);  // the callees at the code's depth: deeper down they log the stack
-    for (reg32 i = 0; i < 0x17; ++i)
+    const GuestFrame frame(ts, 0x18, 0);  // the callees at the code's depth: deeper down they log the stack
+    for (u32 i = 0; i < 0x17; ++i)
         put(app, i * 0xc + kVoiceRecords, 0);
-    reg32 setup = gameSettings(app).soundSetup;
-    const reg32 speakers = gameSettings(app).soundSurround;
+    u32 setup = gameSettings(app).soundSetup;
+    const u32 speakers = gameSettings(app).soundSurround;
     if (setup == 2)
         setup = 0;
-    const reg32 rateKind = gameSettings(app).soundRateKind;
+    const u32 rateKind = gameSettings(app).soundRateKind;
     if (setup == 3)
     {
         put(app, kSoundInitOK, 1);
@@ -2977,12 +2977,12 @@ bool bringUpSound(App* app, CPU& cpu, reg32 callerEdx)
         put(app, kSoundInitOK, 0);
     if (at(app, kEffectsOn) == 0 && at(app, kMusicOn) == 0)
         return true;
-    const std::optional<reg32> caps = callGame(app, cpu, kSndCaps, {0xffffffff});
+    const std::optional<u32> caps = callGame(app, ts, kSndCaps, {0xffffffff});
     if (!caps)
         return false;
-    if (at(app, kSoundInitOK) != 0 && !traceSetup(app, cpu))
+    if (at(app, kSoundInitOK) != 0 && !traceSetup(app, ts))
         return false;
-    const std::optional<reg32> started = startLibrary(app, cpu, *caps, setup, speakers, callerEdx);
+    const std::optional<u32> started = startLibrary(app, ts, *caps, setup, speakers, callerEdx);
     if (!started)
         return false;
     if (i32(*started) < 0)
@@ -2992,15 +2992,15 @@ bool bringUpSound(App* app, CPU& cpu, reg32 callerEdx)
         put(app, kEffectsOn, 0);
         return true;
     }
-    guest::direct<0x4e2228, port::priorityOffsetSet>(app, cpu, rateKind != 0 ? 0u : 0xffffffceu);
-    return busInitDone(app, cpu);
+    guest::direct<0x4e2228, port::priorityOffsetSet>(app, ts, rateKind != 0 ? 0u : 0xffffffceu);
+    return busInitDone(app, ts);
 }
 
 /* 0x40fb10: bringUpSound.  What the code leaves in eax no caller reads; aiplan.inc's promise says
  * so. */
-x86::reg32 startSound(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 startSound(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&, callerEdx = args.edx] { return bringUpSound(app, cpu, callerEdx); });
+    asThunk(ts, args, [&, callerEdx = args.edx] { return bringUpSound(app, ts, callerEdx); });
     return args.eax;
 }
 
@@ -3008,12 +3008,12 @@ x86::reg32 startSound(App* app, x86::CPU& cpu, x86::Args& args)
  * or music are on the library started again (startLibrary); failing that both are turned off, else the
  * effect bus set up (0x418740) and the caps asked again.  `callerEdx` as startLibrary has it.  False
  * when the game stopped. */
-bool restartLibrary(App* app, CPU& cpu, reg32 setup, reg32 callerEdx)
+bool restartLibrary(App* app, ThreadState& ts, u32 setup, u32 callerEdx)
 {
-    const GuestFrame frame(cpu, 0x18, 0);  // the callees at the code's depth: deeper down they log the stack
+    const GuestFrame frame(ts, 0x18, 0);  // the callees at the code's depth: deeper down they log the stack
     if (setup == 2)
         setup = 0;
-    const reg32 speakers = gameSettings(app).soundSurround;
+    const u32 speakers = gameSettings(app).soundSurround;
     if (setup == 3)
     {
         put(app, kSoundInitOK, 1);
@@ -3023,12 +3023,12 @@ bool restartLibrary(App* app, CPU& cpu, reg32 setup, reg32 callerEdx)
         put(app, kSoundInitOK, 0);
     if (at(app, kEffectsOn) == 0 && at(app, kMusicOn) == 0)
         return true;
-    const std::optional<reg32> caps = callGame(app, cpu, kSndCaps, {0xffffffff});
+    const std::optional<u32> caps = callGame(app, ts, kSndCaps, {0xffffffff});
     if (!caps)
         return false;
-    if (at(app, kSoundInitOK) != 0 && !traceSetup(app, cpu))
+    if (at(app, kSoundInitOK) != 0 && !traceSetup(app, ts))
         return false;
-    const std::optional<reg32> started = startLibrary(app, cpu, *caps, setup, speakers, callerEdx);
+    const std::optional<u32> started = startLibrary(app, ts, *caps, setup, speakers, callerEdx);
     if (!started)
         return false;
     if (i32(*started) < 0)
@@ -3038,14 +3038,14 @@ bool restartLibrary(App* app, CPU& cpu, reg32 setup, reg32 callerEdx)
         put(app, kEffectsOn, 0);
         return true;
     }
-    return busInitDone(app, cpu) && callGame(app, cpu, kSndCaps, {0xffffffff});
+    return busInitDone(app, ts) && callGame(app, ts, kSndCaps, {0xffffffff});
 }
 
 /* 0x40fcf0: restartLibrary for setup eax.  What the code leaves in eax no caller reads; aiplan.inc's
  * promise says so. */
-x86::reg32 restartSound(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 restartSound(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    asThunk(cpu, args, [&, setup = args.eax, callerEdx = args.edx] { return restartLibrary(app, cpu, setup, callerEdx); });
+    asThunk(ts, args, [&, setup = args.eax, callerEdx = args.edx] { return restartLibrary(app, ts, setup, callerEdx); });
     return args.eax;
 }
 

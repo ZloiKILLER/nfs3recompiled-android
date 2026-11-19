@@ -60,10 +60,10 @@ enum SpeechBank : int32_t
  * esp as the code has it at the call, the register arguments as the code
  * loads them (eax, edx, ebx and ecx in turn), the others as they are.  Its eax
  * (empty when the game stopped). */
-inline Result callAt(App* app, CPU& cpu, reg32 esp, reg32 target, std::initializer_list<reg32> registers)
+inline Result callAt(App* app, ThreadState& ts, u32 esp, u32 target, std::initializer_list<u32> registers)
 {
-    cpu.esp = esp;
-    const std::optional<reg32> eax = guest::pointerCall(app, cpu, target, registers);
+    ts.sp = esp;
+    const std::optional<u32> eax = guest::pointerCall(app, ts, target, registers);
     if (!eax)
         return {};
     return int32_t(*eax);
@@ -71,10 +71,10 @@ inline Result callAt(App* app, CPU& cpu, reg32 esp, reg32 target, std::initializ
 
 /* The same with words pushed: the register arguments `a` (0 for those not
  * given), `stack` pushed. */
-inline Result callPushing(App* app, CPU& cpu, reg32 esp, reg32 target, Args a, std::initializer_list<reg32> stack)
+inline Result callPushing(App* app, ThreadState& ts, u32 esp, u32 target, Args a, std::initializer_list<u32> stack)
 {
-    reg32 r;
-    if (!pointerGame(app, cpu, esp, target, a, stack, r))
+    u32 r;
+    if (!pointerGame(app, ts, esp, target, a, stack, r))
         return {};
     return int32_t(r);
 }
@@ -114,7 +114,7 @@ inline uint16_t comparedStatus(uint16_t before, double a, double b)
 
 /* The game's strcpy and strcat, inlined in its code: the text at `from` to
  * `to`, and after the text already at `to` (its length back). */
-inline void copyText(App* app, reg32 to, reg32 from)
+inline void copyText(App* app, u32 to, u32 from)
 {
     for (;; ++to, ++from)
     {
@@ -125,9 +125,9 @@ inline void copyText(App* app, reg32 to, reg32 from)
     }
 }
 
-inline reg32 appendText(App* app, reg32 to, reg32 from)
+inline u32 appendText(App* app, u32 to, u32 from)
 {
-    reg32 end = to;
+    u32 end = to;
     while (load<uint8_t>(app, end) != 0)
         ++end;
     copyText(app, end, from);
@@ -135,29 +135,29 @@ inline reg32 appendText(App* app, reg32 to, reg32 from)
 }
 
 /* The units' folders (a name each), by the units. */
-constexpr reg32 kSpeechUnitFolders[6] = {0x7a2b34, 0x7a2bb4, 0x7a2c34, 0x7a2cb4, 0x7a2d34, 0x7a2b34};
+constexpr u32 kSpeechUnitFolders[6] = {0x7a2b34, 0x7a2bb4, 0x7a2c34, 0x7a2cb4, 0x7a2d34, 0x7a2b34};
 
 /* The speech's functions other files call (port_sound_speech.cpp).  Each takes
  * esp as the game's code has it at the call's return address. */
 
 // 0x4c85a0: line `line` said, or queued while the player's plays.
-Result speechLineSaid(App* app, CPU& cpu, reg32 esp, reg32 line);
+Result speechLineSaid(App* app, ThreadState& ts, u32 esp, u32 line);
 // 0x4c8b30: player `player`'s cop radio of `kind` at `distance`.
-Result copRadioStarted(App* app, CPU& cpu, reg32 esp, int32_t player, int32_t kind, int32_t distance);
+Result copRadioStarted(App* app, ThreadState& ts, u32 esp, int32_t player, int32_t kind, int32_t distance);
 // 0x4c89b0: the radio of `player`, if it is off, on.
-Result radioStarted(App* app, CPU& cpu, reg32 esp, reg32 speaker, int32_t distance, int32_t pitch, reg32 pan,
+Result radioStarted(App* app, ThreadState& ts, u32 esp, u32 speaker, int32_t distance, int32_t pitch, u32 pan,
                     int32_t player);
 // 0x4c8f90: a line of the race voice queued, once the race is under way (else eax as it was).
-Result raceLineQueued(App* app, CPU& cpu, reg32 esp, reg32 effect, reg32 kind, reg32 player);
+Result raceLineQueued(App* app, ThreadState& ts, u32 esp, u32 effect, u32 kind, u32 player);
 // 0x4c9010, 0x4c9090, 0x4c91a0: the race voice's lines for an event, the gap and a lap time.
-Result raceEventLineQueued(App* app, CPU& cpu, reg32 esp, reg32 player, reg32 event);
-Result gapLineQueued(App* app, CPU& cpu, reg32 esp, reg32 car, reg32 player, reg32 toSay, reg32 ecx);
-Result lapTimeLineQueued(App* app, CPU& cpu, reg32 esp, reg32 player, int32_t seconds);
+Result raceEventLineQueued(App* app, ThreadState& ts, u32 esp, u32 player, u32 event);
+Result gapLineQueued(App* app, ThreadState& ts, u32 esp, u32 car, u32 player, u32 toSay, u32 ecx);
+Result lapTimeLineQueued(App* app, ThreadState& ts, u32 esp, u32 player, int32_t seconds);
 // 0x4c86d0: player `player`'s speech tick.
-Result playerSpeechTicked(App* app, CPU& cpu, reg32 esp, int32_t player);
+Result playerSpeechTicked(App* app, ThreadState& ts, u32 esp, int32_t player);
 
 // 0x412be0: the radio's line for `event`, at random among the event's own.
-Result copLineChosen(App* app, CPU& cpu, reg32 esp, int32_t event);
+Result copLineChosen(App* app, ThreadState& ts, u32 esp, int32_t event);
 
 }  // namespace port
 }  // namespace nfs3hp

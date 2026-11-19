@@ -6,7 +6,7 @@
 #include <mutex>
 #include <thread>
 
-namespace win32
+namespace nfs
 {
 namespace glthread
 {

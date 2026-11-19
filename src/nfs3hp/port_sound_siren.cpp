@@ -30,15 +30,15 @@ using sources::shiftedToZero;
 constexpr Var<int32_t> kEffectsOn{0x55290c}, kStereo{0x55292c}, kSurround{0x5525a4};
 constexpr Table<int32_t> kSirenOn{0x552d90}, kSirenTone{0x552da4}, kSirenFirst{0x552db8}, kSirenSecond{0x552dcc};
 constexpr Table<int32_t> kSirenTicks{0x552de0};
-constexpr Var<reg32> kPlayerSiren{0x570e68};
-constexpr Table<reg32> kSirens{0x570ec0, 8};
+constexpr Var<u32> kPlayerSiren{0x570e68};
+constexpr Table<u32> kSirens{0x570ec0, 8};
 constexpr Var<int32_t> kCopBank{0x571160};
-constexpr Table<reg32> kSlotSounds{0x570de8, 8};  // the sound each of the race's slots plays (-1 none)
+constexpr Table<u32> kSlotSounds{0x570de8, 8};  // the sound each of the race's slots plays (-1 none)
 constexpr Var<int32_t> kSpeedClamp{0x57126c}, kNoiseScale{0x55260c};
 
 // What the sirens call of the effects' (port_sound_effects.cpp): the play of a slot, its stop, and an effect of a
 // bank.
-constexpr reg32 kSlotPlay = 0x417080, kSlotStop = 0x416f60, kPlayEffect = 0x4182b0;
+constexpr u32 kSlotPlay = 0x417080, kSlotStop = 0x416f60, kPlayEffect = 0x4182b0;
 
 // The slot of the player's siren, and the cops' from this on.
 constexpr int32_t kPlayerSirenIndex = 4, kPlayerSirenSlot = 0x10, kCopSirenSlots = 0x1b;
@@ -53,14 +53,14 @@ int32_t nearness(int32_t distance, int32_t far)
 }
 
 /* A pan (0..0xffff around) as stereo's (0..127), as the game's code makes it. */
-reg32 stereoPan(uint32_t pan)
+u32 stereoPan(uint32_t pan)
 {
     const uint32_t a = int32_t(pan) > 0x3fff && int32_t(pan) < 0xc000 ? 0xbfff - pan : (pan + 0x4000) & 0xffff;
-    return reg32(int32_t(a) >> 8);
+    return u32(int32_t(a) >> 8);
 }
 
 /* Siren i's sound. */
-reg32 sirenSound(App* app, int32_t siren)
+u32 sirenSound(App* app, int32_t siren)
 {
     return siren == kPlayerSirenIndex ? kPlayerSiren(app) : kSirens(app, siren);
 }
@@ -70,30 +70,30 @@ int32_t sirenSlot(int32_t siren) { return siren == kPlayerSirenIndex ? kPlayerSi
 
 /* 0x417cb0's, 0x417db0's, 0x417e00's: siren `siren`'s tone `tone` started
  * with effect `effect` of the cops' bank, its sound kept.  The handle. */
-Result toneStarted(App* app, CPU& cpu, reg32 esp, int32_t siren, int32_t tone, int32_t effect)
+Result toneStarted(App* app, ThreadState& ts, u32 esp, int32_t siren, int32_t tone, int32_t effect)
 {
-    const reg32 frame = esp - 5 * 4;  // five pushes
+    const u32 frame = esp - 5 * 4;  // five pushes
     kSirenTone.set(app, siren, tone);
-    cpu.esp = frame;
+    ts.sp = frame;
     const Result handle =
-        guest::direct<kPlayEffect, bankEffect>(app, cpu, frame - 8, kCopBank(app), effect, 0, 0u, uint8_t(0x40));
+        guest::direct<kPlayEffect, bankEffect>(app, ts, frame - 8, kCopBank(app), effect, 0, 0u, uint8_t(0x40));
     if (!handle)
         return {};
     if (siren == kPlayerSirenIndex)
-        kPlayerSiren.set(app, reg32(*handle));
+        kPlayerSiren.set(app, u32(*handle));
     else
-        kSirens.set(app, siren, reg32(*handle));
+        kSirens.set(app, siren, u32(*handle));
     return handle;
 }
 
 /* 0x417d00's, 0x417e60's: siren `siren`'s tone faded out in 5 ticks, the tone
  * `next`'s turn, the ticks gone none (`pushes`: what the code pushes). */
-Result toneFaded(App* app, CPU& cpu, reg32 esp, reg32 pushes, int32_t siren, int32_t next)
+Result toneFaded(App* app, ThreadState& ts, u32 esp, u32 pushes, int32_t siren, int32_t next)
 {
-    const reg32 frame = esp - pushes * 4;
+    const u32 frame = esp - pushes * 4;
     kSirenTone.set(app, siren, next);
     kSirenTicks.set(app, siren, 0);
-    return fadeSound(app, cpu, frame - 4, sirenSound(app, siren), 5, -1);
+    return fadeSound(app, ts, frame - 4, sirenSound(app, siren), 5, -1);
 }
 
 /* The warble's turn: a random number of ticks, `base` and up to `range` more. */
@@ -107,9 +107,9 @@ namespace sources
 int32_t sirenActive(App* app, int32_t siren) { return kSirenOn(app, siren); }
 
 /* 0x417eb0's. */
-Result sirenSwitchedOn(App* app, CPU& cpu, reg32 esp, int32_t siren, bool steady)
+Result sirenSwitchedOn(App* app, ThreadState& ts, u32 esp, int32_t siren, bool steady)
 {
-    const reg32 frame = esp - 5 * 4;
+    const u32 frame = esp - 5 * 4;
     if (kSirenOn(app, siren) != 0)
         return siren;
     kSirenOn.set(app, siren, 1);
@@ -117,38 +117,38 @@ Result sirenSwitchedOn(App* app, CPU& cpu, reg32 esp, int32_t siren, bool steady
     {
         kSirenTone.set(app, siren, 1);
         kSirenSecond.set(app, siren, -1);
-        return toneStarted(app, cpu, frame - 4, siren, 1, 9);
+        return toneStarted(app, ts, frame - 4, siren, 1, 9);
     }
     // Half the time the second tone first (for 2 to 3 seconds), else the first (for 2.4 to 4.4).
     if (nextRandom(app) % 100 > 0x32)
     {
         kSirenTone.set(app, siren, 1);
         kSirenSecond.set(app, siren, randomTicks(app, 0x3c, 0x78));
-        return toneStarted(app, cpu, frame - 4, siren, 1, 1);
+        return toneStarted(app, ts, frame - 4, siren, 1, 1);
     }
     const int32_t ticks = randomTicks(app, 0x78, 0xf0);
     kSirenTone.set(app, siren, 0);
     kSirenFirst.set(app, siren, ticks);
-    return toneStarted(app, cpu, frame - 4, siren, 0, 0);
+    return toneStarted(app, ts, frame - 4, siren, 0, 0);
 }
 
 /* 0x417f60's. */
-Result sirenSwitchedOff(App* app, CPU& cpu, reg32 esp, int32_t siren)
+Result sirenSwitchedOff(App* app, ThreadState& ts, u32 esp, int32_t siren)
 {
-    const reg32 frame = esp - 6 * 4;
+    const u32 frame = esp - 6 * 4;
     kSirenOn.set(app, siren, 0);
     kSirenTone.set(app, siren, 0);
     kSirenFirst.set(app, siren, 0xf0);
     kSirenSecond.set(app, siren, 0x78);
     kSirenTicks.set(app, siren, 0);
-    return fadeSound(app, cpu, frame - 4, sirenSound(app, siren), 5, -1);
+    return fadeSound(app, ts, frame - 4, sirenSound(app, siren), 5, -1);
 }
 
 /* 0x417fd0's. */
-Result sirenTicked(App* app, CPU& cpu, reg32 esp, int32_t siren, int32_t volume, int32_t pitch, reg32 pan)
+Result sirenTicked(App* app, ThreadState& ts, u32 esp, int32_t siren, int32_t volume, int32_t pitch, u32 pan)
 {
-    const reg32 frame = esp - 3 * 4;  // esi, edi and ebp pushed
-    const reg32 at = frame - 0xc;     // and three locals: the code's esp from here on
+    const u32 frame = esp - 3 * 4;  // esi, edi and ebp pushed
+    const u32 at = frame - 0xc;     // and three locals: the code's esp from here on
     if (kSirenOn(app, siren) == 0)
         return siren;
     if (kSirenTone(app, siren) == 0)
@@ -158,10 +158,10 @@ Result sirenTicked(App* app, CPU& cpu, reg32 esp, int32_t siren, int32_t volume,
         kSirenTicks.set(app, siren, ticks);
         if (ticks == kSirenFirst(app, siren))
         {
-            if (!toneFaded(app, cpu, at - 4, 4, siren, 1))
+            if (!toneFaded(app, ts, at - 4, 4, siren, 1))
                 return {};
             kSirenSecond.set(app, siren, randomTicks(app, 0x3c, 0x78));
-            if (!toneStarted(app, cpu, at - 4, siren, 1, 1))
+            if (!toneStarted(app, ts, at - 4, siren, 1, 1))
                 return {};
         }
     }
@@ -171,10 +171,10 @@ Result sirenTicked(App* app, CPU& cpu, reg32 esp, int32_t siren, int32_t volume,
         kSirenTicks.set(app, siren, ticks);
         if (ticks == kSirenSecond(app, siren))
         {
-            if (!toneFaded(app, cpu, at - 4, 3, siren, 0))
+            if (!toneFaded(app, ts, at - 4, 3, siren, 0))
                 return {};
             kSirenFirst.set(app, siren, randomTicks(app, 0x78, 0xf0));
-            if (!toneStarted(app, cpu, at - 4, siren, 0, 0))
+            if (!toneStarted(app, ts, at - 4, siren, 0, 0))
                 return {};
         }
     }
@@ -182,22 +182,22 @@ Result sirenTicked(App* app, CPU& cpu, reg32 esp, int32_t siren, int32_t volume,
     const int32_t bend = std::clamp(shiftedToZero(int32_t(uint32_t(pitch) << 6), 16), 0, 0x7f);
     const int32_t slot = sirenSlot(siren);
     // SND's bend's error text reads ebx, esi and edi as the code has them: the slot, the siren, the pan.
-    Result r = setBendFrom(app, cpu, at - 4, kSlotSounds(app, slot), bend, reg32(slot), reg32(siren), pan);
+    Result r = setBendFrom(app, ts, at - 4, kSlotSounds(app, slot), bend, u32(slot), u32(siren), pan);
     if (!r)
         return {};
     // The effects' volume times 63 (steady) or 85 (warbling), the siren's volume of it.
     const int32_t effects = gameSettings(app).effectsVolume;
     const int32_t scale = kSirenSecond(app, siren) == -1 ? imul(effects, 63) : imul(effects, 85);
-    r = setVolumeFrom(app, cpu, at - 4, kSlotSounds(app, slot), imul(volume, scale) >> 14, frame);
+    r = setVolumeFrom(app, ts, at - 4, kSlotSounds(app, slot), imul(volume, scale) >> 14, frame);
     if (!r)
         return {};
     const int32_t mode = gameSettings(app).soundSetup;
     // 3D (or surround): placed by the angle, the middle without stereo; else panned by the stereo's side.
     if (mode == 2)
-        return placeSound(app, cpu, at - 4, kSlotSounds(app, slot), pan, 0);
+        return placeSound(app, ts, at - 4, kSlotSounds(app, slot), pan, 0);
     if (kSurround(app) != 0)
-        return placeSound(app, cpu, at - 4, kSlotSounds(app, slot), kStereo(app) != 0 ? pan : 0, 0);
-    return panSound(app, cpu, at - 4, kSlotSounds(app, slot),
+        return placeSound(app, ts, at - 4, kSlotSounds(app, slot), kStereo(app) != 0 ? pan : 0, 0);
+    return panSound(app, ts, at - 4, kSlotSounds(app, slot),
                     kStereo(app) != 0 ? int32_t(stereoPan(pan)) : 0x40);
 }
 
@@ -210,11 +210,11 @@ Result sirenTicked(App* app, CPU& cpu, reg32 esp, int32_t siren, int32_t volume,
  * the car is near -- `distance` (0x15f9 and on: silent), `pan` -- or the slot
  * stopped.  The noise is a car's knock (port_sound_crash.cpp) at a 16th of
  * the force.  eax as the code leaves it. */
-Result noiseByDistancePlayed(App* app, CPU& cpu, reg32 esp, int32_t slot, reg32 effect, reg32 material, reg32 force,
-                             int32_t distance, reg32 pan)
+Result noiseByDistancePlayed(App* app, ThreadState& ts, u32 esp, int32_t slot, u32 effect, u32 material, u32 force,
+                             int32_t distance, u32 pan)
 {
-    const reg32 frame = esp - 3 * 4;
-    const reg32 at = frame - 4;  // and a local
+    const u32 frame = esp - 3 * 4;
+    const u32 at = frame - 4;  // and a local
     if (kEffectsOn(app) == 0)
         return slot;
     int32_t eax = slot;
@@ -228,21 +228,21 @@ Result noiseByDistancePlayed(App* app, CPU& cpu, reg32 esp, int32_t slot, reg32 
     {
         if (kSlotSounds(app, slot) != 0xffffffffu)
         {
-            cpu.esp = at;
-            return guest::direct<kSlotStop, slotStopped>(app, cpu, at - 4, slot);
+            ts.sp = at;
+            return guest::direct<kSlotStop, slotStopped>(app, ts, at - 4, slot);
         }
         return eax;
     }
-    return sources::knockPlayed(app, cpu, at - 8 - 4, slot, effect, material, int32_t(force) >> 4, distance, pan);
+    return sources::knockPlayed(app, ts, at - 8 - 4, slot, effect, material, int32_t(force) >> 4, distance, pan);
 }
 
 /* 0x417b80 (stdcall 8): the noise ecx of slot eax, effect edx, material ebx,
  * [esp+4] its distance, [esp+8] its pan. */
-x86::reg32 noiseByDistance(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 noiseByDistance(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args,
-             noiseByDistancePlayed(app, cpu, e.esp, int32_t(e.eax), e.edx, e.ebx, e.ecx, int32_t(e.arg(app, 0)),
+    const Entry e(ts, args);
+    return e.finish(ts, args,
+             noiseByDistancePlayed(app, ts, e.esp, int32_t(e.eax), e.edx, e.ebx, e.ecx, int32_t(e.arg(app, 0)),
                                    e.arg(app, 1)),
              8);
     return args.eax;
@@ -251,107 +251,107 @@ x86::reg32 noiseByDistance(App* app, CPU& cpu, x86::Args& args)
 /* 0x417c00's: the player's noise (slot 0x10, the second player's 0x11 by
  * `player` in the split screen), effect 3, at pitch `pitch`, as loud as
  * `distance` is short of 0x15f9, pan `pan`.  `player` with the effects off. */
-Result playerNoisePlayed(App* app, CPU& cpu, reg32 esp, reg32 player, int32_t distance, reg32 pitch, reg32 pan)
+Result playerNoisePlayed(App* app, ThreadState& ts, u32 esp, u32 player, int32_t distance, u32 pitch, u32 pan)
 {
-    const reg32 frame = esp - 3 * 4;
+    const u32 frame = esp - 3 * 4;
     if (kEffectsOn(app) == 0)
         return int32_t(player);
     const int32_t slot = player != 0 && gameSettings(app).playMode == 1 ? 0x11 : kPlayerSirenSlot;
     const int32_t volume = nearness(distance, kFar);
-    cpu.esp = frame;
-    return guest::direct<kSlotPlay, slotPlayed>(app, cpu, frame - 8, slot, 3, volume, int32_t(pitch), pan);
+    ts.sp = frame;
+    return guest::direct<kSlotPlay, slotPlayed>(app, ts, frame - 8, slot, 3, volume, int32_t(pitch), pan);
 }
 
 /* 0x417c70's: the player's noise stopped (the second player's by `player` in
  * the split screen).  `player` with the effects off. */
-Result playerNoiseStopped(App* app, CPU& cpu, reg32 esp, reg32 player)
+Result playerNoiseStopped(App* app, ThreadState& ts, u32 esp, u32 player)
 {
-    const reg32 frame = esp - 4;
+    const u32 frame = esp - 4;
     if (kEffectsOn(app) == 0)
         return int32_t(player);
     const int32_t slot = player != 0 && gameSettings(app).playMode == 1 ? 0x11 : kPlayerSirenSlot;
-    cpu.esp = frame;
-    return guest::direct<kSlotStop, slotStopped>(app, cpu, frame - 4, slot);
+    ts.sp = frame;
+    return guest::direct<kSlotStop, slotStopped>(app, ts, frame - 4, slot);
 }
 
 /* 0x417c00: the player's noise, eax the player, edx the distance, ebx the
  * pitch, ecx the pan. */
-x86::reg32 playerNoise(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 playerNoise(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, playerNoisePlayed(app, cpu, e.esp, e.eax, int32_t(e.edx), e.ebx, e.ecx));
+    const Entry e(ts, args);
+    return e.finish(ts, args, playerNoisePlayed(app, ts, e.esp, e.eax, int32_t(e.edx), e.ebx, e.ecx));
 }
 
 /* 0x417c70: the player's noise stopped, eax the player. */
-x86::reg32 playerNoiseStop(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 playerNoiseStop(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, playerNoiseStopped(app, cpu, e.esp, e.eax));
+    const Entry e(ts, args);
+    return e.finish(ts, args, playerNoiseStopped(app, ts, e.esp, e.eax));
 }
 
 /* 0x417ca0: whether siren eax is on. */
-x86::reg32 sirenIsOn(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 sirenIsOn(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.back(cpu, args, reg32(sources::sirenActive(app, int32_t(e.eax))));
+    const Entry e(ts, args);
+    return e.back(ts, args, u32(sources::sirenActive(app, int32_t(e.eax))));
 }
 
 /* 0x417cb0: siren eax's first tone (effect 0). */
-x86::reg32 sirenFirstTone(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 sirenFirstTone(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, toneStarted(app, cpu, e.esp, int32_t(e.eax), 0, 0));
+    const Entry e(ts, args);
+    return e.finish(ts, args, toneStarted(app, ts, e.esp, int32_t(e.eax), 0, 0));
 }
 
 /* 0x417db0: siren eax's second tone (effect 1). */
-x86::reg32 sirenSecondTone(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 sirenSecondTone(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, toneStarted(app, cpu, e.esp, int32_t(e.eax), 1, 1));
+    const Entry e(ts, args);
+    return e.finish(ts, args, toneStarted(app, ts, e.esp, int32_t(e.eax), 1, 1));
 }
 
 /* 0x417e00: siren eax's one tone for ever (effect 9). */
-x86::reg32 sirenSteadyTone(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 sirenSteadyTone(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, toneStarted(app, cpu, e.esp, int32_t(e.eax), 1, 9));
+    const Entry e(ts, args);
+    return e.finish(ts, args, toneStarted(app, ts, e.esp, int32_t(e.eax), 1, 9));
 }
 
 /* 0x417d00: siren eax's first tone faded out, the second's turn. */
-x86::reg32 sirenFirstDone(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 sirenFirstDone(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, toneFaded(app, cpu, e.esp, 4, int32_t(e.eax), 1));
+    const Entry e(ts, args);
+    return e.finish(ts, args, toneFaded(app, ts, e.esp, 4, int32_t(e.eax), 1));
 }
 
 /* 0x417e60: siren eax's second tone faded out, the first's turn. */
-x86::reg32 sirenSecondDone(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 sirenSecondDone(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, toneFaded(app, cpu, e.esp, 3, int32_t(e.eax), 0));
+    const Entry e(ts, args);
+    return e.finish(ts, args, toneFaded(app, ts, e.esp, 3, int32_t(e.eax), 0));
 }
 
 /* 0x417eb0: siren eax on, if it is not: steady (edx not 0), or warbling --
  * from either tone at random, for a random while. */
-x86::reg32 sirenStart(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 sirenStart(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, sources::sirenSwitchedOn(app, cpu, e.esp, int32_t(e.eax), e.edx != 0));
+    const Entry e(ts, args);
+    return e.finish(ts, args, sources::sirenSwitchedOn(app, ts, e.esp, int32_t(e.eax), e.edx != 0));
 }
 
 /* 0x417f60: siren eax off, faded out, its state as it starts. */
-x86::reg32 sirenStop(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 sirenStop(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, sources::sirenSwitchedOff(app, cpu, e.esp, int32_t(e.eax)));
+    const Entry e(ts, args);
+    return e.finish(ts, args, sources::sirenSwitchedOff(app, ts, e.esp, int32_t(e.eax)));
 }
 
 /* 0x417fd0: siren eax's tick: its tones turned when their ticks are up, its
  * volume edx, pitch ebx (16.10) and pan ecx set. */
-x86::reg32 sirenTick(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 sirenTick(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, sources::sirenTicked(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx), int32_t(e.ebx), e.ecx));
+    const Entry e(ts, args);
+    return e.finish(ts, args, sources::sirenTicked(app, ts, e.esp, int32_t(e.eax), int32_t(e.edx), int32_t(e.ebx), e.ecx));
 }
 
 /* 0x4179d0's: slot `slot`'s noise `kind` -- 1 a car's, 0 the road's, else
@@ -359,11 +359,11 @@ x86::reg32 sirenTick(App* app, CPU& cpu, x86::Args& args)
  * short of 0x15f (a car's) or 0x15f9, and as `speed` says; pan `pan`.  Silent:
  * the slot stopped.  eax as the code leaves it: the last quotient it worked
  * out when nothing plays. */
-Result noiseBySpeedPlayed(App* app, CPU& cpu, reg32 esp, int32_t slot, reg32 kind, reg32 ecx, reg32 ebx,
-                          int32_t distance, reg32 pan, int32_t speed)
+Result noiseBySpeedPlayed(App* app, ThreadState& ts, u32 esp, int32_t slot, u32 kind, u32 ecx, u32 ebx,
+                          int32_t distance, u32 pan, int32_t speed)
 {
-    const reg32 frame = esp - 3 * 4;
-    const reg32 at = frame - 8;  // and two locals
+    const u32 frame = esp - 3 * 4;
+    const u32 at = frame - 8;  // and two locals
     if (kEffectsOn(app) == 0)
         return slot;
     int32_t eax = slot;  // as the code has it as it goes
@@ -405,23 +405,23 @@ Result noiseBySpeedPlayed(App* app, CPU& cpu, reg32 esp, int32_t slot, reg32 kin
     {
         if (kSlotSounds(app, slot) != 0xffffffffu)
         {
-            cpu.esp = at;
-            return guest::direct<kSlotStop, slotStopped>(app, cpu, at - 4, slot);
+            ts.sp = at;
+            return guest::direct<kSlotStop, slotStopped>(app, ts, at - 4, slot);
         }
         return eax;
     }
     const int32_t pitch = shiftedToZero(imul(int32_t(ecx), int32_t(ebx)), 16);
-    cpu.esp = at;
-    return guest::direct<kSlotPlay, slotPlayed>(app, cpu, at - 8, slot, int32_t(kind), volume, pitch, pan);
+    ts.sp = at;
+    return guest::direct<kSlotPlay, slotPlayed>(app, ts, at - 8, slot, int32_t(kind), volume, pitch, pan);
 }
 
 /* 0x4179d0 (stdcall 12): slot eax's noise edx at pitch ecx times ebx,
  * [esp+4] its distance, [esp+8] its pan, [esp+0xc] its speed. */
-x86::reg32 noiseBySpeed(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 noiseBySpeed(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args,
-             noiseBySpeedPlayed(app, cpu, e.esp, int32_t(e.eax), e.edx, e.ecx, e.ebx, int32_t(e.arg(app, 0)),
+    const Entry e(ts, args);
+    return e.finish(ts, args,
+             noiseBySpeedPlayed(app, ts, e.esp, int32_t(e.eax), e.edx, e.ecx, e.ebx, int32_t(e.arg(app, 0)),
                                 e.arg(app, 1), int32_t(e.arg(app, 2))),
              0xc);
     return args.eax;

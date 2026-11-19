@@ -58,31 +58,31 @@ using guest::at;
 using guest::byte;
 using guest::put;
 using guest::putByte;
-using x86::reg16;
-using x86::reg32;
-using App = win32::WinApplication;
-using CPU = x86::CPU;
+using nfs::u16;
+using nfs::u32;
+using App = nfs::App;
+using ThreadState = nfs::ThreadState;
 using i32 = std::int32_t;
 
 // The race's.
-constexpr reg32 kFrame = 0x7d3684;          // the race's frame
+constexpr u32 kFrame = 0x7d3684;          // the race's frame
 // The setup the player's is held against: seven floats, the setup's middle.
-constexpr reg32 kDefaultSetup = 0x55d024;
+constexpr u32 kDefaultSetup = 0x55d024;
 // The game's that these call by address: Watcom's chop and exp, the sine,
 // atan2 and the square root of a stack float, a 2D turn by an angle; n
 // vectors added (settleCar's last call, see there).  A vector's dot product
 // and n vectors scaled, less others, added are vertices' (guest::direct).
-constexpr reg32 kChop = 0x4dfd56;
+constexpr u32 kChop = 0x4dfd56;
 
-reg16 half(App* app, reg32 a) { return app->getMemory<reg16>(a); }
-x86::Float f32(App* app, reg32 a) { return x86::Float(app->getMemory<float>(a)); }
-x86::Float f64(App* app, reg32 a) { return x86::Float(app->getMemory<double>(a)); }
+u16 half(App* app, u32 a) { return app->getMemory<u16>(a); }
+nfs::Float f32(App* app, u32 a) { return nfs::Float(app->getMemory<float>(a)); }
+nfs::Float f64(App* app, u32 a) { return nfs::Float(app->getMemory<double>(a)); }
 
-auto floatAt(App* app, reg32 a) { return app->getMemory<float>(a); }
+auto floatAt(App* app, u32 a) { return app->getMemory<float>(a); }
 
-reg32 bitsOf(float value)
+u32 bitsOf(float value)
 {
-    reg32 bits;
+    u32 bits;
     std::memcpy(&bits, &value, sizeof bits);
     return bits;
 }
@@ -93,7 +93,7 @@ i32 signedBits(float value) { return i32(bitsOf(value)); }
 /* The float's size, as the code's "0 > x ? -x : x": a compare of the x87 that leaves neither
  * below nor equal is a plain > on every value, a NaN too (unordered sets both flags), and what
  * is not negated stays the same bits. */
-float size(float value) { return 0.0 > x86::Float(value) ? float(-x86::Float(value)) : value; }
+float size(float value) { return 0.0 > nfs::Float(value) ? float(-nfs::Float(value)) : value; }
 
 /* Over a link or in the series the setup does not count. */
 bool linkOrSeries(App* app)
@@ -103,11 +103,11 @@ bool linkOrSeries(App* app)
 
 /* A native_frontend_* file's typed core called as C++ (guest::direct): nothing (false) when the
  * game stopped in it (its calls into the game throw fe::Terminated). */
-template <reg32 Address, auto Core, typename... Args>
-auto feCore(App* app, CPU& cpu, Args... args)
+template <u32 Address, auto Core, typename... Args>
+auto feCore(App* app, ThreadState& ts, Args... args)
 {
     const auto run = [&] {
-        return guest::direct<Address, Core>(app, cpu, args...);
+        return guest::direct<Address, Core>(app, ts, args...);
     };
     using Result = decltype(run());
     const auto spoil = [&] {};
@@ -122,18 +122,18 @@ auto feCore(App* app, CPU& cpu, Args... args)
             return false;
         }
         spoil();
-        return !cpu.terminate;
+        return !ts.terminate;
     }
     else
     {
         try
         {
             const Result result = run();
-            if constexpr (std::is_same_v<Result, x86::reg32>)
+            if constexpr (std::is_same_v<Result, nfs::u32>)
                 (void)result;  // a menu core's result: the eax it leaves is no longer set (no caller reads it)
             else
                 spoil();
-            return cpu.terminate ? std::optional<Result>() : std::optional<Result>(result);
+            return ts.terminate ? std::optional<Result>() : std::optional<Result>(result);
         }
         catch (const fe::Terminated&)
         {
@@ -143,84 +143,84 @@ auto feCore(App* app, CPU& cpu, Args... args)
 }
 
 /* Watcom's exp, of a double on the stack, onto the x87. */
-std::optional<x86::Float> watcomExp(App* app, CPU& cpu, x86::Float power)
+std::optional<nfs::Float> watcomExp(App* app, ThreadState& ts, nfs::Float power)
 {
-    const reg32 sp = cpu.esp;
-    cpu.esp -= 8;  // (the double the code pushes: the core is handed it)
-    const double result = guest::direct<0x4f8116, watcom::clib::exponent>(app, cpu, double(power));
-    cpu.esp = sp;
-    if (cpu.terminate)
+    const u32 sp = ts.sp;
+    ts.sp -= 8;  // (the double the code pushes: the core is handed it)
+    const double result = guest::direct<0x4f8116, watcom::clib::exponent>(app, ts, double(power));
+    ts.sp = sp;
+    if (ts.terminate)
         return std::nullopt;
-    return x86::Float(result);
+    return nfs::Float(result);
 }
 
 /* Watcom's chop of the value, then fistp; never nullopt (the optional is the callers' stop
  * signal). */
-std::optional<i32> chop(App* app, CPU& cpu, x86::Float value)
+std::optional<i32> chop(App* app, ThreadState& ts, nfs::Float value)
 {
-    const double whole = guest::direct<kChop, watcom::clib::chop>(app, cpu, double(value));
-    return fp::toInteger<i32>(x86::Float(whole));
+    const double whole = guest::direct<kChop, watcom::clib::chop>(app, ts, double(value));
+    return fp::toInteger<i32>(nfs::Float(whole));
 }
 
 /* The stack pointer on entry to a thunk: what its code leaves of the registers is the Args'. */
 struct Saved
 {
-    reg32 esp;
-    explicit Saved(const CPU& entry) : esp(entry.esp) {}
-    void restore(CPU& back) const { back.esp = esp; }
+    u32 esp;
+    explicit Saved(const ThreadState& entry) : esp(entry.sp) {}
+    void restore(ThreadState& back) const { back.sp = esp; }
 };
 
 // The car's record.
-constexpr reg32 kCarSpeed = 0xa4, kCarSpin = 0xe4, kCarRoadState = 0x10c, kCarUpAxis = 0x130, kCarRoadSpeed = 0x15c, kCarRoad = 0x160;
-constexpr reg32 kCarRaceStarted = 0x164, kCarPlayer = 0x1f0, kCarFlags = 0x200, kCarField20c = 0x20c, kCarSetup = 0x220, kCarRaceStage = 0x2c4;
-constexpr reg32 kCarSpeedAlong = 0x4f4, kCarGear = 0x50b, kCarHandbrake = 0x50d, kCarWheelTurned = 0x514, kCarSteering = 0x51c;
-constexpr reg32 kCarHandling = 0x528, kCarGearRevs = 0x52c, kCarGearInverse = 0x54c, kCarGearShare = 0x56c, kCarDrag = 0x58c;
-constexpr reg32 kCarRevs = 0x590, kCarClutch = 0x594, kCarWheelTurns = 0x59c, kCarWheelsTurn = 0x5a4, kCarThrottle = 0x5b0;
-constexpr reg32 kCarFrontSlip = 0x5c0, kCarBackSlip = 0x5c4, kCarBrake = 0x5f0;
+constexpr u32 kCarSpeed = 0xa4, kCarSpin = 0xe4, kCarRoadState = 0x10c, kCarUpAxis = 0x130, kCarRoadSpeed = 0x15c, kCarRoad = 0x160;
+constexpr u32 kCarRaceStarted = 0x164, kCarPlayer = 0x1f0, kCarFlags = 0x200, kCarField20c = 0x20c, kCarSetup = 0x220, kCarRaceStage = 0x2c4;
+constexpr u32 kCarSpeedAlong = 0x4f4, kCarGear = 0x50b, kCarHandbrake = 0x50d, kCarWheelTurned = 0x514, kCarSteering = 0x51c;
+constexpr u32 kCarHandling = 0x528, kCarGearRevs = 0x52c, kCarGearInverse = 0x54c, kCarGearShare = 0x56c, kCarDrag = 0x58c;
+constexpr u32 kCarRevs = 0x590, kCarClutch = 0x594, kCarWheelTurns = 0x59c, kCarWheelsTurn = 0x5a4, kCarThrottle = 0x5b0;
+constexpr u32 kCarFrontSlip = 0x5c0, kCarBackSlip = 0x5c4, kCarBrake = 0x5f0;
 constexpr std::uint8_t kCarFlagPlayer = 1, kCarFlagSetupMiddle = 2;
 constexpr std::uint8_t kGearReverse = 0, kGearNeutral = 1;
-constexpr reg32 kRaceStageFinished = 3;
+constexpr u32 kRaceStageFinished = 3;
 constexpr i32 kWheelFullTime = 0x180, kFullLock = 0x7f;
 // The player's setup: the sliders, as kDefaultSetup holds their middles.
-constexpr reg32 kSetupSlider = 0x40, kSetupSliders = 7, kSetupSlipSlider = 0x58;
-constexpr reg32 kSliderSecond = 4, kSliderThird = 8, kSliderFourth = 0xc, kSliderFifth = 0x10, kSliderSixth = 0x14;
+constexpr u32 kSetupSlider = 0x40, kSetupSliders = 7, kSetupSlipSlider = 0x58;
+constexpr u32 kSliderSecond = 4, kSliderThird = 8, kSliderFourth = 0xc, kSliderFifth = 0x10, kSliderSixth = 0x14;
 // The car's handling record.
-constexpr reg32 kHandlingShareBase = 4, kHandlingGears = 8, kHandlingRatios = 0x94, kHandlingGearShare = 0xd4, kHandlingTorque = 0x114;
-constexpr reg32 kHandlingRevsIdle = 0x1c0, kHandlingRevsLimit = 0x1c4, kHandlingTopSpeed = 0x1c8, kHandlingDriveCut = 0x1d4;
-constexpr reg32 kHandlingSideLimit = 0x23c, kHandlingDriveShare = 0x248;
+constexpr u32 kHandlingShareBase = 4, kHandlingGears = 8, kHandlingRatios = 0x94, kHandlingGearShare = 0xd4, kHandlingTorque = 0x114;
+constexpr u32 kHandlingRevsIdle = 0x1c0, kHandlingRevsLimit = 0x1c4, kHandlingTopSpeed = 0x1c8, kHandlingDriveCut = 0x1d4;
+constexpr u32 kHandlingSideLimit = 0x23c, kHandlingDriveShare = 0x248;
 constexpr i32 kTorquePoints = 0x29;
 // An axle's record.
-constexpr reg32 kAxleDrive = 0, kAxleGrip = 4, kAxleGripShare = 8, kAxleAngle = 0xc, kAxleAcross = 0x10, kAxleAlong = 0x18;
-constexpr reg32 kAxleForceAcross = 0x1c, kAxleForceUp = 0x20, kAxleForceAlong = 0x24, kAxleFront = 0x28, kAxleSlip = 0x2c;
+constexpr u32 kAxleDrive = 0, kAxleGrip = 4, kAxleGripShare = 8, kAxleAngle = 0xc, kAxleAcross = 0x10, kAxleAlong = 0x18;
+constexpr u32 kAxleForceAcross = 0x1c, kAxleForceUp = 0x20, kAxleForceAlong = 0x24, kAxleFront = 0x28, kAxleSlip = 0x2c;
 // The game's constants these read.
-constexpr reg32 kTorqueSliderShift = 0x53dc68, kTorqueSliderScale = 0x53dc6c, kFirstSliderTopShare = 0x53dc70, kGearShareScale = 0x53dc7c;
-constexpr reg32 kDownOneThrottle = 0x53dca4, kUprightLowest = 0x53dcc4;  // doubles
-constexpr reg32 kStillBelow = 0x53dccc;
-constexpr reg32 kSlipLimitScale = 0x53ddb4, kSlipLimitTop = 0x53ddb8;
-constexpr reg32 kGripOtherShare = 0x53ddbc, kGripPullScale = 0x53ddc0, kGripPullTop = 0x53ddc4, kNeutralForceShare = 0x53ddc8;
-constexpr reg32 kSlideOtherShare = 0x53ddcc, kAssistSlipShare = 0x53ddd0, kSlideRoad1Share = 0x53ddd4, kSlideRoad2Share = 0x53ddd8;
-constexpr reg32 kSlidePullScale = 0x53dddc, kSlidePullTop = 0x53dde0, kHighRevsShare = 0x53dde4, kBrakeAlongShare = 0x53dde8;
-constexpr reg32 kClutchSlipShare = 0x53ddec;
-constexpr reg32 kLogisticShift = 0x53ddf4, kLogisticSteep = 0x53ddfc, kLogisticSize = 0x53de04;  // doubles
-constexpr reg32 kSteeringShareScale = 0x53de0c;
-constexpr reg32 kReverseAngleScale = 0x53de10, kReverseForceScale = 0x53de14, kGearAngleScale = 0x53de18, kGearForceScale = 0x53de1c;
-constexpr reg32 kSideLimitScale = 0x53de20, kFullLockShare = 0x53de24, kLightBrakeShare = 0x53de28;
-constexpr reg32 kFrontSideShare = 0x53de2c, kBackSideShare = 0x53de30;
+constexpr u32 kTorqueSliderShift = 0x53dc68, kTorqueSliderScale = 0x53dc6c, kFirstSliderTopShare = 0x53dc70, kGearShareScale = 0x53dc7c;
+constexpr u32 kDownOneThrottle = 0x53dca4, kUprightLowest = 0x53dcc4;  // doubles
+constexpr u32 kStillBelow = 0x53dccc;
+constexpr u32 kSlipLimitScale = 0x53ddb4, kSlipLimitTop = 0x53ddb8;
+constexpr u32 kGripOtherShare = 0x53ddbc, kGripPullScale = 0x53ddc0, kGripPullTop = 0x53ddc4, kNeutralForceShare = 0x53ddc8;
+constexpr u32 kSlideOtherShare = 0x53ddcc, kAssistSlipShare = 0x53ddd0, kSlideRoad1Share = 0x53ddd4, kSlideRoad2Share = 0x53ddd8;
+constexpr u32 kSlidePullScale = 0x53dddc, kSlidePullTop = 0x53dde0, kHighRevsShare = 0x53dde4, kBrakeAlongShare = 0x53dde8;
+constexpr u32 kClutchSlipShare = 0x53ddec;
+constexpr u32 kLogisticShift = 0x53ddf4, kLogisticSteep = 0x53ddfc, kLogisticSize = 0x53de04;  // doubles
+constexpr u32 kSteeringShareScale = 0x53de0c;
+constexpr u32 kReverseAngleScale = 0x53de10, kReverseForceScale = 0x53de14, kGearAngleScale = 0x53de18, kGearForceScale = 0x53de1c;
+constexpr u32 kSideLimitScale = 0x53de20, kFullLockShare = 0x53de24, kLightBrakeShare = 0x53de28;
+constexpr u32 kFrontSideShare = 0x53de2c, kBackSideShare = 0x53de30;
 constexpr std::uint8_t kRaceFlagTorque = 1, kRaceFlagFirstSet = 4, kRaceFlagSimulationGrip = 0x20;
 // Floats' bits the code compares as ints, so that a NaN or a negative lands where it does there.
 constexpr i32 kBits0_015 = 0x3c75c28f, kBits0_02 = 0x3ca3d70a, kBits0_05 = 0x3d4ccccd, kBits0_1 = 0x3dcccccd, kBits0_15 = 0x3e19999a;
 constexpr i32 kBits0_2 = 0x3e4ccccd, kBits0_25 = 0x3e800000, kBits0_5 = 0x3f000000, kBits0_85 = 0x3f59999a, kBits0_9 = 0x3f666666;
 constexpr i32 kBits0_95 = 0x3f733333, kBits1 = 0x3f800000, kBits5 = 0x40a00000, kBitsSlow = 0x41566666;
-constexpr reg32 kBitsNotSign = 0x7fffffff;
+constexpr u32 kBitsNotSign = 0x7fffffff;
 // settleCar's vector, where the code's frame has it: under the entry's esp and over the new esp.
-constexpr reg32 kPartBelowEntry = 0x54, kPartOverEsp = 0xc;
+constexpr u32 kPartBelowEntry = 0x54, kPartOverEsp = 0xc;
 
 /* The setup's slider the slip goes by. */
-reg32 slipSlider(App* app, reg32 car) { return at(app, car + kCarSetup) + kSetupSlipSlider; }
+u32 slipSlider(App* app, u32 car) { return at(app, car + kCarSetup) + kSetupSlipSlider; }
 
 /* How quickly the slip follows, by the slider: a constant less it by another, 0.7 over a link or
  * in the series, 0.5 at least. */
-float slipPull(App* app, reg32 car, reg32 scale, reg32 top)
+float slipPull(App* app, u32 car, u32 scale, u32 top)
 {
     const float pull = linkOrSeries(app) ? 0.7f : float(fp::sub(f32(app, top), fp::mul(f32(app, slipSlider(app, car)), f32(app, scale))));
     return signedBits(pull) > kBits0_5 ? pull : 0.5f;
@@ -228,91 +228,91 @@ float slipPull(App* app, reg32 car, reg32 scale, reg32 top)
 
 }  // namespace
 
-x86::reg32 logisticCurve(App* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 steeringGrip(App* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 setupSlipLimit(App* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 setupGripLoss(App* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 tyreGrip(App* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 tyreSlide(App* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 axleForces(App* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 applyTuning(App* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 automaticGear(App* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 matchRevsToSpeed(App* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 resetDriveState(App* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 settleAtRest(App* app, x86::CPU& cpu, x86::Args& args);
+nfs::u32 logisticCurve(App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 steeringGrip(App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 setupSlipLimit(App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 setupGripLoss(App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 tyreGrip(App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 tyreSlide(App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 axleForces(App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 applyTuning(App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 automaticGear(App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 matchRevsToSpeed(App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 resetDriveState(App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 settleAtRest(App* app, nfs::ThreadState& ts, nfs::Args& args);
 
 /* 0x4ac994: a logistic curve, 1 - c / (1 + exp((x + a) * b)), with Watcom's exp by address. */
-std::optional<float> logistic(App* app, CPU& cpu, float x)
+std::optional<float> logistic(App* app, ThreadState& ts, float x)
 {
-    const auto power = watcomExp(app, cpu, fp::mul(fp::add(x, f64(app, kLogisticShift)), f64(app, kLogisticSteep)));
+    const auto power = watcomExp(app, ts, fp::mul(fp::add(x, f64(app, kLogisticShift)), f64(app, kLogisticSteep)));
     if (!power)
         return std::nullopt;
     return float(fp::sub(1.0, fp::div(f64(app, kLogisticSize), fp::add(*power, 1.0))));
 }
 
 /* The thunk (stdcall: x, ret 4): onto the x87's stack, every register kept. */
-x86::reg32 logisticCurve(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 logisticCurve(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    const Saved saved(cpu);
-    const auto value = logistic(app, cpu, floatAt(app, cpu.esp + 4));
+    const Saved saved(ts);
+    const auto value = logistic(app, ts, floatAt(app, ts.sp + 4));
     if (!value)
         return args.eax;
-    saved.restore(cpu);
+    saved.restore(ts);
     args.floatSet = true;
-    args.floatResult = double(x86::Float(*value));
-    cpu.esp += 8;
+    args.floatResult = double(nfs::Float(*value));
+    ts.sp += 8;
     return args.eax;
 }
 
 /* 0x4ac9dd: the steering's share of the front's grip: 1 while the wheel has not been turned,
  * else the curve of how long it has (a whole lock's time being 1) by a constant. */
-std::optional<float> steeringShare(App* app, CPU& cpu, reg32 car)
+std::optional<float> steeringShare(App* app, ThreadState& ts, u32 car)
 {
     const i32 turned = i32(at(app, car + kCarWheelTurned));
     if (turned <= 0)
         return 1.0f;
-    const float time = float(fp::div(x86::Float(turned), x86::Float(kWheelFullTime)));
-    const auto curve = logistic(app, cpu, time);
+    const float time = float(fp::div(nfs::Float(turned), nfs::Float(kWheelFullTime)));
+    const auto curve = logistic(app, ts, time);
     if (!curve)
         return std::nullopt;
     return float(fp::mul(*curve, f32(app, kSteeringShareScale)));
 }
 
 /* The thunk: onto the x87's stack, its bits in eax, the other registers kept. */
-x86::reg32 steeringGrip(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 steeringGrip(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    const Saved saved(cpu);
-    const auto share = steeringShare(app, cpu, args.eax);
+    const Saved saved(ts);
+    const auto share = steeringShare(app, ts, args.eax);
     if (!share)
         return args.eax;
-    saved.restore(cpu);
+    saved.restore(ts);
     args.eax = bitsOf(*share);
     args.floatSet = true;
-    args.floatResult = double(x86::Float(*share));
-    cpu.esp += 4;
+    args.floatResult = double(nfs::Float(*share));
+    ts.sp += 4;
     return args.eax;
 }
 
 /* 0x4ac027: how far the slip may go, by the setup's slider: 12 - 4 * it, chopped.  Over a link
  * or in the series the slider is put to 1 first. */
-std::optional<i32> slipLimit(App* app, CPU& cpu, reg32 slider)
+std::optional<i32> slipLimit(App* app, ThreadState& ts, u32 slider)
 {
     if (linkOrSeries(app))
         floatAt(app, slider) = 1.0f;
     const float limit = float(fp::sub(f32(app, kSlipLimitTop), fp::mul(f32(app, slider), f32(app, kSlipLimitScale))));
-    return chop(app, cpu, limit);
+    return chop(app, ts, limit);
 }
 
 /* The thunk: slider at eax, the limit to eax. */
-x86::reg32 setupSlipLimit(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 setupSlipLimit(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    const Saved saved(cpu);
-    const auto limit = slipLimit(app, cpu, args.eax);
+    const Saved saved(ts);
+    const auto limit = slipLimit(app, ts, args.eax);
     if (!limit)
         return args.eax;
-    saved.restore(cpu);
-    args.eax = reg32(*limit);
-    cpu.esp += 4;
+    saved.restore(ts);
+    args.eax = u32(*limit);
+    ts.sp += 4;
     return args.eax;
 }
 
@@ -320,13 +320,13 @@ x86::reg32 setupSlipLimit(App* app, x86::CPU& cpu, x86::Args& args)
  * the game's constants, `lowest` the code's own value of its floor. */
 struct GripCurve
 {
-    reg32 shift, scale, top, floor;
+    u32 shift, scale, top, floor;
     float lowest;
 };
 
-float gripCurve(App* app, reg32 slider, const GripCurve& curve)
+float gripCurve(App* app, u32 slider, const GripCurve& curve)
 {
-    const x86::Float divisor = fp::sub(f32(app, curve.top), fp::mul(fp::add(f32(app, slider), f32(app, curve.shift)), f32(app, curve.scale)));
+    const nfs::Float divisor = fp::sub(f32(app, curve.top), fp::mul(fp::add(f32(app, slider), f32(app, curve.shift)), f32(app, curve.scale)));
     const float held = divisor > f32(app, curve.floor) ? float(divisor) : curve.lowest;
     return float(fp::div(1.0, held));
 }
@@ -334,11 +334,11 @@ float gripCurve(App* app, reg32 slider, const GripCurve& curve)
 /* 0x4abd9c: the grip lost to the setup's slider, by the car's road and whether the simulation's
  * handling is on (raceFlags 0x20): on two of the roads the simulation's is cut again.  Over a
  * link or in the series the slider is put to 1 first. */
-float gripLoss(App* app, reg32 car, reg32 slider)
+float gripLoss(App* app, u32 car, u32 slider)
 {
     if (linkOrSeries(app))
         floatAt(app, slider) = 1.0f;
-    const reg32 road = at(app, car + kCarRoad);
+    const u32 road = at(app, car + kCarRoad);
     if ((std::uint8_t(gameSettings(app).raceFlags) & kRaceFlagSimulationGrip) != 0)
     {
         if (road == 2)
@@ -355,23 +355,23 @@ float gripLoss(App* app, reg32 car, reg32 slider)
 }
 
 /* The thunk: car eax, slider edx; onto the x87's stack, its bits in eax. */
-x86::reg32 setupGripLoss(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 setupGripLoss(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     const float loss = gripLoss(app, args.eax, args.edx);
     args.eax = bitsOf(loss);
     args.floatSet = true;
-    args.floatResult = double(x86::Float(loss));
-    cpu.esp += 4;
+    args.floatResult = double(nfs::Float(loss));
+    ts.sp += 4;
     return args.eax;
 }
 
 /* The axle's slip held to slipLimit.  False when the game stopped. */
-bool holdSlip(App* app, CPU& cpu, reg32 car, reg32 axle)
+bool holdSlip(App* app, ThreadState& ts, u32 car, u32 axle)
 {
-    const auto limit = slipLimit(app, cpu, slipSlider(app, car));
+    const auto limit = slipLimit(app, ts, slipSlider(app, car));
     if (!limit)
         return false;
-    const float most = float(x86::Float(*limit));
+    const float most = float(nfs::Float(*limit));
     const float slip = floatAt(app, axle + kAxleSlip);
     floatAt(app, axle + kAxleSlip) = slip > most ? most : slip;
     return true;
@@ -382,16 +382,16 @@ bool holdSlip(App* app, CPU& cpu, reg32 car, reg32 axle)
  * the other) is past the grip -- or 0 -- and held to slipLimit; the force across the speed across
  * by the slip's share (0.75 past the grip lost) by steeringShare, the force along the drive by
  * it, both a 20th in neutral; the slip kept back in the car.  False when the game stopped. */
-bool gripAxle(App* app, CPU& cpu, reg32 car, reg32 axle)
+bool gripAxle(App* app, ThreadState& ts, u32 car, u32 axle)
 {
     const bool front = at(app, axle + kAxleFront) != 0;
-    const reg32 carSlip = car + (front ? kCarFrontSlip : kCarBackSlip);
+    const u32 carSlip = car + (front ? kCarFrontSlip : kCarBackSlip);
     put(app, car + kCarWheelTurns, at(app, car + kCarWheelTurns) + (front ? 1 : 2));
     floatAt(app, axle + kAxleSlip) = float(f32(app, carSlip));
     const float grip = float(fp::mul(f32(app, axle + kAxleGrip), f32(app, axle + kAxleGripShare)));
     const float across = size(floatAt(app, axle + kAxleAcross));
     const float along = size(floatAt(app, axle + kAxleAlong));
-    const x86::Float otherShare = f32(app, kGripOtherShare);
+    const nfs::Float otherShare = f32(app, kGripOtherShare);
     const float speed = across > along ? float(fp::add(fp::mul(along, otherShare), across))
                                        : float(fp::add(fp::mul(across, otherShare), along));
     if (speed > grip)
@@ -404,18 +404,18 @@ bool gripAxle(App* app, CPU& cpu, reg32 car, reg32 axle)
     {
         put(app, axle + kAxleSlip, 0);
     }
-    if (!holdSlip(app, cpu, car, axle))
+    if (!holdSlip(app, ts, car, axle))
         return false;
     const float loss = gripLoss(app, car, slipSlider(app, car));
     const float kept = float(fp::sub(grip, fp::mul(grip, loss)));
     float share = 0.75f;
     if (size(speed) > size(kept))
     {
-        const x86::Float ratio = fp::div(kept, speed);
+        const nfs::Float ratio = fp::div(kept, speed);
         share = 0.0 > ratio ? float(-ratio) : float(ratio);
     }
     const float forceAcross = float(fp::mul(f32(app, axle + kAxleAcross), share));
-    const auto steering = steeringShare(app, cpu, car);
+    const auto steering = steeringShare(app, ts, car);
     if (!steering)
         return false;
     floatAt(app, axle + kAxleForceAcross) = float(fp::mul(*steering, forceAcross));
@@ -431,16 +431,16 @@ bool gripAxle(App* app, CPU& cpu, reg32 car, reg32 axle)
 }
 
 /* The thunk: car eax, axle edx; eax and edx as the game's code leaves them. */
-x86::reg32 tyreGrip(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 tyreGrip(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    const Saved saved(cpu);
-    const reg32 car = args.eax;
-    if (!gripAxle(app, cpu, car, args.edx))
+    const Saved saved(ts);
+    const u32 car = args.eax;
+    if (!gripAxle(app, ts, car, args.edx))
         return args.eax;
-    saved.restore(cpu);
+    saved.restore(ts);
     args.eax = car;
     args.edx = slipSlider(app, car);
-    cpu.esp += 4;
+    ts.sp += 4;
     return args.eax;
 }
 
@@ -451,12 +451,12 @@ x86::reg32 tyreGrip(App* app, x86::CPU& cpu, x86::Args& args)
  * slider, and the forces cut -- along only with the assist, else by half again -- when on the
  * back, in a gear, braking hard with the revs high.  The back axle with the clutch in slips at
  * the forces' size, by 4 in first or second.  The slip held to slipLimit. */
-bool slideAxle(App* app, CPU& cpu, reg32 car, reg32 axle)
+bool slideAxle(App* app, ThreadState& ts, u32 car, u32 axle)
 {
     const bool front = at(app, axle + kAxleFront) != 0;
     const float across = size(floatAt(app, axle + kAxleForceAcross));
     const float along = size(floatAt(app, axle + kAxleForceAlong));
-    const x86::Float otherShare = f32(app, kSlideOtherShare);
+    const nfs::Float otherShare = f32(app, kSlideOtherShare);
     const float force = across > along ? float(fp::add(across, float(fp::mul(along, otherShare))))
                                        : float(fp::add(along, float(fp::mul(across, otherShare))));
     floatAt(app, axle + kAxleSlip) = float(f32(app, car + (front ? kCarFrontSlip : kCarBackSlip)));
@@ -464,7 +464,7 @@ bool slideAxle(App* app, CPU& cpu, reg32 car, reg32 axle)
     const float kept = float(fp::sub(grip, fp::mul(gripLoss(app, car, slipSlider(app, car)), grip)));
     const float loss = gripLoss(app, car, slipSlider(app, car));
     put(app, axle + kAxleSlip, 0);
-    const reg32 forceAcross = axle + kAxleForceAcross, forceAlong = axle + kAxleForceAlong, slip = axle + kAxleSlip;
+    const u32 forceAcross = axle + kAxleForceAcross, forceAlong = axle + kAxleForceAlong, slip = axle + kAxleSlip;
     if (force > kept)
     {
         const bool assist = gameSettings(app).raceOptionSimulation != 0 && !front;
@@ -483,10 +483,10 @@ bool slideAxle(App* app, CPU& cpu, reg32 car, reg32 axle)
         {
             if (signedBits(size(floatAt(app, car + kCarSpeedAlong))) > kBits5 || at(app, car + kCarClutch) != 0)
                 floatAt(app, slip) = float(fp::sub(force, kept));
-            const x86::Float past = fp::mul(fp::sub(force, kept), loss);
-            const x86::Float held = fp::mul(kept, loss);
+            const nfs::Float past = fp::mul(fp::sub(force, kept), loss);
+            const nfs::Float held = fp::mul(kept, loss);
             const float least = held > past ? float(past) : float(held);
-            const reg32 road = at(app, car + kCarRoad);
+            const u32 road = at(app, car + kCarRoad);
             float lost = least;
             if (road == 1)
                 lost = float(fp::mul(least, f32(app, kSlideRoad1Share)));
@@ -500,9 +500,9 @@ bool slideAxle(App* app, CPU& cpu, reg32 car, reg32 axle)
             if (!front && byte(app, car + kCarGear) == 2 && i32(at(app, car + kCarField20c)) >= kBits0_95
                 && i32(at(app, car + kCarBrake)) >= kBits0_85)
             {
-                const x86::Float high = fp::mul(x86::Float(i32(at(app, at(app, car + kCarHandling) + kHandlingRevsLimit))), f32(app, kHighRevsShare));
+                const nfs::Float high = fp::mul(nfs::Float(i32(at(app, at(app, car + kCarHandling) + kHandlingRevsLimit))), f32(app, kHighRevsShare));
                 // fcompp's "not below" is >= on every value: unordered sets below.
-                if (x86::Float(i32(at(app, car + kCarRevs))) >= high)
+                if (nfs::Float(i32(at(app, car + kCarRevs))) >= high)
                 {
                     floatAt(app, forceAcross) = float(fp::mul(f32(app, forceAcross), cut));
                     if (gameSettings(app).raceOptionSimulation != 0)
@@ -520,43 +520,43 @@ bool slideAxle(App* app, CPU& cpu, reg32 car, reg32 axle)
         if (gear >= 2 && gear <= 3)
             floatAt(app, slip) = float(fp::mul(f32(app, slip), f32(app, kClutchSlipShare)));
     }
-    return holdSlip(app, cpu, car, axle);
+    return holdSlip(app, ts, car, axle);
 }
 
 /* The thunk: car eax, axle edx; the slip's bits left in eax, the axle in edx. */
-x86::reg32 tyreSlide(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 tyreSlide(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    const Saved saved(cpu);
-    const reg32 axle = args.edx;
-    if (!slideAxle(app, cpu, args.eax, axle))
+    const Saved saved(ts);
+    const u32 axle = args.edx;
+    if (!slideAxle(app, ts, args.eax, axle))
         return args.eax;
-    saved.restore(cpu);
+    saved.restore(ts);
     args.eax = at(app, axle + kAxleSlip);
-    cpu.esp += 4;
+    ts.sp += 4;
     return args.eax;
 }
 
 /* The 2D turn of the words at x and y by the axle's wheels' angle (rendc's, 0x496bf0). */
-bool turnByWheels(App* app, CPU& cpu, reg32 axle, reg32 x, reg32 y)
+bool turnByWheels(App* app, ThreadState& ts, u32 axle, u32 x, u32 y)
 {
-    return feCore<0x496bf0, frontend::rendc::rotatePlane>(app, cpu, at(app, x), at(app, y), at(app, axle + kAxleAngle),
+    return feCore<0x496bf0, frontend::rendc::rotatePlane>(app, ts, at(app, x), at(app, y), at(app, axle + kAxleAngle),
                                                          x, y)
         .has_value();
 }
 
 /* The game's sine of a float (simd's, 0x4ea930). */
-std::optional<x86::Float> sine(App* app, CPU& cpu, float angle)
+std::optional<nfs::Float> sine(App* app, ThreadState& ts, float angle)
 {
-    return feCore<0x4ea930, frontend::simd::sineValue>(app, cpu, bitsOf(angle));
+    return feCore<0x4ea930, frontend::simd::sineValue>(app, ts, bitsOf(angle));
 }
 
 /* The force across a sliding axle's tyres: the sine, taken twice as the code does, of the slip's
  * angle by a scale, by the grip and a scale, made positive. */
-std::optional<float> sideForce(App* app, CPU& cpu, float angle, float grip, reg32 angleScale, reg32 forceScale)
+std::optional<float> sideForce(App* app, ThreadState& ts, float angle, float grip, u32 angleScale, u32 forceScale)
 {
     const float scaled = float(fp::mul(angle, f32(app, angleScale)));
-    const auto forOnce = [&]() -> std::optional<x86::Float> {
-        const auto value = sine(app, cpu, scaled);
+    const auto forOnce = [&]() -> std::optional<nfs::Float> {
+        const auto value = sine(app, ts, scaled);
         if (!value)
             return std::nullopt;
         return fp::mul(fp::mul(*value, grip), f32(app, forceScale));
@@ -579,14 +579,14 @@ std::optional<float> sideForce(App* app, CPU& cpu, float angle, float grip, reg3
  * its own -- held to the handling's +0x23c by 2, a part at full lock slow or when hardly braking,
  * held to the speed across, 0 on the front stopped with the handbrake, by a share for the axle;
  * then past the grip (slideAxle), the forces turned back, the slip kept in the car. */
-AxleEnd axleTyres(App* app, CPU& cpu, reg32 car, reg32 axle)
+AxleEnd axleTyres(App* app, ThreadState& ts, u32 car, u32 axle)
 {
-    const reg32 handling = at(app, car + kCarHandling);
+    const u32 handling = at(app, car + kCarHandling);
     put(app, axle + kAxleSlip, 0);
     const float grip = floatAt(app, axle + kAxleGrip);
     const float kept = float(fp::sub(grip, fp::mul(gripLoss(app, car, slipSlider(app, car)), grip)));
     const bool wheelsTurned = (at(app, axle + kAxleAngle) & kBitsNotSign) != 0;
-    if (wheelsTurned && !turnByWheels(app, cpu, axle, axle + kAxleAcross, axle + kAxleAlong))
+    if (wheelsTurned && !turnByWheels(app, ts, axle, axle + kAxleAcross, axle + kAxleAlong))
         return AxleEnd::Stopped;
 
     bool heldBack = false;
@@ -595,7 +595,7 @@ AxleEnd axleTyres(App* app, CPU& cpu, reg32 car, reg32 axle)
     const bool lightBrake = i32(at(app, car + kCarBrake)) <= kBits0_25;
     const std::uint8_t gear = byte(app, car + kCarGear);
     // Each "below" of the code is !(>=) on every value: unordered sets it.
-    if (0.0 > x86::Float(drive) && 0.0 > x86::Float(along))
+    if (0.0 > nfs::Float(drive) && 0.0 > nfs::Float(along))
     {
         if (lightBrake || gear != kGearReverse)
         {
@@ -603,7 +603,7 @@ AxleEnd axleTyres(App* app, CPU& cpu, reg32 car, reg32 axle)
             heldBack = true;
         }
     }
-    else if (!(0.0 >= x86::Float(drive)) && !(0.0 >= x86::Float(along)))
+    else if (!(0.0 >= nfs::Float(drive)) && !(0.0 >= nfs::Float(along)))
     {
         if (lightBrake || gear <= kGearNeutral)
         {
@@ -616,9 +616,9 @@ AxleEnd axleTyres(App* app, CPU& cpu, reg32 car, reg32 axle)
     const bool handbrake = byte(app, car + kCarHandbrake) != 0;
     if (handbrake)
     {
-        const reg32 road = at(app, car + kCarRoad);
-        const reg32 time = at(app, car + kCarWheelTurned) + (road == 1 ? 3 : road == 2 ? 4 : 1);
-        put(app, car + kCarWheelTurned, i32(time) < kWheelFullTime ? time : reg32(kWheelFullTime));
+        const u32 road = at(app, car + kCarRoad);
+        const u32 time = at(app, car + kCarWheelTurned) + (road == 1 ? 3 : road == 2 ? 4 : 1);
+        put(app, car + kCarWheelTurned, i32(time) < kWheelFullTime ? time : u32(kWheelFullTime));
     }
     else
     {
@@ -628,12 +628,12 @@ AxleEnd axleTyres(App* app, CPU& cpu, reg32 car, reg32 axle)
     const bool front = at(app, axle + kAxleFront) != 0;
     const auto drivePastGrip = [&] { return size(floatAt(app, axle + kAxleDrive)) > floatAt(app, axle + kAxleGrip); };
     if ((handbrake && !front) || (handbrake && front && heldBack && drivePastGrip()))
-        return gripAxle(app, cpu, car, axle) ? AxleEnd::Gripped : AxleEnd::Stopped;
+        return gripAxle(app, ts, car, axle) ? AxleEnd::Gripped : AxleEnd::Stopped;
 
     if (heldBack && drivePastGrip() && !handbrake && byte(app, handling + kHandlingDriveCut) != 0)
     {
-        const x86::Float limit = f32(app, axle + kAxleGrip);
-        const x86::Float held = f32(app, axle + kAxleDrive);
+        const nfs::Float limit = f32(app, axle + kAxleGrip);
+        const nfs::Float held = f32(app, axle + kAxleDrive);
         if (held > limit)
             floatAt(app, axle + kAxleDrive) = float(limit);
         else if (-limit > held)
@@ -642,31 +642,31 @@ AxleEnd axleTyres(App* app, CPU& cpu, reg32 car, reg32 axle)
     }
 
     const std::optional<double> turned = feCore<0x4ea9c0, frontend::simd::angleOfFloatsValue>(
-        app, cpu, at(app, axle + kAxleAcross), bitsOf(size(floatAt(app, axle + kAxleAlong))));
+        app, ts, at(app, axle + kAxleAcross), bitsOf(size(floatAt(app, axle + kAxleAlong))));
     if (!turned)
         return AxleEnd::Stopped;
     const float angle = float(*turned);
-    const auto force = gear == kGearReverse ? sideForce(app, cpu, angle, kept, kReverseAngleScale, kReverseForceScale)
-                                            : sideForce(app, cpu, angle, kept, kGearAngleScale, kGearForceScale);
+    const auto force = gear == kGearReverse ? sideForce(app, ts, angle, kept, kReverseAngleScale, kReverseForceScale)
+                                            : sideForce(app, ts, angle, kept, kGearAngleScale, kGearForceScale);
     if (!force)
         return AxleEnd::Stopped;
     float side = *force;
-    const x86::Float most = fp::mul(f32(app, handling + kHandlingSideLimit), f32(app, kSideLimitScale));
-    if (!(most >= x86::Float(side)))
+    const nfs::Float most = fp::mul(f32(app, handling + kHandlingSideLimit), f32(app, kSideLimitScale));
+    if (!(most >= nfs::Float(side)))
         side = float(most);
 
     const i32 brakeBits = signedBits(size(floatAt(app, car + kCarBrake)));
     const bool slow = signedBits(size(floatAt(app, car + kCarSpeedAlong))) < kBitsSlow;
     const i32 steering = i32(at(app, car + kCarSteering));
-    const i32 steeringSize = steering < 0 ? i32(0u - reg32(steering)) : steering;
+    const i32 steeringSize = steering < 0 ? i32(0u - u32(steering)) : steering;
     if (brakeBits < kBits0_02 && slow && steeringSize >= kFullLock)
         side = float(fp::mul(side, f32(app, kFullLockShare)));
     else if (brakeBits < kBits0_015 && slow)
         side = float(fp::mul(side, f32(app, kLightBrakeShare)));
 
     const float across = floatAt(app, axle + kAxleAcross);
-    if (0.0 > x86::Float(across))
-        side = !(-x86::Float(side) >= x86::Float(across)) ? across : float(-x86::Float(side));
+    if (0.0 > nfs::Float(across))
+        side = !(-nfs::Float(side) >= nfs::Float(across)) ? across : float(-nfs::Float(side));
     else
         side = across > side ? side : across;
     if (front)
@@ -682,76 +682,76 @@ AxleEnd axleTyres(App* app, CPU& cpu, reg32 car, reg32 axle)
     put(app, axle + kAxleForceUp, 0);
     floatAt(app, axle + kAxleForceAlong) = float(f32(app, axle + kAxleDrive));
 
-    if (!slideAxle(app, cpu, car, axle))
+    if (!slideAxle(app, ts, car, axle))
         return AxleEnd::Stopped;
-    if (wheelsTurned && !turnByWheels(app, cpu, axle, axle + kAxleForceAcross, axle + kAxleForceAlong))
+    if (wheelsTurned && !turnByWheels(app, ts, axle, axle + kAxleForceAcross, axle + kAxleForceAlong))
         return AxleEnd::Stopped;
     floatAt(app, car + (front ? kCarFrontSlip : kCarBackSlip)) = float(f32(app, axle + kAxleSlip));
     return AxleEnd::Slid;
 }
 
 /* The thunk: car eax, axle edx; eax the car, edx as gripping or sliding leaves it. */
-x86::reg32 axleForces(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 axleForces(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    const Saved saved(cpu);
-    const reg32 car = args.eax;
-    const AxleEnd end = axleTyres(app, cpu, car, args.edx);
+    const Saved saved(ts);
+    const u32 car = args.eax;
+    const AxleEnd end = axleTyres(app, ts, car, args.edx);
     if (end == AxleEnd::Stopped)
         return args.eax;
-    const reg32 slidEdx = args.edx;
-    saved.restore(cpu);
+    const u32 slidEdx = args.edx;
+    saved.restore(ts);
     args.edx = end == AxleEnd::Gripped ? slipSlider(app, car) : slidEdx;
-    cpu.esp += 4;
+    ts.sp += 4;
     return args.eax;
 }
 
 /* fcomp's "not equal" on every value: unordered sets the flag too, so a NaN does not differ. */
-bool differs(x86::Float a, x86::Float b) { return a < b || a > b; }
+bool differs(nfs::Float a, nfs::Float b) { return a < b || a > b; }
 
 /* A float held at a bound, compared as the code does, as its bits' int. */
-void holdBitsAtLeast(App* app, reg32 a, i32 bits)
+void holdBitsAtLeast(App* app, u32 a, i32 bits)
 {
-    const reg32 value = at(app, a);
-    put(app, a, i32(value) > bits ? value : reg32(bits));
+    const u32 value = at(app, a);
+    put(app, a, i32(value) > bits ? value : u32(bits));
 }
 
-void holdBitsAtMost(App* app, reg32 a, i32 bits)
+void holdBitsAtMost(App* app, u32 a, i32 bits)
 {
-    const reg32 value = at(app, a);
-    put(app, a, i32(value) > bits ? reg32(bits) : value);
+    const u32 value = at(app, a);
+    put(app, a, i32(value) > bits ? u32(bits) : value);
 }
 
 /* The setup's seven sliders back to their middle. */
-void setupToMiddle(App* app, reg32 setup)
+void setupToMiddle(App* app, u32 setup)
 {
-    for (reg32 i = 0; i < kSetupSliders; ++i)
+    for (u32 i = 0; i < kSetupSliders; ++i)
         put(app, setup + kSetupSlider + i * 4, at(app, kDefaultSetup + i * 4));
 }
 
 /* The torque curve moved about its middle by the first slider. */
-void tuneTorqueCurve(App* app, reg32 handling, reg32 sliders)
+void tuneTorqueCurve(App* app, u32 handling, u32 sliders)
 {
     const i32 middle = i32(at(app, handling + kHandlingRevsLimit) + at(app, handling + kHandlingRevsIdle)) / 2 / 256 + 3;
     const i32 top = i32(at(app, handling + kHandlingRevsLimit)) / 256 + 3;
     for (i32 i = 0; i < kTorquePoints; ++i)
     {
-        const reg32 point = handling + kHandlingTorque + reg32(i) * 4;
+        const u32 point = handling + kHandlingTorque + u32(i) * 4;
         const float part = float(fp::mul(fp::mul(fp::add(f32(app, sliders), f32(app, kTorqueSliderShift)), f32(app, kTorqueSliderScale)), f32(app, point)));
-        const x86::Float position = fp::div(x86::Float(i32(reg32(middle) - reg32(i))), x86::Float(i32(reg32(top) - reg32(middle))));
+        const nfs::Float position = fp::div(nfs::Float(i32(u32(middle) - u32(i))), nfs::Float(i32(u32(top) - u32(middle))));
         const float move = float(fp::mul(position, part));
         floatAt(app, point) = float(fp::add(f32(app, point), move));
     }
-    const x86::Float share = fp::add(fp::mul(fp::sub(f32(app, sliders), f32(app, kDefaultSetup)), f32(app, kFirstSliderTopShare)), 1.0);
+    const nfs::Float share = fp::add(fp::mul(fp::sub(f32(app, sliders), f32(app, kDefaultSetup)), f32(app, kFirstSliderTopShare)), 1.0);
     floatAt(app, handling + kHandlingTopSpeed) = float(fp::mul(share, f32(app, handling + kHandlingTopSpeed)));
 }
 
 /* One gear's numbers in the car, from its ratio in the handling and the fourth slider. */
-void tuneGear(App* app, reg32 car, reg32 handling, reg32 sliders, reg32 gear, bool tuned)
+void tuneGear(App* app, u32 car, u32 handling, u32 sliders, u32 gear, bool tuned)
 {
-    const reg32 ratio = handling + kHandlingRatios + gear * 4;
-    const reg32 shareBase = handling + kHandlingGearShare + gear * 4;
-    const reg32 inverse = car + kCarGearInverse + gear * 4;
-    const reg32 share = car + kCarGearShare + gear * 4;
+    const u32 ratio = handling + kHandlingRatios + gear * 4;
+    const u32 shareBase = handling + kHandlingGearShare + gear * 4;
+    const u32 inverse = car + kCarGearInverse + gear * 4;
+    const u32 share = car + kCarGearShare + gear * 4;
     if ((std::uint8_t(gameSettings(app).raceFlags) & kRaceFlagTorque) != 0)
         holdBitsAtLeast(app, shareBase, kBits1);
     if (tuned && differs(f32(app, sliders + kSliderFourth), f32(app, kDefaultSetup + kSliderFourth)))
@@ -762,7 +762,7 @@ void tuneGear(App* app, reg32 car, reg32 handling, reg32 sliders, reg32 gear, bo
         floatAt(app, inverse) = 0.01f;
     floatAt(app, share) = float(fp::mul(fp::div(f32(app, ratio), f32(app, handling + kHandlingShareBase)), f32(app, kGearShareScale)));
     floatAt(app, share) = float(fp::mul(f32(app, shareBase), f32(app, share)));
-    const x86::Float revs = fp::mul(x86::Float(i32(at(app, handling + kHandlingRevsLimit))), f32(app, inverse));
+    const nfs::Float revs = fp::mul(nfs::Float(i32(at(app, handling + kHandlingRevsLimit))), f32(app, inverse));
     floatAt(app, car + kCarGearRevs + gear * 4) = float(fp::div(1.0, revs));
 }
 
@@ -777,24 +777,24 @@ void tuneGear(App* app, reg32 car, reg32 handling, reg32 sliders, reg32 gear, bo
  * Then by the gear: its ratio by the fourth, its inverse (a 100th for none), its share, the limit's
  * revs by it; +0x1c8 by the fourth; the top gear's drag (+0x58c) from the torque at the top speed.
  * False when the game stopped. */
-bool tuneHandling(App* app, CPU& cpu, reg32 car)
+bool tuneHandling(App* app, ThreadState& ts, u32 car)
 {
     if ((byte(app, car + kCarFlags) & kCarFlagSetupMiddle) != 0)
         setupToMiddle(app, at(app, car + kCarSetup));
     if (linkOrSeries(app))
         setupToMiddle(app, at(app, car + kCarSetup));
-    const reg32 setup = at(app, car + kCarSetup);
-    const reg32 sliders = setup + kSetupSlider;
-    const reg32 handling = at(app, car + kCarHandling);
+    const u32 setup = at(app, car + kCarSetup);
+    const u32 sliders = setup + kSetupSlider;
+    const u32 handling = at(app, car + kCarHandling);
     const bool tuned = !linkOrSeries(app);
     const bool computerDrives = gameSettings(app).raceOptionComputerDrives != 0;
 
-    const reg32 entry = at(app, car + kCarPlayer) * 0x6c;
+    const u32 entry = at(app, car + kCarPlayer) * 0x6c;
     if (gameSettings(app).entryAt(entry).transmission == 1 && (std::uint8_t(gameSettings(app).raceFlags) & kRaceFlagFirstSet) == 0)
     {
         put(app, handling + 8, at(app, handling + 0xc));
         floatAt(app, handling + 0x1b8) = float(f32(app, handling + 0x1bc));
-        for (reg32 i = 0; i < 8; ++i)
+        for (u32 i = 0; i < 8; ++i)
         {
             floatAt(app, handling + i * 4 + 0x54) = float(f32(app, handling + i * 4 + 0x74));
             floatAt(app, handling + i * 4 + 0xd4) = float(f32(app, handling + i * 4 + 0xf4));
@@ -802,7 +802,7 @@ bool tuneHandling(App* app, CPU& cpu, reg32 car)
         }
     }
 
-    const reg32 third = sliders + kSliderThird;
+    const u32 third = sliders + kSliderThird;
     if (differs(f32(app, third), f32(app, kDefaultSetup + kSliderThird)) && tuned)
     {
         floatAt(app, handling + 0x23c) = float(fp::mul(f32(app, third), f32(app, handling + 0x23c)));
@@ -815,7 +815,7 @@ bool tuneHandling(App* app, CPU& cpu, reg32 car)
         floatAt(app, handling + 0x258) = float(fp::add(f32(app, handling + 0x258), scaled));
     }
 
-    const reg32 second = sliders + kSliderSecond;
+    const u32 second = sliders + kSliderSecond;
     if (differs(f32(app, second), f32(app, kDefaultSetup + kSliderSecond)) && tuned)
         floatAt(app, handling + 0x1dc) = float(fp::sub(f32(app, handling + 0x1dc), f32(app, second)));
     if (computerDrives && tuned)
@@ -823,26 +823,26 @@ bool tuneHandling(App* app, CPU& cpu, reg32 car)
     holdBitsAtMost(app, handling + 0x1dc, 0x3f400000);
     holdBitsAtLeast(app, handling + 0x1dc, 0x3e99999a);
 
-    const reg32 fifth = sliders + kSliderFifth;
+    const u32 fifth = sliders + kSliderFifth;
     if (differs(f32(app, fifth), f32(app, kDefaultSetup + kSliderFifth)) && tuned)
     {
         floatAt(app, handling + 0x254) = float(fp::mul(f32(app, fifth), f32(app, handling + 0x254)));
         holdBitsAtLeast(app, handling + 0x254, 0x3e99999a);
         holdBitsAtMost(app, handling + 0x254, 0x3f333333);
-        const std::optional<double> root = feCore<0x4ea920, frontend::simc::squareRootOf>(app, cpu, at(app, fifth));
+        const std::optional<double> root = feCore<0x4ea920, frontend::simc::squareRootOf>(app, ts, at(app, fifth));
         if (!root)
             return false;
-        floatAt(app, handling + 0x294) = float(fp::div(f32(app, handling + 0x294), x86::Float(*root)));
+        floatAt(app, handling + 0x294) = float(fp::div(f32(app, handling + 0x294), nfs::Float(*root)));
     }
     if (computerDrives && tuned)
         floatAt(app, handling + 0x254) = float(fp::add(f32(app, handling + 0x254), f32(app, 0x53dc58)));
 
-    const reg32 sixth = sliders + kSliderSixth;
+    const u32 sixth = sliders + kSliderSixth;
     if (differs(f32(app, sixth), f32(app, kDefaultSetup + kSliderSixth)) && tuned)
     {
         const float scale = float(fp::add(fp::mul(fp::add(f32(app, sixth), f32(app, 0x53dc5c)), f32(app, 0x53dc60)), 1.0));
         floatAt(app, handling + 0x24c) = float(fp::mul(f32(app, handling + 0x24c), scale));
-        const x86::Float share = fp::add(fp::mul(fp::sub(f32(app, sixth), f32(app, kDefaultSetup)), f32(app, 0x53dc64)), 1.0);
+        const nfs::Float share = fp::add(fp::mul(fp::sub(f32(app, sixth), f32(app, kDefaultSetup)), f32(app, 0x53dc64)), 1.0);
         floatAt(app, handling + kHandlingTopSpeed) = float(fp::div(f32(app, handling + kHandlingTopSpeed), share));
     }
 
@@ -853,47 +853,47 @@ bool tuneHandling(App* app, CPU& cpu, reg32 car)
     {
         for (i32 i = 0; i < kTorquePoints; ++i)
         {
-            const reg32 point = handling + kHandlingTorque + reg32(i) * 4;
+            const u32 point = handling + kHandlingTorque + u32(i) * 4;
             floatAt(app, point) = float(fp::mul(f32(app, point), f32(app, 0x53dc74)));
         }
         floatAt(app, handling + kHandlingTopSpeed) = float(fp::mul(f32(app, handling + kHandlingTopSpeed), f32(app, 0x53dc78)));
     }
 
-    for (reg32 gear = 0; i32(gear) < i32(at(app, handling + kHandlingGears)); ++gear)
+    for (u32 gear = 0; i32(gear) < i32(at(app, handling + kHandlingGears)); ++gear)
         tuneGear(app, car, handling, sliders, gear, tuned);
 
     if (differs(f32(app, sliders + kSliderFourth), f32(app, kDefaultSetup + kSliderFourth)) && tuned)
         floatAt(app, handling + kHandlingTopSpeed) = float(fp::div(f32(app, handling + kHandlingTopSpeed), f32(app, sliders + kSliderFourth)));
 
     // The top gear's drag, from the torque at the revs of the top speed.
-    const reg32 gears = at(app, handling + kHandlingGears) << 2;
+    const u32 gears = at(app, handling + kHandlingGears) << 2;
     const i32 revs = fp::toInteger<i32>(fp::mul(f32(app, handling + kHandlingTopSpeed), f32(app, handling + gears + 0x90)));
-    float drag = floatAt(app, handling + kHandlingTorque + (reg32(revs / 256) << 2));
+    float drag = floatAt(app, handling + kHandlingTorque + (u32(revs / 256) << 2));
     drag = float(fp::mul(drag, f32(app, car + gears + 0x568)));
     drag = float(fp::div(drag, f32(app, handling + gears + 0xd0)));
     if (tuned)
     {
-        const x86::Float slider = fp::div(fp::add(1.0, f32(app, setup + 0x54)), f32(app, 0x53dc80));
+        const nfs::Float slider = fp::div(fp::add(1.0, f32(app, setup + 0x54)), f32(app, 0x53dc80));
         floatAt(app, car + kCarDrag) = float(fp::div(drag, slider));
     }
     else
     {
         floatAt(app, car + kCarDrag) = float(fp::div(drag, f32(app, 0x53dc84)));
     }
-    const x86::Float cube = fp::mul(fp::mul(fp::mul(f32(app, handling + kHandlingTopSpeed), f32(app, 0x53dc88)), f32(app, handling + kHandlingTopSpeed)), f32(app, handling + kHandlingTopSpeed));
+    const nfs::Float cube = fp::mul(fp::mul(fp::mul(f32(app, handling + kHandlingTopSpeed), f32(app, 0x53dc88)), f32(app, handling + kHandlingTopSpeed)), f32(app, handling + kHandlingTopSpeed));
     floatAt(app, car + kCarDrag) = float(fp::div(f32(app, car + kCarDrag), cube));
     floatAt(app, car + kCarDrag) = float(fp::mul(f32(app, car + kCarDrag), f32(app, 0x53dc8c)));
     return true;
 }
 
 /* The thunk: car eax, left in eax; the other registers kept. */
-x86::reg32 applyTuning(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 applyTuning(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    const Saved saved(cpu);
-    if (!tuneHandling(app, cpu, args.eax))
+    const Saved saved(ts);
+    if (!tuneHandling(app, ts, args.eax))
         return args.eax;
-    saved.restore(cpu);
-    cpu.esp += 4;
+    saved.restore(ts);
+    ts.sp += 4;
     return args.eax;
 }
 
@@ -902,37 +902,37 @@ x86::reg32 applyTuning(App* app, x86::CPU& cpu, x86::Args& args)
  * wheels' turn by its ratio) against the limit's 5/6 and 7/8 (up, but not past the top), and half
  * the limit (down: by one or two, by the throttle) -- with the wheels on the limit, or the brake
  * past 0.9, these; else only down by one. */
-reg32 gearChoice(App* app, reg32 car)
+u32 gearChoice(App* app, u32 car)
 {
     const std::uint8_t gear8 = byte(app, car + kCarGear);
     if (gear8 < 2)
         return 0;
     if ((byte(app, car + kCarFlags) & kCarFlagPlayer) != 0 && at(app, car + kCarRaceStage) == kRaceStageFinished)
         return 2;
-    const reg32 gear = gear8;
-    const reg32 handling = at(app, car + kCarHandling);
+    const u32 gear = gear8;
+    const u32 handling = at(app, car + kCarHandling);
     const i32 limit = i32(at(app, handling + kHandlingRevsLimit));
     const i32 halfLimit = limit / 2;
-    const i32 fiveSixths = i32(reg32(limit) - reg32(limit / 6));
-    const i32 sevenEighths = i32(reg32(limit) - reg32(limit / 8));
+    const i32 fiveSixths = i32(u32(limit) - u32(limit / 6));
+    const i32 sevenEighths = i32(u32(limit) - u32(limit / 8));
     const float throttle = size(floatAt(app, car + kCarThrottle));
-    const reg32 gears = at(app, handling + kHandlingGears);
-    const x86::Float lastGearTop = fp::mul(x86::Float(limit), f32(app, car + (gears << 2) + kCarGearInverse - 8));
-    const reg32 topGear = gears - 1 - (lastGearTop > f32(app, handling + kHandlingTopSpeed) ? 1 : 0);
+    const u32 gears = at(app, handling + kHandlingGears);
+    const nfs::Float lastGearTop = fp::mul(nfs::Float(limit), f32(app, car + (gears << 2) + kCarGearInverse - 8));
+    const u32 topGear = gears - 1 - (lastGearTop > f32(app, handling + kHandlingTopSpeed) ? 1 : 0);
     const bool belowTop = i32(gear) < i32(topGear);
-    const reg32 upGear = belowTop ? gear + 1 : gear;
-    const reg32 downOne = gear8 > 2 ? gear - 1 : gear;
-    const reg32 downTwo = gear8 > 3 ? gear - 2 : gear;
-    const auto revsIn = [&](reg32 inGear) {
+    const u32 upGear = belowTop ? gear + 1 : gear;
+    const u32 downOne = gear8 > 2 ? gear - 1 : gear;
+    const u32 downTwo = gear8 > 3 ? gear - 2 : gear;
+    const auto revsIn = [&](u32 inGear) {
         return fp::toInteger<i32>(fp::mul(f32(app, car + kCarWheelsTurn), f32(app, handling + kHandlingRatios + (inGear << 2))));
     };
     const i32 revs = revsIn(gear);
     const i32 revsDownOne = revsIn(downOne);
     const i32 revsDownTwo = revsIn(downTwo);
-    const i32 revsSize = revs < 0 ? i32(0u - reg32(revs)) : revs;
+    const i32 revsSize = revs < 0 ? i32(0u - u32(revs)) : revs;
 
     // Down to a gear not the one it is in: the choice; else no change.
-    const auto to = [&](reg32 target) { return gear != target ? target : 0; };
+    const auto to = [&](u32 target) { return gear != target ? target : 0; };
     if (i32(at(app, car + kCarBrake)) <= kBits0_9 && revsSize <= limit)
     {
         if ((halfLimit > revsDownOne && downOne == 2)
@@ -946,25 +946,25 @@ reg32 gearChoice(App* app, reg32 car)
     if (((halfLimit > revsDownTwo && downTwo == 2) || (revsDownTwo < fiveSixths && i32(downTwo) > 2)) && easedOff && gear != downTwo)
         return downTwo;
     // fcomp's "below" is !(>=) on every value: unordered sets it.
-    if ((halfLimit > revsDownOne && downOne == 2 && !(x86::Float(throttle) >= f64(app, kDownOneThrottle)))
+    if ((halfLimit > revsDownOne && downOne == 2 && !(nfs::Float(throttle) >= f64(app, kDownOneThrottle)))
         || (revsDownOne < fiveSixths && i32(downOne) > 2 && easedOff))
         return to(downOne);
     return 0;
 }
 
 /* The thunk: car eax, the choice to eax. */
-x86::reg32 automaticGear(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 automaticGear(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     args.eax = gearChoice(app, args.eax);
-    cpu.esp += 4;
+    ts.sp += 4;
     return args.eax;
 }
 
 /* A dot product (vertices', 0x4e01f0), as the x87 leaves it stored to a float. */
-std::optional<float> dot(App* app, CPU& cpu, reg32 a, reg32 b)
+std::optional<float> dot(App* app, ThreadState& ts, u32 a, u32 b)
 {
-    const double product = guest::direct<0x4e01f0, vertices::dotProduct>(app, cpu, a, b);
-    if (cpu.terminate)
+    const double product = guest::direct<0x4e01f0, vertices::dotProduct>(app, ts, a, b);
+    if (ts.terminate)
         return std::nullopt;
     return float(product);
 }
@@ -972,13 +972,13 @@ std::optional<float> dot(App* app, CPU& cpu, reg32 a, reg32 b)
 /* 0x4aa4f4: the car's speeds along its axes (dot products of its speed with two of its axes); the
  * clutch, the throttle and the axles' slip cleared.  The code then has a matching of the revs to
  * the speed which it cannot reach: its test wants neutral, its next the gear not neutral. */
-bool matchToSpeed(App* app, CPU& cpu, reg32 car)
+bool matchToSpeed(App* app, ThreadState& ts, u32 car)
 {
-    const auto forward = dot(app, cpu, car + kCarSpeed, car + 0x190);
+    const auto forward = dot(app, ts, car + kCarSpeed, car + 0x190);
     if (!forward)
         return false;
     floatAt(app, car + 0x4ec) = *forward;
-    const auto along = dot(app, cpu, car + kCarSpeed, car + 0x1a8);
+    const auto along = dot(app, ts, car + kCarSpeed, car + 0x1a8);
     if (!along)
         return false;
     floatAt(app, car + kCarSpeedAlong) = *along;
@@ -990,62 +990,62 @@ bool matchToSpeed(App* app, CPU& cpu, reg32 car)
 }
 
 /* The thunk: car eax, left in eax; the other registers kept. */
-x86::reg32 matchRevsToSpeed(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 matchRevsToSpeed(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    const Saved saved(cpu);
-    if (!matchToSpeed(app, cpu, args.eax))
+    const Saved saved(ts);
+    if (!matchToSpeed(app, ts, args.eax))
         return args.eax;
-    saved.restore(cpu);
-    cpu.esp += 4;
+    saved.restore(ts);
+    ts.sp += 4;
     return args.eax;
 }
 
 /* 0x4aa79f: the car's drive put back: +0x506 and the gear 2, +0x507 0 (the code has this for a
  * human player's car and for the others, the same) and its forces, speeds along the axes, the
  * clutch, the throttle and the axles' slip cleared. */
-void resetDrive(App* app, reg32 car)
+void resetDrive(App* app, u32 car)
 {
     putByte(app, car + 0x506, 2);
     putByte(app, car + kCarGear, 2);
     putByte(app, car + 0x507, 0);
-    for (const reg32 cleared : { 0x2e8u, 0x2ecu, 0x2f0u, 0x2f4u, 0x2f8u, 0x2fcu, 0x4ecu, 0x4f0u, 0x4f4u, 0x4f8u, 0x4fcu, 0x500u,
+    for (const u32 cleared : { 0x2e8u, 0x2ecu, 0x2f0u, 0x2f4u, 0x2f8u, 0x2fcu, 0x4ecu, 0x4f0u, 0x4f4u, 0x4f8u, 0x4fcu, 0x500u,
                                  kCarClutch, kCarThrottle, kCarFrontSlip, kCarBackSlip, 0x2e4u })
         put(app, car + cleared, 0);
 }
 
 /* The thunk: car eax, left there. */
-x86::reg32 resetDriveState(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 resetDriveState(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     resetDrive(app, args.eax);
-    cpu.esp += 4;
+    ts.sp += 4;
     return args.eax;
 }
 
 /* One vector scaled (vertices', 0x4e0050) into the result. */
-bool scaleVector(App* app, CPU& cpu, reg32 vector, float scale, reg32 result)
+bool scaleVector(App* app, ThreadState& ts, u32 vector, float scale, u32 result)
 {
-    guest::direct<0x4e0050, vertices::scaleVectorsBy>(app, cpu, 1, vector, scale, result);
-    return !cpu.terminate;
+    guest::direct<0x4e0050, vertices::scaleVectorsBy>(app, ts, 1, vector, scale, result);
+    return !ts.terminate;
 }
 
 /* One vector less the other, or with it added, in place (vertices', 0x4e0000 and 0x4dffb0). */
 template <bool Add>
-bool vectorWith(App* app, CPU& cpu, reg32 vector, reg32 other)
+bool vectorWith(App* app, ThreadState& ts, u32 vector, u32 other)
 {
     if constexpr (Add)
-        guest::direct<0x4dffb0, vertices::offsetVectorList<true>>(app, cpu, 1, vector, other, vector);
+        guest::direct<0x4dffb0, vertices::offsetVectorList<true>>(app, ts, 1, vector, other, vector);
     else
-        guest::direct<0x4e0000, vertices::offsetVectorList<false>>(app, cpu, 1, vector, other, vector);
-    return !cpu.terminate;
+        guest::direct<0x4e0000, vertices::offsetVectorList<false>>(app, ts, 1, vector, other, vector);
+    return !ts.terminate;
 }
 
 /* The other added by address (n in eax, the vector edx, the other ebx, the result ecx): settleCar's
  * last call, whose eax -- the vector past its end -- is what settleCar leaves, which its callers
  * on registers see; vertices' core gives nothing back. */
-bool addByAddress(App* app, CPU& cpu, reg32 vector, reg32 other, reg32& eax)
+bool addByAddress(App* app, ThreadState& ts, u32 vector, u32 other, u32& eax)
 {
-    guest::direct<0x4dffb0, vertices::offsetVectorList<true>>(app, cpu, 1, vector, other, vector);
-    if (cpu.terminate)
+    guest::direct<0x4dffb0, vertices::offsetVectorList<true>>(app, ts, 1, vector, other, vector);
+    if (ts.terminate)
         return false;
     eax = vector + 12;  // the vector past its end, as the thunk leaves it
     return true;
@@ -1054,13 +1054,13 @@ bool addByAddress(App* app, CPU& cpu, reg32 vector, reg32 other, reg32& eax)
 /* A vector's part along the up axis taken off, scaled by `keep`, and put back: `part` a vector
  * on the guest's stack the callees are handed.  `last`: settleCar's last, its add by address, whose
  * eax goes to `eax`. */
-bool dampUpPart(App* app, CPU& cpu, reg32 vector, reg32 up, reg32 part, float along, float keep, reg32 scaleFrom, reg32 scaleTo,
-                bool last, reg32& eax)
+bool dampUpPart(App* app, ThreadState& ts, u32 vector, u32 up, u32 part, float along, float keep, u32 scaleFrom, u32 scaleTo,
+                bool last, u32& eax)
 {
-    if (!scaleVector(app, cpu, up, along, part) || !vectorWith<false>(app, cpu, vector, part)
-        || !scaleVector(app, cpu, scaleFrom, keep, scaleTo))
+    if (!scaleVector(app, ts, up, along, part) || !vectorWith<false>(app, ts, vector, part)
+        || !scaleVector(app, ts, scaleFrom, keep, scaleTo))
         return false;
-    return last ? addByAddress(app, cpu, vector, part, eax) : vectorWith<true>(app, cpu, vector, part);
+    return last ? addByAddress(app, ts, vector, part, eax) : vectorWith<true>(app, ts, vector, part);
 }
 
 /* 0x4aa8e7: the car settled when it is all but stopped and upright: its speed's and its spin's
@@ -1068,67 +1068,67 @@ bool dampUpPart(App* app, CPU& cpu, reg32 vector, reg32 up, reg32 part, float al
  * unless it hardly moves (two of the speeds' sizes under the constant).  eax is left as the code
  * leaves it, which callers on registers can see: where it stops early, the status word of its last
  * compare in the low half.  That eax; nullopt when the game stopped. */
-std::optional<reg32> settleCarLeaving(App* app, CPU& cpu, reg32 car)
+std::optional<u32> settleCarLeaving(App* app, ThreadState& ts, u32 car)
 {
-    const reg32 up = car + kCarUpAxis;
+    const u32 up = car + kCarUpAxis;
     if (i32(at(app, car + kCarRoadSpeed)) > kBits0_2)
         return car;
-    const x86::Float upward = f32(app, up + 4);
-    const x86::Float lowest = f64(app, kUprightLowest);
+    const nfs::Float upward = f32(app, up + 4);
+    const nfs::Float lowest = f64(app, kUprightLowest);
     if (!(upward >= lowest))
         return (up & 0xffff0000u) | fp::compare(upward, lowest);
     const float rolling = floatAt(app, car + kCarRoadState);
-    const auto speedUp = dot(app, cpu, car + 0xc0, up);
+    const auto speedUp = dot(app, ts, car + 0xc0, up);
     if (!speedUp)
         return std::nullopt;
-    const auto spinUp = dot(app, cpu, car + 0xd8, up);
+    const auto spinUp = dot(app, ts, car + 0xd8, up);
     if (!spinUp)
         return std::nullopt;
     const float rollingSize = size(rolling), speedSize = size(*speedUp), spinSize = size(*spinUp);
     float keepSpeed = 0.94f, keepSpin = 0.98f;
     if (half(app, car + kCarRaceStarted) != 0)
     {
-        const x86::Float still = f32(app, kStillBelow);
-        const x86::Float lastSum = fp::add(speedSize, spinSize);
+        const nfs::Float still = f32(app, kStillBelow);
+        const nfs::Float lastSum = fp::add(speedSize, spinSize);
         if (!(fp::add(rollingSize, speedSize) > still) && !(fp::add(rollingSize, spinSize) > still) && !(lastSum > still))
             return (car & 0xffff0000u) | fp::compare(lastSum, still);
         keepSpeed = 0.98f;
         keepSpin = 0.998f;
     }
     // The vector the callees are handed, on the guest's stack, under the frame the code has.
-    cpu.esp -= kPartBelowEntry;
-    const reg32 part = cpu.esp + kPartOverEsp;
-    const reg32 speed = car + kCarSpeed, spin = car + kCarSpin;
-    const auto alongSpeed = dot(app, cpu, up, speed);
+    ts.sp -= kPartBelowEntry;
+    const u32 part = ts.sp + kPartOverEsp;
+    const u32 speed = car + kCarSpeed, spin = car + kCarSpin;
+    const auto alongSpeed = dot(app, ts, up, speed);
     if (!alongSpeed)
         return std::nullopt;
-    reg32 eax = 0;
-    if (!dampUpPart(app, cpu, speed, up, part, *alongSpeed, keepSpeed, speed, speed, false, eax))
+    u32 eax = 0;
+    if (!dampUpPart(app, ts, speed, up, part, *alongSpeed, keepSpeed, speed, speed, false, eax))
         return std::nullopt;
-    const auto alongSpin = dot(app, cpu, up, spin);
+    const auto alongSpin = dot(app, ts, up, spin);
     if (!alongSpin)
         return std::nullopt;
-    if (!dampUpPart(app, cpu, spin, up, part, *alongSpin, keepSpin, part, part, true, eax))
+    if (!dampUpPart(app, ts, spin, up, part, *alongSpin, keepSpin, part, part, true, eax))
         return std::nullopt;
     return eax;
 }
 
 /* settleCarLeaving: the eax it leaves; nullopt when the game stopped. */
-std::optional<reg32> settleCar(App* app, CPU& cpu, reg32 car)
+std::optional<u32> settleCar(App* app, ThreadState& ts, u32 car)
 {
-    return settleCarLeaving(app, cpu, car);
+    return settleCarLeaving(app, ts, car);
 }
 
 /* The thunk: car eax; eax as settleCar leaves it, the other registers kept. */
-x86::reg32 settleAtRest(App* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 settleAtRest(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    const Saved saved(cpu);
-    const std::optional<reg32> left = settleCarLeaving(app, cpu, args.eax);
+    const Saved saved(ts);
+    const std::optional<u32> left = settleCarLeaving(app, ts, args.eax);
     if (!left)
         return args.eax;
-    saved.restore(cpu);
+    saved.restore(ts);
     args.eax = *left;
-    cpu.esp += 4;
+    ts.sp += 4;
     return args.eax;
 }
 

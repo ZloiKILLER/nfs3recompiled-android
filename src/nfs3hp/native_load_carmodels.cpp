@@ -12,10 +12,9 @@
 #include "native_loading.h"
 #include "port_menus.h"
 #include "native_vertices.h"
-#include "native_windows.h"
 #include "port_thrash.h"
 #include "native_watcom.h"
-#include "host_system.h"
+#include "os_system.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -82,48 +81,47 @@ using guest::at;
 using guest::byte;
 using guest::put;
 using guest::putByte;
-using x86::reg16;
-using x86::reg32;
-using x86::reg8;
-using x86::sreg32;
-using App = win32::WinApplication;
+using nfs::u16;
+using nfs::u32;
+using nfs::u8;
+using nfs::s32;
+using App = nfs::App;
 
 using guest::EspKept;
-using CPU = x86::CPU;
+using ThreadState = nfs::ThreadState;
 using i32 = std::int32_t;
 
 // The network's carp.txt: the data path, the file it is written to, the
 // receiver's record and what it takes next (0x12c bytes into the transfer's
 // name), the .viv it is read from; the transfer's state's words.
-constexpr reg32 kDataPath = 0x7a28b4, kCarpFile = 0x79faac, kReceiver = 0x55e5bc, kTransferName = 0x79f97c;
-constexpr reg32 kNextBytes = 0x12c, kSendViv = 0x79f978, kTransferTitle = 0x79f5e0, kTransferWord = 0x79faa8;
+constexpr u32 kDataPath = 0x7a28b4, kCarpFile = 0x79faac, kReceiver = 0x55e5bc, kTransferName = 0x79f97c;
+constexpr u32 kNextBytes = 0x12c, kSendViv = 0x79f978, kTransferTitle = 0x79f5e0, kTransferWord = 0x79faa8;
 // Its strings: "wb", "Carp.txt", "car.viv", "\carp.txt", "car.VIV".
-constexpr reg32 kWriteMode = 0x53c590, kCarpName = 0x53c584, kCarVivName = 0x53c594, kCarpPath = 0x53c59c;
-constexpr reg32 kCarVivPath = 0x53c5a8;
+constexpr u32 kWriteMode = 0x53c590, kCarpName = 0x53c584, kCarVivName = 0x53c594, kCarpPath = 0x53c59c;
+constexpr u32 kCarVivPath = 0x53c5a8;
 // The models': an empty name (the blocks' tag), "%s.viv", "car.fce", the
 // trace's file and format, "%s.fce", "%s00.tga", "%s.art"; the .viv's ones.
-constexpr reg32 kNoName = 0x53c60c, kVivFormat = 0x53c62c, kFceName = 0x53c634, kTraceFile = 0x53c63c;
-constexpr reg32 kTraceFormat = 0x53c658, kFceFormat = 0x53c670, kTgaFormat = 0x53c678, kArtFormat = 0x53c684;
-constexpr reg32 kVivFceFormat = 0x53ff70, kVivNoName = 0x53ff78, kVivTgaFormat = 0x53ff7c;
+constexpr u32 kNoName = 0x53c60c, kVivFormat = 0x53c62c, kFceName = 0x53c634, kTraceFile = 0x53c63c;
+constexpr u32 kTraceFormat = 0x53c658, kFceFormat = 0x53c670, kTgaFormat = 0x53c678, kArtFormat = 0x53c684;
+constexpr u32 kVivFceFormat = 0x53ff70, kVivNoName = 0x53ff78, kVivTgaFormat = 0x53ff7c;
 // Their numbers: 6 (a double, the hue's sixths), 255 (a double); the two
 // records of zeros nfs3.exe keeps among its code (0x4b7a10, 0x4b7a20).
-constexpr reg32 kSix = 0x53c660, kFull = 0x53c668;
-constexpr reg32 kZeros = 0x4b7a10, kMoreZeros = 0x4b7a20;
+constexpr u32 kSix = 0x53c660, kFull = 0x53c668;
+constexpr u32 kZeros = 0x4b7a10, kMoreZeros = 0x4b7a20;
 // Whether a pixel all black but its top bit is drawn as 0x8001.
-constexpr reg32 kBlackVisible = 0x7a3a6c;
+constexpr u32 kBlackVisible = 0x7a3a6c;
 // The specs: the players' tables, their names, the default spec; the path
 // made, the folder before it, "carspecs\", ".spc".
-constexpr reg32 kFirstSpecs = 0x8b9200, kSecondSpecs = 0x8b88a0, kSpecsBytes = 0x960, kSpecBytes = 0x30;
-constexpr reg32 kSpecCount = 0x32, kFirstPlayer = 0x549784, kSecondPlayer = 0x54978c, kDefaultSpec = 0x55d024;
-constexpr reg32 kSpecPath = 0x564188, kSpecFolder = 0x7a2fb4, kSpecsFolder = 0x549770, kSpecExtension = 0x54977c;
+constexpr u32 kFirstSpecs = 0x8b9200, kSecondSpecs = 0x8b88a0, kSpecsBytes = 0x960, kSpecBytes = 0x30;
+constexpr u32 kSpecCount = 0x32, kFirstPlayer = 0x549784, kSecondPlayer = 0x54978c, kDefaultSpec = 0x55d024;
+constexpr u32 kSpecPath = 0x564188, kSpecFolder = 0x7a2fb4, kSpecsFolder = 0x549770, kSpecExtension = 0x54977c;
 // What is called: the paths' backslash, a file copied, the .viv's name the new car goes into;
 // fopen, fclose, fwrite, mkdir, strrchr; sprintf; a file found in a .viv; fseek, fread; memmove; a
 // model made ready; a texture allocated, its pixels given; vectors less another; __CHP; memset; a
-// player's name valid; GetModuleFileNameA; unlink, a file's size, access, chmod.  All typed,
+// player's name valid; unlink, a file's size, access, chmod.  All typed,
 // called as C++ (guest::direct); the constants are the host's and the vectors'.
-constexpr reg32 kSubtract = 0x4e0000;
-constexpr reg32 kChop = 0x4dfd56;
-constexpr reg32 kGetModuleFileName = 0x534544;
+constexpr u32 kSubtract = 0x4e0000;
+constexpr u32 kChop = 0x4dfd56;
 // The rest are the other typed files' (native_load_cardb.h, native_load_saves.h,
 // native_ea_support.h, native_ea_memory.h, native_ea_net.h, native_graphics.h,
 // native_vertices.h), called as C++ (guest::direct): the car's folder marked, a car's record, id,
@@ -132,28 +130,28 @@ constexpr reg32 kGetModuleFileName = 0x534544;
 // memory, memmove; a file loaded, there, loaded quietly; a texture allocated; a vector's length;
 // a file's place in a .viv in memory; a spec file of this machine's; a file saved.
 
-reg16 half(win32::WinApplication* app, reg32 address)
+u16 half(nfs::App* app, u32 address)
 {
-    return app->getMemory<reg16>(address);
+    return app->getMemory<u16>(address);
 }
 
-void putHalf(win32::WinApplication* app, reg32 address, reg16 value)
+void putHalf(nfs::App* app, u32 address, u16 value)
 {
-    app->getMemory<reg16>(address) = value;
+    app->getMemory<u16>(address) = value;
 }
 
-x86::Float f64(win32::WinApplication* app, reg32 address)
+nfs::Float f64(nfs::App* app, u32 address)
 {
-    return x86::Float(app->getMemory<double>(address));
+    return nfs::Float(app->getMemory<double>(address));
 }
 
-void putF32(win32::WinApplication* app, reg32 address, const x86::Float& value)
+void putF32(nfs::App* app, u32 address, const nfs::Float& value)
 {
     app->getMemory<float>(address) = float(value);
 }
 
 /* Which table of specs player's is: the first's, the second's, or none. */
-reg32 specsOf(reg32 player)
+u32 specsOf(u32 player)
 {
     return player == 0 ? kFirstSpecs : player == 1 ? kSecondSpecs : 0;
 }
@@ -164,56 +162,56 @@ reg32 specsOf(reg32 player)
 class GuestFrame
 {
 public:
-    GuestFrame(CPU& cpu, reg32 pushed, reg32 bytes) : cpu(cpu), esp(cpu.esp), base(cpu.esp - pushed)
+    GuestFrame(ThreadState& ts, u32 pushed, u32 bytes) : ts(ts), esp(ts.sp), base(ts.sp - pushed)
     {
-        cpu.esp = base - bytes;
+        ts.sp = base - bytes;
     }
-    ~GuestFrame() { cpu.esp = esp; }
-    reg32 operator-(reg32 offset) const { return base - offset; }
+    ~GuestFrame() { ts.sp = esp; }
+    u32 operator-(u32 offset) const { return base - offset; }
 
 private:
-    CPU& cpu;
-    const reg32 esp;
-    const reg32 base;
+    ThreadState& ts;
+    const u32 esp;
+    const u32 base;
 };
 
 // A spec's fields: in use (a byte), its car's id (16 bytes), its car's spec (0x1c bytes).
-constexpr reg32 kSpecInUse = 0, kSpecCarId = 4, kSpecCar = 0x14, kCarIdBytes = 0x10, kCarSpecBytes = 0x1c;
+constexpr u32 kSpecInUse = 0, kSpecCarId = 4, kSpecCar = 0x14, kCarIdBytes = 0x10, kCarSpecBytes = 0x1c;
 // The return address's slot on the guest's stack.
-constexpr reg32 kReturnSlot = 4;
+constexpr u32 kReturnSlot = 4;
 
 // A runtime's core's result, nothing when the game stopped in it.
-std::optional<reg32> unlessStopped(CPU& cpu, reg32 result)
+std::optional<u32> unlessStopped(ThreadState& ts, u32 result)
 {
-    if (cpu.terminate)
+    if (ts.terminate)
         return std::nullopt;
     return result;
 }
 
 /* A native_frontend_* file's typed core called as C++ (guest::direct): nothing (false) when the
- * game stopped in it (its calls into the game throw fe::Terminated), every register but eax kept.  A reg32 result is the eax the function leaves: eax set to it. */
-template <reg32 Address, auto Core, typename... Args>
-auto feCore(App* app, CPU& cpu, Args... args)
+ * game stopped in it (its calls into the game throw fe::Terminated), every register but eax kept.  A u32 result is the eax the function leaves: eax set to it. */
+template <u32 Address, auto Core, typename... Args>
+auto feCore(App* app, ThreadState& ts, Args... args)
 {
-    using Result = decltype(guest::direct<Address, Core>(app, cpu, args...));
+    using Result = decltype(guest::direct<Address, Core>(app, ts, args...));
     if constexpr (std::is_void_v<Result>)
     {
         try
         {
-            guest::direct<Address, Core>(app, cpu, args...);
+            guest::direct<Address, Core>(app, ts, args...);
         }
         catch (const fe::Terminated&)
         {
             return false;
         }
-        return !cpu.terminate;
+        return !ts.terminate;
     }
     else
     {
         try
         {
-            const Result result = guest::direct<Address, Core>(app, cpu, args...);
-            return cpu.terminate ? std::optional<Result>() : std::optional<Result>(result);
+            const Result result = guest::direct<Address, Core>(app, ts, args...);
+            return ts.terminate ? std::optional<Result>() : std::optional<Result>(result);
         }
         catch (const fe::Terminated&)
         {
@@ -223,121 +221,121 @@ auto feCore(App* app, CPU& cpu, Args... args)
 }
 
 /* 0x4e0640: memset of `count` bytes at `to` to 0 (it gives `to` back); false when the game stopped. */
-bool clearBytes(App* app, CPU& cpu, reg32 to, reg32 count)
+bool clearBytes(App* app, ThreadState& ts, u32 to, u32 count)
 {
-    return unlessStopped(cpu, guest::direct<0x4e0640, watcom::clib::memset>(app, cpu, to, 0u, count)).has_value();
+    return unlessStopped(ts, guest::direct<0x4e0640, watcom::clib::memset>(app, ts, to, 0u, count)).has_value();
 }
 
 /* The runtime's fopen, fclose, strrchr, mkdir, fseek and fread (native_watcom.h); nothing when the
  * game stopped. */
-std::optional<reg32> openFile(App* app, CPU& cpu, reg32 name, reg32 mode)
+std::optional<u32> openFile(App* app, ThreadState& ts, u32 name, u32 mode)
 {
-    return unlessStopped(cpu, guest::direct<0x4edfe8, watcom::clib::fopen>(app, cpu, name, mode));
+    return unlessStopped(ts, guest::direct<0x4edfe8, watcom::clib::fopen>(app, ts, name, mode));
 }
 
-std::optional<reg32> closeFile(App* app, CPU& cpu, reg32 stream)
+std::optional<u32> closeFile(App* app, ThreadState& ts, u32 stream)
 {
-    return unlessStopped(cpu, guest::direct<0x4ee100, watcom::clib::fclose>(app, cpu, stream));
+    return unlessStopped(ts, guest::direct<0x4ee100, watcom::clib::fclose>(app, ts, stream));
 }
 
-std::optional<reg32> lastOf(App* app, CPU& cpu, reg32 string, reg32 c)
+std::optional<u32> lastOf(App* app, ThreadState& ts, u32 string, u32 c)
 {
-    return unlessStopped(cpu, guest::direct<0x4ee2f0, watcom::clib::strrchr>(app, cpu, string, c));
+    return unlessStopped(ts, guest::direct<0x4ee2f0, watcom::clib::strrchr>(app, ts, string, c));
 }
 
-std::optional<reg32> makeFolder(App* app, CPU& cpu, reg32 path)
+std::optional<u32> makeFolder(App* app, ThreadState& ts, u32 path)
 {
-    return unlessStopped(cpu, guest::direct<0x4eb1d0, watcom::clib::mkdir>(app, cpu, path));
+    return unlessStopped(ts, guest::direct<0x4eb1d0, watcom::clib::mkdir>(app, ts, path));
 }
 
-std::optional<reg32> seekFile(App* app, CPU& cpu, reg32 stream, reg32 offset, reg32 whence)
+std::optional<u32> seekFile(App* app, ThreadState& ts, u32 stream, u32 offset, u32 whence)
 {
-    return unlessStopped(cpu, guest::direct<0x4e9088, watcom::clib::fseek>(app, cpu, stream, offset, whence));
+    return unlessStopped(ts, guest::direct<0x4e9088, watcom::clib::fseek>(app, ts, stream, offset, whence));
 }
 
-std::optional<reg32> readFile(App* app, CPU& cpu, reg32 buffer, reg32 size, reg32 count, reg32 stream)
+std::optional<u32> readFile(App* app, ThreadState& ts, u32 buffer, u32 size, u32 count, u32 stream)
 {
-    return unlessStopped(cpu, guest::direct<0x4e9200, watcom::clib::fread>(app, cpu, buffer, size, count, stream));
+    return unlessStopped(ts, guest::direct<0x4e9200, watcom::clib::fread>(app, ts, buffer, size, count, stream));
 }
 
 /* The runtime's access, chmod and unlink on a path; nothing when the game stopped. */
-std::optional<reg32> accessFile(App* app, CPU& cpu, reg32 path, reg32 mode)
+std::optional<u32> accessFile(App* app, ThreadState& ts, u32 path, u32 mode)
 {
-    return unlessStopped(cpu, guest::direct<0x4f05f0, watcom::clib::access>(app, cpu, path, mode));
+    return unlessStopped(ts, guest::direct<0x4f05f0, watcom::clib::access>(app, ts, path, mode));
 }
 
-std::optional<reg32> chmodFile(App* app, CPU& cpu, reg32 path, reg32 mode)
+std::optional<u32> chmodFile(App* app, ThreadState& ts, u32 path, u32 mode)
 {
-    return unlessStopped(cpu, guest::direct<0x4ee3c0, watcom::clib::chmod>(app, cpu, path, mode));
+    return unlessStopped(ts, guest::direct<0x4ee3c0, watcom::clib::chmod>(app, ts, path, mode));
 }
 
-std::optional<reg32> unlinkFile(App* app, CPU& cpu, reg32 path)
+std::optional<u32> unlinkFile(App* app, ThreadState& ts, u32 path)
 {
-    return unlessStopped(cpu, guest::direct<0x4e28a0, watcom::clib::unlink>(app, cpu, path));
+    return unlessStopped(ts, guest::direct<0x4e28a0, watcom::clib::unlink>(app, ts, path));
 }
 
 /* 0x4529a0 (port::menus'): the path ended with a backslash; false when the game stopped. */
-bool endPath(App* app, CPU& cpu, reg32 path)
+bool endPath(App* app, ThreadState& ts, u32 path)
 {
-    return unlessStopped(cpu, guest::direct<0x4529a0, port::menus::backslashEnded>(app, cpu, path)).has_value();
+    return unlessStopped(ts, guest::direct<0x4529a0, port::menus::backslashEnded>(app, ts, path)).has_value();
 }
 
 /* 0x49cfa0: the FCE at `fce` made ready; the FCE, nothing when the game stopped. */
-std::optional<reg32> modelReady(App* app, CPU& cpu, reg32 fce)
+std::optional<u32> modelReady(App* app, ThreadState& ts, u32 fce)
 {
-    return guest::direct<0x49cfa0, loader::fceModelReady>(app, cpu, fce);
+    return guest::direct<0x49cfa0, loader::fceModelReady>(app, ts, fce);
 }
 
 /* 0x49c620: `texture` given the pixels; false when the game stopped. */
-bool textureGiven(App* app, CPU& cpu, reg32 texture, reg32 pixels, reg32 width, reg32 height)
+bool textureGiven(App* app, ThreadState& ts, u32 texture, u32 pixels, u32 width, u32 height)
 {
-    return guest::direct<0x49c620, graphics::textureUpdated>(app, cpu, texture, pixels, width, height) && !cpu.terminate;
+    return guest::direct<0x49c620, graphics::textureUpdated>(app, ts, texture, pixels, width, height) && !ts.terminate;
 }
 
 /* 0x4721f0 (native_frontend_text's): whether `name` will do for a player's, 1 or 0; nothing when
  * the game stopped. */
-std::optional<reg32> nameWillDo(App* app, CPU& cpu, reg32 name)
+std::optional<u32> nameWillDo(App* app, ThreadState& ts, u32 name)
 {
-    return unlessStopped(cpu, guest::direct<0x4721f0, frontend::text::nameValid>(app, cpu, name));
+    return unlessStopped(ts, guest::direct<0x4721f0, frontend::text::nameValid>(app, ts, name));
 }
 
 /* The menus' 0x452a00 (loada's): the file `from` copied to `to`; nothing when the game stopped. */
-std::optional<reg32> copyFile(App* app, CPU& cpu, reg32 to, reg32 from)
+std::optional<u32> copyFile(App* app, ThreadState& ts, u32 to, u32 from)
 {
-    return feCore<0x452a00, frontend::loada::copyFile>(app, cpu, to, from);
+    return feCore<0x452a00, frontend::loada::copyFile>(app, ts, to, from);
 }
 
 /* 0x439a50: car `car`'s record, or 0 past the last. */
-std::optional<reg32> carRecord(App* app, CPU& cpu, i32 car)
+std::optional<u32> carRecord(App* app, ThreadState& ts, i32 car)
 {
-    const reg32 record = guest::direct<0x439a50, recordAt>(app, cpu, reg32(car));
-    if (cpu.terminate)
+    const u32 record = guest::direct<0x439a50, recordAt>(app, ts, u32(car));
+    if (ts.terminate)
         return std::nullopt;
     return record;
 }
 
 /* 0x439520: car `car`'s id, or 0. */
-std::optional<reg32> carId(App* app, CPU& cpu, i32 car)
+std::optional<u32> carId(App* app, ThreadState& ts, i32 car)
 {
-    return guest::direct<0x439520, idOf>(app, cpu, reg32(car));
+    return guest::direct<0x439520, idOf>(app, ts, u32(car));
 }
 
 /* rep movsd, then rep movsb: `count` bytes from `from` to `to`, a dword at a time and the last
  * up to three a byte at a time. */
-void copyGuest(App* app, reg32 to, reg32 from, reg32 count)
+void copyGuest(App* app, u32 to, u32 from, u32 count)
 {
-    for (reg32 n = count >> 2; n != 0; --n, to += 4, from += 4)
+    for (u32 n = count >> 2; n != 0; --n, to += 4, from += 4)
         put(app, to, at(app, from));
-    for (reg32 n = count & 3; n != 0; --n)
+    for (u32 n = count & 3; n != 0; --n)
         putByte(app, to++, byte(app, from++));
 }
 
 /* Watcom's inlined strcpy: the string at `from` to `to`, its 0 too, a byte after another. */
-void copyText(App* app, reg32 to, reg32 from)
+void copyText(App* app, u32 to, u32 from)
 {
     for (;;)
     {
-        const reg8 c = byte(app, from++);
+        const u8 c = byte(app, from++);
         putByte(app, to++, c);
         if (c == 0)
             return;
@@ -345,7 +343,7 @@ void copyText(App* app, reg32 to, reg32 from)
 }
 
 /* Watcom's inlined strcat: the string at `from` after the one at `to`. */
-void appendText(App* app, reg32 to, reg32 from)
+void appendText(App* app, u32 to, u32 from)
 {
     while (byte(app, to) != 0)
         ++to;
@@ -354,44 +352,44 @@ void appendText(App* app, reg32 to, reg32 from)
 
 }  // namespace
 
-x86::reg32 beginCarpReceive(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 receiveCarpChunk(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 beginCarpSend(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 readCarColors(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 rgbToHsv(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 hsvToRgb(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 tintPixel(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 scaleTexture(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 fitTexture(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 loadArtTextures(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 nearestModelColor(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 loadTgaTexture(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 loadCarModel(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 loadVivCarModel(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 copyVivCarModel(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 setSpecUsed(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 specUsed(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 specCarName(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 findSpec(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 freeSpecSlot(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 setSpec(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 defaultSpecs(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 refreshSpecs(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 specPath(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 readSpecs(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 loadPlayerSpecs(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 savePlayerSpecs(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+nfs::u32 beginCarpReceive(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 receiveCarpChunk(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 beginCarpSend(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 readCarColors(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 rgbToHsv(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 hsvToRgb(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 tintPixel(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 scaleTexture(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 fitTexture(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 loadArtTextures(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 nearestModelColor(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 loadTgaTexture(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 loadCarModel(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 loadVivCarModel(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 copyVivCarModel(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 setSpecUsed(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 specUsed(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 specCarName(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 findSpec(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 freeSpecSlot(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 setSpec(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 defaultSpecs(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 refreshSpecs(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 specPath(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 readSpecs(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 loadPlayerSpecs(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 savePlayerSpecs(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
 
 namespace
 {
 
 // The receiver's record: done, the size awaited, the buffer, what is in, the FILE written.
-constexpr reg32 kReceiverDone = 0, kReceiverSize = 4, kReceiverBuffer = 8, kReceiverIn = 0xc, kReceiverFile = 0x10;
+constexpr u32 kReceiverDone = 0, kReceiverSize = 4, kReceiverBuffer = 8, kReceiverIn = 0xc, kReceiverFile = 0x10;
 
 /* 0x49b540's core: the receiver's record made ready for `bytes` bytes: into `buffer`, or with
  * none into the data path's Carp.txt, opened to write (0x4edfe8).  0, or -1 when it would not
  * open; nullopt when the game stopped. */
-std::optional<reg32> beginReceive(App* app, CPU& cpu, reg32 record, reg32 bytes, reg32 buffer)
+std::optional<u32> beginReceive(App* app, ThreadState& ts, u32 record, u32 bytes, u32 buffer)
 {
     put(app, record + kReceiverIn, 0);
     put(app, record + kReceiverDone, 0);
@@ -403,10 +401,10 @@ std::optional<reg32> beginReceive(App* app, CPU& cpu, reg32 record, reg32 bytes,
         return 0;
     }
     copyText(app, kCarpFile, kDataPath);
-    if (!endPath(app, cpu, kCarpFile))
+    if (!endPath(app, ts, kCarpFile))
         return std::nullopt;
     appendText(app, kCarpFile, kCarpName);
-    const std::optional<reg32> file = openFile(app, cpu, kCarpFile, kWriteMode);
+    const std::optional<u32> file = openFile(app, ts, kCarpFile, kWriteMode);
     if (!file)
         return std::nullopt;
     put(app, record + kReceiverFile, *file);
@@ -415,8 +413,8 @@ std::optional<reg32> beginReceive(App* app, CPU& cpu, reg32 record, reg32 bytes,
 
 // receiveCarpChunk's frame: four registers pushed, then 0x260 bytes -- the car's folder at -0x134
 // and its carp.txt's path at -0x260, both handed to the functions it calls.
-constexpr reg32 kChunkPushed = 0x10, kChunkFrame = 0x260, kChunkFolder = 0x134, kChunkCarp = 0x260;
-constexpr reg32 kBackslash = 0x5c;
+constexpr u32 kChunkPushed = 0x10, kChunkFrame = 0x260, kChunkFolder = 0x134, kChunkCarp = 0x260;
+constexpr u32 kBackslash = 0x5c;
 
 /* 0x49b5f0's core: `count` bytes at `data` taken by the receiver's record, unless it is done:
  * written to its file (fwrite; failing, the file closed, the record done, -1) or copied into its
@@ -424,21 +422,21 @@ constexpr reg32 kBackslash = 0x5c;
  * the transfer's name; or, from the buffer, the record done and the car put together in its
  * folder (the data path's, made): its carp.txt copied in, car.viv made of it and the others, the
  * cars' data and the transfer's state brought up to date.  0; nullopt when the game stopped. */
-std::optional<reg32> receiveChunk(App* app, CPU& cpu, reg32 record, reg32 data, reg32 count)
+std::optional<u32> receiveChunk(App* app, ThreadState& ts, u32 record, u32 data, u32 count)
 {
     if (at(app, record + kReceiverDone) != 0)
         return 0;
-    const GuestFrame frame(cpu, kChunkPushed, kChunkFrame);
-    const reg32 folder = frame - kChunkFolder, carp = frame - kChunkCarp;
-    const reg32 file = at(app, record + kReceiverFile);
+    const GuestFrame frame(ts, kChunkPushed, kChunkFrame);
+    const u32 folder = frame - kChunkFolder, carp = frame - kChunkCarp;
+    const u32 file = at(app, record + kReceiverFile);
     if (file != 0)
     {
-        const reg32 written = guest::direct<0x4eebd0, watcom::clib::fwrite>(app, cpu, data, count, 1u, file);
-        if (cpu.terminate)
+        const u32 written = guest::direct<0x4eebd0, watcom::clib::fwrite>(app, ts, data, count, 1u, file);
+        if (ts.terminate)
             return std::nullopt;
         if (written == 0)
         {
-            if (!closeFile(app, cpu, at(app, record + kReceiverFile)))
+            if (!closeFile(app, ts, at(app, record + kReceiverFile)))
                 return std::nullopt;
             put(app, record + kReceiverFile, 0);
             put(app, record + kReceiverDone, 1);
@@ -447,48 +445,48 @@ std::optional<reg32> receiveChunk(App* app, CPU& cpu, reg32 record, reg32 data, 
     }
     else
         copyGuest(app, at(app, record + kReceiverBuffer) + at(app, record + kReceiverIn), data, count);
-    const reg32 in = at(app, record + kReceiverIn) + count;
+    const u32 in = at(app, record + kReceiverIn) + count;
     put(app, record + kReceiverIn, in);
     if (in != at(app, record + kReceiverSize))
         return 0;
-    const reg32 written = at(app, record + kReceiverFile);
+    const u32 written = at(app, record + kReceiverFile);
     if (written != 0)
     {
-        if (!closeFile(app, cpu, written))
+        if (!closeFile(app, ts, written))
             return std::nullopt;
         put(app, record + kReceiverFile, 0);
-        if (!beginReceive(app, cpu, kReceiver, kNextBytes, kTransferName))
+        if (!beginReceive(app, ts, kReceiver, kNextBytes, kTransferName))
             return std::nullopt;
         return 0;
     }
     put(app, record + kReceiverDone, 1);
     copyText(app, folder, kDataPath);
-    if (!endPath(app, cpu, folder))
+    if (!endPath(app, ts, folder))
         return std::nullopt;
-    const std::optional<reg32> last = lastOf(app, cpu, folder, kBackslash);
-    if (!last || !guest::direct<0x4385a0, freePlayerFolder>(app, cpu, *last + 1) || !makeFolder(app, cpu, folder)
-        || !endPath(app, cpu, folder))
+    const std::optional<u32> last = lastOf(app, ts, folder, kBackslash);
+    if (!last || !guest::direct<0x4385a0, freePlayerFolder>(app, ts, *last + 1) || !makeFolder(app, ts, folder)
+        || !endPath(app, ts, folder))
         return std::nullopt;
     appendText(app, folder, kCarpName);
-    if (!copyFile(app, cpu, folder, kCarpFile))
+    if (!copyFile(app, ts, folder, kCarpFile))
         return std::nullopt;
     copyText(app, carp, folder);
-    const std::optional<reg32> carpName = lastOf(app, cpu, carp, kBackslash);
+    const std::optional<u32> carpName = lastOf(app, ts, carp, kBackslash);
     if (!carpName)
         return std::nullopt;
     copyText(app, *carpName + 1, kCarVivName);
-    const std::optional<reg32> viv = unlessStopped(cpu, guest::direct<0x43ba20, load::placeholderViv>(app, cpu));
-    if (!viv || !copyFile(app, cpu, carp, *viv) || !guest::direct<0x43baa0, appendCarp>(app, cpu, carp)
-        || !guest::direct<0x439d90, loadCars>(app, cpu))
+    const std::optional<u32> viv = unlessStopped(ts, guest::direct<0x43ba20, load::placeholderViv>(app, ts));
+    if (!viv || !copyFile(app, ts, carp, *viv) || !guest::direct<0x43baa0, appendCarp>(app, ts, carp)
+        || !guest::direct<0x439d90, loadCars>(app, ts))
         return std::nullopt;
-    guest::direct<0x43bc00, setLastId>(app, cpu, kTransferTitle);
-    if (cpu.terminate || !guest::direct<0x43bc40, nameLastCar>(app, cpu, kTransferName))
+    guest::direct<0x43bc00, setLastId>(app, ts, kTransferTitle);
+    if (ts.terminate || !guest::direct<0x43bc40, nameLastCar>(app, ts, kTransferName))
         return std::nullopt;
-    guest::direct<0x43bc70, setLastFlags>(app, cpu, at(app, kTransferWord));
-    if (cpu.terminate)
+    guest::direct<0x43bc70, setLastFlags>(app, ts, at(app, kTransferWord));
+    if (ts.terminate)
         return std::nullopt;
-    guest::direct<0x43bc90, markLastAfterOthers>(app, cpu);
-    if (cpu.terminate || !guest::direct<0x439d90, loadCars>(app, cpu))
+    guest::direct<0x43bc90, markLastAfterOthers>(app, ts);
+    if (ts.terminate || !guest::direct<0x439d90, loadCars>(app, ts))
         return std::nullopt;
     return 0;
 }
@@ -497,27 +495,27 @@ std::optional<reg32> receiveChunk(App* app, CPU& cpu, reg32 record, reg32 data, 
 
 /* 0x49b540: beginReceive for the record eax, ebx bytes, the buffer edx; edx the record when
  * there is no buffer. */
-x86::reg32 beginCarpReceive(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 beginCarpReceive(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const reg32 record = args.eax, buffer = args.edx;
-    const std::optional<reg32> result = beginReceive(app, cpu, record, args.ebx, buffer);
+    const u32 record = args.eax, buffer = args.edx;
+    const std::optional<u32> result = beginReceive(app, ts, record, args.ebx, buffer);
     if (!result)
         return args.eax;
     args.eax = *result;
     if (buffer == 0)
         args.edx = record;
-    cpu.esp += 4;
+    ts.sp += 4;
     return args.eax;
 }
 
 /* 0x49b5f0: receiveChunk for the record eax, the ebx bytes at edx. */
-x86::reg32 receiveCarpChunk(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 receiveCarpChunk(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const std::optional<reg32> result = receiveChunk(app, cpu, args.eax, args.edx, args.ebx);
+    const std::optional<u32> result = receiveChunk(app, ts, args.eax, args.edx, args.ebx);
     if (!result)
         return args.eax;
     args.eax = *result;
-    cpu.esp += 4;
+    ts.sp += 4;
     return args.eax;
 }
 
@@ -527,44 +525,44 @@ namespace
 // beginCarpSend's frame: five registers pushed, then 0x270 bytes: the text's size at -0x10, the
 // .viv's FILE at -0x14, the text's place at -0x18, the .viv's path at -0x144, the car's
 // carp.txt's path at -0x270 -- each handed to a function it calls.
-constexpr reg32 kSendPushed = 0x14, kSendFrame = 0x270, kSendSize = 0x10, kSendFile = 0x14, kSendPlace = 0x18;
-constexpr reg32 kSendVivPath = 0x144, kSendPath = 0x270;
+constexpr u32 kSendPushed = 0x14, kSendFrame = 0x270, kSendSize = 0x10, kSendFile = 0x14, kSendPlace = 0x18;
+constexpr u32 kSendVivPath = 0x144, kSendPath = 0x270;
 // The header sent: the car's id at +1, its record's +0x380 at +0x14, the text's size at +0x18;
 // 0x1c bytes in all.
-constexpr reg32 kHeaderCarId = 1, kHeaderCarWord = 0x14, kHeaderSize = 0x18, kHeaderBytes = 0x1c;
-constexpr reg32 kCarRecordWord = 0x380;
+constexpr u32 kHeaderCarId = 1, kHeaderCarWord = 0x14, kHeaderSize = 0x18, kHeaderBytes = 0x1c;
+constexpr u32 kCarRecordWord = 0x380;
 
 /* 0x4df690: sprintf (cdecl), its arguments as given; false when the game stopped. */
-bool print(App* app, CPU& cpu, std::initializer_list<reg32> arguments)
+bool print(App* app, ThreadState& ts, std::initializer_list<u32> arguments)
 {
-    const reg32* const word = arguments.begin();
+    const u32* const word = arguments.begin();
     guest::Words rest({});
     for (std::size_t i = 2; i < arguments.size(); ++i)
         rest.word[rest.count++] = word[i];
-    return unlessStopped(cpu, guest::direct<0x4df690, watcom::clib::sprintf>(app, cpu, word[0], word[1], rest))
+    return unlessStopped(ts, guest::direct<0x4df690, watcom::clib::sprintf>(app, ts, word[0], word[1], rest))
         .has_value();
 }
 
 /* 0x4ea290: the file named `name` in the .viv at `viv` found, its place to [place] and its size
  * to [size]; false when the game stopped. */
-bool findVivEntry(App* app, CPU& cpu, reg32 viv, reg32 name, reg32 place, reg32 size)
+bool findVivEntry(App* app, ThreadState& ts, u32 viv, u32 name, u32 place, u32 size)
 {
-    return guest::direct<0x4ea290, locatedEntry>(app, cpu, viv, name, reg32(0), place, size).has_value();
+    return guest::direct<0x4ea290, locatedEntry>(app, ts, viv, name, u32(0), place, size).has_value();
 }
 
 /* Whether a copy of `count` bytes from `from` to `to` lands on its source from above (memmove's
  * backwards: it leaves eax and edx where they were and ebx all ones; forwards, eax and edx past the
  * bytes and ebx 0). */
-bool movesBackwards(reg32 from, reg32 to, reg32 count)
+bool movesBackwards(u32 from, u32 to, u32 count)
 {
     return to > from && to < from + count;
 }
 
 /* 0x4ea4f0: `count` bytes from `from` to `to`; what it leaves in ebx to `countLeft`.  False when the
  * game stopped. */
-bool moveMemory(App* app, CPU& cpu, reg32 from, reg32 to, reg32 count, reg32& countLeft)
+bool moveMemory(App* app, ThreadState& ts, u32 from, u32 to, u32 count, u32& countLeft)
 {
-    if (!guest::direct<0x4ea4f0, ea::moveMemory>(app, cpu, to, from, count) || cpu.terminate)
+    if (!guest::direct<0x4ea4f0, ea::moveMemory>(app, ts, to, from, count) || ts.terminate)
         return false;
     countLeft = movesBackwards(from, to, count) ? 0xffffffffu : 0u;
     return true;
@@ -575,45 +573,45 @@ bool moveMemory(App* app, CPU& cpu, reg32 from, reg32 to, reg32 count, reg32& co
  * handle to 0x79f978) and its FILE put at the text; the car's name to the transfer's name, and
  * the header's 0x1c bytes sent to every machine (0x4a60e0, which may change edx: what it leaves
  * there to `packetLeft`).  The FILE; nullopt when the game stopped. */
-std::optional<reg32> beginSend(App* app, CPU& cpu, reg32 header, reg32 car, reg32& packetLeft)
+std::optional<u32> beginSend(App* app, ThreadState& ts, u32 header, u32 car, u32& packetLeft)
 {
-    const GuestFrame frame(cpu, kSendPushed, kSendFrame);
-    const reg32 size = frame - kSendSize, file = frame - kSendFile, place = frame - kSendPlace;
-    const reg32 viv = frame - kSendVivPath, path = frame - kSendPath;
-    const std::optional<reg32> record = carRecord(app, cpu, i32(car));
+    const GuestFrame frame(ts, kSendPushed, kSendFrame);
+    const u32 size = frame - kSendSize, file = frame - kSendFile, place = frame - kSendPlace;
+    const u32 viv = frame - kSendVivPath, path = frame - kSendPath;
+    const std::optional<u32> record = carRecord(app, ts, i32(car));
     if (!record)
         return std::nullopt;
-    const std::optional<reg32> id = carId(app, cpu, i32(car));
+    const std::optional<u32> id = carId(app, ts, i32(car));
     if (!id)
         return std::nullopt;
     copyGuest(app, header + kHeaderCarId, *id, kCarIdBytes);
     copyText(app, path, kDataPath);
-    if (!endPath(app, cpu, path))
+    if (!endPath(app, ts, path))
         return std::nullopt;
-    const std::optional<reg32> folder = guest::direct<0x4392b0, folderOf>(app, cpu, car);
+    const std::optional<u32> folder = guest::direct<0x4392b0, folderOf>(app, ts, car);
     if (!folder)
         return std::nullopt;
     appendText(app, path, *folder);
     appendText(app, path, kCarpPath);
     copyText(app, viv, path);
-    const std::optional<reg32> vivName = lastOf(app, cpu, viv, kBackslash);
-    if (!vivName || !print(app, cpu, {*vivName + 1, kCarVivPath}))
+    const std::optional<u32> vivName = lastOf(app, ts, viv, kBackslash);
+    if (!vivName || !print(app, ts, {*vivName + 1, kCarVivPath}))
         return std::nullopt;
-    const std::optional<reg32> opened = guest::direct<0x43b830, ea::vivOpened>(app, cpu, viv, file);
+    const std::optional<u32> opened = guest::direct<0x43b830, ea::vivOpened>(app, ts, viv, file);
     if (!opened)
         return std::nullopt;
     put(app, kSendViv, *opened);
-    const std::optional<reg32> carpName = lastOf(app, cpu, path, kBackslash);
-    if (!carpName || !guest::direct<0x43b9d0, ea::vivFileFound>(app, cpu, at(app, kSendViv), *carpName + 1, place, size)
-        || !seekFile(app, cpu, at(app, file), at(app, place), 0))
+    const std::optional<u32> carpName = lastOf(app, ts, path, kBackslash);
+    if (!carpName || !guest::direct<0x43b9d0, ea::vivFileFound>(app, ts, at(app, kSendViv), *carpName + 1, place, size)
+        || !seekFile(app, ts, at(app, file), at(app, place), 0))
         return std::nullopt;
     put(app, header + kHeaderSize, at(app, size));
     put(app, header + kHeaderCarWord, at(app, *record + kCarRecordWord));
-    const std::optional<reg32> name = guest::direct<0x439250, nameOf>(app, cpu, car);
+    const std::optional<u32> name = guest::direct<0x439250, nameOf>(app, ts, car);
     if (!name)
         return std::nullopt;
     copyText(app, kTransferName, *name);
-    const std::optional<ea::Regs> sent = guest::direct<0x4a60e0, ea::packetSent>(app, cpu, reg32(0), header, kHeaderBytes);
+    const std::optional<ea::Regs> sent = guest::direct<0x4a60e0, ea::packetSent>(app, ts, u32(0), header, kHeaderBytes);
     if (!sent)
         return std::nullopt;
     packetLeft = sent->edx;
@@ -623,15 +621,15 @@ std::optional<reg32> beginSend(App* app, CPU& cpu, reg32 header, reg32 car, reg3
 }  // namespace
 
 /* 0x49b800: beginSend for the header eax, car edx; edx as the packet's sending leaves it. */
-x86::reg32 beginCarpSend(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 beginCarpSend(App* app, ThreadState& ts, nfs::Args& args)
 {
-    reg32 packetLeft = args.edx;
-    const std::optional<reg32> file = beginSend(app, cpu, args.eax, args.edx, packetLeft);
+    u32 packetLeft = args.edx;
+    const std::optional<u32> file = beginSend(app, ts, args.eax, args.edx, packetLeft);
     if (!file)
         return args.eax;
     args.eax = *file;
     args.edx = packetLeft;
-    cpu.esp += 4;
+    ts.sp += 4;
     return args.eax;
 }
 
@@ -640,45 +638,45 @@ namespace
 
 // A colour as red, green, blue and a fourth, and as hue, saturation, brightness and the fourth:
 // a dword each.
-constexpr reg32 kRed = 0, kGreen = 4, kBlue = 8, kFourth = 0xc;
-constexpr reg32 kHue = 0, kSaturation = 4, kBrightness = 8;
+constexpr u32 kRed = 0, kGreen = 4, kBlue = 8, kFourth = 0xc;
+constexpr u32 kHue = 0, kSaturation = 4, kBrightness = 8;
 // The hue's sixths in 16.16: green's third and blue's; the hue's sixths to a turn; 8.8 parts.
 constexpr i32 kGreenThird = 0x20000, kBlueThird = 0x40000, kSixths = 6, kTurn = 0x100, kTop = 0xff;
 
 /* cdq; idiv: `dividend` over `divisor`, the quotient and the remainder -- worked in 64 bits as
  * the game's code does, the quotient's low half. */
-std::pair<reg32, reg32> divide(x86::sreg64 dividend, reg32 divisor)
+std::pair<u32, u32> divide(nfs::s64 dividend, u32 divisor)
 {
-    const x86::sreg64 by = sreg32(divisor);
-    return {reg32(x86::reg64(dividend / by)), reg32(x86::reg64(dividend % by))};
+    const nfs::s64 by = s32(divisor);
+    return {u32(nfs::u64(dividend / by)), u32(nfs::u64(dividend % by))};
 }
 
 /* `a` over `b` in 16.16: the whole part, then the remainder's (cdq; idiv; shrd; sar; idiv). */
-reg32 fixedOver(reg32 a, reg32 b)
+u32 fixedOver(u32 a, u32 b)
 {
-    const auto [whole, rest] = divide(sreg32(a), b);
-    const x86::sreg64 shifted = x86::sreg64((x86::reg64(reg32(sreg32(rest) >> 16)) << 32) | reg32(rest << 16));
+    const auto [whole, rest] = divide(s32(a), b);
+    const nfs::s64 shifted = nfs::s64((nfs::u64(u32(s32(rest) >> 16)) << 32) | u32(rest << 16));
     return (whole << 16) + divide(shifted, b).first;
 }
 
 /* `a` times `b` in 16.16, rounded by the bit shifted out (imul; shl; shr; adc). */
-reg32 fixedTimes(reg32 a, reg32 b)
+u32 fixedTimes(u32 a, u32 b)
 {
-    const x86::sreg64 product = x86::sreg64(sreg32(a)) * sreg32(b);
-    const reg32 low = reg32(x86::reg64(product));
-    return (low >> 16) + (reg32(x86::reg64(product) >> 32) << 16) + ((low >> 15) & 1);
+    const nfs::s64 product = nfs::s64(s32(a)) * s32(b);
+    const u32 low = u32(nfs::u64(product));
+    return (low >> 16) + (u32(nfs::u64(product) >> 32) << 16) + ((low >> 15) & 1);
 }
 
 /* `value` held to 0 to 255. */
-reg32 toByte(reg32 value)
+u32 toByte(u32 value)
 {
-    return sreg32(value) < 0 ? 0 : sreg32(value) > kTop ? reg32(kTop) : value;
+    return s32(value) < 0 ? 0 : s32(value) > kTop ? u32(kTop) : value;
 }
 
 /* What 0x49c880 leaves in eax and edx: the brightness stored, and the brightest of the three. */
 struct HsvLeft
 {
-    reg32 brightness, brightest;
+    u32 brightness, brightest;
 };
 
 /* 0x49c880's core: the colour at `rgb` -- red, green, blue, 0 to 255, and a fourth -- as hue,
@@ -686,40 +684,40 @@ struct HsvLeft
  * the three is largest), the others 0 to 255, each held to 0 to 255; the fourth as it is.  A hue
  * below 0 has its high word counted on (inc word [hsv + 2]), as the code does.  The colour is
  * read again where the code reads it, after the first writes: the two may be one. */
-HsvLeft rgbToHsvAt(App* app, reg32 rgb, reg32 hsv)
+HsvLeft rgbToHsvAt(App* app, u32 rgb, u32 hsv)
 {
-    const reg32 red = at(app, rgb + kRed), green = at(app, rgb + kGreen), blue = at(app, rgb + kBlue);
-    const reg32 greenBlueMost = sreg32(blue) < sreg32(green) ? green : blue;
-    const reg32 most = sreg32(greenBlueMost) < sreg32(red) ? red : greenBlueMost;
-    const reg32 greenBlueLeast = sreg32(green) < sreg32(blue) ? green : blue;
-    const reg32 least = sreg32(greenBlueLeast) > sreg32(red) ? red : greenBlueLeast;
-    const reg32 fourth = at(app, rgb + kFourth);
+    const u32 red = at(app, rgb + kRed), green = at(app, rgb + kGreen), blue = at(app, rgb + kBlue);
+    const u32 greenBlueMost = s32(blue) < s32(green) ? green : blue;
+    const u32 most = s32(greenBlueMost) < s32(red) ? red : greenBlueMost;
+    const u32 greenBlueLeast = s32(green) < s32(blue) ? green : blue;
+    const u32 least = s32(greenBlueLeast) > s32(red) ? red : greenBlueLeast;
+    const u32 fourth = at(app, rgb + kFourth);
     put(app, hsv + kHue, 0);
     put(app, hsv + kSaturation, 0);
     put(app, hsv + kFourth, fourth);
-    const reg32 range = most - least;
+    const u32 range = most - least;
     put(app, hsv + kBrightness, most);
     if (most != 0 && range != 0)
     {
-        put(app, hsv + kSaturation, divide(sreg32(range << 8), most).first);
-        reg32 hue;
+        put(app, hsv + kSaturation, divide(s32(range << 8), most).first);
+        u32 hue;
         if (most == at(app, rgb + kRed))
             hue = fixedOver(at(app, rgb + kGreen) - at(app, rgb + kBlue), range);
-        else if (const reg32 g = at(app, rgb + kGreen); most == g)
+        else if (const u32 g = at(app, rgb + kGreen); most == g)
             hue = fixedOver(at(app, rgb + kBlue) - at(app, rgb + kRed), range) + kGreenThird;
         else
             hue = fixedOver(at(app, rgb + kRed) - g, range) + kBlueThird;
         put(app, hsv + kHue, hue);
-        const reg32 sixth = divide(sreg32(at(app, hsv + kHue)), kSixths).first;
+        const u32 sixth = divide(s32(at(app, hsv + kHue)), kSixths).first;
         put(app, hsv + kHue, sixth);
-        if (sreg32(sixth) < 0)
-            putHalf(app, hsv + kHue + 2, reg16(half(app, hsv + kHue + 2) + 1));
+        if (s32(sixth) < 0)
+            putHalf(app, hsv + kHue + 2, u16(half(app, hsv + kHue + 2) + 1));
     }
     put(app, hsv + kHue, fixedTimes(kTurn, at(app, hsv + kHue)));
     put(app, hsv + kHue, toByte(at(app, hsv + kHue)));
     put(app, hsv + kSaturation, toByte(at(app, hsv + kSaturation)));
-    const reg32 brightest = at(app, hsv + kBrightness);
-    const reg32 brightness = toByte(brightest);
+    const u32 brightest = at(app, hsv + kBrightness);
+    const u32 brightness = toByte(brightest);
     put(app, hsv + kBrightness, brightness);
     return {brightness, brightest};
 }
@@ -728,12 +726,12 @@ HsvLeft rgbToHsvAt(App* app, reg32 rgb, reg32 hsv)
 
 /* 0x49c880: rgbToHsvAt for the colour at eax, to edx; eax the brightness stored, edx the brightest
  * of the three before it was held to 255. */
-x86::reg32 rgbToHsv(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 rgbToHsv(App* app, ThreadState& ts, nfs::Args& args)
 {
     const HsvLeft left = rgbToHsvAt(app, args.eax, args.edx);
     args.eax = left.brightness;
     args.edx = left.brightest;
-    cpu.esp += 4;
+    ts.sp += 4;
     return args.eax;
 }
 
@@ -742,10 +740,10 @@ namespace
 
 /* 0x4dfd56 (__CHP): `value` chopped toward 0, and stored as a dword (fistp); never nullopt (the
  * optional is the callers' stop signal). */
-std::optional<reg32> chopToInteger(App* app, CPU& cpu, const x86::Float& value)
+std::optional<u32> chopToInteger(App* app, ThreadState& ts, const nfs::Float& value)
 {
-    const double whole = guest::direct<kChop, watcom::clib::chop>(app, cpu, double(value));
-    return reg32(fp::toInteger<sreg32>(x86::Float(whole)));
+    const double whole = guest::direct<kChop, watcom::clib::chop>(app, ts, double(value));
+    return u32(fp::toInteger<s32>(nfs::Float(whole)));
 }
 
 /* 0x49ca50's core: the colour at `hsv` as hue, saturation and brightness to `rgb` as red, green
@@ -755,17 +753,17 @@ std::optional<reg32> chopToInteger(App* app, CPU& cpu, const x86::Float& value)
  * they were before the holding.  The colour is read again where the code reads it, after the
  * first writes: the two may be one.  What it leaves in eax and edx: the blue stored, and the
  * blue before it was held; nullopt when the game stopped. */
-std::optional<HsvLeft> hsvToRgbAt(App* app, CPU& cpu, reg32 hsv, reg32 rgb)
+std::optional<HsvLeft> hsvToRgbAt(App* app, ThreadState& ts, u32 hsv, u32 rgb)
 {
     put(app, rgb + kFourth, at(app, hsv + kFourth));
-    const reg32 brightness = at(app, hsv + kBrightness);
-    if (sreg32(brightness) <= 0)
+    const u32 brightness = at(app, hsv + kBrightness);
+    if (s32(brightness) <= 0)
     {
         put(app, rgb + kGreen, 0);
         put(app, rgb + kBlue, 0);
         put(app, rgb + kRed, 0);
     }
-    else if (sreg32(at(app, hsv + kSaturation)) <= 0)
+    else if (s32(at(app, hsv + kSaturation)) <= 0)
     {
         put(app, rgb + kRed, brightness);
         put(app, rgb + kGreen, brightness);
@@ -773,18 +771,18 @@ std::optional<HsvLeft> hsvToRgbAt(App* app, CPU& cpu, reg32 hsv, reg32 rgb)
     }
     else
     {
-        const reg32 hue = at(app, hsv + kHue);
-        const reg32 sixth = reg32(sreg32(hue * reg32(kSixths)) >> 8);
-        const std::optional<reg32> fraction = chopToInteger(
-            app, cpu, fp::sub(fp::mul(x86::Float(sreg32(hue)), f64(app, kSix)), x86::Float(sreg32(sixth << 8))));
+        const u32 hue = at(app, hsv + kHue);
+        const u32 sixth = u32(s32(hue * u32(kSixths)) >> 8);
+        const std::optional<u32> fraction = chopToInteger(
+            app, ts, fp::sub(fp::mul(nfs::Float(s32(hue)), f64(app, kSix)), nfs::Float(s32(sixth << 8))));
         if (!fraction)
             return std::nullopt;
-        const reg32 part = fixedOver(*fraction, kTurn);
-        const reg32 saturation = at(app, hsv + kSaturation);
-        const reg32 low = reg32(sreg32(at(app, hsv + kBrightness) * (kTurn - saturation)) >> 8);
-        const reg32 falling = reg32(sreg32((kTurn - fixedTimes(saturation, part)) * at(app, hsv + kBrightness)) >> 8);
-        const reg32 full = at(app, hsv + kBrightness);
-        const reg32 rising = reg32(sreg32((kTurn - fixedTimes(saturation, 0x10000 - part)) * full) >> 8);
+        const u32 part = fixedOver(*fraction, kTurn);
+        const u32 saturation = at(app, hsv + kSaturation);
+        const u32 low = u32(s32(at(app, hsv + kBrightness) * (kTurn - saturation)) >> 8);
+        const u32 falling = u32(s32((kTurn - fixedTimes(saturation, part)) * at(app, hsv + kBrightness)) >> 8);
+        const u32 full = at(app, hsv + kBrightness);
+        const u32 rising = u32(s32((kTurn - fixedTimes(saturation, 0x10000 - part)) * full) >> 8);
         switch (sixth)
         {
         case 0:
@@ -823,8 +821,8 @@ std::optional<HsvLeft> hsvToRgbAt(App* app, CPU& cpu, reg32 hsv, reg32 rgb)
     }
     put(app, rgb + kRed, toByte(at(app, rgb + kRed)));
     put(app, rgb + kGreen, toByte(at(app, rgb + kGreen)));
-    const reg32 blue = at(app, rgb + kBlue);
-    const reg32 held = toByte(blue);
+    const u32 blue = at(app, rgb + kBlue);
+    const u32 held = toByte(blue);
     put(app, rgb + kBlue, held);
     return HsvLeft{held, blue};
 }
@@ -833,14 +831,14 @@ std::optional<HsvLeft> hsvToRgbAt(App* app, CPU& cpu, reg32 hsv, reg32 rgb)
 
 /* 0x49ca50: hsvToRgbAt for the colour at eax, to edx; eax the blue stored, edx the blue before it
  * was held to 255. */
-x86::reg32 hsvToRgb(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 hsvToRgb(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const std::optional<HsvLeft> left = hsvToRgbAt(app, cpu, args.eax, args.edx);
+    const std::optional<HsvLeft> left = hsvToRgbAt(app, ts, args.eax, args.edx);
     if (!left)
         return args.eax;
     args.eax = left->brightness;
     args.edx = left->brightest;
-    cpu.esp += 4;
+    ts.sp += 4;
     return args.eax;
 }
 
@@ -849,14 +847,14 @@ namespace
 
 // tintPixel's frame: two registers pushed, then 0x30 bytes: the colour asked as hue, saturation,
 // brightness at -0x20 and as red, green, blue at -0x30, which hsvToRgbAt works in.
-constexpr reg32 kTintPushed = 8, kTintFrame = 0x30, kTintHsv = 0x20, kTintRgb = 0x30;
+constexpr u32 kTintPushed = 8, kTintFrame = 0x30, kTintHsv = 0x20, kTintRgb = 0x30;
 // A 1555 pixel: its top bit, and a channel's five bits at 10 (red), 5 (green) and 0 (blue).
-constexpr reg32 kPixelTop = 0x8000, kPixelBlueBits = 0xff;
+constexpr u32 kPixelTop = 0x8000, kPixelBlueBits = 0xff;
 
 /* What 0x49cc50 leaves: the pixel in eax, and in edx its red and green with the top bit. */
 struct TintLeft
 {
-    reg32 pixel, redGreen;
+    u32 pixel, redGreen;
 };
 
 /* 0x49cc50's core: the 1555 pixel in the colour at `color` (hue, saturation, brightness, the
@@ -864,43 +862,43 @@ struct TintLeft
  * colour's fourth unless that is 255) times the colour's brightness, held to 255, makes the
  * colour's red, green and blue (hsvToRgbAt, in a frame at the code's depth), 1555 again with the
  * top bit.  nullopt when the game stopped. */
-std::optional<TintLeft> tint(App* app, CPU& cpu, reg32 pixel, reg32 color)
+std::optional<TintLeft> tint(App* app, ThreadState& ts, u32 pixel, u32 color)
 {
     if ((pixel & kPixelTop) == 0)
         return TintLeft{0, 0};
-    const GuestFrame frame(cpu, kTintPushed, kTintFrame);
-    const reg32 hsv = frame - kTintHsv, rgb = frame - kTintRgb;
-    const reg32 blue = ((pixel & 0xffff) << 3) & kPixelBlueBits;
-    float scale = float(x86::Float(sreg32(blue)));
+    const GuestFrame frame(ts, kTintPushed, kTintFrame);
+    const u32 hsv = frame - kTintHsv, rgb = frame - kTintRgb;
+    const u32 blue = ((pixel & 0xffff) << 3) & kPixelBlueBits;
+    float scale = float(nfs::Float(s32(blue)));
     if (at(app, color + kFourth) != kTop)
-        scale = float(fp::div(x86::Float(scale),
-                              fp::sub(f64(app, kFull), x86::Float(sreg32(at(app, color + kFourth))))));
+        scale = float(fp::div(nfs::Float(scale),
+                              fp::sub(f64(app, kFull), nfs::Float(s32(at(app, color + kFourth))))));
     put(app, hsv + kHue, at(app, color + kHue));
     put(app, hsv + kSaturation, at(app, color + kSaturation));
-    const std::optional<reg32> brightness =
-        chopToInteger(app, cpu, fp::mul(x86::Float(sreg32(at(app, color + kBrightness))), x86::Float(scale)));
+    const std::optional<u32> brightness =
+        chopToInteger(app, ts, fp::mul(nfs::Float(s32(at(app, color + kBrightness))), nfs::Float(scale)));
     if (!brightness)
         return std::nullopt;
     put(app, hsv + kBrightness, *brightness);
-    if (sreg32(at(app, hsv + kBrightness)) > kTop)
+    if (s32(at(app, hsv + kBrightness)) > kTop)
         put(app, hsv + kBrightness, kTop);
     put(app, hsv + kFourth, at(app, color + kFourth));
-    if (!hsvToRgbAt(app, cpu, hsv, rgb))
+    if (!hsvToRgbAt(app, ts, hsv, rgb))
         return std::nullopt;
-    const reg32 redGreen = ((reg32(sreg32(at(app, rgb + kRed)) >> 3) << 10) | kPixelTop)
-                           | (reg32(sreg32(at(app, rgb + kGreen)) >> 3) << 5);
-    return TintLeft{reg32(sreg32(at(app, rgb + kBlue)) >> 3) | redGreen, redGreen};
+    const u32 redGreen = ((u32(s32(at(app, rgb + kRed)) >> 3) << 10) | kPixelTop)
+                           | (u32(s32(at(app, rgb + kGreen)) >> 3) << 5);
+    return TintLeft{u32(s32(at(app, rgb + kBlue)) >> 3) | redGreen, redGreen};
 }
 
 // nearestModelColor's frame: five registers pushed, then 0x44 bytes: a model's colour as floats
 // at -0x1c, the one asked at -0x28, their difference at -0x34 (each handed to 0x4e0000 and
 // 0x4e06a0), red, green and blue at -0x44 (hsvToRgbAt's).
-constexpr reg32 kNearestPushed = 0x14, kNearestFrame = 0x44, kNearestColor = 0x1c, kNearestWanted = 0x28;
-constexpr reg32 kNearestDifference = 0x34, kNearestRgb = 0x44;
+constexpr u32 kNearestPushed = 0x14, kNearestFrame = 0x44, kNearestColor = 0x1c, kNearestWanted = 0x28;
+constexpr u32 kNearestDifference = 0x34, kNearestRgb = 0x44;
 // A model's colours' count (+0x7fc) and its colours (+0x800); its second colours' count (+0x900)
 // and its second colours (+0x904); 16 bytes a colour.
-constexpr reg32 kModelColors = 0x7fc, kModelColor = 0x800, kModelSeconds = 0x900, kModelSecond = 0x904;
-constexpr reg32 kColorShift = 4;
+constexpr u32 kModelColors = 0x7fc, kModelColor = 0x800, kModelSeconds = 0x900, kModelSecond = 0x904;
+constexpr u32 kColorShift = 4;
 // The distance to beat at first (the code's float bits 0x447a0000).
 constexpr float kStartDistance = 1000.0f;
 
@@ -908,15 +906,15 @@ constexpr float kStartDistance = 1000.0f;
  * subtraction's (0x4e0000) when there was a colour to try, else the first conversion's. */
 struct NearestLeft
 {
-    reg32 index, left;
+    u32 index, left;
 };
 
 /* Red, green and blue at `rgb` to floats at `to`, each a float of the dword (fild; fstp). */
-void rgbToFloats(App* app, reg32 rgb, reg32 to)
+void rgbToFloats(App* app, u32 rgb, u32 to)
 {
-    putF32(app, to, x86::Float(sreg32(at(app, rgb + kRed))));
-    putF32(app, to + 4, x86::Float(sreg32(at(app, rgb + kGreen))));
-    putF32(app, to + 8, x86::Float(sreg32(at(app, rgb + kBlue))));
+    putF32(app, to, nfs::Float(s32(at(app, rgb + kRed))));
+    putF32(app, to + 4, nfs::Float(s32(at(app, rgb + kGreen))));
+    putF32(app, to + 8, nfs::Float(s32(at(app, rgb + kBlue))));
 }
 
 /* 0x49d240's core: which of the model's colours (as many as it has of both kinds) is nearest the
@@ -924,34 +922,34 @@ void rgbToFloats(App* app, reg32 rgb, reg32 to)
  * every other one nearer; 0 if none.  The distance is the vectors' (0x4e0000 the difference,
  * 0x4e06a0 its length, on the x87's stack) compared there with the best, as the code does: C0
  * set below it, or unordered.  nullopt when the game stopped. */
-std::optional<NearestLeft> nearestColor(App* app, CPU& cpu, reg32 model, reg32 color)
+std::optional<NearestLeft> nearestColor(App* app, ThreadState& ts, u32 model, u32 color)
 {
-    const GuestFrame frame(cpu, kNearestPushed, kNearestFrame);
-    const reg32 tried = frame - kNearestColor, wanted = frame - kNearestWanted;
-    const reg32 difference = frame - kNearestDifference, rgb = frame - kNearestRgb;
+    const GuestFrame frame(ts, kNearestPushed, kNearestFrame);
+    const u32 tried = frame - kNearestColor, wanted = frame - kNearestWanted;
+    const u32 difference = frame - kNearestDifference, rgb = frame - kNearestRgb;
     float best = kStartDistance;
-    reg32 nearest = 0;
-    std::optional<HsvLeft> converted = hsvToRgbAt(app, cpu, color, rgb);
+    u32 nearest = 0;
+    std::optional<HsvLeft> converted = hsvToRgbAt(app, ts, color, rgb);
     if (!converted)
         return std::nullopt;
-    reg32 lastLeft = converted->brightest;
+    u32 lastLeft = converted->brightest;
     rgbToFloats(app, rgb, wanted);
-    for (reg32 index = 0; sreg32(index) < sreg32(at(app, model + kModelColors))
-                          && sreg32(index) < sreg32(at(app, model + kModelSeconds));
+    for (u32 index = 0; s32(index) < s32(at(app, model + kModelColors))
+                          && s32(index) < s32(at(app, model + kModelSeconds));
          ++index)
     {
-        if (!hsvToRgbAt(app, cpu, model + kModelColor + (index << kColorShift), rgb))
+        if (!hsvToRgbAt(app, ts, model + kModelColor + (index << kColorShift), rgb))
             return std::nullopt;
         rgbToFloats(app, rgb, tried);
-        guest::direct<0x4e0000, vertices::offsetVectorList<false>>(app, cpu, 1, wanted, tried, difference);
-        if (cpu.terminate)
+        guest::direct<0x4e0000, vertices::offsetVectorList<false>>(app, ts, 1, wanted, tried, difference);
+        if (ts.terminate)
             return std::nullopt;
         lastLeft = wanted;  // the edx it leaves, the vectors' first
-        const double length = guest::direct<0x4e06a0, vertices::vectorLength>(app, cpu, difference);
-        if (cpu.terminate)
+        const double length = guest::direct<0x4e06a0, vertices::vectorLength>(app, ts, difference);
+        if (ts.terminate)
             return std::nullopt;
         const float distance = float(length);
-        const bool below = (fp::compare(x86::Float(length), x86::Float(best)) & 0x100) != 0;
+        const bool below = (fp::compare(nfs::Float(length), nfs::Float(best)) & 0x100) != 0;
         if (below)
         {
             nearest = index;
@@ -965,27 +963,27 @@ std::optional<NearestLeft> nearestColor(App* app, CPU& cpu, reg32 model, reg32 c
 
 /* 0x49cc50: tint for the pixel eax, the colour at edx; edx its red and green (as it was, for a
  * pixel without its top bit). */
-x86::reg32 tintPixel(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 tintPixel(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const std::optional<TintLeft> left = tint(app, cpu, args.eax, args.edx);
+    const std::optional<TintLeft> left = tint(app, ts, args.eax, args.edx);
     if (!left)
         return args.eax;
     if ((args.eax & kPixelTop) != 0)
         args.edx = left->redGreen;
     args.eax = left->pixel;
-    cpu.esp += 4;
+    ts.sp += 4;
     return args.eax;
 }
 
 /* 0x49d240: nearestColor for the model eax, the colour at edx; edx as the code leaves it. */
-x86::reg32 nearestModelColor(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 nearestModelColor(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const std::optional<NearestLeft> left = nearestColor(app, cpu, args.eax, args.edx);
+    const std::optional<NearestLeft> left = nearestColor(app, ts, args.eax, args.edx);
     if (!left)
         return args.eax;
     args.eax = left->index;
     args.edx = left->left;
-    cpu.esp += 4;
+    ts.sp += 4;
     return args.eax;
 }
 
@@ -996,14 +994,14 @@ namespace
 // its place at -8, the .viv's FILE at -0x14, the colours' count at -0x18 (each handed to a
 // function it calls), red, green and blue at -0x28 (hsvToRgbAt's), the colours read at -0x128,
 // the .viv's name at -0x254.
-constexpr reg32 kReadPushed = 0xc, kReadFrame = 0x254, kReadFound = 4, kReadPlace = 8, kReadFile = 0x14;
-constexpr reg32 kReadCount = 0x18, kReadRgb = 0x28, kReadHsv = 0x128, kReadName = 0x254;
+constexpr u32 kReadPushed = 0xc, kReadFrame = 0x254, kReadFound = 4, kReadPlace = 8, kReadFile = 0x14;
+constexpr u32 kReadCount = 0x18, kReadRgb = 0x28, kReadHsv = 0x128, kReadName = 0x254;
 // The .fce's colours' count, its colours (0x100 bytes: 16 at most), its 12 bytes at +0x28.
-constexpr reg32 kFceColorsBytes = 0x100, kFceTwelve = 0x28, kTwelveBytes = 0xc, kMostColors = 0x10;
+constexpr u32 kFceColorsBytes = 0x100, kFceTwelve = 0x28, kTwelveBytes = 0xc, kMostColors = 0x10;
 // mrc.c's trace when car.fce is not found: its line, and the words the code hands with it.
-constexpr reg32 kTraceLine = 0x5a, kTraceLevel = 1, kTraceSize = 0x104, kTraceWords = 0x14;
+constexpr u32 kTraceLine = 0x5a, kTraceLevel = 1, kTraceSize = 0x104, kTraceWords = 0x14;
 // fseek's whence: from the start, from where it is.
-constexpr reg32 kSeekSet = 0, kSeekCurrent = 1;
+constexpr u32 kSeekSet = 0, kSeekCurrent = 1;
 
 }  // namespace
 
@@ -1012,60 +1010,60 @@ constexpr reg32 kSeekSet = 0, kSeekCurrent = 1;
  * the fourth, a byte each, to `colors` on; its 12 bytes at +0x28 to `twelve`.  Not found, a trace
  * of mrc.c's line 0x5a and [count] 0.  The .viv's file is read (fseek, fread) into a frame at the
  * code's depth.  nullopt when the game stopped. */
-std::optional<ColorsLeft> readColors(App* app, CPU& cpu, reg32 name, reg32 colors, reg32 wanted, reg32 count,
-                                     reg32 twelve)
+std::optional<ColorsLeft> readColors(App* app, ThreadState& ts, u32 name, u32 colors, u32 wanted, u32 count,
+                                     u32 twelve)
 {
-    const GuestFrame frame(cpu, kReadPushed, kReadFrame);
-    const reg32 found = frame - kReadFound, place = frame - kReadPlace, file = frame - kReadFile;
-    const reg32 read = frame - kReadCount, rgb = frame - kReadRgb, hsv = frame - kReadHsv;
-    const reg32 vivName = frame - kReadName;
+    const GuestFrame frame(ts, kReadPushed, kReadFrame);
+    const u32 found = frame - kReadFound, place = frame - kReadPlace, file = frame - kReadFile;
+    const u32 read = frame - kReadCount, rgb = frame - kReadRgb, hsv = frame - kReadHsv;
+    const u32 vivName = frame - kReadName;
     put(app, count, 0);
-    if (!print(app, cpu, {vivName, kVivFormat, name}))
+    if (!print(app, ts, {vivName, kVivFormat, name}))
         return std::nullopt;
-    const std::optional<reg32> viv = guest::direct<0x43b830, ea::vivOpened>(app, cpu, vivName, file);
+    const std::optional<u32> viv = guest::direct<0x43b830, ea::vivOpened>(app, ts, vivName, file);
     if (!viv)
         return std::nullopt;
     // What it leaves in ecx, the entry, for the thunk that gives it on.
     const std::optional<ea::VivSearch> search =
-        guest::direct<0x43b9d0, ea::vivFile>(app, cpu, *viv, kFceName, place, found);
+        guest::direct<0x43b9d0, ea::vivFile>(app, ts, *viv, kFceName, place, found);
     if (!search)
         return std::nullopt;
-    const reg32 findLeft = search->entry;
+    const u32 findLeft = search->entry;
     if (at(app, found) == 0)
     {
-        const std::optional<reg32> closed = guest::direct<0x43b9b0, ea::vivClosed>(app, cpu, *viv, file);
+        const std::optional<u32> closed = guest::direct<0x43b9b0, ea::vivClosed>(app, ts, *viv, file);
         if (!closed)
             return std::nullopt;
         {
             // The trace's words pushed as the code pushes them (it reads none of them).
-            const GuestFrame words(cpu, 0, kTraceWords);
-            reg32 slot = words - kTraceWords;
-            for (const reg32 word : {kTraceLine, kTraceLevel, kTraceFormat, kTraceFile, kTraceSize})
+            const GuestFrame words(ts, 0, kTraceWords);
+            u32 slot = words - kTraceWords;
+            for (const u32 word : {kTraceLine, kTraceLevel, kTraceFormat, kTraceFile, kTraceSize})
             {
                 put(app, slot, word);
                 slot += 4;
             }
-            guest::direct<0x42d510, ea::traceOff>(app, cpu);
-            if (cpu.terminate)
+            guest::direct<0x42d510, ea::traceOff>(app, ts);
+            if (ts.terminate)
                 return std::nullopt;
         }
         return ColorsLeft{*closed, place, findLeft, file};
     }
-    const auto seekFrom = [&](reg32 offset) {
-        return seekFile(app, cpu, at(app, file), at(app, place), kSeekSet)
-               && seekFile(app, cpu, at(app, file), offset, kSeekCurrent);
+    const auto seekFrom = [&](u32 offset) {
+        return seekFile(app, ts, at(app, file), at(app, place), kSeekSet)
+               && seekFile(app, ts, at(app, file), offset, kSeekCurrent);
     };
-    const auto readInto = [&](reg32 to, reg32 bytes) {
-        return readFile(app, cpu, to, bytes, 1, at(app, file)).has_value();
+    const auto readInto = [&](u32 to, u32 bytes) {
+        return readFile(app, ts, to, bytes, 1, at(app, file)).has_value();
     };
     if (!seekFrom(kModelColors) || !readInto(read, 4) || !seekFrom(kModelColor) || !readInto(hsv, kFceColorsBytes)
         || !seekFrom(kFceTwelve) || !readInto(twelve, kTwelveBytes)
-        || !guest::direct<0x43b9b0, ea::vivClosed>(app, cpu, *viv, file))
+        || !guest::direct<0x43b9b0, ea::vivClosed>(app, ts, *viv, file))
         return std::nullopt;
-    reg32 index = 0, lastColor = file;
-    for (; sreg32(index) < sreg32(wanted) && index < kMostColors; ++index)
+    u32 index = 0, lastColor = file;
+    for (; s32(index) < s32(wanted) && index < kMostColors; ++index)
     {
-        if (!hsvToRgbAt(app, cpu, hsv + (index << kColorShift), rgb))
+        if (!hsvToRgbAt(app, ts, hsv + (index << kColorShift), rgb))
             return std::nullopt;
         lastColor = colors + index * 4;
         putByte(app, lastColor, byte(app, rgb + kRed));
@@ -1073,24 +1071,24 @@ std::optional<ColorsLeft> readColors(App* app, CPU& cpu, reg32 name, reg32 color
         putByte(app, lastColor + 2, byte(app, rgb + kBlue));
         putByte(app, lastColor + 3, byte(app, rgb + kFourth));
     }
-    const reg32 total = at(app, read);
+    const u32 total = at(app, read);
     put(app, count, total);
     return ColorsLeft{total, 1, index, lastColor};
 }
 
 /* 0x49c700: readColors for the .viv named eax, the colours to edx, ebx of them, their count to
  * [ecx], the 12 bytes to [esp+4]; eax, ebx, ecx and edx as the code leaves them. */
-x86::reg32 readCarColors(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 readCarColors(App* app, ThreadState& ts, nfs::Args& args)
 {
     const std::optional<ColorsLeft> left =
-        readColors(app, cpu, args.eax, args.edx, args.ebx, args.ecx, at(app, cpu.esp + kReturnSlot));
+        readColors(app, ts, args.eax, args.edx, args.ebx, args.ecx, at(app, ts.sp + kReturnSlot));
     if (!left)
         return args.eax;
     args.eax = left->eax;
     args.ebx = left->ebx;
     args.ecx = left->ecx;
     args.edx = left->edx;
-    cpu.esp += kReturnSlot + 4;
+    ts.sp += kReturnSlot + 4;
     return args.eax;
 }
 
@@ -1099,12 +1097,12 @@ namespace
 
 // scaleTexture's frame: three registers pushed, then 0x30 bytes (its locals, none handed on);
 // fitTexture's: three registers pushed, then scaleTexture's four words.
-constexpr reg32 kScalePushed = 0xc, kScaleFrame = 0x30, kFitPushed = 0xc, kScaleWords = 0x10;
+constexpr u32 kScalePushed = 0xc, kScaleFrame = 0x30, kFitPushed = 0xc, kScaleWords = 0x10;
 // A 32-bit pixel: red, green, blue, alpha a byte each; a 1555 word's channels at 10, 5 and 0.
-constexpr reg32 kPixelGreen = 1, kPixelBlue = 2, kPixelAlpha = 3, kAlphaHalf = 0x80, kAlphaFull = 0xff;
-constexpr reg32 kBlackDrawn = 0x8001;
+constexpr u32 kPixelGreen = 1, kPixelBlue = 2, kPixelAlpha = 3, kAlphaHalf = 0x80, kAlphaFull = 0xff;
+constexpr u32 kBlackDrawn = 0x8001;
 // The texture's sides: the largest power of two no larger than the picture's, from 512 down.
-constexpr reg32 kSides[] = {0x200, 0x100, 0x80, 0x40, 0x20, 0x10, 8, 4, 2};
+constexpr u32 kSides[] = {0x200, 0x100, 0x80, 0x40, 0x20, 0x10, 8, 4, 2};
 
 /* 0x49cd00's core: the `width` by `height` pixels at `pixels` (32 bits each) scaled to `toWidth`
  * by `toHeight` 1555 words at `to`, the nearest pixel of each: the top bit from the alpha's being
@@ -1112,61 +1110,61 @@ constexpr reg32 kSides[] = {0x200, 0x100, 0x80, 0x40, 0x20, 0x10, 8, 4, 2};
  * bit is clear, else in `second` where it is not 0xff -- when there is the colour; 0x8000 drawn
  * as 0x8001 while [0x7a3a6c]'s low bit is set.  The steps are the x87's quotients stored as
  * floats, the nearest pixel the step's sum chopped (0x4dfd56).  nullopt when the game stopped. */
-std::optional<Left> scaleInto(App* app, CPU& cpu, reg32 to, reg32 pixels, reg32 width, reg32 height, reg32 toWidth,
-                              reg32 toHeight, reg32 color, reg32 second)
+std::optional<Left> scaleInto(App* app, ThreadState& ts, u32 to, u32 pixels, u32 width, u32 height, u32 toWidth,
+                              u32 toHeight, u32 color, u32 second)
 {
-    const GuestFrame frame(cpu, kScalePushed, kScaleFrame);
-    const x86::Float across = fp::div(x86::Float(sreg32(width)), x86::Float(sreg32(toWidth)));
-    const x86::Float down = fp::div(x86::Float(sreg32(height)), x86::Float(sreg32(toHeight)));
+    const GuestFrame frame(ts, kScalePushed, kScaleFrame);
+    const nfs::Float across = fp::div(nfs::Float(s32(width)), nfs::Float(s32(toWidth)));
+    const nfs::Float down = fp::div(nfs::Float(s32(height)), nfs::Float(s32(toHeight)));
     const float columnStep = float(across), rowStep = float(down);
     Left left{toHeight, width, 0, pixels};
-    reg32 row = 0;
-    for (; sreg32(row) < sreg32(toHeight); ++row)
+    u32 row = 0;
+    for (; s32(row) < s32(toHeight); ++row)
     {
-        const std::optional<reg32> sourceRow =
-            chopToInteger(app, cpu, fp::mul(x86::Float(sreg32(row)), x86::Float(rowStep)));
+        const std::optional<u32> sourceRow =
+            chopToInteger(app, ts, fp::mul(nfs::Float(s32(row)), nfs::Float(rowStep)));
         if (!sourceRow)
             return std::nullopt;
-        const reg32 line = pixels + ((*sourceRow * width) << 2);
+        const u32 line = pixels + ((*sourceRow * width) << 2);
         float x = 0.0f;
         left.ebx = 0;
         left.edx = line;
-        const auto nearest = [&]() -> std::optional<reg32> {
-            const std::optional<reg32> column = chopToInteger(app, cpu, x86::Float(x));
+        const auto nearest = [&]() -> std::optional<u32> {
+            const std::optional<u32> column = chopToInteger(app, ts, nfs::Float(x));
             if (!column)
                 return std::nullopt;
             return line + (*column << 2);
         };
-        reg32 column = 0;
-        for (; sreg32(column) < sreg32(toWidth); ++column)
+        u32 column = 0;
+        for (; s32(column) < s32(toWidth); ++column)
         {
-            const std::optional<reg32> first = nearest();
+            const std::optional<u32> first = nearest();
             if (!first)
                 return std::nullopt;
-            const reg32 top = byte(app, *first + kPixelAlpha) != 0 ? kPixelTop : 0;
-            const std::optional<reg32> source = nearest();
+            const u32 top = byte(app, *first + kPixelAlpha) != 0 ? kPixelTop : 0;
+            const std::optional<u32> source = nearest();
             if (!source)
                 return std::nullopt;
-            const reg32 high = reg32(byte(app, *source + kPixelBlue)) >> 3;
-            const reg32 low = reg32(byte(app, *source)) >> 3;
-            const reg32 middle = reg32(byte(app, *source + kPixelGreen)) >> 3;
-            std::optional<reg32> tintIn;  // the colour a tint is in, if any
+            const u32 high = u32(byte(app, *source + kPixelBlue)) >> 3;
+            const u32 low = u32(byte(app, *source)) >> 3;
+            const u32 middle = u32(byte(app, *source + kPixelGreen)) >> 3;
+            std::optional<u32> tintIn;  // the colour a tint is in, if any
             if (color != 0 && byte(app, *source + kPixelAlpha) < kAlphaHalf)
                 tintIn = color;
             else if (second != 0)
             {
-                const std::optional<reg32> alpha = nearest();
+                const std::optional<u32> alpha = nearest();
                 if (!alpha)
                     return std::nullopt;
                 if (byte(app, *alpha + kPixelAlpha) < kAlphaFull)
                     tintIn = second;
             }
-            reg32 pixel, redGreen;
+            u32 pixel, redGreen;
             if (tintIn)
             {
-                const reg32 plain = ((high << 10) | top | (middle << 5) | low) & 0xffff;
-                const GuestFrame call(cpu, kReturnSlot, 0);
-                const std::optional<TintLeft> tinted = tint(app, cpu, plain, *tintIn);
+                const u32 plain = ((high << 10) | top | (middle << 5) | low) & 0xffff;
+                const GuestFrame call(ts, kReturnSlot, 0);
+                const std::optional<TintLeft> tinted = tint(app, ts, plain, *tintIn);
                 if (!tinted)
                     return std::nullopt;
                 pixel = tinted->pixel;
@@ -1177,10 +1175,10 @@ std::optional<Left> scaleInto(App* app, CPU& cpu, reg32 to, reg32 pixels, reg32 
                 redGreen = top | (high << 10) | (middle << 5);
                 pixel = low | redGreen;
             }
-            putHalf(app, to, reg16(pixel));
+            putHalf(app, to, u16(pixel));
             if ((at(app, kBlackVisible) & (half(app, to) == kPixelTop ? 1u : 0u)) != 0)
                 putHalf(app, to, kBlackDrawn);
-            x = float(fp::add(x86::Float(x), x86::Float(columnStep)));
+            x = float(fp::add(nfs::Float(x), nfs::Float(columnStep)));
             to += 2;
             left.ebx = column + 1;
             left.edx = redGreen;
@@ -1196,23 +1194,23 @@ std::optional<Left> scaleInto(App* app, CPU& cpu, reg32 to, reg32 pixels, reg32 
  * (the port's: 256 in the game's code, 512 reached only where the size asked for is 512,
  * port_thrash.h) -- or the size asked for when the width is larger than it -- and the pixels
  * scaled to it at texture + 8, in the colours `color` and `second`.  What the scaling leaves. */
-std::optional<Left> fitInto(App* app, CPU& cpu, reg32 texture, reg32 pixels, reg32 width, reg32 height,
-                            reg32 asked, reg32 color, reg32 second)
+std::optional<Left> fitInto(App* app, ThreadState& ts, u32 texture, u32 pixels, u32 width, u32 height,
+                            u32 asked, u32 color, u32 second)
 {
-    reg32 size = 1;
-    if (sreg32(width) > sreg32(asked))
+    u32 size = 1;
+    if (s32(width) > s32(asked))
         size = asked;
     else
-        for (const reg32 side : kSides)
-            if (sreg32(width) >= sreg32(side))
+        for (const u32 side : kSides)
+            if (s32(width) >= s32(side))
             {
                 size = side;
                 break;
             }
     put(app, texture + 4, size);
     put(app, texture, size);
-    const GuestFrame call(cpu, kFitPushed + kScaleWords + kReturnSlot, 0);
-    return scaleInto(app, cpu, texture + 8, pixels, width, height, at(app, texture), at(app, texture + 4), color,
+    const GuestFrame call(ts, kFitPushed + kScaleWords + kReturnSlot, 0);
+    return scaleInto(app, ts, texture + 8, pixels, width, height, at(app, texture), at(app, texture + 4), color,
                      second);
 }
 
@@ -1220,10 +1218,10 @@ std::optional<Left> fitInto(App* app, CPU& cpu, reg32 texture, reg32 pixels, reg
 
 /* 0x49cd00: scaleInto for the ebx by ecx pixels at edx, to eax, [esp+4] by [esp+8], the colours
  * [esp+0xc] and [esp+0x10]; eax, ebx, ecx and edx as the code leaves them. */
-x86::reg32 scaleTexture(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 scaleTexture(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const reg32 words = cpu.esp + kReturnSlot;
-    const std::optional<Left> left = scaleInto(app, cpu, args.eax, args.edx, args.ebx, args.ecx, at(app, words),
+    const u32 words = ts.sp + kReturnSlot;
+    const std::optional<Left> left = scaleInto(app, ts, args.eax, args.edx, args.ebx, args.ecx, at(app, words),
                                                at(app, words + 4), at(app, words + 8), at(app, words + 0xc));
     if (!left)
         return args.eax;
@@ -1231,16 +1229,16 @@ x86::reg32 scaleTexture(App* app, CPU& cpu, x86::Args& args)
     args.ebx = left->ebx;
     args.ecx = left->ecx;
     args.edx = left->edx;
-    cpu.esp += kReturnSlot + kScaleWords;
+    ts.sp += kReturnSlot + kScaleWords;
     return args.eax;
 }
 
 /* 0x49cea0: fitInto for the ebx by ecx pixels at edx, to eax, [esp+4] asked, the colours [esp+8]
  * and [esp+0xc]; eax, ebx, ecx and edx as the scaling leaves them. */
-x86::reg32 fitTexture(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 fitTexture(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const reg32 words = cpu.esp + kReturnSlot;
-    const std::optional<Left> left = fitInto(app, cpu, args.eax, args.edx, args.ebx, args.ecx, at(app, words),
+    const u32 words = ts.sp + kReturnSlot;
+    const std::optional<Left> left = fitInto(app, ts, args.eax, args.edx, args.ebx, args.ecx, at(app, words),
                                              at(app, words + 4), at(app, words + 8));
     if (!left)
         return args.eax;
@@ -1248,7 +1246,7 @@ x86::reg32 fitTexture(App* app, CPU& cpu, x86::Args& args)
     args.ebx = left->ebx;
     args.ecx = left->ecx;
     args.edx = left->edx;
-    cpu.esp += kReturnSlot + 0xc;
+    ts.sp += kReturnSlot + 0xc;
     return args.eax;
 }
 
@@ -1258,30 +1256,30 @@ namespace
 // A model's pictures' count (+0xc).  A picture of the .art: its width, its height, its 32-bit
 // pixels at +8.  A texture's block: its width, its height, its 1555 words at +8; a block of the
 // game's memory allocated at 16 bytes' alignment.
-constexpr reg32 kModelPictures = 0xc, kPictureWidth = 0, kPictureHeight = 4, kPicturePixels = 8;
+constexpr u32 kModelPictures = 0xc, kPictureWidth = 0, kPictureHeight = 4, kPicturePixels = 8;
 // A model's textures' handles (+0x1e04 on, one a picture).
-constexpr reg32 kModelTexture = 0x1e04;
-constexpr reg32 kTextureWidth = 0, kTextureHeight = 4, kTexturePixels = 8, kBlockAlign = 0x10;
+constexpr u32 kModelTexture = 0x1e04;
+constexpr u32 kTextureWidth = 0, kTextureHeight = 4, kTexturePixels = 8, kBlockAlign = 0x10;
 // A .tga's header: its id's length (+0), its width (+0xc) and height (+0xe), little-endian
 // words; the pixels after its 18 bytes and the id.
-constexpr reg32 kTgaIdLength = 0, kTgaWidth = 0xc, kTgaHeight = 0xe, kTgaHeader = 0x12;
+constexpr u32 kTgaIdLength = 0, kTgaWidth = 0xc, kTgaHeight = 0xe, kTgaHeader = 0x12;
 // loadArtTextures' frame: three registers pushed, then 0x1c bytes; loadTgaTexture's: three, then
 // 0x18; the three words each hands fitTexture, and loadTgaTexture takes.
-constexpr reg32 kArtPushed = 0xc, kArtFrame = 0x1c, kTgaPushed = 0xc, kTgaFrame = 0x18, kThreeWords = 0xc;
+constexpr u32 kArtPushed = 0xc, kArtFrame = 0x1c, kTgaPushed = 0xc, kTgaFrame = 0x18, kThreeWords = 0xc;
 // loadCarModel's frame: four registers pushed, then 0xd8 bytes, the name made at its top.
-constexpr reg32 kModelPushed = 0x10, kModelFrame = 0xd8;
+constexpr u32 kModelPushed = 0x10, kModelFrame = 0xd8;
 // A file loaded as it is, or quietly (0x4e0ec0's mode).
-constexpr reg32 kLoadPlain = 0, kLoadQuiet = 0x10;
+constexpr u32 kLoadPlain = 0, kLoadQuiet = 0x10;
 
 /* A texture's block's bytes for `most` a side: two bytes a pixel and the width and height. */
-reg32 textureBytes(reg32 most)
+u32 textureBytes(u32 most)
 {
     return most * most * 2 + kTexturePixels;
 }
 
 /* What the memmove of `count` bytes from `from` to `to` leaves in eax, ebx, ecx and edx (ecx
  * as it was). */
-Left movedLeft(reg32 from, reg32 to, reg32 count, reg32 ecx)
+Left movedLeft(u32 from, u32 to, u32 count, u32 ecx)
 {
     if (movesBackwards(from, to, count))
         return Left{from, 0xffffffffu, ecx, to};
@@ -1289,11 +1287,11 @@ Left movedLeft(reg32 from, reg32 to, reg32 count, reg32 ecx)
 }
 
 /* fitInto as the code calls it, three words on the guest's stack under the caller's frame. */
-std::optional<Left> fitCalled(App* app, CPU& cpu, reg32 texture, reg32 pixels, reg32 width, reg32 height,
-                              reg32 asked, reg32 color, reg32 second)
+std::optional<Left> fitCalled(App* app, ThreadState& ts, u32 texture, u32 pixels, u32 width, u32 height,
+                              u32 asked, u32 color, u32 second)
 {
-    const GuestFrame call(cpu, kThreeWords + kReturnSlot, 0);
-    return fitInto(app, cpu, texture, pixels, width, height, asked, color, second);
+    const GuestFrame call(ts, kThreeWords + kReturnSlot, 0);
+    return fitInto(app, ts, texture, pixels, width, height, asked, color, second);
 }
 
 /* 0x49d130's core: the textures of the model from the .art's pictures at `picture`, `most` at
@@ -1302,32 +1300,32 @@ std::optional<Left> fitCalled(App* app, CPU& cpu, reg32 texture, reg32 pixels, r
  * (0x49c600, its handle to the model's +0x1e04 on) and given the pixels (0x49c620); a picture of
  * no size has no texture (0).  Only for a model of more than one picture -- the block freed only
  * then.  What it leaves in the four registers; nullopt when the game stopped. */
-std::optional<Left> loadArt(App* app, CPU& cpu, reg32 model, reg32 picture, reg32 most, reg32 color)
+std::optional<Left> loadArt(App* app, ThreadState& ts, u32 model, u32 picture, u32 most, u32 color)
 {
-    const GuestFrame frame(cpu, kArtPushed, kArtFrame);
-    const std::optional<reg32> block = guest::direct<0x4e1620, ea::reserved>(app, cpu, kNoName, textureBytes(most), kBlockAlign);
+    const GuestFrame frame(ts, kArtPushed, kArtFrame);
+    const std::optional<u32> block = guest::direct<0x4e1620, ea::reserved>(app, ts, kNoName, textureBytes(most), kBlockAlign);
     if (!block)
         return std::nullopt;
-    const reg32 seconds = at(app, model + kModelSeconds);
-    const reg32 second = seconds != 0 ? model + kModelSecond : 0;
-    const reg32 count = at(app, model + kModelPictures);
-    if (sreg32(count) <= 1)
+    const u32 seconds = at(app, model + kModelSeconds);
+    const u32 second = seconds != 0 ? model + kModelSecond : 0;
+    const u32 count = at(app, model + kModelPictures);
+    if (s32(count) <= 1)
         return Left{count, kBlockAlign, color, seconds};
     Left left{};
-    for (reg32 index = 0; sreg32(index) < sreg32(count); ++index)
+    for (u32 index = 0; s32(index) < s32(count); ++index)
     {
-        const reg32 handle = model + index * 4 + kModelTexture;
+        const u32 handle = model + index * 4 + kModelTexture;
         if (at(app, picture + kPictureWidth) != 0 && at(app, picture + kPictureHeight) != 0)
         {
-            if (!fitCalled(app, cpu, *block, picture + kPicturePixels, at(app, picture + kPictureWidth),
+            if (!fitCalled(app, ts, *block, picture + kPicturePixels, at(app, picture + kPictureWidth),
                            at(app, picture + kPictureHeight), most, color, second))
                 return std::nullopt;
-            const std::optional<reg32> texture = guest::direct<0x49c600, graphics::allocatedTexture>(
-                app, cpu, at(app, *block + kTextureWidth), at(app, *block + kTextureHeight));
+            const std::optional<u32> texture = guest::direct<0x49c600, graphics::allocatedTexture>(
+                app, ts, at(app, *block + kTextureWidth), at(app, *block + kTextureHeight));
             if (!texture)
                 return std::nullopt;
             put(app, handle, *texture);
-            if (!textureGiven(app, cpu, *texture, *block + kTexturePixels, at(app, *block + kTextureWidth),
+            if (!textureGiven(app, ts, *texture, *block + kTexturePixels, at(app, *block + kTextureWidth),
                               at(app, *block + kTextureHeight)))
                 return std::nullopt;
             left.edx = *block + kTexturePixels;
@@ -1344,7 +1342,7 @@ std::optional<Left> loadArt(App* app, CPU& cpu, reg32 model, reg32 picture, reg3
     left.eax = count;
     if (*block != 0)
     {
-        const std::optional<reg32> freed = guest::direct<0x4e1890, ea::purgeBlock>(app, cpu, *block);
+        const std::optional<u32> freed = guest::direct<0x4e1890, ea::purgeBlock>(app, ts, *block);
         if (!freed)
             return std::nullopt;
         left.eax = *freed;
@@ -1360,25 +1358,25 @@ std::optional<Left> loadArt(App* app, CPU& cpu, reg32 model, reg32 picture, reg3
  * its handle to the model's +0x1e04, given the pixels (0x49c620) when `upload` says so; the
  * fitted pixels copied to `copyTo` when there is one.  The block of the game's memory they were
  * fitted in freed.  What it leaves in the four registers; nullopt when the game stopped. */
-std::optional<Left> loadTga(App* app, CPU& cpu, reg32 model, reg32 tga, reg32 most, reg32 texture, reg32 color,
-                            reg32 upload, reg32 copyTo)
+std::optional<Left> loadTga(App* app, ThreadState& ts, u32 model, u32 tga, u32 most, u32 texture, u32 color,
+                            u32 upload, u32 copyTo)
 {
-    const GuestFrame frame(cpu, kTgaPushed, kTgaFrame);
-    const auto word = [&](reg32 offset) { return reg32(byte(app, tga + offset) | byte(app, tga + offset + 1) << 8); };
+    const GuestFrame frame(ts, kTgaPushed, kTgaFrame);
+    const auto word = [&](u32 offset) { return u32(byte(app, tga + offset) | byte(app, tga + offset + 1) << 8); };
     if (at(app, model + kModelPictures) == 1)
-        most = reg32(port::driver::texture512Side(sreg32(most), int32_t(word(kTgaWidth))));
-    const std::optional<reg32> block = guest::direct<0x4e1620, ea::reserved>(app, cpu, kNoName, textureBytes(most), kBlockAlign);
+        most = u32(port::driver::texture512Side(s32(most), int32_t(word(kTgaWidth))));
+    const std::optional<u32> block = guest::direct<0x4e1620, ea::reserved>(app, ts, kNoName, textureBytes(most), kBlockAlign);
     if (!block)
         return std::nullopt;
     Left left{*block, at(app, model + kModelSeconds), color, textureBytes(most)};
-    reg32 second = 0;
+    u32 second = 0;
     if (left.ebx != 0)
     {
-        reg32 nearest = 0;
+        u32 nearest = 0;
         if (color != 0)
         {
-            const GuestFrame call(cpu, kReturnSlot, 0);
-            const std::optional<NearestLeft> found = nearestColor(app, cpu, model, color);
+            const GuestFrame call(ts, kReturnSlot, 0);
+            const std::optional<NearestLeft> found = nearestColor(app, ts, model, color);
             if (!found)
                 return std::nullopt;
             nearest = found->index;
@@ -1390,18 +1388,18 @@ std::optional<Left> loadTga(App* app, CPU& cpu, reg32 model, reg32 tga, reg32 mo
     left.eax = at(app, model + kModelPictures);
     if (left.eax == 1)
     {
-        const reg32 width = word(kTgaWidth), height = word(kTgaHeight);
+        const u32 width = word(kTgaWidth), height = word(kTgaHeight);
         left = Left{byte(app, tga + kTgaIdLength), width, tga, tga + kTgaHeader + byte(app, tga + kTgaIdLength)};
         if (width != 0 && height != 0)
         {
-            const std::optional<Left> fitted = fitCalled(app, cpu, *block, left.edx, width, height, most, color, second);
+            const std::optional<Left> fitted = fitCalled(app, ts, *block, left.edx, width, height, most, color, second);
             if (!fitted)
                 return std::nullopt;
             left = *fitted;
             if (texture == 0)
             {
-                const std::optional<reg32> handle = guest::direct<0x49c600, graphics::allocatedTexture>(
-                    app, cpu, at(app, *block + kTextureWidth), at(app, *block + kTextureHeight));
+                const std::optional<u32> handle = guest::direct<0x49c600, graphics::allocatedTexture>(
+                    app, ts, at(app, *block + kTextureWidth), at(app, *block + kTextureHeight));
                 if (!handle)
                     return std::nullopt;
                 left = Left{*handle, left.ebx, left.ecx, at(app, *block + kTextureHeight)};
@@ -1416,7 +1414,7 @@ std::optional<Left> loadTga(App* app, CPU& cpu, reg32 model, reg32 tga, reg32 mo
             put(app, model + kModelTexture, texture);
             if (upload != 0)
             {
-                if (!textureGiven(app, cpu, texture, *block + kTexturePixels, at(app, *block + kTextureWidth),
+                if (!textureGiven(app, ts, texture, *block + kTexturePixels, at(app, *block + kTextureWidth),
                                   at(app, *block + kTextureHeight)))
                     return std::nullopt;
                 left = Left{texture, at(app, *block + kTextureWidth), at(app, *block + kTextureHeight),
@@ -1428,15 +1426,15 @@ std::optional<Left> loadTga(App* app, CPU& cpu, reg32 model, reg32 tga, reg32 mo
     }
     if (copyTo != 0)
     {
-        const reg32 bytes = (at(app, *block + kTextureWidth) * 2) * at(app, *block + kTextureHeight);
-        reg32 ebxLeft;
-        if (!moveMemory(app, cpu, *block + kTexturePixels, copyTo, bytes, ebxLeft))
+        const u32 bytes = (at(app, *block + kTextureWidth) * 2) * at(app, *block + kTextureHeight);
+        u32 ebxLeft;
+        if (!moveMemory(app, ts, *block + kTexturePixels, copyTo, bytes, ebxLeft))
             return std::nullopt;
         left = movedLeft(*block + kTexturePixels, copyTo, bytes, left.ecx);
     }
     if (*block != 0)
     {
-        const std::optional<reg32> freed = guest::direct<0x4e1890, ea::purgeBlock>(app, cpu, *block);
+        const std::optional<u32> freed = guest::direct<0x4e1890, ea::purgeBlock>(app, ts, *block);
         if (!freed)
             return std::nullopt;
         left.eax = *freed;
@@ -1445,10 +1443,10 @@ std::optional<Left> loadTga(App* app, CPU& cpu, reg32 model, reg32 tga, reg32 mo
 }
 
 /* loadTga as the code calls it, its three words on the guest's stack under the caller's frame. */
-std::optional<Left> tgaCalled(App* app, CPU& cpu, reg32 model, reg32 tga, reg32 most, reg32 color)
+std::optional<Left> tgaCalled(App* app, ThreadState& ts, u32 model, u32 tga, u32 most, u32 color)
 {
-    const GuestFrame call(cpu, kThreeWords + kReturnSlot, 0);
-    return loadTga(app, cpu, model, tga, most, 0, color, 1, 0);
+    const GuestFrame call(ts, kThreeWords + kReturnSlot, 0);
+    return loadTga(app, ts, model, tga, most, 0, color, 1, 0);
 }
 
 /* 0x49d450's core: the car's model named `name`: "%s.fce" loaded and made ready, its texture from
@@ -1456,56 +1454,56 @@ std::optional<Left> tgaCalled(App* app, CPU& cpu, reg32 model, reg32 tga, reg32 
  * `most` at most each way, in its colour `color` (of as many as it has).  The files loaded
  * freed; the model, and what the texture's loading leaves in ebx and edx (ebx the .art, for
  * one).  nullopt when the game stopped. */
-std::optional<Left> loadModel(App* app, CPU& cpu, reg32 name, reg32 most, reg32 color)
+std::optional<Left> loadModel(App* app, ThreadState& ts, u32 name, u32 most, u32 color)
 {
-    const GuestFrame frame(cpu, kModelPushed, kModelFrame);
-    const reg32 path = frame - kModelFrame;
-    if (!print(app, cpu, {path, kFceFormat, name}))
+    const GuestFrame frame(ts, kModelPushed, kModelFrame);
+    const u32 path = frame - kModelFrame;
+    if (!print(app, ts, {path, kFceFormat, name}))
         return std::nullopt;
-    const std::optional<reg32> fce = guest::direct<0x4e0ec0, ea::loadWhole>(app, cpu, path, kLoadPlain);
+    const std::optional<u32> fce = guest::direct<0x4e0ec0, ea::loadWhole>(app, ts, path, kLoadPlain);
     if (!fce)
         return std::nullopt;
-    const std::optional<reg32> model = modelReady(app, cpu, *fce);
-    if (!model || !print(app, cpu, {path, kTgaFormat, name}))
+    const std::optional<u32> model = modelReady(app, ts, *fce);
+    if (!model || !print(app, ts, {path, kTgaFormat, name}))
         return std::nullopt;
     bool fromTga = false;
     if (at(app, *model + kModelPictures) == 1)
     {
-        const std::optional<bool> exists = guest::direct<0x4e0e60, ea::fileThere>(app, cpu, name);
+        const std::optional<bool> exists = guest::direct<0x4e0e60, ea::fileThere>(app, ts, name);
         if (!exists)
             return std::nullopt;
         fromTga = *exists;
     }
     // The colour asked for: the model's colour `color` modulo as many as it has (idiv's
     // remainder), or none.
-    const auto colorOf = [&]() -> reg32 {
-        const reg32 colors = at(app, *model + kModelColors);
-        if (sreg32(colors) <= 0)
+    const auto colorOf = [&]() -> u32 {
+        const u32 colors = at(app, *model + kModelColors);
+        if (s32(colors) <= 0)
             return 0;
-        return *model + kModelColor + (divide(sreg32(color), colors).second << kColorShift);
+        return *model + kModelColor + (divide(s32(color), colors).second << kColorShift);
     };
     std::optional<Left> left;
     if (fromTga)
     {
-        const std::optional<reg32> tga = guest::direct<0x4e0ec0, ea::loadWhole>(app, cpu, path, kLoadQuiet);
+        const std::optional<u32> tga = guest::direct<0x4e0ec0, ea::loadWhole>(app, ts, path, kLoadQuiet);
         if (!tga)
             return std::nullopt;
-        left = tgaCalled(app, cpu, *model, *tga, most, colorOf());
-        if (!left || (*tga != 0 && !guest::direct<0x4e1890, ea::purgeBlock>(app, cpu, *tga)))
+        left = tgaCalled(app, ts, *model, *tga, most, colorOf());
+        if (!left || (*tga != 0 && !guest::direct<0x4e1890, ea::purgeBlock>(app, ts, *tga)))
             return std::nullopt;
     }
     else
     {
-        if (!print(app, cpu, {path, kArtFormat, name}))
+        if (!print(app, ts, {path, kArtFormat, name}))
             return std::nullopt;
-        const std::optional<reg32> art = guest::direct<0x4e0ec0, ea::loadWhole>(app, cpu, path, kLoadQuiet);
+        const std::optional<u32> art = guest::direct<0x4e0ec0, ea::loadWhole>(app, ts, path, kLoadQuiet);
         if (!art)
             return std::nullopt;
         {
-            const GuestFrame call(cpu, kReturnSlot, 0);
-            left = loadArt(app, cpu, *model, *art, most, colorOf());
+            const GuestFrame call(ts, kReturnSlot, 0);
+            left = loadArt(app, ts, *model, *art, most, colorOf());
         }
-        if (!left || (*art != 0 && !guest::direct<0x4e1890, ea::purgeBlock>(app, cpu, *art)))
+        if (!left || (*art != 0 && !guest::direct<0x4e1890, ea::purgeBlock>(app, ts, *art)))
             return std::nullopt;
         left->ebx = *art;
     }
@@ -1517,26 +1515,26 @@ std::optional<Left> loadModel(App* app, CPU& cpu, reg32 name, reg32 most, reg32 
 
 /* 0x49d130: loadArt for the model eax, the pictures at edx, ebx at most, the colour ecx; eax, ebx,
  * ecx and edx as the code leaves them. */
-x86::reg32 loadArtTextures(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 loadArtTextures(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const std::optional<Left> left = loadArt(app, cpu, args.eax, args.edx, args.ebx, args.ecx);
+    const std::optional<Left> left = loadArt(app, ts, args.eax, args.edx, args.ebx, args.ecx);
     if (!left)
         return args.eax;
     args.eax = left->eax;
     args.ebx = left->ebx;
     args.ecx = left->ecx;
     args.edx = left->edx;
-    cpu.esp += kReturnSlot;
+    ts.sp += kReturnSlot;
     return args.eax;
 }
 
 /* 0x49d320: loadTga for the model eax, the .tga at edx, ebx at most, the texture ecx, the colour
  * [esp+4], whether to upload [esp+8], where to copy [esp+0xc]; eax, ebx, ecx and edx as the code
  * leaves them. */
-x86::reg32 loadTgaTexture(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 loadTgaTexture(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const reg32 words = cpu.esp + kReturnSlot;
-    const std::optional<Left> left = loadTga(app, cpu, args.eax, args.edx, args.ebx, args.ecx, at(app, words),
+    const u32 words = ts.sp + kReturnSlot;
+    const std::optional<Left> left = loadTga(app, ts, args.eax, args.edx, args.ebx, args.ecx, at(app, words),
                                              at(app, words + 4), at(app, words + 8));
     if (!left)
         return args.eax;
@@ -1544,21 +1542,21 @@ x86::reg32 loadTgaTexture(App* app, CPU& cpu, x86::Args& args)
     args.ebx = left->ebx;
     args.ecx = left->ecx;
     args.edx = left->edx;
-    cpu.esp += kReturnSlot + kThreeWords;
+    ts.sp += kReturnSlot + kThreeWords;
     return args.eax;
 }
 
 /* 0x49d450: loadModel for the name at eax, edx at most, the colour ebx; ebx and edx as the
  * texture's loading leaves them. */
-x86::reg32 loadCarModel(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 loadCarModel(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const std::optional<Left> left = loadModel(app, cpu, args.eax, args.edx, args.ebx);
+    const std::optional<Left> left = loadModel(app, ts, args.eax, args.edx, args.ebx);
     if (!left)
         return args.eax;
     args.eax = left->eax;
     args.ebx = left->ebx;
     args.edx = left->edx;
-    cpu.esp += kReturnSlot;
+    ts.sp += kReturnSlot;
     return args.eax;
 }
 
@@ -1568,14 +1566,14 @@ namespace
 // loadVivCarModel's frame: three registers pushed, then 0x23c bytes: the file's place at -0x18,
 // its size at -0x1c, the colour as hue, saturation and brightness at -0x2c and as red, green and
 // blue at -0x3c (16 bytes each, nfs3.exe's zeros at first), the path at -0x23c.
-constexpr reg32 kVivModelPushed = 0xc, kVivModelFrame = 0x23c, kVivModelPlace = 0x18, kVivModelSize = 0x1c;
-constexpr reg32 kVivModelHsv = 0x2c, kVivModelRgb = 0x3c, kVivModelPath = 0x23c, kColorBytes = 0x10;
+constexpr u32 kVivModelPushed = 0xc, kVivModelFrame = 0x23c, kVivModelPlace = 0x18, kVivModelSize = 0x1c;
+constexpr u32 kVivModelHsv = 0x2c, kVivModelRgb = 0x3c, kVivModelPath = 0x23c, kColorBytes = 0x10;
 // copyVivCarModel's: four registers pushed, then 0x208 bytes: the place at -4, the size at -8,
 // the path at -0x208.
-constexpr reg32 kVivCopyPushed = 0x10, kVivCopyFrame = 0x208, kVivCopyPlace = 4, kVivCopySize = 8;
-constexpr reg32 kVivCopyPath = 0x208;
+constexpr u32 kVivCopyPushed = 0x10, kVivCopyFrame = 0x208, kVivCopyPlace = 4, kVivCopySize = 8;
+constexpr u32 kVivCopyPath = 0x208;
 // A car's model (+0x8a4) and its colour as hue, saturation and brightness (+0x8a8 on).
-constexpr reg32 kCarModel = 0x8a4, kCarColor = 0x8a8;
+constexpr u32 kCarModel = 0x8a4, kCarColor = 0x8a8;
 
 }  // namespace
 
@@ -1585,23 +1583,23 @@ constexpr reg32 kCarModel = 0x8a4, kCarColor = 0x8a8;
  * and the fourth, a byte each: as hue, saturation and brightness to the car's +0x8a8 on) when
  * there is one.  The block, and what the texture's loading (loadTga) leaves in ebx, ecx and edx;
  * nullopt when the game stopped. */
-std::optional<Left> loadVivModel(App* app, CPU& cpu, reg32 car, reg32 name, reg32 most, reg32 color, reg32 viv)
+std::optional<Left> loadVivModel(App* app, ThreadState& ts, u32 car, u32 name, u32 most, u32 color, u32 viv)
 {
-    const GuestFrame frame(cpu, kVivModelPushed, kVivModelFrame);
-    const reg32 place = frame - kVivModelPlace, size = frame - kVivModelSize, hsv = frame - kVivModelHsv;
-    const reg32 rgb = frame - kVivModelRgb, path = frame - kVivModelPath;
+    const GuestFrame frame(ts, kVivModelPushed, kVivModelFrame);
+    const u32 place = frame - kVivModelPlace, size = frame - kVivModelSize, hsv = frame - kVivModelHsv;
+    const u32 rgb = frame - kVivModelRgb, path = frame - kVivModelPath;
     copyGuest(app, hsv, kZeros, kColorBytes);
     copyGuest(app, rgb, kMoreZeros, kColorBytes);
-    if (!print(app, cpu, {path, kVivFceFormat, name}) || !findVivEntry(app, cpu, viv, path, place, size))
+    if (!print(app, ts, {path, kVivFceFormat, name}) || !findVivEntry(app, ts, viv, path, place, size))
         return std::nullopt;
-    const reg32 fce = viv + at(app, place);
-    const std::optional<reg32> block = guest::direct<0x4e1620, ea::reserved>(app, cpu, kVivNoName, at(app, size), reg32(0));
-    if (!block || !guest::direct<0x4ea4f0, ea::moveMemory>(app, cpu, *block, fce, at(app, size))
-        || !modelReady(app, cpu, *block)
-        || !print(app, cpu, {path, kVivTgaFormat, name}) || !findVivEntry(app, cpu, viv, path, place, size))
+    const u32 fce = viv + at(app, place);
+    const std::optional<u32> block = guest::direct<0x4e1620, ea::reserved>(app, ts, kVivNoName, at(app, size), u32(0));
+    if (!block || !guest::direct<0x4ea4f0, ea::moveMemory>(app, ts, *block, fce, at(app, size))
+        || !modelReady(app, ts, *block)
+        || !print(app, ts, {path, kVivTgaFormat, name}) || !findVivEntry(app, ts, viv, path, place, size))
         return std::nullopt;
-    const reg32 tga = viv + at(app, place);
-    reg32 asked = 0;
+    const u32 tga = viv + at(app, place);
+    u32 asked = 0;
     if (color != 0)
     {
         put(app, rgb + kRed, byte(app, color));
@@ -1614,7 +1612,7 @@ std::optional<Left> loadVivModel(App* app, CPU& cpu, reg32 car, reg32 name, reg3
         put(app, car + kCarColor + kBrightness, at(app, hsv + kBrightness));
         asked = hsv;
     }
-    std::optional<Left> left = tgaCalled(app, cpu, *block, tga, most, asked);
+    std::optional<Left> left = tgaCalled(app, ts, *block, tga, most, asked);
     if (!left)
         return std::nullopt;
     left->eax = *block;
@@ -1624,51 +1622,51 @@ std::optional<Left> loadVivModel(App* app, CPU& cpu, reg32 car, reg32 name, reg3
 /* 0x4b7ba0's core: another of the model named `name` in the .viv at `viv`: "%s.fce" copied into a
  * block of the game's memory, given the texture of the car's model and made ready.  The block;
  * nullopt when the game stopped.  What the copy (0x4ea4f0) leaves in ebx to `copyLeft`. */
-std::optional<reg32> copyVivModel(App* app, CPU& cpu, reg32 car, reg32 name, reg32 viv, reg32& copyLeft)
+std::optional<u32> copyVivModel(App* app, ThreadState& ts, u32 car, u32 name, u32 viv, u32& copyLeft)
 {
-    const GuestFrame frame(cpu, kVivCopyPushed, kVivCopyFrame);
-    const reg32 place = frame - kVivCopyPlace, size = frame - kVivCopySize, path = frame - kVivCopyPath;
-    if (!print(app, cpu, {path, kVivFceFormat, name}) || !findVivEntry(app, cpu, viv, path, place, size))
+    const GuestFrame frame(ts, kVivCopyPushed, kVivCopyFrame);
+    const u32 place = frame - kVivCopyPlace, size = frame - kVivCopySize, path = frame - kVivCopyPath;
+    if (!print(app, ts, {path, kVivFceFormat, name}) || !findVivEntry(app, ts, viv, path, place, size))
         return std::nullopt;
-    const reg32 fce = viv + at(app, place);
-    const std::optional<reg32> block = guest::direct<0x4e1620, ea::reserved>(app, cpu, kVivNoName, at(app, size), reg32(0));
-    if (!block || !moveMemory(app, cpu, fce, *block, at(app, size), copyLeft))
+    const u32 fce = viv + at(app, place);
+    const std::optional<u32> block = guest::direct<0x4e1620, ea::reserved>(app, ts, kVivNoName, at(app, size), u32(0));
+    if (!block || !moveMemory(app, ts, fce, *block, at(app, size), copyLeft))
         return std::nullopt;
     put(app, *block + kModelTexture, at(app, at(app, car + kCarModel) + kModelTexture));
-    if (!modelReady(app, cpu, *block))
+    if (!modelReady(app, ts, *block))
         return std::nullopt;
     return *block;
 }
 
 /* 0x4b7a60: loadVivModel for car eax, the name at edx, ebx at most, the colour at ecx, the .viv
  * at [esp+4]; ebx, ecx and edx as the texture's loading leaves them. */
-x86::reg32 loadVivCarModel(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 loadVivCarModel(App* app, ThreadState& ts, nfs::Args& args)
 {
     const std::optional<Left> left =
-        loadVivModel(app, cpu, args.eax, args.edx, args.ebx, args.ecx, at(app, cpu.esp + kReturnSlot));
+        loadVivModel(app, ts, args.eax, args.edx, args.ebx, args.ecx, at(app, ts.sp + kReturnSlot));
     if (!left)
         return args.eax;
     args.eax = left->eax;
     args.ebx = left->ebx;
     args.ecx = left->ecx;
     args.edx = left->edx;
-    cpu.esp += kReturnSlot + 4;
+    ts.sp += kReturnSlot + 4;
     return args.eax;
 }
 
 /* 0x4b7ba0: copyVivModel for car eax, the name at edx, the .viv at ebx; edx the texture given,
  * ebx as the copy leaves it. */
-x86::reg32 copyVivCarModel(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 copyVivCarModel(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const reg32 car = args.eax;
-    reg32 copyLeft = args.ebx;
-    const std::optional<reg32> block = copyVivModel(app, cpu, car, args.edx, args.ebx, copyLeft);
+    const u32 car = args.eax;
+    u32 copyLeft = args.ebx;
+    const std::optional<u32> block = copyVivModel(app, ts, car, args.edx, args.ebx, copyLeft);
     if (!block)
         return args.eax;
     args.eax = *block;
     args.edx = at(app, *block + kModelTexture);
     args.ebx = copyLeft;
-    cpu.esp += 4;
+    ts.sp += 4;
     return args.eax;
 }
 
@@ -1676,62 +1674,62 @@ namespace
 {
 
 // The players' names (0x549784, 0x54978c), whether one will do (0x4721f0).
-// GetModuleFileNameA's buffer and its size, a frame's under the six registers loadPlayerSpecs pushes;
+// The program's path's buffer, a frame's under the six registers loadPlayerSpecs pushes;
 // a file's size asked for with this mode; chmod's read and write; access's write.
-constexpr reg32 kModuleBytes = 0xfc, kModuleSize = 0xf9, kSpecsPushed = 0x18;
+constexpr u32 kModuleBytes = 0xfc, kSpecsPushed = 0x18;
 // A call's return address's slot: where one of this file's cores calls another, the callee's
 // frame as deep as the code's.
-constexpr reg32 kSizeMode = 0x10, kReadWrite = 0x180, kWritable = 2;
+constexpr u32 kSizeMode = 0x10, kReadWrite = 0x180, kWritable = 2;
 
 /* Player's spec `index`'s 0x30 bytes, or 0: no table for the player, or the index outside 0 to 49. */
-reg32 specSlot(reg32 player, i32 index)
+u32 specSlot(u32 player, i32 index)
 {
-    const reg32 table = specsOf(player);
+    const u32 table = specsOf(player);
     if (table == 0 || index < 0 || index >= i32(kSpecCount))
         return 0;
-    return table + reg32(index) * kSpecBytes;
+    return table + u32(index) * kSpecBytes;
 }
 
 /* Player's table of specs' name: the first's, the second's, or 0. */
-reg32 specsName(reg32 player)
+u32 specsName(u32 player)
 {
     return player == 0 ? kFirstPlayer : player == 1 ? kSecondPlayer : 0;
 }
 
 /* Whether the `count` bytes at `a` are those at `b` (repe cmpsb). */
-bool sameBytes(App* app, reg32 a, reg32 b, reg32 count)
+bool sameBytes(App* app, u32 a, u32 b, u32 count)
 {
-    for (reg32 i = 0; i < count; ++i)
+    for (u32 i = 0; i < count; ++i)
         if (byte(app, a + i) != byte(app, b + i))
             return false;
     return true;
 }
 
 /* 0x4dc3a0's core: player's spec `index` marked in use or not; nothing for an index outside. */
-void markSpec(App* app, reg32 player, i32 index, reg8 inUse)
+void markSpec(App* app, u32 player, i32 index, u8 inUse)
 {
-    const reg32 slot = specSlot(player, index);
+    const u32 slot = specSlot(player, index);
     if (slot != 0)
         putByte(app, slot + kSpecInUse, inUse);
 }
 
 /* 0x4dc3f0's core: whether player's spec `index` is in use; 0 for none. */
-reg8 specInUse(App* app, reg32 player, i32 index)
+u8 specInUse(App* app, u32 player, i32 index)
 {
-    const reg32 slot = specSlot(player, index);
+    const u32 slot = specSlot(player, index);
     return slot != 0 ? byte(app, slot + kSpecInUse) : 0;
 }
 
 /* 0x4dc440's core: player's spec `index`'s car id's address, or 0. */
-reg32 specCarId(reg32 player, i32 index)
+u32 specCarId(u32 player, i32 index)
 {
-    const reg32 slot = specSlot(player, index);
+    const u32 slot = specSlot(player, index);
     return slot != 0 ? slot + kSpecCarId : 0;
 }
 
 /* 0x4dc490's core: the first of player's specs whose car id is the 16 bytes at `id`, in use or
  * not; -1 for none. */
-i32 specOfCar(App* app, reg32 player, reg32 id)
+i32 specOfCar(App* app, u32 player, u32 id)
 {
     if (specsOf(player) == 0)
         return -1;
@@ -1742,7 +1740,7 @@ i32 specOfCar(App* app, reg32 player, reg32 id)
 }
 
 /* 0x4dc500's core: player's first spec not in use, or -1. */
-i32 firstFreeSpec(App* app, reg32 player)
+i32 firstFreeSpec(App* app, u32 player)
 {
     if (specsOf(player) == 0)
         return -1;
@@ -1755,18 +1753,18 @@ i32 firstFreeSpec(App* app, reg32 player)
 /* 0x4dc5a0's core: player's spec `index` given the car id at `id` and the spec at `spec`, each
  * cleared (0x4e0640) where there is none; nothing for an index outside.  False when the game
  * stopped. */
-bool storeSpec(App* app, CPU& cpu, reg32 player, i32 index, reg32 id, reg32 spec)
+bool storeSpec(App* app, ThreadState& ts, u32 player, i32 index, u32 id, u32 spec)
 {
-    const reg32 slot = specSlot(player, index);
+    const u32 slot = specSlot(player, index);
     if (slot == 0)
         return true;
     if (id != 0)
         copyGuest(app, slot + kSpecCarId, id, kCarIdBytes);
-    else if (!clearBytes(app, cpu, slot + kSpecCarId, kCarIdBytes))
+    else if (!clearBytes(app, ts, slot + kSpecCarId, kCarIdBytes))
         return false;
     if (spec != 0)
         copyGuest(app, slot + kSpecCar, spec, kCarSpecBytes);
-    else if (!clearBytes(app, cpu, slot + kSpecCar, kCarSpecBytes))
+    else if (!clearBytes(app, ts, slot + kSpecCar, kCarSpecBytes))
         return false;
     return true;
 }
@@ -1774,27 +1772,27 @@ bool storeSpec(App* app, CPU& cpu, reg32 player, i32 index, reg32 id, reg32 spec
 /* 0x4dc670's core: player's specs made anew: the table cleared, then each car there is (to the
  * first there is not) given a spec in use, its id and the default spec, while there are specs
  * free.  How many; nullopt when the game stopped. */
-std::optional<i32> makeDefaultSpecs(App* app, CPU& cpu, reg32 player)
+std::optional<i32> makeDefaultSpecs(App* app, ThreadState& ts, u32 player)
 {
     i32 made = 0;
-    const reg32 table = specsOf(player);
+    const u32 table = specsOf(player);
     if (table == 0)
         return made;
-    if (!clearBytes(app, cpu, table, kSpecsBytes))
+    if (!clearBytes(app, ts, table, kSpecsBytes))
         return std::nullopt;
     for (i32 car = 0;; ++car)
     {
-        const std::optional<reg32> record = carRecord(app, cpu, car);
+        const std::optional<u32> record = carRecord(app, ts, car);
         if (!record)
             return std::nullopt;
         if (*record != 0 && made < i32(kSpecCount))
         {
-            const std::optional<reg32> id = carId(app, cpu, car);
+            const std::optional<u32> id = carId(app, ts, car);
             if (!id)
                 return std::nullopt;
             if (*id != 0)
             {
-                if (!storeSpec(app, cpu, player, made, *id, kDefaultSpec))
+                if (!storeSpec(app, ts, player, made, *id, kDefaultSpec))
                     return std::nullopt;
                 markSpec(app, player, made, 1);
                 ++made;
@@ -1809,37 +1807,37 @@ std::optional<i32> makeDefaultSpecs(App* app, CPU& cpu, reg32 player)
  * longer known (0x439990) cleared and marked free; each car there is (to the first there is not)
  * without a spec given one, free, its id and the default spec.  Whether anything was added or
  * taken; nullopt when the game stopped. */
-std::optional<bool> refreshSpecsOf(App* app, CPU& cpu, reg32 player)
+std::optional<bool> refreshSpecsOf(App* app, ThreadState& ts, u32 player)
 {
     bool changed = false;
-    const reg32 table = specsOf(player);
+    const u32 table = specsOf(player);
     if (table == 0)
         return changed;
     for (i32 index = 0; index < i32(kSpecCount); ++index)
     {
         if (specInUse(app, player, index) == 0)
             continue;
-        const reg32 id = specCarId(player, index);
+        const u32 id = specCarId(player, index);
         if (id == 0)
             continue;
-        const reg32 known = guest::direct<0x439990, placeById>(app, cpu, id);
-        if (cpu.terminate)
+        const u32 known = guest::direct<0x439990, placeById>(app, ts, id);
+        if (ts.terminate)
             return std::nullopt;
         if (known != 0xffffffff)
             continue;
-        if (!storeSpec(app, cpu, player, index, 0, 0))
+        if (!storeSpec(app, ts, player, index, 0, 0))
             return std::nullopt;
         markSpec(app, player, index, 0);
         changed = true;
     }
     for (i32 car = 0;; ++car)
     {
-        const std::optional<reg32> record = carRecord(app, cpu, car);
+        const std::optional<u32> record = carRecord(app, ts, car);
         if (!record)
             return std::nullopt;
         if (*record != 0)
         {
-            const std::optional<reg32> id = carId(app, cpu, car);
+            const std::optional<u32> id = carId(app, ts, car);
             if (!id)
                 return std::nullopt;
             if (*id != 0)
@@ -1848,7 +1846,7 @@ std::optional<bool> refreshSpecsOf(App* app, CPU& cpu, reg32 player)
                 const i32 free = found >= 0 ? -1 : firstFreeSpec(app, player);
                 if (free != -1)
                 {
-                    if (!storeSpec(app, cpu, player, free, *id, kDefaultSpec))
+                    if (!storeSpec(app, ts, player, free, *id, kDefaultSpec))
                         return std::nullopt;
                     markSpec(app, player, free, 1);
                     changed = true;
@@ -1862,7 +1860,7 @@ std::optional<bool> refreshSpecsOf(App* app, CPU& cpu, reg32 player)
 
 /* 0x4dc800's core: the specs' file of the player named `name`, made at 0x564188: the folder
  * ([0x7a2fb4] on), "carspecs\", the name, ".spc".  Its address. */
-reg32 makeSpecPath(App* app, reg32 name)
+u32 makeSpecPath(App* app, u32 name)
 {
     putByte(app, kSpecPath, 0);
     copyText(app, kSpecPath, kSpecFolder);
@@ -1874,138 +1872,136 @@ reg32 makeSpecPath(App* app, reg32 name)
 
 /* 0x4dc8b0's core: player's specs from the file's `bytes` bytes at `file` (0x30 at least), a
  * spec's 0x30 bytes at a time, 50 at most.  How many. */
-i32 readSpecsFrom(App* app, reg32 player, reg32 file, reg32 bytes)
+i32 readSpecsFrom(App* app, u32 player, u32 file, u32 bytes)
 {
-    const reg32 table = specsOf(player);
+    const u32 table = specsOf(player);
     i32 index = 0;
     if (file == 0 || table == 0 || bytes < kSpecBytes)
         return index;
-    for (reg32 offset = 0; sreg32(offset) < sreg32(bytes) && index < i32(kSpecCount); offset += kSpecBytes)
+    for (u32 offset = 0; s32(offset) < s32(bytes) && index < i32(kSpecCount); offset += kSpecBytes)
     {
-        copyGuest(app, table + reg32(index) * kSpecBytes, file + offset, kSpecBytes);
+        copyGuest(app, table + u32(index) * kSpecBytes, file + offset, kSpecBytes);
         ++index;
     }
     return index;
 }
 
-std::optional<reg32> saveSpecs(App* app, CPU& cpu, reg32 player);
+std::optional<u32> saveSpecs(App* app, ThreadState& ts, u32 player);
 
 /* 0x4dca50's core: player's specs saved, when the player's name will do: the file made writable
  * if it is there and is not (chmod 0x180), the specs brought up to the cars there are, the table
  * written whole (0x4eebb0).  What that gives, or 0; nullopt when the game stopped. */
-std::optional<reg32> saveSpecs(App* app, CPU& cpu, reg32 player)
+std::optional<u32> saveSpecs(App* app, ThreadState& ts, u32 player)
 {
-    const GuestFrame frame(cpu, kSpecsPushed, 0);  // as deep as the code's: access hands on a frame of its own
-    const reg32 name = specsName(player), table = specsOf(player);
+    const GuestFrame frame(ts, kSpecsPushed, 0);  // as deep as the code's: access hands on a frame of its own
+    const u32 name = specsName(player), table = specsOf(player);
     if (name == 0)
         return 0;
-    const std::optional<reg32> valid = nameWillDo(app, cpu, name);
+    const std::optional<u32> valid = nameWillDo(app, ts, name);
     if (!valid)
         return std::nullopt;
     if (*valid == 0 || table == 0)
         return 0;
-    const reg32 path = makeSpecPath(app, name);
-    const std::optional<bool> exists = guest::direct<0x4e0e60, ea::fileThere>(app, cpu, path);
+    const u32 path = makeSpecPath(app, name);
+    const std::optional<bool> exists = guest::direct<0x4e0e60, ea::fileThere>(app, ts, path);
     if (!exists)
         return std::nullopt;
     if (*exists)
     {
-        const std::optional<reg32> locked = accessFile(app, cpu, path, kWritable);
+        const std::optional<u32> locked = accessFile(app, ts, path, kWritable);
         if (!locked)
             return std::nullopt;
-        if (*locked != 0 && !chmodFile(app, cpu, path, kReadWrite))
+        if (*locked != 0 && !chmodFile(app, ts, path, kReadWrite))
             return std::nullopt;
     }
-    if (!refreshSpecsOf(app, cpu, player))
+    if (!refreshSpecsOf(app, ts, player))
         return std::nullopt;
-    return guest::direct<0x4eebb0, saveBlockQuietly>(app, cpu, path, table, kSpecsBytes);
+    return guest::direct<0x4eebb0, saveBlockQuietly>(app, ts, path, table, kSpecsBytes);
 }
 
 }  // namespace
 
 /* 0x4dc940's core: player's specs loaded, when the player's name will do: the table cleared; a
- * file of another machine's (0x472940, by the module's name, which GetModuleFileNameA puts in a
- * frame at the code's depth) deleted, and with none the specs made anew and saved; else the file
+ * file of another machine's (0x472940, by the program's path, put in a frame at the code's depth)
+ * deleted, and with none the specs made anew and saved; else the file
  * read in and freed, and saved again if bringing it up to the cars there are changed it -- made
  * anew instead when it would not load.  eax as the code leaves it: the player for one with no
  * table, 0 for a name that will not do, else what the last of the specs' functions gave;
  * nullopt when the game stopped. */
-std::optional<reg32> playerSpecs(App* app, CPU& cpu, reg32 player)
+std::optional<u32> playerSpecs(App* app, ThreadState& ts, u32 player)
 {
-    const GuestFrame frame(cpu, kSpecsPushed, kModuleBytes);
-    const reg32 module = frame - kModuleBytes;
-    const reg32 table = specsOf(player), name = specsName(player);
+    const GuestFrame frame(ts, kSpecsPushed, kModuleBytes);
+    const u32 module = frame - kModuleBytes;
+    const u32 table = specsOf(player), name = specsName(player);
     if (name == 0)
         return player;
-    const std::optional<reg32> valid = nameWillDo(app, cpu, name);
+    const std::optional<u32> valid = nameWillDo(app, ts, name);
     if (!valid)
         return std::nullopt;
     if (*valid == 0 || table == 0)
         return *valid;
-    if (!clearBytes(app, cpu, table, kSpecsBytes))
+    if (!clearBytes(app, ts, table, kSpecsBytes))
         return std::nullopt;
-    const reg32 path = makeSpecPath(app, name);
-    {
-        if (!guest::windows<kGetModuleFileName, &host::moduleFileName>(app, cpu, 0, module, kModuleSize))
-            return std::nullopt;
-    }
-    const std::optional<bool> exists = guest::direct<0x4e0e60, ea::fileThere>(app, cpu, path);
+    const u32 path = makeSpecPath(app, name);
+    // The program's path, C:\ and its name, however many bytes it takes.
+    guest::putText(app, module, os::programPath(app).c_str());
+    const std::optional<bool> exists = guest::direct<0x4e0e60, ea::fileThere>(app, ts, path);
     if (!exists)
         return std::nullopt;
     bool anew = !*exists;
     if (!anew)
     {
-        const std::optional<reg32> foreign = guest::direct<0x472940, writtenBefore>(app, cpu, path, module);
+        const std::optional<u32> foreign = guest::direct<0x472940, writtenBefore>(app, ts, path, module);
         if (!foreign)
             return std::nullopt;
         if (*foreign != 0)
         {
-            if (!unlinkFile(app, cpu, path))
+            if (!unlinkFile(app, ts, path))
                 return std::nullopt;
             anew = true;
         }
     }
     if (anew)
     {
-        if (!makeDefaultSpecs(app, cpu, player))
+        if (!makeDefaultSpecs(app, ts, player))
             return std::nullopt;
-        const GuestFrame call(cpu, kReturnSlot, 0);
-        return saveSpecs(app, cpu, player);
+        const GuestFrame call(ts, kReturnSlot, 0);
+        return saveSpecs(app, ts, player);
     }
-    const std::optional<reg32> size = feCore<0x4e43a0, frontend::eaa::fileSize>(app, cpu, path);
+    const std::optional<u32> size = feCore<0x4e43a0, frontend::eaa::fileSize>(app, ts, path);
     if (!size)
         return std::nullopt;
-    const std::optional<reg32> file = guest::direct<0x4e0fe0, ea::loadQuietly>(app, cpu, path, kSizeMode);
+    const std::optional<u32> file = guest::direct<0x4e0fe0, ea::loadQuietly>(app, ts, path, kSizeMode);
     if (!file)
         return std::nullopt;
     if (*file == 0)
     {
-        const std::optional<i32> made = makeDefaultSpecs(app, cpu, player);
+        const std::optional<i32> made = makeDefaultSpecs(app, ts, player);
         if (!made)
             return std::nullopt;
-        return reg32(*made);
+        return u32(*made);
     }
-    if (sreg32(*size) > 0)
+    if (s32(*size) > 0)
         readSpecsFrom(app, player, *file, *size);
-    if (!guest::direct<0x4e1890, ea::purgeBlock>(app, cpu, *file))
+    if (!guest::direct<0x4e1890, ea::purgeBlock>(app, ts, *file))
         return std::nullopt;
-    const std::optional<bool> changed = refreshSpecsOf(app, cpu, player);
+    const std::optional<bool> changed = refreshSpecsOf(app, ts, player);
     if (!changed)
         return std::nullopt;
     if (!*changed)
         return 0;
-    const GuestFrame call(cpu, kReturnSlot, 0);
-    return saveSpecs(app, cpu, player);
+    const GuestFrame call(ts, kReturnSlot, 0);
+    return saveSpecs(app, ts, player);
 }
 
 /* 0x4dc3a0: markSpec for player eax, spec edx, bl; eax, ebx and edx as the game's code leaves
  * them. */
-x86::reg32 setSpecUsed(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 setSpecUsed(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const reg32 player = args.eax, index = args.edx;
-    const reg8 inUse = reg8(args.ebx);
+    const u32 player = args.eax, index = args.edx;
+    const u8 inUse = u8(args.ebx);
     markSpec(app, player, i32(index), inUse);
-    const reg32 slot = specSlot(player, i32(index));
+    const u32 slot = specSlot(player, i32(index));
     if (slot != 0)
     {
         args.eax = slot;
@@ -2017,62 +2013,62 @@ x86::reg32 setSpecUsed(App* app, CPU& cpu, x86::Args& args)
         args.eax = index;
         args.edx = specsOf(player);
     }
-    cpu.esp += 4;
+    ts.sp += 4;
     return args.eax;
 }
 
 /* 0x4dc3f0: specInUse for player eax, spec edx, in al; eax's top as the code leaves it (the
  * slot's offset, or the index), edx the table. */
-x86::reg32 specUsed(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 specUsed(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const reg32 player = args.eax, index = args.edx;
-    const reg8 used = specInUse(app, player, i32(index));
-    const reg32 offset = specSlot(player, i32(index)) != 0 ? index * kSpecBytes : index;
+    const u32 player = args.eax, index = args.edx;
+    const u8 used = specInUse(app, player, i32(index));
+    const u32 offset = specSlot(player, i32(index)) != 0 ? index * kSpecBytes : index;
     args.eax = (offset & ~0xffu) | used;
     args.edx = specsOf(player);
-    cpu.esp += 4;
+    ts.sp += 4;
     return args.eax;
 }
 
 /* 0x4dc440: specCarId for player eax, spec edx; edx the table. */
-x86::reg32 specCarName(App*, CPU& cpu, x86::Args& args)
+nfs::u32 specCarName(App*, ThreadState& ts, nfs::Args& args)
 {
-    const reg32 player = args.eax;
+    const u32 player = args.eax;
     args.eax = specCarId(player, i32(args.edx));
     args.edx = specsOf(player);
-    cpu.esp += 4;
+    ts.sp += 4;
     return args.eax;
 }
 
 /* 0x4dc490: specOfCar for player eax, the id at edx; edx where the search stopped (-1 with no
  * table, 50 with no spec found). */
-x86::reg32 findSpec(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 findSpec(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const reg32 player = args.eax;
+    const u32 player = args.eax;
     const i32 found = specOfCar(app, player, args.edx);
-    args.eax = reg32(found);
-    args.edx = specsOf(player) == 0 ? 0xffffffff : found >= 0 ? reg32(found) : kSpecCount;
-    cpu.esp += 4;
+    args.eax = u32(found);
+    args.edx = specsOf(player) == 0 ? 0xffffffff : found >= 0 ? u32(found) : kSpecCount;
+    ts.sp += 4;
     return args.eax;
 }
 
 /* 0x4dc500: firstFreeSpec for player eax. */
-x86::reg32 freeSpecSlot(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 freeSpecSlot(App* app, ThreadState& ts, nfs::Args& args)
 {
-    args.eax = reg32(firstFreeSpec(app, args.eax));
-    cpu.esp += 4;
+    args.eax = u32(firstFreeSpec(app, args.eax));
+    ts.sp += 4;
     return args.eax;
 }
 
 /* 0x4dc5a0: storeSpec for player eax, spec edx, the id at ebx, the spec at ecx; eax, ebx, ecx and
  * edx as the code leaves them: with the spec there, the copies' (the count, ecx 0) or the
  * clearings' (where it cleared, the count, edx 0). */
-x86::reg32 setSpec(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 setSpec(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const reg32 player = args.eax, index = args.edx, id = args.ebx, spec = args.ecx;
-    if (!storeSpec(app, cpu, player, i32(index), id, spec))
+    const u32 player = args.eax, index = args.edx, id = args.ebx, spec = args.ecx;
+    if (!storeSpec(app, ts, player, i32(index), id, spec))
         return args.eax;
-    const reg32 table = specsOf(player);
+    const u32 table = specsOf(player);
     if (table == 0)
     {
         args.edx = 0;
@@ -2089,140 +2085,140 @@ x86::reg32 setSpec(App* app, CPU& cpu, x86::Args& args)
         args.ecx = 0;
         args.edx = spec != 0 && id != 0 ? index : 0;
     }
-    cpu.esp += 4;
+    ts.sp += 4;
     return args.eax;
 }
 
 /* 0x4dc670: makeDefaultSpecs for player eax. */
-x86::reg32 defaultSpecs(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 defaultSpecs(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const std::optional<i32> made = makeDefaultSpecs(app, cpu, args.eax);
+    const std::optional<i32> made = makeDefaultSpecs(app, ts, args.eax);
     if (!made)
         return args.eax;
-    args.eax = reg32(*made);
-    cpu.esp += 4;
+    args.eax = u32(*made);
+    ts.sp += 4;
     return args.eax;
 }
 
 /* 0x4dc710: refreshSpecsOf for player eax, in al. */
-x86::reg32 refreshSpecs(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 refreshSpecs(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const std::optional<bool> changed = refreshSpecsOf(app, cpu, args.eax);
+    const std::optional<bool> changed = refreshSpecsOf(app, ts, args.eax);
     if (!changed)
         return args.eax;
     args.eax = *changed ? 1 : 0;
-    cpu.esp += 4;
+    ts.sp += 4;
     return args.eax;
 }
 
 /* 0x4dc800: makeSpecPath for the name at eax. */
-x86::reg32 specPath(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 specPath(App* app, ThreadState& ts, nfs::Args& args)
 {
     args.eax = makeSpecPath(app, args.eax);
-    cpu.esp += 4;
+    ts.sp += 4;
     return args.eax;
 }
 
 /* 0x4dc8b0: readSpecsFrom for player eax, the ebx bytes at edx; eax, ebx and edx as the code
  * leaves them: ebx the table, edx the bytes read, eax the player when none were, else the last
  * copy's count -- or 50, stopped by the table's end with bytes left. */
-x86::reg32 readSpecs(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 readSpecs(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const reg32 player = args.eax, file = args.edx, bytes = args.ebx;
+    const u32 player = args.eax, file = args.edx, bytes = args.ebx;
     const i32 read = readSpecsFrom(app, player, file, bytes);
-    const reg32 offset = reg32(read) * kSpecBytes;
+    const u32 offset = u32(read) * kSpecBytes;
     args.ebx = specsOf(player);
     args.edx = offset;
     if (read == 0)
         args.eax = player;
-    else if (read == i32(kSpecCount) && sreg32(offset) < sreg32(bytes))
+    else if (read == i32(kSpecCount) && s32(offset) < s32(bytes))
         args.eax = kSpecCount;
     else
         args.eax = kSpecBytes;
-    cpu.esp += 4;
+    ts.sp += 4;
     return args.eax;
 }
 
 /* 0x4dc940: playerSpecs for player eax. */
-x86::reg32 loadPlayerSpecs(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 loadPlayerSpecs(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const EspKept kept(cpu);
-    const std::optional<reg32> result = playerSpecs(app, cpu, args.eax);
+    const EspKept kept(ts);
+    const std::optional<u32> result = playerSpecs(app, ts, args.eax);
     if (!result)
         return args.eax;
     args.eax = *result;
-    cpu.esp += 4;
+    ts.sp += 4;
     return args.eax;
 }
 
 /* 0x4dca50: saveSpecs for player eax. */
-x86::reg32 savePlayerSpecs(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 savePlayerSpecs(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const EspKept kept(cpu);
-    const std::optional<reg32> result = saveSpecs(app, cpu, args.eax);
+    const EspKept kept(ts);
+    const std::optional<u32> result = saveSpecs(app, ts, args.eax);
     if (!result)
         return args.eax;
     args.eax = *result;
-    cpu.esp += 4;
+    ts.sp += 4;
     return args.eax;
 }
 
 /* The typed cores of the thunks above, for callers that call them as C++ (native_load_carmodels.h). */
-reg32 colourToHsv(App* app, reg32 rgb, reg32 hsv)
+u32 colourToHsv(App* app, u32 rgb, u32 hsv)
 {
     return rgbToHsvAt(app, rgb, hsv).brightness;
 }
 
-std::optional<reg32> hsvToColour(App* app, CPU& cpu, reg32 hsv, reg32 rgb)
+std::optional<u32> hsvToColour(App* app, ThreadState& ts, u32 hsv, u32 rgb)
 {
-    const std::optional<HsvLeft> left = hsvToRgbAt(app, cpu, hsv, rgb);
+    const std::optional<HsvLeft> left = hsvToRgbAt(app, ts, hsv, rgb);
     if (!left)
         return std::nullopt;
     return left->brightness;
 }
 
-std::optional<reg32> tgaLoaded(App* app, CPU& cpu, reg32 model, reg32 tga, reg32 most, reg32 texture, reg32 color,
-                               reg32 upload, reg32 copyTo)
+std::optional<u32> tgaLoaded(App* app, ThreadState& ts, u32 model, u32 tga, u32 most, u32 texture, u32 color,
+                               u32 upload, u32 copyTo)
 {
-    const std::optional<Left> left = loadTga(app, cpu, model, tga, most, texture, color, upload, copyTo);
+    const std::optional<Left> left = loadTga(app, ts, model, tga, most, texture, color, upload, copyTo);
     if (!left)
         return std::nullopt;
     return left->eax;
 }
 
-std::optional<reg32> modelLoaded(App* app, CPU& cpu, reg32 name, reg32 most, reg32 color)
+std::optional<u32> modelLoaded(App* app, ThreadState& ts, u32 name, u32 most, u32 color)
 {
-    const std::optional<Left> left = loadModel(app, cpu, name, most, color);
+    const std::optional<Left> left = loadModel(app, ts, name, most, color);
     if (!left)
         return std::nullopt;
     return left->eax;
 }
 
-reg32 specIndexOf(App* app, reg32 player, reg32 id)
+u32 specIndexOf(App* app, u32 player, u32 id)
 {
-    return reg32(specOfCar(app, player, id));
+    return u32(specOfCar(app, player, id));
 }
 
-std::optional<reg32> specsSavedOf(App* app, CPU& cpu, reg32 player)
+std::optional<u32> specsSavedOf(App* app, ThreadState& ts, u32 player)
 {
-    const EspKept kept(cpu);
-    return saveSpecs(app, cpu, player);
+    const EspKept kept(ts);
+    return saveSpecs(app, ts, player);
 }
 
-std::optional<reg32> carpReceiveBegun(App* app, CPU& cpu, reg32 record, reg32 bytes, reg32 buffer)
+std::optional<u32> carpReceiveBegun(App* app, ThreadState& ts, u32 record, u32 bytes, u32 buffer)
 {
-    return beginReceive(app, cpu, record, bytes, buffer);
+    return beginReceive(app, ts, record, bytes, buffer);
 }
 
-std::optional<reg32> carpChunkReceived(App* app, CPU& cpu, reg32 record, reg32 data, reg32 count)
+std::optional<u32> carpChunkReceived(App* app, ThreadState& ts, u32 record, u32 data, u32 count)
 {
-    return receiveChunk(app, cpu, record, data, count);
+    return receiveChunk(app, ts, record, data, count);
 }
 
-std::optional<reg32> carpSendBegun(App* app, CPU& cpu, reg32 header, reg32 car)
+std::optional<u32> carpSendBegun(App* app, ThreadState& ts, u32 header, u32 car)
 {
-    reg32 packetLeft = car;
-    return beginSend(app, cpu, header, car, packetLeft);
+    u32 packetLeft = car;
+    return beginSend(app, ts, header, car, packetLeft);
 }
 
 }  // namespace load

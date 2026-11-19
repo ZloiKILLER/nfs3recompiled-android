@@ -6,7 +6,7 @@
 
 /* native_frontend_simc.cpp's typed functions (quaternions and matrices, a view's pass, the replay's
  * panel, the television director, small helpers, the view widget), which other files call as C++
- * (guest::direct), and how the game's code calls each by address.  Each calls the game's other functions by address on `cpu` and throws fe::Terminated
+ * (guest::direct), and how the game's code calls each by address.  Each calls the game's other functions by address on `ts` and throws fe::Terminated
  * when the game stopped in one, as a call by address does; its result is what the game's function leaves
  * in eax, and what it leaves on the x87's stack and in the registers it does not save stays there.
  * A stack argument the game's code hands by its address (`...At`) is taken as that address. */
@@ -17,82 +17,82 @@ namespace frontend
 namespace simc
 {
 
-using App = win32::WinApplication;
-using CPU = x86::CPU;
-using reg32 = x86::reg32;
+using App = nfs::App;
+using ThreadState = nfs::ThreadState;
+using u32 = nfs::u32;
 
 // The game's 0x4b70f0: a pose mixed between two by the float `t`.
-reg32 poseBlend(App* app, CPU& cpu, reg32 quatA, reg32 quatB, reg32 placeA, reg32 placeB, reg32 t, reg32 quatOut, reg32 placeOut);
+u32 poseBlend(App* app, ThreadState& ts, u32 quatA, u32 quatB, u32 placeA, u32 placeB, u32 t, u32 quatOut, u32 placeOut);
 // The game's 0x4b71e0: quaternion slerp by the float `t`.
-reg32 quatSlerp(App* app, CPU& cpu, reg32 from, reg32 to, reg32 t, reg32 out);
+u32 quatSlerp(App* app, ThreadState& ts, u32 from, u32 to, u32 t, u32 out);
 // The game's 0x4b7300: the quaternion at `b` negated if its negative is nearer `a`.
-reg32 quatNearer(App* app, CPU& cpu, reg32 a, reg32 b);
+u32 quatNearer(App* app, ThreadState& ts, u32 a, u32 b);
 // The game's 0x4b73c0: the 3x3 matrix made a quaternion.
-reg32 quatFromMatrix(App* app, CPU& cpu, reg32 matrix, reg32 out);
+u32 quatFromMatrix(App* app, ThreadState& ts, u32 matrix, u32 out);
 // The game's 0x4b7590: the quaternion made a 3x3 matrix.
-reg32 matrixFromQuat(App* app, CPU& cpu, reg32 quat, reg32 out);
+u32 matrixFromQuat(App* app, ThreadState& ts, u32 quat, u32 out);
 // The game's 0x4b7680: two 3x3 matrices slerped through quaternions.
-reg32 matrixSlerp(App* app, CPU& cpu, reg32 from, reg32 to, reg32 t, reg32 out);
+u32 matrixSlerp(App* app, ThreadState& ts, u32 from, u32 to, u32 t, u32 out);
 // The game's 0x4b7720: the 3x3 matrix `out` is `a` minus `b`.
-reg32 matrixSubtract(App* app, CPU& cpu, reg32 a, reg32 b, reg32 out);
+u32 matrixSubtract(App* app, ThreadState& ts, u32 a, u32 b, u32 out);
 // The game's 0x4b7780: the 3x3 matrix `out` is `a` plus `b`.
-reg32 matrixAdd(App* app, CPU& cpu, reg32 a, reg32 b, reg32 out);
+u32 matrixAdd(App* app, ThreadState& ts, u32 a, u32 b, u32 out);
 // The game's 0x4b77e0: the 3x3 matrix times the float `factor`.
-reg32 matrixScale(App* app, CPU& cpu, reg32 matrix, reg32 factor, reg32 out);
+u32 matrixScale(App* app, ThreadState& ts, u32 matrix, u32 factor, u32 out);
 // The game's 0x4b7840: the 3x3 matrix made orthonormal again.
-reg32 matrixOrthonormalise(App* app, CPU& cpu, reg32 matrix, reg32 terms);
+u32 matrixOrthonormalise(App* app, ThreadState& ts, u32 matrix, u32 terms);
 // The game's 0x4b79c0: the 3x3 matrix turned a quarter.
-reg32 matrixQuarterTurn(App* app, CPU& cpu, reg32 matrix);
+u32 matrixQuarterTurn(App* app, ThreadState& ts, u32 matrix);
 // The game's 0x4ea680: the 3x3 matrix turned about its first row by the angle at `angleAt`.
-reg32 turnAboutFirstRow(App* app, CPU& cpu, reg32 matrix, reg32 angleAt, reg32 out);
+u32 turnAboutFirstRow(App* app, ThreadState& ts, u32 matrix, u32 angleAt, u32 out);
 // The game's 0x4ea820: the 3x3 matrix turned about its last row by the angle at `angleAt`.
-reg32 turnAboutLastRow(App* app, CPU& cpu, reg32 matrix, reg32 angleAt, reg32 out);
+u32 turnAboutLastRow(App* app, ThreadState& ts, u32 matrix, u32 angleAt, u32 out);
 // The game's 0x4ea920: the square root of the float `value`, which it leaves on the x87.
-double squareRootOf(App* app, reg32 value);
+double squareRootOf(App* app, u32 value);
 // The game's 0x4bc470: a view's pass: the view's record filled, the frame drawn through it.
-reg32 viewPass(App* app, CPU& cpu, reg32 pass, reg32 record4, reg32 record68, reg32 record6c, reg32 record70);
+u32 viewPass(App* app, ThreadState& ts, u32 pass, u32 record4, u32 record68, u32 record6c, u32 record70);
 // The game's 0x4dbde0: the projection of the view.
-reg32 setView(App* app, CPU& cpu, reg32 view);
+u32 setView(App* app, ThreadState& ts, u32 view);
 // The game's 0x4d5720: the race frame's end (0x434a90).
-reg32 raceFrameEnd(App* app, CPU& cpu);
+u32 raceFrameEnd(App* app, ThreadState& ts);
 // The game's 0x4bd4d0: the pointer on the replay's panel: the buttons' word of a press, else 0.
-reg32 panelPointer(App* app, CPU& cpu);
+u32 panelPointer(App* app, ThreadState& ts);
 // The game's 0x4bd640: the replay's panel each frame.
-reg32 panelKeys(App* app, CPU& cpu);
+u32 panelKeys(App* app, ThreadState& ts);
 // The game's 0x4bdb60: player's camera made `camera`, a new shot begun.
-reg32 tvSetCamera(App* app, CPU& cpu, reg32 player, reg32 camera);
+u32 tvSetCamera(App* app, ThreadState& ts, u32 player, u32 camera);
 // The game's 0x4bdbd0: player's next shot.
-reg32 tvNextCamera(App* app, CPU& cpu, reg32 player);
+u32 tvNextCamera(App* app, ThreadState& ts, u32 player);
 // The game's 0x4bdc70: 1 when player's shot has run its length.
-reg32 tvShotOver(App* app, CPU& cpu, reg32 player);
+u32 tvShotOver(App* app, ThreadState& ts, u32 player);
 // The game's 0x4bdcc0: player's shot begins now, as long as camera's are.
-reg32 tvStartShot(App* app, CPU& cpu, reg32 player, reg32 camera);
+u32 tvStartShot(App* app, ThreadState& ts, u32 player, u32 camera);
 // The game's 0x4bdd10: the largest of `count` rows of a column of the replay's table; edx and ebx left where they stop.
-reg32 tvBusiest(App* app, CPU& cpu, reg32 column, reg32 row, reg32 count);
+u32 tvBusiest(App* app, ThreadState& ts, u32 column, u32 row, u32 count);
 // The game's 0x4bdd70: the director's choice for player each frame.
-reg32 tvDirect(App* app, CPU& cpu, reg32 player);
+u32 tvDirect(App* app, ThreadState& ts, u32 player);
 // The game's 0x4be000: al 1 for a digit or a sign, 0 for anything else.
-reg32 isNumberCharacter(App* app, CPU& cpu, reg32 character);
+u32 isNumberCharacter(App* app, ThreadState& ts, u32 character);
 // The game's 0x4be1a0: an off beat of the clock: 0 or 1.
-reg32 offBeat(App* app, CPU& cpu, reg32 rate, reg32 offset);
+u32 offBeat(App* app, ThreadState& ts, u32 rate, u32 offset);
 // The game's 0x4c9dd0: siren `index` on at a node.
-reg32 sirenOn(App* app, CPU& cpu, reg32 index, reg32 node, reg32 side, reg32 clock);
+u32 sirenOn(App* app, ThreadState& ts, u32 index, u32 node, u32 side, u32 clock);
 // The game's 0x4c9f50: siren `index` off.
-reg32 sirenOff(App* app, CPU& cpu, reg32 index);
+u32 sirenOff(App* app, ThreadState& ts, u32 index);
 // The game's 0x4ea570: the angle of (x, y) in 16-bit fixed point.
-reg32 angle(App* app, CPU& cpu, reg32 y, reg32 x);
+u32 angle(App* app, ThreadState& ts, u32 y, u32 x);
 // The game's 0x4ea654: how many entries the pack has.
-reg32 packCount(App* app, CPU& cpu, reg32 pack);
+u32 packCount(App* app, ThreadState& ts, u32 pack);
 // The game's 0x4ea658: entry `entry` of the pack, or 0 past its end.
-reg32 packEntry(App* app, CPU& cpu, reg32 pack, reg32 entry);
+u32 packEntry(App* app, ThreadState& ts, u32 pack, u32 entry);
 // The game's 0x43bcc0: where on the car's interior picture its map starts.
-reg32 interiorMapX(App* app, CPU& cpu, reg32 car);
+u32 interiorMapX(App* app, ThreadState& ts, u32 car);
 // The game's 0x465320: the view widget's item placed.
-reg32 viewLaidOut(App* app, CPU& cpu, reg32 item);
+u32 viewLaidOut(App* app, ThreadState& ts, u32 item);
 // The game's 0x465360: the view widget's empty entry: eax as it came.
-reg32 viewNoEntry(App* app, CPU& cpu, reg32 eax);
+u32 viewNoEntry(App* app, ThreadState& ts, u32 eax);
 // The game's 0x465370: the showcase's car's interior picture loaded and the view set back.
-reg32 viewLoadCar(App* app, CPU& cpu);
+u32 viewLoadCar(App* app, ThreadState& ts);
 
 }  // namespace simc
 }  // namespace frontend

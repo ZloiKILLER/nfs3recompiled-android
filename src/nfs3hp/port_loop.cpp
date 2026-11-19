@@ -43,27 +43,27 @@ namespace
 
 /* A call into the game's code through guest::pointerCall: the register arguments of `a`, `stack` pushed, from the
  * game's stack at esp.  Its eax; false when the game stops. */
-inline bool callPointer(App* app, CPU& cpu, reg32 esp, reg32 target, Args a, std::initializer_list<reg32> stack,
-                        reg32& result)
+inline bool callPointer(App* app, ThreadState& ts, u32 esp, u32 target, Args a, std::initializer_list<u32> stack,
+                        u32& result)
 {
-    cpu.esp = esp;
-    x86::Args registers;
+    ts.sp = esp;
+    nfs::Args registers;
     registers.eax = a.eax;
     registers.edx = a.edx;
     registers.ebx = a.ebx;
     registers.ecx = a.ecx;
-    const std::optional<reg32> value = guest::pointerCall(app, cpu, target, registers, stack);
+    const std::optional<u32> value = guest::pointerCall(app, ts, target, registers, stack);
     if (!value)
         return false;
     result = *value;
     return true;
 }
 
-inline bool callPointer(App* app, CPU& cpu, reg32 esp, reg32 target, Args a = {},
-                        std::initializer_list<reg32> stack = {})
+inline bool callPointer(App* app, ThreadState& ts, u32 esp, u32 target, Args a = {},
+                        std::initializer_list<u32> stack = {})
 {
-    reg32 ignored;
-    return callPointer(app, cpu, esp, target, a, stack, ignored);
+    u32 ignored;
+    return callPointer(app, ts, esp, target, a, stack, ignored);
 }
 
 }  // namespace
@@ -124,8 +124,8 @@ namespace
  * before it. */
 struct Screen
 {
-    reg32 onLoad, unused04, onEnter, onExit, onFrame;
-    reg32 name;         // 0x14
+    u32 onLoad, unused04, onEnter, onExit, onFrame;
+    u32 name;         // 0x14
     int16_t firstItem;  // 0x18
     int16_t selected;   // 0x1a
     int16_t previous;   // 0x1c
@@ -136,19 +136,19 @@ struct Screen
  * starts as. */
 struct Widget
 {
-    reg32 type, name, templ;
+    u32 type, name, templ;
 };
 
 /* An item: its widget's type, its state and flags, its place, its layer, its
  * help and codelink, the box the mouse finds it in, and its handlers. */
 struct Item
 {
-    reg32 type;           // 0x00
+    u32 type;           // 0x00
     uint16_t state;       // 0x04: the state byte and the flags byte as one word
     int16_t x, y;         // 0x06, 0x08
     int16_t priority;     // 0x0a: its layer, drawn from the highest down
-    reg32 help;           // 0x0c
-    reg32 codelink;       // 0x10
+    u32 help;           // 0x0c
+    u32 codelink;       // 0x10
     int16_t postRaceOnly; // 0x14
     int16_t mainOnly;     // 0x16
     uint8_t unused18[2];
@@ -157,14 +157,14 @@ struct Item
     int16_t width;        // 0x1e
     int16_t height;       // 0x20
     uint8_t unused22[2];
-    reg32 onShow;         // 0x24
-    reg32 onHide;         // 0x28
-    reg32 onDraw;         // 0x2c
-    reg32 onKey;          // 0x30
-    reg32 onShown;        // 0x34
-    reg32 onPass;         // 0x38
-    reg32 text;           // 0x3c
-    reg32 nextMenu;       // 0x40
+    u32 onShow;         // 0x24
+    u32 onHide;         // 0x28
+    u32 onDraw;         // 0x2c
+    u32 onKey;          // 0x30
+    u32 onShown;        // 0x34
+    u32 onPass;         // 0x38
+    u32 text;           // 0x3c
+    u32 nextMenu;       // 0x40
     uint8_t unused44[0xbc - 0x44];
 };
 #pragma pack(pop)
@@ -183,7 +183,7 @@ constexpr uint16_t kHiddenFlag = 0x1000;     // the flags byte's kHidden, in the
 constexpr uint16_t kDisabledState = 0x0001;
 
 constexpr int16_t kNoItem = 100;             // selected: none
-constexpr reg32 kButton = 5;
+constexpr u32 kButton = 5;
 
 /* ---- The game's variables ---- */
 
@@ -192,106 +192,106 @@ constexpr reg32 kButton = 5;
 constexpr Records<Screen> kScreens{0x6040d0};
 constexpr Var<int32_t> kScreenCount{0x660bb0};
 constexpr Records<Item> kItems{0x604ee0};
-constexpr reg32 kWidgetsAt = 0x557a84;
+constexpr u32 kWidgetsAt = 0x557a84;
 
 // The loop's state.
-constexpr Var<reg32> kCurrentMenu{0x559230};
-constexpr Table<reg32> kHistory{0x662800};
-constexpr reg32 kHistorySize = 20;
-constexpr Var<reg32> kInRace{0x559234};       // the menus are a race's pause screens
-constexpr Var<reg32> kAfterRace{0x662968};    // the menus opened on "postgame"
+constexpr Var<u32> kCurrentMenu{0x559230};
+constexpr Table<u32> kHistory{0x662800};
+constexpr u32 kHistorySize = 20;
+constexpr Var<u32> kInRace{0x559234};       // the menus are a race's pause screens
+constexpr Var<u32> kAfterRace{0x662968};    // the menus opened on "postgame"
 constexpr Var<int16_t> kNetworkGame{0x7a22dc};        // set up to race others over a network
-constexpr Var<reg32> kNetworkConnected{0x7a22e0};
-constexpr Var<reg32> kMouseX{0x55e5e4};
-constexpr Var<reg32> kMouseY{0x55e5e8};
-constexpr Var<reg32> kMouseBlocked{0x5556d0};  // the network screens have the mouse
+constexpr Var<u32> kNetworkConnected{0x7a22e0};
+constexpr Var<u32> kMouseX{0x55e5e4};
+constexpr Var<u32> kMouseY{0x55e5e8};
+constexpr Var<u32> kMouseBlocked{0x5556d0};  // the network screens have the mouse
 constexpr Var<uint8_t> kMouseHeld{0x559250};   // the item under the mouse stays the selected one
 // The depth range 2D is drawn in: one for the five lowest layers, one above.
-constexpr Var<reg32> kDepthNear{0x563aa8};
-constexpr Var<reg32> kDepthFar{0x563aac};
-constexpr reg32 kFloatAlmostOne = 0x3f7fff00;
-constexpr reg32 kFloatTiny = 0x37800080;
+constexpr Var<u32> kDepthNear{0x563aa8};
+constexpr Var<u32> kDepthFar{0x563aac};
+constexpr u32 kFloatAlmostOne = 0x3f7fff00;
+constexpr u32 kFloatTiny = 0x37800080;
 
 // The help box (0x449aa0).
-constexpr Var<reg32> kHelpMenu{0x559248};      // the screen it was for
-constexpr Var<reg32> kHelpNeedsMove{0x559238}; // not before the pointer moves on a new screen
-constexpr Var<reg32> kHelpLastX{0x55923c};     // where the pointer was
-constexpr Var<reg32> kHelpLastY{0x559240};
-constexpr Var<reg32> kHelpDue{0x662950};       // the tick it shows at
-constexpr Var<reg32> kHelpItem{0x559244};      // the item it is shown for, -1 for none
-constexpr Var<reg32> kHelpText{0x55924c};
-constexpr Var<reg32> kHelpFade{0x662964};      // 0 or 255
-constexpr Var<reg32> kHelpX{0x662958};
-constexpr Var<reg32> kHelpY{0x66295c};
-constexpr Var<reg32> kHelpWidth{0x662960};
-constexpr Var<reg32> kHelpHeight{0x662954};
-constexpr Var<reg32> kHelpAlpha{0x559450};     // float, 0.9 with translucency
-constexpr reg32 kHelpFont = 0x12;
-constexpr reg32 kHelpWrap = 380;
-constexpr reg32 kHelpBoxColour = 0xff4b6cad;
-constexpr reg32 kHelpTextColour = 0x488cfd;
-constexpr reg32 kFloatOne = 0x3f800000;
-constexpr reg32 kFloatPoint9 = 0x3f666666;
-constexpr Var<reg32> kTicks{0x79c1a4};         // the game's clock
+constexpr Var<u32> kHelpMenu{0x559248};      // the screen it was for
+constexpr Var<u32> kHelpNeedsMove{0x559238}; // not before the pointer moves on a new screen
+constexpr Var<u32> kHelpLastX{0x55923c};     // where the pointer was
+constexpr Var<u32> kHelpLastY{0x559240};
+constexpr Var<u32> kHelpDue{0x662950};       // the tick it shows at
+constexpr Var<u32> kHelpItem{0x559244};      // the item it is shown for, -1 for none
+constexpr Var<u32> kHelpText{0x55924c};
+constexpr Var<u32> kHelpFade{0x662964};      // 0 or 255
+constexpr Var<u32> kHelpX{0x662958};
+constexpr Var<u32> kHelpY{0x66295c};
+constexpr Var<u32> kHelpWidth{0x662960};
+constexpr Var<u32> kHelpHeight{0x662954};
+constexpr Var<u32> kHelpAlpha{0x559450};     // float, 0.9 with translucency
+constexpr u32 kHelpFont = 0x12;
+constexpr u32 kHelpWrap = 380;
+constexpr u32 kHelpBoxColour = 0xff4b6cad;
+constexpr u32 kHelpTextColour = 0x488cfd;
+constexpr u32 kFloatOne = 0x3f800000;
+constexpr u32 kFloatPoint9 = 0x3f666666;
+constexpr Var<u32> kTicks{0x79c1a4};         // the game's clock
 constexpr Var<uint8_t> kDisplayFlags{0x7a3a58};
 constexpr uint8_t kNoTranslucency = 0x02;      // no fades, an opaque help box
-constexpr Var<reg32> kDrawColour{0x563aa4};    // what 2D is drawn with, alpha on top
+constexpr Var<u32> kDrawColour{0x563aa4};    // what 2D is drawn with, alpha on top
 
 // The race settings 0x44be60 keeps consistent (see there), and what it last
 // saw of them.
-constexpr reg32 kTournament = 1;
-constexpr reg32 kKnockout = 2;
-constexpr reg32 kHotPursuit = 3;
-constexpr Var<reg32> kSeen4d0{0x559258};       // -1 before the first pass
-constexpr Var<reg32> kSeen4d4{0x55925c};
-constexpr Var<reg32> kSeenRaceType{0x559260};
-constexpr Var<reg32> kSetting292c{0x55292c};
+constexpr u32 kTournament = 1;
+constexpr u32 kKnockout = 2;
+constexpr u32 kHotPursuit = 3;
+constexpr Var<u32> kSeen4d0{0x559258};       // -1 before the first pass
+constexpr Var<u32> kSeen4d4{0x55925c};
+constexpr Var<u32> kSeenRaceType{0x559260};
+constexpr Var<u32> kSetting292c{0x55292c};
 constexpr Var<uint16_t> kSetting639c{0x55639c};
-constexpr Var<reg32> kValue5d004{0x55d004};
+constexpr Var<u32> kValue5d004{0x55d004};
 constexpr Var<int16_t> kNetworkSetting2276{0x7a2276};
-constexpr Var<reg32> kNetworkSettingE5d0{0x55e5d0};
+constexpr Var<u32> kNetworkSettingE5d0{0x55e5d0};
 
 // The loop's (0x44b230).
-constexpr Var<reg32> kLastAction{0x66296c};    // what left the last screen
-constexpr Var<reg32> kScreenUp{0x8b7630};      // a screen is being shown
-constexpr Var<reg32> kFlagEb10{0x55eb10};
-constexpr Var<reg32> kFrontendArt{0x559228};   // mmnu.qfs (or .fsh), loaded once
-constexpr Var<reg32> kScreenShapes{0x55922c};  // a screen's own, let go as it closes
-constexpr Var<reg32> kAfterMovieScreen{0x559224};  // the screen a movie goes on to, by name
+constexpr Var<u32> kLastAction{0x66296c};    // what left the last screen
+constexpr Var<u32> kScreenUp{0x8b7630};      // a screen is being shown
+constexpr Var<u32> kFlagEb10{0x55eb10};
+constexpr Var<u32> kFrontendArt{0x559228};   // mmnu.qfs (or .fsh), loaded once
+constexpr Var<u32> kScreenShapes{0x55922c};  // a screen's own, let go as it closes
+constexpr Var<u32> kAfterMovieScreen{0x559224};  // the screen a movie goes on to, by name
 constexpr Var<uint8_t> kNoHelpFlags{0x55eb2e}; // 0x10 or 0x20, no help box
 constexpr Var<uint8_t> kQuitting{0x559251};    // Yes was the answer
-constexpr Var<reg32> kNoQuitQuestion{0x55e894};
-constexpr Var<reg32> kSuspended{0x559444};     // the game's window gone to the background
-constexpr Var<reg32> kResumed{0x55fec0};
-constexpr Var<reg32> kFade{0x559c60};          // a screen's fade out, to 500
-constexpr Var<reg32> kFadeIn{0x559c68};
-constexpr reg32 kArtFolder = 0x7a2db4;
+constexpr Var<u32> kNoQuitQuestion{0x55e894};
+constexpr Var<u32> kSuspended{0x559444};     // the game's window gone to the background
+constexpr Var<u32> kResumed{0x55fec0};
+constexpr Var<u32> kFade{0x559c60};          // a screen's fade out, to 500
+constexpr Var<u32> kFadeIn{0x559c68};
+constexpr u32 kArtFolder = 0x7a2db4;
 // The dialogs the loop opens, their lines and buttons.
-constexpr reg32 kDialogLines = 0x662970;
-constexpr reg32 kDialogButtons = 0x66297c;
-constexpr reg32 kQuitQuestion = 0xf4;
-constexpr reg32 kQuitYes = 0xc4;
-constexpr reg32 kQuitNo = 0xc5;
-constexpr reg32 kPlayer1NameTitle = 0xc9;
-constexpr reg32 kPlayer2NameTitle = 0xca;
-constexpr reg32 kPlayer1Default = 0xfa;        // "Player 1"
-constexpr reg32 kPlayer2Default = 0xfb;
-constexpr reg32 kNameDialogLine2 = 0xf8;
-constexpr reg32 kNameDialogOk = 0xf9;
-constexpr reg32 kNameDialogCancel = 0xc6;
-constexpr reg32 kPlayerNameLength = 10;
+constexpr u32 kDialogLines = 0x662970;
+constexpr u32 kDialogButtons = 0x66297c;
+constexpr u32 kQuitQuestion = 0xf4;
+constexpr u32 kQuitYes = 0xc4;
+constexpr u32 kQuitNo = 0xc5;
+constexpr u32 kPlayer1NameTitle = 0xc9;
+constexpr u32 kPlayer2NameTitle = 0xca;
+constexpr u32 kPlayer1Default = 0xfa;        // "Player 1"
+constexpr u32 kPlayer2Default = 0xfb;
+constexpr u32 kNameDialogLine2 = 0xf8;
+constexpr u32 kNameDialogOk = 0xf9;
+constexpr u32 kNameDialogCancel = 0xc6;
+constexpr u32 kPlayerNameLength = 10;
 // What leaves a screen (its handlers' results, the loop's actions).
-constexpr reg32 kBackToFirst = 4;              // back screen by screen to the first one
-constexpr reg32 kGoOn = 5;                     // to the selected button's nextmenu
-constexpr reg32 kRace = 6;                     // the menus left for the race
-constexpr reg32 kRace7 = 7;
-constexpr reg32 kMoviePlayed = 9;              // the attract-mode movie has played over the screen
-constexpr reg32 kQuit = 10;
-constexpr reg32 kOut = 11;                     // Back from the first screen
+constexpr u32 kBackToFirst = 4;              // back screen by screen to the first one
+constexpr u32 kGoOn = 5;                     // to the selected button's nextmenu
+constexpr u32 kRace = 6;                     // the menus left for the race
+constexpr u32 kRace7 = 7;
+constexpr u32 kMoviePlayed = 9;              // the attract-mode movie has played over the screen
+constexpr u32 kQuit = 10;
+constexpr u32 kOut = 11;                     // Back from the first screen
 // The dialogs' answers, and what a dialog's callback is told.
-constexpr reg32 kDialogEnter = 1;              // Enter, or a click
-constexpr reg32 kDialogEscape = 3;
-constexpr Var<reg32> kInputFromMouse{0x664658};
+constexpr u32 kDialogEnter = 1;              // Enter, or a click
+constexpr u32 kDialogEscape = 3;
+constexpr Var<u32> kInputFromMouse{0x664658};
 
 // Keys, as 0x451960 gives them: ASCII, or a scan code in the high byte.
 constexpr uint16_t kKeyEnter = 0x0d;
@@ -302,109 +302,109 @@ constexpr uint16_t kKeyRight = 0x4d00;
 constexpr uint16_t kKeyDown = 0x5000;
 
 // What a key handler or a screen's handler returns.
-constexpr reg32 kHandled = 2;                  // taken, and nothing more: 0 to the loop
-constexpr reg32 kKeyEscapeButton = 0x0d;       // what the Escape button is handed
+constexpr u32 kHandled = 2;                  // taken, and nothing more: 0 to the loop
+constexpr u32 kKeyEscapeButton = 0x0d;       // what the Escape button is handed
 
 // Sounds, 0x4181d0(sound, volume).
-constexpr reg32 kSoundMove = 0;
-constexpr reg32 kSoundBack = 3;
-constexpr reg32 kSoundEnter = 4;
-constexpr reg32 kSoundLeave = 5;
-constexpr reg32 kSoundStart = 7;
-constexpr reg32 kVolumeFull = 0x7f;
-constexpr reg32 kVolumeTick = 0x2d;
+constexpr u32 kSoundMove = 0;
+constexpr u32 kSoundBack = 3;
+constexpr u32 kSoundEnter = 4;
+constexpr u32 kSoundLeave = 5;
+constexpr u32 kSoundStart = 7;
+constexpr u32 kVolumeFull = 0x7f;
+constexpr u32 kVolumeTick = 0x2d;
 
 // The game's strings.
-constexpr reg32 kRaceNow = 0x538fb4, kEscape = 0x538fbc, kIpx = 0x538fc4, kPostGame = 0x539048;
-constexpr reg32 kMmnu = 0x538fc8, kQfsFormat = 0x538fd0, kFshFormat = 0x538fdc;
-constexpr reg32 kOpponent = 0x538fe8, kCar1 = 0x538ff4, kCar2 = 0x538ffc;
-constexpr reg32 kShowcaseScreen = 0x539084, kInteriorScreen = 0x539090, kHistoryScreen = 0x53909c;
-constexpr reg32 kCompareScreen = 0x5390a4;
+constexpr u32 kRaceNow = 0x538fb4, kEscape = 0x538fbc, kIpx = 0x538fc4, kPostGame = 0x539048;
+constexpr u32 kMmnu = 0x538fc8, kQfsFormat = 0x538fd0, kFshFormat = 0x538fdc;
+constexpr u32 kOpponent = 0x538fe8, kCar1 = 0x538ff4, kCar2 = 0x538ffc;
+constexpr u32 kShowcaseScreen = 0x539084, kInteriorScreen = 0x539090, kHistoryScreen = 0x53909c;
+constexpr u32 kCompareScreen = 0x5390a4;
 
 /* ---- What they call ---- */
 
 // What is not rewritten, or is held on its own: by address.
-constexpr reg32 kCodelinkMatches = 0x4429c0;
-constexpr reg32 kTextBox = 0x451ff0;           // a text's size, wrapped: (text, font, wrap, &w, &h, 0)
-constexpr reg32 kDrawTextWrapped = 0x451fc0;
-constexpr reg32 kDrawTextInRace = 0x452190;
-constexpr reg32 kFillBox = 0x4d8550;
-constexpr reg32 kCarFlag10 = 0x4396b0;         // a car's flag 0x10
-constexpr reg32 kMap4cf160 = 0x4cf160;         // 2 -> 0, 4 -> 1, else 2
-constexpr reg32 kMap4cf190 = 0x4cf190;         // 0 -> 2, 1 -> 4, else 8
-constexpr reg32 kMarkOption8 = 0x442b60;
-constexpr reg32 kLoadMenus = 0x449510;
-constexpr reg32 kCheckMenuFiles = 0x449960;
-constexpr reg32 kSprintf = 0x4df690;
-constexpr reg32 kFree = 0x4e1890;
-constexpr reg32 kSetDisplay = 0x4d1750;
-constexpr reg32 kResetInput = 0x451b20;
-constexpr reg32 kStartMusic = 0x4104f0;        // (track, music choice, after a race)
-constexpr reg32 kStopMusic = 0x4109d0;
-constexpr reg32 kPollEvents = 0x4c9860;
-constexpr reg32 kViewLastReplay = 0x44e710;  // the results' View Replay: 7 when it loaded
-constexpr reg32 kReadKey = 0x451960;           // the next key, 0 for none
-constexpr reg32 kBeginFrame = 0x4d9120;
-constexpr reg32 kPresentFrame = 0x4dab90;
-constexpr reg32 kEndFrame = 0x4d9140;          // and waits for the next one
-constexpr reg32 kItemChanged = 0x460760;
-constexpr reg32 kScreenLeft = 0x4534d0;        // (its name)
-constexpr reg32 kMenusEnd = 0x452110;
-constexpr reg32 kNetworkLeft = 0x440d20;
-constexpr reg32 kDialogPass = 0x445f50;        // a dialog's pass, its result the loop's
-constexpr reg32 kDialogKey = 0x445e60;
-constexpr reg32 kCloseDialog = 0x445f10;
-constexpr reg32 kDialogShown = 0x4438b0;
-constexpr reg32 kNameValid = 0x4721f0;
-constexpr reg32 kResetDisplay = 0x4daf80;
-constexpr reg32 kLoadPointer = 0x49c140;
-constexpr reg32 kLoadShapes = 0x4956f0;        // a .qfs or .fsh file, 0 when it is not there
-constexpr reg32 kLoadDialogArt = 0x445de0;
-constexpr reg32 kClearBackground = 0x465d60;
-constexpr reg32 kSetBackground = 0x465d80;
-constexpr reg32 kLoadScreenArt = 0x4a4ba0;
-constexpr reg32 kFrameTime = 0x4f0650;
-constexpr reg32 kSleep = 0x4f0710;
-constexpr reg32 kResumeSound = 0x4bef50;
-constexpr reg32 kBoxBorder = 0x4d8930;
-constexpr reg32 kStrcmp = 0x4ee310;
-constexpr reg32 kSetMousePosition = 0x49bfc0;
-constexpr reg32 kNetworkFrame = 0x441040;      // the network screens' pass; nonzero leaves
-constexpr reg32 kNetworkBusy = 0x441680;
-constexpr reg32 kNetworkKey = 0x441700;
-constexpr reg32 kNetworkShown = 0x440970;
-constexpr reg32 kHotKey = 0x4524e0;            // the keys that work on any screen
-constexpr reg32 kSetCursor = 0x49c0e0;
-constexpr reg32 kPlaySound = 0x4181d0;
-constexpr reg32 kCurrentMenuName = 0x44ae00;
-constexpr reg32 kShowItems = 0x44a960;
-constexpr reg32 kQuitAnswerAt = 0x44b0f0;
-constexpr reg32 kPlayer1NameAnswerAt = 0x44af90;
-constexpr reg32 kPlayer2NameAnswerAt = 0x44b040;
+constexpr u32 kCodelinkMatches = 0x4429c0;
+constexpr u32 kTextBox = 0x451ff0;           // a text's size, wrapped: (text, font, wrap, &w, &h, 0)
+constexpr u32 kDrawTextWrapped = 0x451fc0;
+constexpr u32 kDrawTextInRace = 0x452190;
+constexpr u32 kFillBox = 0x4d8550;
+constexpr u32 kCarFlag10 = 0x4396b0;         // a car's flag 0x10
+constexpr u32 kMap4cf160 = 0x4cf160;         // 2 -> 0, 4 -> 1, else 2
+constexpr u32 kMap4cf190 = 0x4cf190;         // 0 -> 2, 1 -> 4, else 8
+constexpr u32 kMarkOption8 = 0x442b60;
+constexpr u32 kLoadMenus = 0x449510;
+constexpr u32 kCheckMenuFiles = 0x449960;
+constexpr u32 kSprintf = 0x4df690;
+constexpr u32 kFree = 0x4e1890;
+constexpr u32 kSetDisplay = 0x4d1750;
+constexpr u32 kResetInput = 0x451b20;
+constexpr u32 kStartMusic = 0x4104f0;        // (track, music choice, after a race)
+constexpr u32 kStopMusic = 0x4109d0;
+constexpr u32 kPollEvents = 0x4c9860;
+constexpr u32 kViewLastReplay = 0x44e710;  // the results' View Replay: 7 when it loaded
+constexpr u32 kReadKey = 0x451960;           // the next key, 0 for none
+constexpr u32 kBeginFrame = 0x4d9120;
+constexpr u32 kPresentFrame = 0x4dab90;
+constexpr u32 kEndFrame = 0x4d9140;          // and waits for the next one
+constexpr u32 kItemChanged = 0x460760;
+constexpr u32 kScreenLeft = 0x4534d0;        // (its name)
+constexpr u32 kMenusEnd = 0x452110;
+constexpr u32 kNetworkLeft = 0x440d20;
+constexpr u32 kDialogPass = 0x445f50;        // a dialog's pass, its result the loop's
+constexpr u32 kDialogKey = 0x445e60;
+constexpr u32 kCloseDialog = 0x445f10;
+constexpr u32 kDialogShown = 0x4438b0;
+constexpr u32 kNameValid = 0x4721f0;
+constexpr u32 kResetDisplay = 0x4daf80;
+constexpr u32 kLoadPointer = 0x49c140;
+constexpr u32 kLoadShapes = 0x4956f0;        // a .qfs or .fsh file, 0 when it is not there
+constexpr u32 kLoadDialogArt = 0x445de0;
+constexpr u32 kClearBackground = 0x465d60;
+constexpr u32 kSetBackground = 0x465d80;
+constexpr u32 kLoadScreenArt = 0x4a4ba0;
+constexpr u32 kFrameTime = 0x4f0650;
+constexpr u32 kSleep = 0x4f0710;
+constexpr u32 kResumeSound = 0x4bef50;
+constexpr u32 kBoxBorder = 0x4d8930;
+constexpr u32 kStrcmp = 0x4ee310;
+constexpr u32 kSetMousePosition = 0x49bfc0;
+constexpr u32 kNetworkFrame = 0x441040;      // the network screens' pass; nonzero leaves
+constexpr u32 kNetworkBusy = 0x441680;
+constexpr u32 kNetworkKey = 0x441700;
+constexpr u32 kNetworkShown = 0x440970;
+constexpr u32 kHotKey = 0x4524e0;            // the keys that work on any screen
+constexpr u32 kSetCursor = 0x49c0e0;
+constexpr u32 kPlaySound = 0x4181d0;
+constexpr u32 kCurrentMenuName = 0x44ae00;
+constexpr u32 kShowItems = 0x44a960;
+constexpr u32 kQuitAnswerAt = 0x44b0f0;
+constexpr u32 kPlayer1NameAnswerAt = 0x44af90;
+constexpr u32 kPlayer2NameAnswerAt = 0x44b040;
 
 /* ---- Small things ---- */
 
-reg32 word(App* app, reg32 at)
+u32 word(App* app, u32 at)
 {
-    return app->getMemory<reg32>(at);
+    return app->getMemory<u32>(at);
 }
 
-void setWord(App* app, reg32 at, reg32 value)
+void setWord(App* app, u32 at, u32 value)
 {
-    app->getMemory<reg32>(at) = value;
+    app->getMemory<u32>(at) = value;
 }
 
-uint8_t byteAt(App* app, reg32 at)
+uint8_t byteAt(App* app, u32 at)
 {
     return app->getMemory<uint8_t>(at);
 }
 
-void setByte(App* app, reg32 at, uint8_t value)
+void setByte(App* app, u32 at, uint8_t value)
 {
     app->getMemory<uint8_t>(at) = value;
 }
 
-void copyString(App* app, reg32 to, reg32 from)
+void copyString(App* app, u32 to, u32 from)
 {
     for (;; ++to, ++from)
     {
@@ -417,39 +417,39 @@ void copyString(App* app, reg32 to, reg32 from)
 
 /* A rewrite called from here as the game's code calls it: its entry esp is
  * the one under its return address. */
-constexpr reg32 entered(reg32 at)
+constexpr u32 entered(u32 at)
 {
     return at - 4;
 }
 
 /* The item `index` of the table, its address. */
-reg32 itemAt(int32_t index)
+u32 itemAt(int32_t index)
 {
     return kItems.address(index);
 }
 
-Screen& screen(App* app, reg32 at)
+Screen& screen(App* app, u32 at)
 {
     return record<Screen>(app, at);
 }
 
-Item& item(App* app, reg32 at)
+Item& item(App* app, u32 at)
 {
     return record<Item>(app, at);
 }
 
 /* A screen's first item, and the item `offset` from it. */
-int32_t firstItem(App* app, reg32 menu)
+int32_t firstItem(App* app, u32 menu)
 {
     return screen(app, menu).firstItem;
 }
 
-reg32 menuItem(App* app, reg32 menu, int32_t offset)
+u32 menuItem(App* app, u32 menu, int32_t offset)
 {
     return itemAt(firstItem(app, menu) + offset);
 }
 
-bool isEnd(App* app, reg32 at)
+bool isEnd(App* app, u32 at)
 {
     return item(app, at).type == 0;
 }
@@ -460,37 +460,37 @@ bool isEnd(App* app, reg32 at)
 struct Game
 {
     App* app;
-    CPU& cpu;
-    reg32 eax;
-    bool call(reg32 esp, reg32 target, Args a = {}, std::initializer_list<reg32> stack = {})
+    ThreadState& ts;
+    u32 eax;
+    bool call(u32 esp, u32 target, Args a = {}, std::initializer_list<u32> stack = {})
     {
-        return callPointer(app, cpu, esp, target, a, stack, eax);
+        return callPointer(app, ts, esp, target, a, stack, eax);
     }
         /* A typed core called as C++ where the game's code calls its address, from `esp`: eax its
      * result (unchanged for a core that gives none); false when the game stopped in it. */
-    template <reg32 Address, auto Core, typename... A>
-    bool direct(reg32 esp, A... args)
+    template <u32 Address, auto Core, typename... A>
+    bool direct(u32 esp, A... args)
     {
-        cpu.esp = esp;
-        if constexpr (std::is_void_v<decltype(guest::direct<Address, Core>(app, cpu, args...))>)
+        ts.sp = esp;
+        if constexpr (std::is_void_v<decltype(guest::direct<Address, Core>(app, ts, args...))>)
         {
-            guest::direct<Address, Core>(app, cpu, args...);
-            return !cpu.terminate;
+            guest::direct<Address, Core>(app, ts, args...);
+            return !ts.terminate;
         }
         else
         {
-            const auto result = guest::direct<Address, Core>(app, cpu, args...);
-            if (cpu.terminate)
+            const auto result = guest::direct<Address, Core>(app, ts, args...);
+            if (ts.terminate)
                 return false;
             eax = valueOf(result);
             return true;
         }
     }
-    static reg32 valueOf(reg32 value) { return value; }
+    static u32 valueOf(u32 value) { return value; }
     template <class T>
-    static reg32 valueOf(const std::optional<T>& value)
+    static u32 valueOf(const std::optional<T>& value)
     {
-        return reg32(*value);
+        return u32(*value);
     }
 };
 
@@ -517,7 +517,7 @@ struct Game
     if (!variable)                   \
         return {}
 
-bool playSound(Game& g, reg32 esp, reg32 sound, reg32 volume)
+bool playSound(Game& g, u32 esp, u32 sound, u32 volume)
 {
     return g.direct<kPlaySound, playMenuEffectOf>(esp, entered(esp), int32_t(sound), int32_t(volume));
 }
@@ -526,24 +526,24 @@ bool playSound(Game& g, reg32 esp, reg32 sound, reg32 volume)
 
 /* 0x4499b0's: whether an item can be used: in a network race's locked lobby,
  * only the one whose codelink names "racenow". */
-Result itemUsableCore(Game& g, reg32 esp, reg32 at)
+Result itemUsableCore(Game& g, u32 esp, u32 at)
 {
     App* app = g.app;
     if (kNetworkConnected(app) == 0 || gameSettings(app).networkLobby == 0 || kInRace(app) != 0)
         return 1;
     GAME_DIRECT(kCodelinkMatches, menus::codelinkMatched, esp - 8,
-                entered(esp - 8), item(app, at).codelink, kRaceNow, reg32(0));
+                entered(esp - 8), item(app, at).codelink, kRaceNow, u32(0));
     return g.eax != 0 ? 1 : 0;
 }
 
 /* An item's state word as selection reads it: greyed out too when it is not
  * usable now (0x4499b0). */
-Result selectionState(Game& g, reg32 esp, reg32 at)
+Result selectionState(Game& g, u32 esp, u32 at)
 {
     uint16_t state = item(g.app, at).state;
     g.eax = at;
     NEEDED(usable, itemUsableCore(g, entered(esp), at));
-    g.eax = reg32(*usable);
+    g.eax = u32(*usable);
     if (*usable == 0)
         state |= kUnusable;
     return state;
@@ -551,14 +551,14 @@ Result selectionState(Game& g, reg32 esp, reg32 at)
 
 /* 0x4499f0's: whether a key may act on a screen: always, but in a locked
  * lobby while the network is idle only on a usable item, and never Escape. */
-Result keyAllowedCore(Game& g, reg32 esp, reg32 menu, uint16_t key)
+Result keyAllowedCore(Game& g, u32 esp, u32 menu, uint16_t key)
 {
     App* app = g.app;
     if (kNetworkConnected(app) == 0 || gameSettings(app).networkLobby == 0 || kInRace(app) != 0)
         return 1;
-    const reg32 at = esp - 8;
+    const u32 at = esp - 8;
     GAME_DIRECT(0x441680, frontend::menua::panelBusy, at);
-    const reg32 busy = g.eax;
+    const u32 busy = g.eax;
     if (busy != 0)
         return 1;
     const Screen& s = screen(app, menu);
@@ -566,12 +566,12 @@ Result keyAllowedCore(Game& g, reg32 esp, reg32 menu, uint16_t key)
         return int32_t(busy);
     g.eax = menuItem(app, menu, s.selected);
     NEEDED(usable, itemUsableCore(g, entered(at), g.eax));
-    g.eax = reg32(*usable);
+    g.eax = u32(*usable);
     return *usable != 0 ? 1 : 0;
 }
 
 /* 0x449e50's: whether the item `offset` of a screen can be selected. */
-Result selectableCore(Game& g, reg32 esp, int32_t offset, reg32 menu)
+Result selectableCore(Game& g, u32 esp, int32_t offset, u32 menu)
 {
     if (offset < 0 || offset == kNoItem)
         return 0;
@@ -581,7 +581,7 @@ Result selectableCore(Game& g, reg32 esp, int32_t offset, reg32 menu)
 
 /* 0x449ea0's: the mouse pointer moved onto the selected item, three quarters
  * along it and halfway down. */
-Result pointAtSelectedCore(Game& g, reg32 esp, reg32 menu)
+Result pointAtSelectedCore(Game& g, u32 esp, u32 menu)
 {
     App* app = g.app;
     const Screen& s = screen(app, menu);
@@ -589,10 +589,10 @@ Result pointAtSelectedCore(Game& g, reg32 esp, reg32 menu)
         return int32_t(g.eax);
     const Item& it = item(app, menuItem(app, menu, s.selected));
     const int32_t x = it.left + 3 * it.width / 4;
-    kMouseX.set(app, reg32(x));
+    kMouseX.set(app, u32(x));
     const int32_t y = it.top + it.height / 2;
-    kMouseY.set(app, reg32(y));
-    GAME_DIRECT(0x49bfc0, frontend::screen::setPointer, esp - 12, reg32(x), reg32(y));
+    kMouseY.set(app, u32(y));
+    GAME_DIRECT(0x49bfc0, frontend::screen::setPointer, esp - 12, u32(x), u32(y));
     return int32_t(g.eax);
 }
 
@@ -600,12 +600,12 @@ Result pointAtSelectedCore(Game& g, reg32 esp, reg32 menu)
  * when it could be selected, a tick when the selection moved -- in that order
  * going forward, the other way round going back -- and the pointer on the
  * new one. */
-Result afterSelecting(Game& g, reg32 at, reg32 menu, int16_t was, bool forward)
+Result afterSelecting(Game& g, u32 at, u32 menu, int16_t was, bool forward)
 {
     App* app = g.app;
     auto keepPrevious = [&]() -> bool {
         NEEDED(ok, selectableCore(g, entered(at), int32_t(was), menu));
-        g.eax = reg32(*ok);
+        g.eax = u32(*ok);
         if (*ok != 0)
             screen(app, menu).previous = was;
         return true;
@@ -621,19 +621,19 @@ Result afterSelecting(Game& g, reg32 at, reg32 menu, int16_t was, bool forward)
 }
 
 /* The previous selection back when the one selected cannot be: whether it was. */
-Result backToPrevious(Game& g, reg32 at, reg32 menu, int16_t was)
+Result backToPrevious(Game& g, u32 at, u32 menu, int16_t was)
 {
     App* app = g.app;
     if (was != kNoItem)
     {
         NEEDED(ok, selectableCore(g, entered(at), int32_t(was), menu));
-        g.eax = reg32(*ok);
+        g.eax = u32(*ok);
         if (*ok != 0)
             return 0;
     }
     const int16_t previous = screen(app, menu).previous;
     NEEDED(ok, selectableCore(g, entered(at), int32_t(previous), menu));
-    g.eax = reg32(*ok);
+    g.eax = u32(*ok);
     if (*ok == 0)
         return 0;
     screen(app, menu).selected = screen(app, menu).previous;
@@ -643,13 +643,13 @@ Result backToPrevious(Game& g, reg32 at, reg32 menu, int16_t was)
 /* 0x449f30's: the item before the selected one that can be selected, round
  * from the first to the last; with none selected, the last of them.  Not
  * while the selected item has the keys. */
-Result selectPreviousCore(Game& g, reg32 esp, reg32 menu)
+Result selectPreviousCore(Game& g, u32 esp, u32 menu)
 {
     App* app = g.app;
-    const reg32 at = esp - 24;
+    const u32 at = esp - 24;
     const int16_t was = screen(app, menu).selected;
     if (was != kNoItem && (item(app, menuItem(app, menu, was)).state & kHasKeys) != 0)
-        return int32_t(reg32(firstItem(app, menu) + was) * 47);  // the selected item's offset in the table, a quarter of it
+        return int32_t(u32(firstItem(app, menu) + was) * 47);  // the selected item's offset in the table, a quarter of it
     NEEDED(back, backToPrevious(g, at, menu, was));
     if (!*back)
     {
@@ -658,7 +658,7 @@ Result selectPreviousCore(Game& g, reg32 esp, reg32 menu)
             for (int32_t index = firstItem(app, menu); !isEnd(app, itemAt(index)); ++index)
             {
                 NEEDED(state, selectionState(g, at, itemAt(index)));
-                g.eax = reg32(*state);
+                g.eax = u32(*state);
                 if ((*state & kNotSelectable) == 0)
                     screen(app, menu).selected = int16_t(index - firstItem(app, menu));
             }
@@ -674,7 +674,7 @@ Result selectPreviousCore(Game& g, reg32 esp, reg32 menu)
                     while (!isEnd(app, menuItem(app, menu, s.selected + 1)))
                         s.selected = int16_t(s.selected + 1);
                 NEEDED(state, selectionState(g, at, menuItem(app, menu, s.selected)));
-                g.eax = reg32(*state);
+                g.eax = u32(*state);
                 if ((*state & kNotSelectable) == 0)
                     break;
             }
@@ -685,13 +685,13 @@ Result selectPreviousCore(Game& g, reg32 esp, reg32 menu)
 
 /* 0x44a0c0's: the item after the selected one that can be selected, round
  * from the last to the first; with none selected, the first of them. */
-Result selectNextCore(Game& g, reg32 esp, reg32 menu)
+Result selectNextCore(Game& g, u32 esp, u32 menu)
 {
     App* app = g.app;
-    const reg32 at = esp - 24;
+    const u32 at = esp - 24;
     const int16_t was = screen(app, menu).selected;
     if (was != kNoItem && (item(app, menuItem(app, menu, was)).state & kHasKeys) != 0)
-        return int32_t(reg32(firstItem(app, menu) + was) * 47);  // the selected item's offset in the table, a quarter of it
+        return int32_t(u32(firstItem(app, menu) + was) * 47);  // the selected item's offset in the table, a quarter of it
     NEEDED(back, backToPrevious(g, at, menu, was));
     if (!*back)
     {
@@ -700,7 +700,7 @@ Result selectNextCore(Game& g, reg32 esp, reg32 menu)
             for (int32_t index = firstItem(app, menu); !isEnd(app, itemAt(index)); ++index)
             {
                 NEEDED(state, selectionState(g, at, itemAt(index)));
-                g.eax = reg32(*state);
+                g.eax = u32(*state);
                 if ((*state & kNotSelectable) == 0)
                 {
                     screen(app, menu).selected = int16_t(index - firstItem(app, menu));
@@ -717,7 +717,7 @@ Result selectNextCore(Game& g, reg32 esp, reg32 menu)
                 if (isEnd(app, menuItem(app, menu, s.selected)))
                     s.selected = 0;
                 NEEDED(state, selectionState(g, at, menuItem(app, menu, s.selected)));
-                g.eax = reg32(*state);
+                g.eax = u32(*state);
                 if ((*state & kNotSelectable) == 0)
                     break;
             }
@@ -729,26 +729,26 @@ Result selectNextCore(Game& g, reg32 esp, reg32 menu)
 /* 0x44a240's: a screen's Escape button: the button whose codelink names
  * "escape", the first of them, if it is not greyed out; 0 for none.  Its
  * index from the first item in *offset (0 for none). */
-Result escapeButtonCore(Game& g, reg32 esp, reg32 menu, reg32 offset)
+Result escapeButtonCore(Game& g, u32 esp, u32 menu, u32 offset)
 {
     App* app = g.app;
-    const reg32 at = esp - 24;
-    reg32 found = 0;
+    const u32 at = esp - 24;
+    u32 found = 0;
     setWord(app, offset, 0);
     if (menu == 0)
         return 0;
     for (int32_t index = firstItem(app, menu); !isEnd(app, itemAt(index)); ++index)
     {
-        const reg32 it = itemAt(index);
-        const reg32 codelink = item(app, it).codelink;
+        const u32 it = itemAt(index);
+        const u32 codelink = item(app, it).codelink;
         if (item(app, it).type != kButton || codelink == 0 || found != 0)
             continue;
         GAME_DIRECT(kCodelinkMatches, menus::codelinkMatched, at, entered(at), codelink, kEscape,
-                    reg32(0));
+                    u32(0));
         if (g.eax != 0 && (item(app, it).state & kDisabledState) == 0)
         {
             found = it;
-            setWord(app, offset, reg32(index - firstItem(app, menu)));
+            setWord(app, offset, u32(index - firstItem(app, menu)));
         }
     }
     return int32_t(found);
@@ -759,7 +759,7 @@ Result escapeButtonCore(Game& g, reg32 esp, reg32 menu, reg32 offset)
 Result selectedIndexCore(Game& g)
 {
     App* app = g.app;
-    const reg32 menu = kCurrentMenu(app);
+    const u32 menu = kCurrentMenu(app);
     if (screen(app, menu).selected == kNoItem)
         return -1;
     return firstItem(app, menu) + screen(app, menu).selected;
@@ -768,21 +768,21 @@ Result selectedIndexCore(Game& g)
 /* 0x44a470's: `it` selected on the screen shown, if it is one of its items:
  * whether it is.  The selection left is kept as the previous when it could be
  * selected. */
-Result selectItemCore(Game& g, reg32 esp, reg32 it)
+Result selectItemCore(Game& g, u32 esp, u32 it)
 {
     App* app = g.app;
-    const reg32 at = esp - 16;
-    const reg32 menu = kCurrentMenu(app);
+    const u32 at = esp - 16;
+    const u32 menu = kCurrentMenu(app);
     for (int32_t index = firstItem(app, menu); !isEnd(app, itemAt(index)); ++index)
     {
         if (itemAt(index) != it)
             continue;
-        const reg32 current = kCurrentMenu(app);
+        const u32 current = kCurrentMenu(app);
         NEEDED(ok, selectableCore(g, entered(at), int32_t(screen(app, current).selected), current));
-        g.eax = reg32(*ok);
+        g.eax = u32(*ok);
         if (*ok != 0)
             screen(app, current).previous = screen(app, current).selected;
-        const reg32 shown = kCurrentMenu(app);
+        const u32 shown = kCurrentMenu(app);
         screen(app, shown).selected = int16_t(index - firstItem(app, shown));
         return 1;
     }
@@ -791,7 +791,7 @@ Result selectItemCore(Game& g, reg32 esp, reg32 it)
 
 /* 0x44a660's: whether an item is shown: in the pause screens, only one marked
  * for them. */
-bool shownNow(App* app, reg32 it)
+bool shownNow(App* app, u32 it)
 {
     return !(kInRace(app) != 0 && (item(app, it).state & kInRaceToo) == 0);
 }
@@ -801,7 +801,7 @@ bool shownNow(App* app, reg32 it)
 Result releaseMouseCore(Game& g)
 {
     kMouseHeld.set(g.app, 0);
-    return int32_t(g.eax & ~reg32(0xff00));
+    return int32_t(g.eax & ~u32(0xff00));
 }
 
 /* 0x44a6b0's: the item under the mouse, by its index from the screen's first,
@@ -809,11 +809,11 @@ Result releaseMouseCore(Game& g)
  * inside of.  While a dialog is up, the mouse holds an item, or the selected
  * item has the keys, the selected one; none while the network screens have
  * the mouse.  Moving onto another item ticks. */
-Result itemUnderMouseCore(Game& g, reg32 esp, reg32 menu)
+Result itemUnderMouseCore(Game& g, u32 esp, u32 menu)
 {
     App* app = g.app;
     constexpr int32_t kLastLayer = 9999;
-    const reg32 at = esp - 40;
+    const u32 at = esp - 40;
     if (kMouseBlocked(app) != 0)
         return -1;
     GAME_DIRECT(kDialogShown, dialogs::dialogShownOf, at);
@@ -826,9 +826,9 @@ Result itemUnderMouseCore(Game& g, reg32 esp, reg32 menu)
         int32_t next = kLastLayer;
         for (int16_t index = int16_t(firstItem(app, menu)); !isEnd(app, itemAt(index)); ++index)
         {
-            const reg32 it = itemAt(index);
+            const u32 it = itemAt(index);
             NEEDED(state, selectionState(g, at, it));
-            g.eax = reg32(*state);
+            g.eax = u32(*state);
             if ((*state & kNotUnderMouse) != 0)
                 continue;
             const int32_t priority = item(app, it).priority;
@@ -856,35 +856,35 @@ Result itemUnderMouseCore(Game& g, reg32 esp, reg32 menu)
 
 /* 0x44a860's: every item's kOnShown handler, the screen being up; then the
  * mouse lets go. */
-Result itemsShownCore(Game& g, reg32 esp, reg32 menu)
+Result itemsShownCore(Game& g, u32 esp, u32 menu)
 {
     App* app = g.app;
-    const reg32 at = esp - 12;
+    const u32 at = esp - 12;
     int16_t index = int16_t(firstItem(app, menu));
     for (; !isEnd(app, itemAt(index)); ++index)
     {
-        const reg32 it = itemAt(index);
+        const u32 it = itemAt(index);
         if (item(app, it).onShown != 0)
             GAME(at, item(app, it).onShown, {it, it});
     }
-    g.eax = reg32(int32_t(index)) * sizeof(Item);  // the end's offset in the table
+    g.eax = u32(int32_t(index)) * sizeof(Item);  // the end's offset in the table
     return releaseMouseCore(g);
 }
 
 /* 0x44a8b0's: a pass of the items: each one's kOnPass handler -- 3 or 4
  * from one ends it -- then the selected one's again; the result the pointer's
  * shape (0x49c0e0), 12 when a key would not be taken now. */
-Result passItemsCore(Game& g, reg32 esp, reg32 menu)
+Result passItemsCore(Game& g, u32 esp, u32 menu)
 {
     App* app = g.app;
-    const reg32 at = esp - 16;
-    reg32 result = 0;
+    const u32 at = esp - 16;
+    u32 result = 0;
     for (int32_t index = firstItem(app, menu); !isEnd(app, itemAt(index)); ++index)
     {
-        const reg32 it = itemAt(index);
+        const u32 it = itemAt(index);
         if (item(app, it).onPass == 0)
             continue;
-        GAME(at, item(app, it).onPass, {it, reg32(index)});
+        GAME(at, item(app, it).onPass, {it, u32(index)});
         result = g.eax;
         if (result == kBackToFirst || result == 3)
         {
@@ -895,7 +895,7 @@ Result passItemsCore(Game& g, reg32 esp, reg32 menu)
     }
     if (screen(app, menu).selected != kNoItem)
     {
-        const reg32 it = menuItem(app, menu, screen(app, menu).selected);
+        const u32 it = menuItem(app, menu, screen(app, menu).selected);
         if (item(app, it).onPass != 0)
         {
             GAME(at, item(app, it).onPass, {it, it});
@@ -903,7 +903,7 @@ Result passItemsCore(Game& g, reg32 esp, reg32 menu)
         }
     }
     NEEDED(allowed, keyAllowedCore(g, entered(at), menu, 0));
-    g.eax = reg32(*allowed);
+    g.eax = u32(*allowed);
     if (*allowed == 0)
         result = 12;
     GAME_DIRECT(kSetCursor, frontend::connect::setPointer, at, result);
@@ -916,50 +916,50 @@ Result passItemsCore(Game& g, reg32 esp, reg32 menu)
  * native_frontend_loop.cpp; called by address.) */
 
 /* 0x44a9e0's: every item's kOnHide handler, the screen closing. */
-Result hideItemsCore(Game& g, reg32 esp, reg32 menu)
+Result hideItemsCore(Game& g, u32 esp, u32 menu)
 {
     App* app = g.app;
-    const reg32 at = esp - 12;
+    const u32 at = esp - 12;
     int16_t index = int16_t(firstItem(app, menu));
     for (; !isEnd(app, itemAt(index)); ++index)
     {
-        const reg32 it = itemAt(index);
+        const u32 it = itemAt(index);
         if (item(app, it).onHide != 0)
             GAME(at, item(app, it).onHide, {it, it});
     }
-    return int32_t(reg32(int32_t(index)) * sizeof(Item));  // the end's offset in the table
+    return int32_t(u32(int32_t(index)) * sizeof(Item));  // the end's offset in the table
 }
 
 /* 0x44aad0's: every item's state and flags back to its widget's template's,
  * the screen opening. */
-Result resetItemsCore(Game& g, reg32 menu)
+Result resetItemsCore(Game& g, u32 menu)
 {
     App* app = g.app;
     int32_t index = firstItem(app, menu);
     for (; !isEnd(app, itemAt(index)); ++index)
     {
-        const reg32 it = itemAt(index);
-        for (reg32 widget = kWidgetsAt; word(app, widget) != 0; widget += sizeof(Widget))
+        const u32 it = itemAt(index);
+        for (u32 widget = kWidgetsAt; word(app, widget) != 0; widget += sizeof(Widget))
         {
             if (word(app, widget) != item(app, it).type)
                 continue;
-            const reg32 from = record<Widget>(app, widget).templ;
+            const u32 from = record<Widget>(app, widget).templ;
             if (from != 0)
                 item(app, it).state = item(app, from).state;
             break;
         }
     }
-    return int32_t(reg32(index) * sizeof(Item));  // the end's offset in the table
+    return int32_t(u32(index) * sizeof(Item));  // the end's offset in the table
 }
 
 /* ---- The screens ---- */
 
 /* 0x44ae60's: a screen by its name, 0 for none loaded. */
-Result menuByNameCore(Game& g, reg32 esp, reg32 name)
+Result menuByNameCore(Game& g, u32 esp, u32 name)
 {
     App* app = g.app;
-    const reg32 at = esp - 20;
-    for (reg32 index = 0; index < reg32(kScreenCount(app)); ++index)
+    const u32 at = esp - 20;
+    for (u32 index = 0; index < u32(kScreenCount(app)); ++index)
     {
         GAME_DIRECT(kStrcmp, watcom::clib::strcmp, at, name,
                     screen(app, kScreens.address(int32_t(index))).name);
@@ -974,8 +974,8 @@ Result menuByNameCore(Game& g, reg32 esp, reg32 name)
 Result popMenuCore(Game& g)
 {
     App* app = g.app;
-    const reg32 back = kHistory(app, 0);
-    for (reg32 i = 0; i + 1 < kHistorySize; ++i)
+    const u32 back = kHistory(app, 0);
+    for (u32 i = 0; i + 1 < kHistorySize; ++i)
         kHistory.set(app, int32_t(i), kHistory(app, int32_t(i + 1)));
     kCurrentMenu.set(app, back != 0 ? back : kScreens.at);
     return int32_t(kHistorySize - 1);
@@ -985,9 +985,9 @@ Result popMenuCore(Game& g)
 Result pushMenuCore(Game& g)
 {
     App* app = g.app;
-    for (reg32 i = kHistorySize - 1; i > 0; --i)
+    for (u32 i = kHistorySize - 1; i > 0; --i)
         kHistory.set(app, int32_t(i), kHistory(app, int32_t(i - 1)));
-    const reg32 menu = kCurrentMenu(app);
+    const u32 menu = kCurrentMenu(app);
     kHistory.set(app, 0, menu);
     return int32_t(menu);
 }
@@ -995,34 +995,34 @@ Result pushMenuCore(Game& g)
 /* 0x44af50's: the history set from a list of screen names, ended by a null
  * (the screens to come back through after a race), then the first of them
  * shown. */
-Result setHistoryCore(Game& g, reg32 esp, reg32 names)
+Result setHistoryCore(Game& g, u32 esp, u32 names)
 {
     App* app = g.app;
-    const reg32 at = esp - 20;
-    for (reg32 i = 0; word(app, names + 4 * i) != 0; ++i)
+    const u32 at = esp - 20;
+    for (u32 i = 0; word(app, names + 4 * i) != 0; ++i)
     {
         g.eax = word(app, names + 4 * i);
         NEEDED(menu, menuByNameCore(g, entered(at), g.eax));
-        g.eax = reg32(*menu);
+        g.eax = u32(*menu);
         if (*menu != 0)
-            kHistory.set(app, int32_t(i), reg32(*menu));
+            kHistory.set(app, int32_t(i), u32(*menu));
     }
     return popMenuCore(g);
 }
 
 /* 0x449df0's: whether the keys go to something other than the screen: an
  * open list (an item of the list widgets that has the keys) or a dialog. */
-Result keysTakenCore(Game& g, reg32 esp)
+Result keysTakenCore(Game& g, u32 esp)
 {
     App* app = g.app;
     NEEDED(index, selectedIndexCore(g));
-    g.eax = reg32(*index);
+    g.eax = u32(*index);
     if (*index != -1)
     {
         const Item& it = item(app, itemAt(*index));
         if ((it.state & kHasKeys) != 0)
         {
-            const reg32 type = it.type;
+            const u32 type = it.type;
             if (type == 0x11 || type == 0x1d || type == 0x12 || type == 0x13)
                 return 1;
         }
@@ -1036,13 +1036,13 @@ Result keysTakenCore(Game& g, reg32 esp)
  * handler.  Whatever none of them took: Escape presses the Escape button
  * (1, the screen left, when there is none), the arrows move the selection.
  * The result is the loop's (kHandled reads as 0). */
-Result handleKeyCore(Game& g, reg32 esp, reg32 menu, reg32 key)
+Result handleKeyCore(Game& g, u32 esp, u32 menu, u32 key)
 {
     App* app = g.app;
-    const reg32 at = esp - 24;
+    const u32 at = esp - 24;
     const uint16_t code = uint16_t(key);
-    const reg32 signedCode = reg32(int32_t(int16_t(code)));
-    reg32 result = 0;
+    const u32 signedCode = u32(int32_t(int16_t(code)));
+    u32 result = 0;
     if (kNetworkConnected(app) != 0)
     {
         GAME_DIRECT(0x441700, frontend::menua::panelKey, at, std::uint16_t(signedCode));
@@ -1051,7 +1051,7 @@ Result handleKeyCore(Game& g, reg32 esp, reg32 menu, reg32 key)
             return int32_t(result == kHandled ? 0 : result);
         // (The allowed check's key is the edx the network's call was handed.)
         NEEDED(allowed, keyAllowedCore(g, entered(at), menu, code));
-        g.eax = reg32(*allowed);
+        g.eax = u32(*allowed);
         if (*allowed == 0)
             return 0;
     }
@@ -1064,7 +1064,7 @@ Result handleKeyCore(Game& g, reg32 esp, reg32 menu, reg32 key)
     }
     else
     {
-        const reg32 it = menuItem(app, menu, screen(app, menu).selected);
+        const u32 it = menuItem(app, menu, screen(app, menu).selected);
         if (item(app, it).onKey != 0)
         {
             GAME(at, item(app, it).onKey, {it, menu, signedCode});
@@ -1078,15 +1078,15 @@ Result handleKeyCore(Game& g, reg32 esp, reg32 menu, reg32 key)
         case kKeyEscape:
         {
             GAME_DIRECT(kPlaySound, playMenuEffectOf, at, entered(at), int32_t(kSoundBack), int32_t(kVolumeFull));
-            const reg32 offset = at;  // [ebp - 4]
+            const u32 offset = at;  // [ebp - 4]
             setWord(app, offset, result);
             NEEDED(button, escapeButtonCore(g, entered(at), menu, offset));
-            g.eax = reg32(*button);
+            g.eax = u32(*button);
             if (*button != 0)
             {
                 screen(app, menu).selected = int16_t(word(app, offset));
                 screen(app, menu).previous = int16_t(word(app, offset));
-                GAME(at, item(app, reg32(*button)).onKey, {reg32(*button), menu, kKeyEscapeButton});
+                GAME(at, item(app, u32(*button)).onKey, {u32(*button), menu, kKeyEscapeButton});
                 result = g.eax;
             }
             else
@@ -1099,7 +1099,7 @@ Result handleKeyCore(Game& g, reg32 esp, reg32 menu, reg32 key)
             GAME_DIRECT(kPlaySound, playMenuEffectOf, at, entered(at), int32_t(kSoundMove), int32_t(kVolumeTick));
             g.eax = menu;
             NEEDED(r, selectPreviousCore(g, entered(at), menu));
-            g.eax = reg32(*r);
+            g.eax = u32(*r);
             break;
         }
         case kKeyRight:
@@ -1108,7 +1108,7 @@ Result handleKeyCore(Game& g, reg32 esp, reg32 menu, reg32 key)
             GAME_DIRECT(kPlaySound, playMenuEffectOf, at, entered(at), int32_t(kSoundMove), int32_t(kVolumeTick));
             g.eax = menu;
             NEEDED(r, selectNextCore(g, entered(at), menu));
-            g.eax = reg32(*r);
+            g.eax = u32(*r);
             break;
         }
         default:
@@ -1123,10 +1123,10 @@ Result handleKeyCore(Game& g, reg32 esp, reg32 menu, reg32 key)
  * not.  Layers 0 to 4 go in front.  Over a network race, the network screens
  * get each layer's pass (the lobby only its eighth); what they or an item's
  * drawing return, the last nonzero, is the result. */
-Result drawItemsCore(Game& g, reg32 esp, reg32 menu)
+Result drawItemsCore(Game& g, u32 esp, u32 menu)
 {
     App* app = g.app;
-    const reg32 at = esp - 36;
+    const u32 at = esp - 36;
     int32_t layer = 0;
     for (int16_t index = int16_t(firstItem(app, menu)); !isEnd(app, itemAt(index)); ++index)
     {
@@ -1134,7 +1134,7 @@ Result drawItemsCore(Game& g, reg32 esp, reg32 menu)
         if (priority > layer)
             layer = priority;
     }
-    reg32 result = 0;
+    u32 result = 0;
     for (; layer >= 0; --layer)
     {
         if (layer <= 4)
@@ -1149,10 +1149,10 @@ Result drawItemsCore(Game& g, reg32 esp, reg32 menu)
         }
         for (int16_t index = int16_t(firstItem(app, menu)); !isEnd(app, itemAt(index)); ++index)
         {
-            const reg32 it = itemAt(index);
+            const u32 it = itemAt(index);
             if (item(app, it).priority != layer)
                 continue;
-            const reg32 isSelected = index == firstItem(app, menu) + screen(app, menu).selected ? 1 : 0;
+            const u32 isSelected = index == firstItem(app, menu) + screen(app, menu).selected ? 1 : 0;
             if (item(app, it).onDraw != 0 && (item(app, it).state & kHiddenFlag) == 0)
             {
                 GAME(at, item(app, it).onDraw, {it, isSelected});
@@ -1189,11 +1189,11 @@ Result drawItemsCore(Game& g, reg32 esp, reg32 menu)
  * unless a movie played (9) or the pause screens are up, the leaving sound
  * and the items faded out -- drawn again as the fade (0x559c60) runs to 500,
  * twice as fast without fades -- then its items' kOnHide. */
-Result leaveScreenCore(Game& g, reg32 esp, reg32 menu, reg32 action)
+Result leaveScreenCore(Game& g, u32 esp, u32 menu, u32 action)
 {
     App* app = g.app;
-    const reg32 at = esp - 16;
-    const reg32 step = (kDisplayFlags(app) & kNoTranslucency) != 0 ? 50 : 25;
+    const u32 at = esp - 16;
+    const u32 step = (kDisplayFlags(app) & kNoTranslucency) != 0 ? 50 : 25;
     if (screen(app, menu).onExit != 0)
         GAME(at, screen(app, menu).onExit, {menu, action, step, menu});
     if (kInRace(app) == 0)
@@ -1208,7 +1208,7 @@ Result leaveScreenCore(Game& g, reg32 esp, reg32 menu, reg32 action)
                     GAME_DIRECT(kBeginFrame, graphics::windowTakenAndCleared, at);
                     g.eax = menu;
                     NEEDED(drawn, drawItemsCore(g, entered(at), menu));
-                    g.eax = reg32(*drawn);
+                    g.eax = u32(*drawn);
                     GAME_DIRECT(kEndFrame, graphics::flipAndWait, at);
                 }
             }
@@ -1225,10 +1225,10 @@ Result leaveScreenCore(Game& g, reg32 esp, reg32 menu, reg32 action)
  * the car screens' backgrounds.  Then no item selected, the items' states
  * from their widgets', the onEnter handler -- its result is this one's --
  * and the items' kOnShow and kOnShown. */
-Result enterScreenCore(Game& g, reg32 esp, reg32 menu)
+Result enterScreenCore(Game& g, u32 esp, u32 menu)
 {
     App* app = g.app;
-    const reg32 at = esp - 20 - 0x100;
+    const u32 at = esp - 20 - 0x100;
     if (kInRace(app) == 0)
     {
         GAME_DIRECT(kSetCursor, frontend::connect::setPointer, at, 0u);
@@ -1237,7 +1237,7 @@ Result enterScreenCore(Game& g, reg32 esp, reg32 menu)
         GAME_DIRECT(0x49c140, frontend::menud::loadPointerArt, at);
         if (kFrontendArt(app) == 0)
         {
-            const reg32 path = at;  // char[0x100]
+            const u32 path = at;  // char[0x100]
             GAME_DIRECT(kSprintf, watcom::clib::sprintf, at, path, kQfsFormat, guest::Words{kArtFolder, kMmnu});
             GAME_DIRECT(kLoadShapes, frontend::draw::loadQfsFlags, at, path, 0u);
             kFrontendArt.set(app, g.eax);
@@ -1271,8 +1271,8 @@ Result enterScreenCore(Game& g, reg32 esp, reg32 menu)
     kScreenShapes.set(app, 0);
     g.eax = menu;
     NEEDED(reset, resetItemsCore(g, menu));
-    g.eax = reg32(*reset);
-    reg32 result = 0;
+    g.eax = u32(*reset);
+    u32 result = 0;
     if (screen(app, menu).onEnter != 0)
     {
         GAME(at, screen(app, menu).onEnter, {menu, 0});
@@ -1281,7 +1281,7 @@ Result enterScreenCore(Game& g, reg32 esp, reg32 menu)
     GAME_DIRECT(kShowItems, frontend::loop::showItems, at, menu);
     g.eax = menu;
     NEEDED(shown, itemsShownCore(g, entered(at), menu));
-    g.eax = reg32(*shown);
+    g.eax = u32(*shown);
     GAME_DIRECT(kFrameTime, frontend::wata::timerSinceLast, at);
     return int32_t(result);
 }
@@ -1289,10 +1289,10 @@ Result enterScreenCore(Game& g, reg32 esp, reg32 menu)
 /* 0x44b1a0's: the game suspended (0x559444, its window gone to the
  * background): waited out, then the screen closed as on leaving it, *action
  * 13 (back to the first screen).  Whether it was. */
-Result waitWhileSuspendedCore(Game& g, reg32 esp, reg32 menu, reg32 action)
+Result waitWhileSuspendedCore(Game& g, u32 esp, u32 menu, u32 action)
 {
     App* app = g.app;
-    const reg32 at = esp - 16;
+    const u32 at = esp - 16;
     if (kSuspended(app) == 0)
         return 0;
     setWord(app, action, 13);
@@ -1302,7 +1302,7 @@ Result waitWhileSuspendedCore(Game& g, reg32 esp, reg32 menu, reg32 action)
         GAME_DIRECT(kPollEvents, descriptionServed, at, entered(at));
     } while (kSuspended(app) != 0);
     // THRASH_treset, through the game's pointer to it (thrash_calls.h).
-    const std::optional<reg32> reset = guest::driverFrom<thrash::kThrashTReset, &driver::tReset>(app, g.cpu, at);
+    const std::optional<u32> reset = guest::driverFrom<thrash::kThrashTReset, &driver::tReset>(app, g.ts, at);
     if (!reset)
         return {};
     g.eax = *reset;
@@ -1312,7 +1312,7 @@ Result waitWhileSuspendedCore(Game& g, reg32 esp, reg32 menu, reg32 action)
         GAME(at, screen(app, menu).onExit, {menu, action, menu});
     g.eax = menu;
     NEEDED(hidden, hideItemsCore(g, entered(at), menu));
-    g.eax = reg32(*hidden);
+    g.eax = u32(*hidden);
     return 1;
 }
 
@@ -1320,24 +1320,24 @@ Result waitWhileSuspendedCore(Game& g, reg32 esp, reg32 menu, reg32 action)
  * when a race is started with no name for player 1 (or, split screen, player
  * 2): Enter (or OK) keeps what was typed -- "Player 1"/"Player 2" if nothing
  * -- and starts the race (5); Cancel or Escape clears it (2). */
-Result nameAnswerCore(Game& g, reg32 esp, reg32 answer, reg32 close, reg32 name, reg32 defaultText)
+Result nameAnswerCore(Game& g, u32 esp, u32 answer, u32 close, u32 name, u32 defaultText)
 {
     App* app = g.app;
-    const reg32 at = esp - 16;
+    const u32 at = esp - 16;
     setByte(app, close, 0);
-    reg32 result = 0;
+    u32 result = 0;
     if (answer == kDialogEnter)
     {
         GAME_DIRECT(0x4446c0, frontend::dialogs::focusedButton, at);
-        const reg32 focus = g.eax;
+        const u32 focus = g.eax;
         if (focus == 0 || kInputFromMouse(app) == 0)
         {
             GAME_DIRECT(0x444c10, frontend::dialogs::editText, at);
-            reg32 typed = g.eax;
+            u32 typed = g.eax;
             GAME_DIRECT(kNameValid, frontend::text::nameValid, at, typed);
             if (g.eax == 0)
             {
-                GAME_DIRECT(0x4d1850, text::lineText, at, entered(at), int32_t(defaultText), reg32(0));
+                GAME_DIRECT(0x4d1850, text::lineText, at, entered(at), int32_t(defaultText), u32(0));
                 typed = g.eax;
             }
             copyString(app, name, typed);
@@ -1361,16 +1361,16 @@ Result nameAnswerCore(Game& g, reg32 esp, reg32 answer, reg32 close, reg32 name,
 }
 
 /* 0x44b0f0's: the answer to "Quit the game?": Yes ends the menus (10). */
-Result quitAnswerCore(Game& g, reg32 esp, reg32 answer, reg32 close)
+Result quitAnswerCore(Game& g, u32 esp, u32 answer, u32 close)
 {
     App* app = g.app;
-    const reg32 at = esp - 8;
+    const u32 at = esp - 8;
     if (answer < kDialogEnter)
         return 0;
     if (answer == kDialogEnter)
     {
         GAME_DIRECT(0x4446c0, frontend::dialogs::focusedButton, at);
-        const reg32 focus = g.eax;
+        const u32 focus = g.eax;
         if (focus == 0)
         {
             if (close != 0)
@@ -1402,10 +1402,10 @@ Result quitAnswerCore(Game& g, reg32 esp, reg32 answer, reg32 close)
  * rested on the selected item for 100 ticks, beside the pointer (kept on the
  * 640x480 screen), wrapped at 380 pixels, and gone when the selection moves,
  * the screen changes or a dialog comes up.  Not while the keys are taken. */
-Result drawHelpCore(Game& g, reg32 esp)
+Result drawHelpCore(Game& g, u32 esp)
 {
     App* app = g.app;
-    const reg32 at = esp - 24 - 8;
+    const u32 at = esp - 24 - 8;
     kHelpAlpha.set(app, (kDisplayFlags(app) & kNoTranslucency) != 0 ? kFloatOne : kFloatPoint9);
     g.eax = kCurrentMenu(app);
     bool restart = kCurrentMenu(app) != kHelpMenu(app);
@@ -1421,22 +1421,22 @@ Result drawHelpCore(Game& g, reg32 esp)
         kHelpMenu.set(app, g.eax);
         kHelpText.set(app, 0);
         kHelpLastX.set(app, kMouseX(app));
-        kHelpItem.set(app, reg32(-1));
+        kHelpItem.set(app, u32(-1));
         kHelpLastY.set(app, kMouseY(app));
     }
     NEEDED(taken, keysTakenCore(g, entered(at)));
-    g.eax = reg32(*taken);
+    g.eax = u32(*taken);
     if (*taken != 0)
         return int32_t(g.eax);
 
     NEEDED(selected, selectedIndexCore(g));
-    g.eax = reg32(*selected);
-    const reg32 index = reg32(*selected);
+    g.eax = u32(*selected);
+    const u32 index = u32(*selected);
     bool timing = true;
     GAME_DIRECT(kDialogShown, dialogs::dialogShownOf, at);
-    if ((g.eax & 0xff) != 0 || index == reg32(-1) || index != kHelpItem(app))
-        kHelpItem.set(app, reg32(-1));
-    else if (kHelpItem(app) != reg32(-1))
+    if ((g.eax & 0xff) != 0 || index == u32(-1) || index != kHelpItem(app))
+        kHelpItem.set(app, u32(-1));
+    else if (kHelpItem(app) != u32(-1))
         timing = false;
     if (timing)
     {
@@ -1447,32 +1447,32 @@ Result drawHelpCore(Game& g, reg32 esp)
             kHelpLastY.set(app, kMouseY(app));
             kHelpDue.set(app, kTicks(app) + 100);
         }
-        else if (int32_t(kTicks(app)) > int32_t(kHelpDue(app)) && index != reg32(-1) && kHelpNeedsMove(app) == 0)
+        else if (int32_t(kTicks(app)) > int32_t(kHelpDue(app)) && index != u32(-1) && kHelpNeedsMove(app) == 0)
         {
             // The box: the text's size, wrapped, and a margin.
             kHelpItem.set(app, index);
             kHelpFade.set(app, 0);
             kHelpText.set(app, item(app, itemAt(int32_t(index))).help);
-            const reg32 width = at, height = at + 4;  // [ebp - 8], [ebp - 4]
+            const u32 width = at, height = at + 4;  // [ebp - 8], [ebp - 4]
             GAME(at, kTextBox, {kHelpText(app), kHelpFont, kHelpWrap, width}, {height, 0});
             const int32_t w = int32_t(word(app, width)) + 7, h = int32_t(word(app, height)) + 3;
             kHelpX.set(app, kMouseX(app));
-            kHelpWidth.set(app, reg32(w));
-            kHelpHeight.set(app, reg32(h));
+            kHelpWidth.set(app, u32(w));
+            kHelpHeight.set(app, u32(h));
             if (int32_t(kMouseX(app)) + w > 630)
-                kHelpX.set(app, reg32(630 - w));
+                kHelpX.set(app, u32(630 - w));
             kHelpY.set(app, kMouseY(app) + 20);
             if (int32_t(kMouseY(app)) + 20 + h > 460)
-                kHelpY.set(app, reg32(int32_t(kMouseY(app)) - h - 8));
+                kHelpY.set(app, u32(int32_t(kMouseY(app)) - h - 8));
         }
     }
 
-    const reg32 helpText = kHelpText(app);
+    const u32 helpText = kHelpText(app);
     if (helpText != 0 && byteAt(app, helpText) == 0)
         kHelpText.set(app, 0);
     if (kHelpText(app) != 0)
     {
-        if (kHelpItem(app) == reg32(-1))
+        if (kHelpItem(app) == u32(-1))
         {
             if (int32_t(kHelpFade(app)) > 0)
                 kHelpFade.set(app, 0);
@@ -1487,12 +1487,12 @@ Result drawHelpCore(Game& g, reg32 esp)
         return int32_t(g.eax);
     }
 
-    const reg32 x = kHelpX(app), y = kHelpY(app);
-    const reg32 w = kHelpWidth(app), h = kHelpHeight(app);
-    const reg32 alpha = kHelpFade(app) << 24;
+    const u32 x = kHelpX(app), y = kHelpY(app);
+    const u32 w = kHelpWidth(app), h = kHelpHeight(app);
+    const u32 alpha = kHelpFade(app) << 24;
     kDrawColour.set(app, alpha);
     GAME_DIRECT(kFillBox, draw2d::gradient, at, at - 4 - 4 * 2, int32_t(x), int32_t(y),
-                int32_t(x + w), int32_t(y + h), reg32(-100), kHelpBoxColour);
+                int32_t(x + w), int32_t(y + h), u32(-100), kHelpBoxColour);
     GAME_DIRECT(kBoxBorder, draw2d::outline, at, at - 4 - 4, int32_t(x), int32_t(y), int32_t(w),
                 int32_t(h), alpha);
     if (kInRace(app) != 0)
@@ -1511,20 +1511,20 @@ Result drawHelpCore(Game& g, reg32 esp)
  * named by their place in the settings (0x6fd2a0 on).  Two of them follow
  * each other -- 0 goes with 0, 1 with 4, 2 with 1 to 3 -- whichever changed
  * since the last pass setting the other.  Nothing after a race. */
-#define ALLOW(option, on) GAME_DIRECT(0x43a6e0, frontend::loada::carFilterLists, at, reg32(option), reg32(on))
+#define ALLOW(option, on) GAME_DIRECT(0x43a6e0, frontend::loada::carFilterLists, at, u32(option), u32(on))
 
-Result fitRaceSettingsCore(Game& g, reg32 esp)
+Result fitRaceSettingsCore(Game& g, u32 esp)
 {
     App* app = g.app;
-    const reg32 at = esp - 20;
+    const u32 at = esp - 20;
     if (kAfterRace(app) != 0)
         return int32_t(g.eax);
-    if (kSeen4d0(app) == reg32(-1))
+    if (kSeen4d0(app) == u32(-1))
     {
         kSeen4d0.set(app, gameSettings(app).trafficLevel);
         kSeen4d4.set(app, gameSettings(app).opponentClass);
     }
-    if (kSeenRaceType(app) == reg32(-1))
+    if (kSeenRaceType(app) == u32(-1))
         kSeenRaceType.set(app, gameSettings(app).raceType);
     gameSettings(app).soundFlag98 = gameSettings(app).musicMode == 0 ? 1 : 0;
     if (gameSettings(app).soundSetup == 1)
@@ -1534,11 +1534,11 @@ Result fitRaceSettingsCore(Game& g, reg32 esp)
     if (gameSettings(app).raceType == kHotPursuit)
         gameSettings(app).trafficLevel = 2;
 
-    const reg32 first = gameSettings(app).trafficLevel;
+    const u32 first = gameSettings(app).trafficLevel;
     if (first != kSeen4d0(app))
     {
         kSeen4d0.set(app, first);
-        auto setSecond = [&](reg32 value) {
+        auto setSecond = [&](u32 value) {
             kSeen4d4.set(app, value);
             gameSettings(app).opponentClass = value;
         };
@@ -1551,9 +1551,9 @@ Result fitRaceSettingsCore(Game& g, reg32 esp)
     }
     else if (gameSettings(app).opponentClass != kSeen4d4(app))
     {
-        const reg32 second = gameSettings(app).opponentClass;
+        const u32 second = gameSettings(app).opponentClass;
         kSeen4d4.set(app, second);
-        auto setFirst = [&](reg32 value) {
+        auto setFirst = [&](u32 value) {
             kSeen4d0.set(app, value);
             gameSettings(app).trafficLevel = value;
         };
@@ -1641,11 +1641,11 @@ Result fitRaceSettingsCore(Game& g, reg32 esp)
         }
         else
             cops = true;
-        ALLOW(reg32(cops ? 0x2084 : 0xf04), 1);
+        ALLOW(u32(cops ? 0x2084 : 0xf04), 1);
     }
 
     // The car screens: the name of the one shown, against each.
-    auto shown = [&](reg32 name, bool& is) -> bool {
+    auto shown = [&](u32 name, bool& is) -> bool {
                 if (!g.direct<kCurrentMenuName, frontend::loop::currentMenuName>(at))
             return false;
         if (!g.direct<kStrcmp, watcom::clib::strcmp>(at, g.eax, name))
@@ -1675,10 +1675,10 @@ Result fitRaceSettingsCore(Game& g, reg32 esp)
     if (is)
         ALLOW(9, 1);
 
-    auto widen = [](reg32 value) { return reg32(int32_t(int16_t(value))); };
+    auto widen = [](u32 value) { return u32(int32_t(int16_t(value))); };
     if (gameSettings(app).raceType == kTournament)
     {
-        const reg32 kind = int32_t(gameSettings(app).playMode) > 1 ? 2 : 4;
+        const u32 kind = int32_t(gameSettings(app).playMode) > 1 ? 2 : 4;
         GAME_DIRECT(0x4cf160, frontend::menue::lapsToOption, at, kind);
         gameSettings(app).lapsClass = widen(g.eax);
         gameSettings(app).track = kValue5d004(app);
@@ -1690,7 +1690,7 @@ Result fitRaceSettingsCore(Game& g, reg32 esp)
         gameSettings(app).track = 0;
     }
     GAME_DIRECT(0x4cf190, frontend::menue::optionToLaps, at,
-                reg32(int32_t(int16_t(gameSettings(app).lapsClass))));
+                u32(int32_t(int16_t(gameSettings(app).lapsClass))));
     gameSettings(app).laps = widen(g.eax);
     kSeen4d0.set(app, gameSettings(app).trafficLevel);
     kSeen4d4.set(app, gameSettings(app).opponentClass);
@@ -1703,22 +1703,22 @@ Result fitRaceSettingsCore(Game& g, reg32 esp)
 
 /* A dialog over the screen asking for a player's name, when a race is
  * started without one: the default name ("Player 1") already in. */
-bool askName(Game& g, reg32 at, reg32 name, reg32 title, reg32 defaultText, reg32 answer)
+bool askName(Game& g, u32 at, u32 name, u32 title, u32 defaultText, u32 answer)
 {
     App* app = g.app;
-    if (!g.direct<0x4d1850, text::lineText>(at, entered(at), int32_t(title), reg32(0)))
+    if (!g.direct<0x4d1850, text::lineText>(at, entered(at), int32_t(title), u32(0)))
         return false;
     setWord(app, kDialogLines, g.eax);
-    if (!g.direct<0x4d1850, text::lineText>(at, entered(at), int32_t(kNameDialogLine2), reg32(0)))
+    if (!g.direct<0x4d1850, text::lineText>(at, entered(at), int32_t(kNameDialogLine2), u32(0)))
         return false;
     setWord(app, kDialogLines + 4, g.eax);
-    if (!g.direct<0x4d1850, text::lineText>(at, entered(at), int32_t(kNameDialogOk), reg32(0)))
+    if (!g.direct<0x4d1850, text::lineText>(at, entered(at), int32_t(kNameDialogOk), u32(0)))
         return false;
     setWord(app, kDialogButtons, g.eax);
-    if (!g.direct<0x4d1850, text::lineText>(at, entered(at), int32_t(kNameDialogCancel), reg32(0)))
+    if (!g.direct<0x4d1850, text::lineText>(at, entered(at), int32_t(kNameDialogCancel), u32(0)))
         return false;
     setWord(app, kDialogButtons + 4, g.eax);
-    if (!g.direct<0x4d1850, text::lineText>(at, entered(at), int32_t(defaultText), reg32(0)))
+    if (!g.direct<0x4d1850, text::lineText>(at, entered(at), int32_t(defaultText), u32(0)))
         return false;
     copyString(app, name, g.eax);
     return g.direct<0x444c20, frontend::dialogs::openEdit>(at - 4 * 5, 2u, kDialogLines, 2u, kDialogButtons, 0u, name, kPlayerNameLength, 1u, answer);
@@ -1741,12 +1741,12 @@ bool askName(Game& g, reg32 at, reg32 name, reg32 title, reg32 defaultText, reg3
  *   6, 7   into the race
  *   9      a movie played: to the screen it named, if any
  *   10     quit (asked first), 11 out */
-Result menuLoopCore(Game& g, reg32 esp, reg32 name, reg32 history)
+Result menuLoopCore(Game& g, u32 esp, u32 name, u32 history)
 {
     App* app = g.app;
-    const reg32 at = esp - 20 - 0x10;
-    const reg32 action = at;        // [ebp - 0x10]: 0x44b1a0 sets it
-    const reg32 offset = at + 4;    // [ebp - 0xc]
+    const u32 at = esp - 20 - 0x10;
+    const u32 action = at;        // [ebp - 0x10]: 0x44b1a0 sets it
+    const u32 offset = at + 4;    // [ebp - 0xc]
     bool running = true, firstScreen = true;
     setWord(app, action, 0);
     setWord(app, offset, 0);
@@ -1759,19 +1759,19 @@ Result menuLoopCore(Game& g, reg32 esp, reg32 name, reg32 history)
     GAME_DIRECT(kSetDisplay, text::loadedLanguageText, at, entered(at),
                 int32_t(gameSettings(app).language));
     GAME(at, kResetInput);
-    const reg32 afterRace = kAfterRace(app);
-    const reg32 tune = afterRace != 0 ? gameSettings(app).track : reg32(0x16);
+    const u32 afterRace = kAfterRace(app);
+    const u32 tune = afterRace != 0 ? gameSettings(app).track : u32(0x16);
     GAME_DIRECT(kStartMusic, musicStarted, at, entered(at),
                 int32_t(tune), int32_t(gameSettings(app).menuMusicVolume), int32_t(afterRace));
-    GAME_DIRECT(kLoadMenus, menus::menusLoaded, at, entered(at), name, reg32(1), Args{name, 1});
+    GAME_DIRECT(kLoadMenus, menus::menusLoaded, at, entered(at), name, u32(1), Args{name, 1});
     kLastAction.set(app, 5);
-    for (reg32 i = 0; i < kHistorySize; ++i)
+    for (u32 i = 0; i < kHistorySize; ++i)
         kHistory.set(app, int32_t(i), 0);
     if (history != 0)
     {
         g.eax = history;
         NEEDED(set, setHistoryCore(g, entered(at), history));
-        g.eax = reg32(*set);
+        g.eax = u32(*set);
     }
     else
         kCurrentMenu.set(app, kScreens.at);
@@ -1780,13 +1780,13 @@ Result menuLoopCore(Game& g, reg32 esp, reg32 name, reg32 history)
     {
         g.eax = kCurrentMenu(app);
         NEEDED(opened, enterScreenCore(g, entered(at), kCurrentMenu(app)));
-        g.eax = reg32(*opened);
+        g.eax = u32(*opened);
         setWord(app, action, g.eax);
         if (firstScreen)
         {
             g.eax = kCurrentMenu(app);
             NEEDED(next, selectNextCore(g, entered(at), kCurrentMenu(app)));
-            g.eax = reg32(*next);
+            g.eax = u32(*next);
             firstScreen = false;
         }
         if (word(app, action) != 0)
@@ -1797,7 +1797,7 @@ Result menuLoopCore(Game& g, reg32 esp, reg32 name, reg32 history)
         while (word(app, action) == 0)
         {
             GAME_DIRECT(kPollEvents, descriptionServed, at, entered(at));
-            const reg32 menu = kCurrentMenu(app);
+            const u32 menu = kCurrentMenu(app);
             if (screen(app, menu).onFrame != 0)
             {
                 GAME(at, screen(app, menu).onFrame, {menu, menu});
@@ -1809,13 +1809,13 @@ Result menuLoopCore(Game& g, reg32 esp, reg32 name, reg32 history)
                 setWord(app, action, g.eax);
             }
             NEEDED(fitted, fitRaceSettingsCore(g, entered(at)));
-            g.eax = reg32(*fitted);
+            g.eax = u32(*fitted);
             if (word(app, action) == 0)
             {
                 GAME_DIRECT(kBeginFrame, graphics::windowTakenAndCleared, at);
                 g.eax = kCurrentMenu(app);
                 NEEDED(drawn, drawItemsCore(g, entered(at), kCurrentMenu(app)));
-                g.eax = reg32(*drawn);
+                g.eax = u32(*drawn);
                 setWord(app, action, g.eax);
                 GAME_DIRECT(kDialogShown, dialogs::dialogShownOf, at);
                 if ((g.eax & 0xff) != 0)
@@ -1825,13 +1825,13 @@ Result menuLoopCore(Game& g, reg32 esp, reg32 name, reg32 history)
                 }
                 g.eax = kCurrentMenu(app);
                 NEEDED(passed, passItemsCore(g, entered(at), kCurrentMenu(app)));
-                g.eax = reg32(*passed);
+                g.eax = u32(*passed);
                 GAME(at, kPresentFrame);
                 const uint8_t noHelp = kNoHelpFlags(app);
                 if ((noHelp & 0x10) == 0 && (noHelp & 0x20) == 0)
                 {
                     NEEDED(helped, drawHelpCore(g, entered(at)));
-                    g.eax = reg32(*helped);
+                    g.eax = u32(*helped);
                 }
                 GAME_DIRECT(kEndFrame, graphics::flipAndWait, at);
             }
@@ -1842,29 +1842,29 @@ Result menuLoopCore(Game& g, reg32 esp, reg32 name, reg32 history)
                     kMouseBlocked.set(app, 0);
                 g.eax = kCurrentMenu(app);
                 NEEDED(under, itemUnderMouseCore(g, entered(at), kCurrentMenu(app)));
-                g.eax = reg32(*under);
-                const reg32 underMouse = reg32(*under);
-                const reg32 current = kCurrentMenu(app);
+                g.eax = u32(*under);
+                const u32 underMouse = u32(*under);
+                const u32 current = kCurrentMenu(app);
                 const int16_t was = screen(app, current).selected;
                 bool ok = false;
-                if (reg32(int32_t(was)) != underMouse)
+                if (u32(int32_t(was)) != underMouse)
                 {
                     NEEDED(selectedOk, selectableCore(g, entered(at), int32_t(was), current));
-                    g.eax = reg32(*selectedOk);
+                    g.eax = u32(*selectedOk);
                     ok = *selectedOk != 0;
                 }
                 if (ok)
                 {
                     GAME_DIRECT(kItemChanged, frontend::menuc::resetButtonPulse, at);
-                    const reg32 shown = kCurrentMenu(app);
+                    const u32 shown = kCurrentMenu(app);
                     screen(app, shown).previous = screen(app, shown).selected;
                 }
-                screen(app, kCurrentMenu(app)).selected = underMouse == reg32(-1) ? kNoItem : int16_t(underMouse);
+                screen(app, kCurrentMenu(app)).selected = underMouse == u32(-1) ? kNoItem : int16_t(underMouse);
                 GAME_DIRECT(kReadKey, text::menuKeyOf, at, entered(at), 1u);
                 const uint16_t key = uint16_t(g.eax);
                 if (key != 0)
                 {
-                    const reg32 code = reg32(int32_t(int16_t(key)));
+                    const u32 code = u32(int32_t(int16_t(key)));
                     GAME_DIRECT(kDialogShown, dialogs::dialogShownOf, at);
                     if ((g.eax & 0xff) != 0)
                     {
@@ -1875,12 +1875,12 @@ Result menuLoopCore(Game& g, reg32 esp, reg32 name, reg32 history)
                     {
                         g.eax = kCurrentMenu(app);
                         NEEDED(handled, handleKeyCore(g, entered(at), kCurrentMenu(app), code));
-                        g.eax = reg32(*handled);
+                        g.eax = u32(*handled);
                         setWord(app, action, g.eax);
                     }
                     g.eax = kCurrentMenu(app);
                     NEEDED(waited, waitWhileSuspendedCore(g, entered(at), kCurrentMenu(app), action));
-                    g.eax = reg32(*waited);
+                    g.eax = u32(*waited);
                     if (*waited != 0)
                         continue;
                 }
@@ -1888,11 +1888,11 @@ Result menuLoopCore(Game& g, reg32 esp, reg32 name, reg32 history)
 
             if (word(app, action) == kQuit && kQuitting(app) == 0 && kNoQuitQuestion(app) == 0)
             {
-                GAME_DIRECT(0x4d1850, text::lineText, at, entered(at), int32_t(kQuitQuestion), reg32(0));
+                GAME_DIRECT(0x4d1850, text::lineText, at, entered(at), int32_t(kQuitQuestion), u32(0));
                 setWord(app, kDialogLines, g.eax);
-                GAME_DIRECT(0x4d1850, text::lineText, at, entered(at), int32_t(kQuitYes), reg32(0));
+                GAME_DIRECT(0x4d1850, text::lineText, at, entered(at), int32_t(kQuitYes), u32(0));
                 setWord(app, kDialogButtons, g.eax);
-                GAME_DIRECT(0x4d1850, text::lineText, at, entered(at), int32_t(kQuitNo), reg32(0));
+                GAME_DIRECT(0x4d1850, text::lineText, at, entered(at), int32_t(kQuitNo), u32(0));
                 setWord(app, kDialogButtons + 4, g.eax);
                 GAME_DIRECT(0x4446d0, frontend::dialogs::openQuestion, at - 4 * 4, 1u, kDialogLines, 2u, kDialogButtons, 0u, 0u, 0u, kQuitAnswerAt);
                 setWord(app, action, 0);
@@ -1937,28 +1937,28 @@ Result menuLoopCore(Game& g, reg32 esp, reg32 name, reg32 history)
         {
             g.eax = kCurrentMenu(app);
             NEEDED(left, leaveScreenCore(g, entered(at), kCurrentMenu(app), word(app, action)));
-            g.eax = reg32(*left);
+            g.eax = u32(*left);
             while (kCurrentMenu(app) != kScreens.at)
             {
                 NEEDED(popped, popMenuCore(g));
-                g.eax = reg32(*popped);
+                g.eax = u32(*popped);
             }
             break;
         }
         case kGoOn:
         {
-            const reg32 menu = kCurrentMenu(app);
-            const reg32 it = menuItem(app, menu, screen(app, menu).selected);
+            const u32 menu = kCurrentMenu(app);
+            const u32 it = menuItem(app, menu, screen(app, menu).selected);
             g.eax = menu;
             NEEDED(escape, escapeButtonCore(g, entered(at), menu, offset));
-            g.eax = reg32(*escape);
-            if (reg32(*escape) == it)
+            g.eax = u32(*escape);
+            if (u32(*escape) == it)
             {
                 setWord(app, action, 3);
                 back = true;
                 break;
             }
-            const reg32 next = item(app, it).type == kButton ? item(app, it).nextMenu : 0;
+            const u32 next = item(app, it).type == kButton ? item(app, it).nextMenu : 0;
             if (next != 0)
             {
                 for (setWord(app, offset, 0); int32_t(word(app, offset)) < kScreenCount(app);
@@ -1971,9 +1971,9 @@ Result menuLoopCore(Game& g, reg32 esp, reg32 name, reg32 history)
                 if (int32_t(word(app, offset)) < kScreenCount(app))
                 {
                     NEEDED(pushed, pushMenuCore(g));
-                    g.eax = reg32(*pushed);
+                    g.eax = u32(*pushed);
                     NEEDED(left, leaveScreenCore(g, entered(at), kCurrentMenu(app), word(app, action)));
-                    g.eax = reg32(*left);
+                    g.eax = u32(*left);
                     kCurrentMenu.set(app, kScreens.address(int32_t(word(app, offset))));
                 }
                 else
@@ -1991,7 +1991,7 @@ Result menuLoopCore(Game& g, reg32 esp, reg32 name, reg32 history)
             GAME_DIRECT(kBeginFrame, graphics::windowTakenAndCleared, at);
             g.eax = kCurrentMenu(app);
             NEEDED(drawn, drawItemsCore(g, entered(at), kCurrentMenu(app)));
-            g.eax = reg32(*drawn);
+            g.eax = u32(*drawn);
             running = false;
             kScreenUp.set(app, 1);
             GAME_DIRECT(kSetCursor, frontend::connect::setPointer, at, 3u);
@@ -2001,25 +2001,25 @@ Result menuLoopCore(Game& g, reg32 esp, reg32 name, reg32 history)
             kFlagEb10.set(app, 0);
             g.eax = kCurrentMenu(app);
             NEEDED(left, leaveScreenCore(g, entered(at), kCurrentMenu(app), word(app, action)));
-            g.eax = reg32(*left);
+            g.eax = u32(*left);
             break;
         }
         case kMoviePlayed:
         {
             g.eax = kCurrentMenu(app);
             NEEDED(left, leaveScreenCore(g, entered(at), kCurrentMenu(app), word(app, action)));
-            g.eax = reg32(*left);
+            g.eax = u32(*left);
             if (kAfterMovieScreen(app) != 0)
             {
                 g.eax = kAfterMovieScreen(app);
                 NEEDED(found, menuByNameCore(g, entered(at), kAfterMovieScreen(app)));
-                g.eax = reg32(*found);
+                g.eax = u32(*found);
                 if (*found != 0)
                 {
                     g.eax = kAfterMovieScreen(app);
                     NEEDED(again, menuByNameCore(g, entered(at), kAfterMovieScreen(app)));
-                    g.eax = reg32(*again);
-                    kCurrentMenu.set(app, reg32(*again));
+                    g.eax = u32(*again);
+                    kCurrentMenu.set(app, u32(*again));
                     kAfterMovieScreen.set(app, 0);
                 }
             }
@@ -2031,7 +2031,7 @@ Result menuLoopCore(Game& g, reg32 esp, reg32 name, reg32 history)
             kFlagEb10.set(app, 0);
             g.eax = kCurrentMenu(app);
             NEEDED(left, leaveScreenCore(g, entered(at), kCurrentMenu(app), word(app, action)));
-            g.eax = reg32(*left);
+            g.eax = u32(*left);
             running = false;
             break;
         }
@@ -2041,7 +2041,7 @@ Result menuLoopCore(Game& g, reg32 esp, reg32 name, reg32 history)
             running = false;
             g.eax = kCurrentMenu(app);
             NEEDED(left, leaveScreenCore(g, entered(at), kCurrentMenu(app), word(app, action)));
-            g.eax = reg32(*left);
+            g.eax = u32(*left);
             break;
         }
         default:
@@ -2049,7 +2049,7 @@ Result menuLoopCore(Game& g, reg32 esp, reg32 name, reg32 history)
         }
         if (back || word(app, action) == 3 || word(app, action) == 1)
         {
-            const reg32 menu = kCurrentMenu(app);
+            const u32 menu = kCurrentMenu(app);
             if (menu == kScreens.at)
             {
                 setWord(app, action, kOut);
@@ -2059,9 +2059,9 @@ Result menuLoopCore(Game& g, reg32 esp, reg32 name, reg32 history)
             {
                 g.eax = menu;
                 NEEDED(left, leaveScreenCore(g, entered(at), menu, word(app, action)));
-                g.eax = reg32(*left);
+                g.eax = u32(*left);
                 NEEDED(popped, popMenuCore(g));
-                g.eax = reg32(*popped);
+                g.eax = u32(*popped);
             }
         }
     }
@@ -2074,7 +2074,7 @@ Result menuLoopCore(Game& g, reg32 esp, reg32 name, reg32 history)
     }
     GAME(at, kMenusEnd);
     GAME_DIRECT(kCloseDialog, dialogs::closeDialogOf, at, 0u);
-    GAME_DIRECT(kStopMusic, musicStopped, at, entered(at), reg32(0));
+    GAME_DIRECT(kStopMusic, musicStopped, at, entered(at), u32(0));
     return int32_t(word(app, action));
 }
 
@@ -2084,86 +2084,86 @@ Result menuLoopCore(Game& g, reg32 esp, reg32 name, reg32 history)
  * Game it runs in made from `eax`, what the game's code has in eax at the
  * call (the first register argument, where there is one) ---- */
 
-Result keysTakenOf(App* app, CPU& cpu, reg32 esp, reg32 eax)
+Result keysTakenOf(App* app, ThreadState& ts, u32 esp, u32 eax)
 {
-    Game g{app, cpu, eax};
+    Game g{app, ts, eax};
     return keysTakenCore(g, esp);
 }
 
-Result selectableOf(App* app, CPU& cpu, reg32 esp, int32_t offset, reg32 menu)
+Result selectableOf(App* app, ThreadState& ts, u32 esp, int32_t offset, u32 menu)
 {
-    Game g{app, cpu, reg32(offset)};
+    Game g{app, ts, u32(offset)};
     return selectableCore(g, esp, offset, menu);
 }
 
-Result pointAtSelectedOf(App* app, CPU& cpu, reg32 esp, reg32 menu)
+Result pointAtSelectedOf(App* app, ThreadState& ts, u32 esp, u32 menu)
 {
-    Game g{app, cpu, menu};
+    Game g{app, ts, menu};
     return pointAtSelectedCore(g, esp, menu);
 }
 
-Result escapeButtonOf(App* app, CPU& cpu, reg32 esp, reg32 menu, reg32 offset)
+Result escapeButtonOf(App* app, ThreadState& ts, u32 esp, u32 menu, u32 offset)
 {
-    Game g{app, cpu, menu};
+    Game g{app, ts, menu};
     return escapeButtonCore(g, esp, menu, offset);
 }
 
-Result handleKeyOf(App* app, CPU& cpu, reg32 esp, reg32 menu, reg32 key)
+Result handleKeyOf(App* app, ThreadState& ts, u32 esp, u32 menu, u32 key)
 {
-    Game g{app, cpu, menu};
+    Game g{app, ts, menu};
     return handleKeyCore(g, esp, menu, key);
 }
 
-Result drawItemsOf(App* app, CPU& cpu, reg32 esp, reg32 menu)
+Result drawItemsOf(App* app, ThreadState& ts, u32 esp, u32 menu)
 {
-    Game g{app, cpu, menu};
+    Game g{app, ts, menu};
     return drawItemsCore(g, esp, menu);
 }
 
-Result itemUnderMouseOf(App* app, CPU& cpu, reg32 esp, reg32 menu)
+Result itemUnderMouseOf(App* app, ThreadState& ts, u32 esp, u32 menu)
 {
-    Game g{app, cpu, menu};
+    Game g{app, ts, menu};
     return itemUnderMouseCore(g, esp, menu);
 }
 
-Result passItemsOf(App* app, CPU& cpu, reg32 esp, reg32 menu)
+Result passItemsOf(App* app, ThreadState& ts, u32 esp, u32 menu)
 {
-    Game g{app, cpu, menu};
+    Game g{app, ts, menu};
     return passItemsCore(g, esp, menu);
 }
 
-Result leaveScreenOf(App* app, CPU& cpu, reg32 esp, reg32 menu, reg32 action)
+Result leaveScreenOf(App* app, ThreadState& ts, u32 esp, u32 menu, u32 action)
 {
-    Game g{app, cpu, menu};
+    Game g{app, ts, menu};
     return leaveScreenCore(g, esp, menu, action);
 }
 
-Result enterScreenOf(App* app, CPU& cpu, reg32 esp, reg32 menu)
+Result enterScreenOf(App* app, ThreadState& ts, u32 esp, u32 menu)
 {
-    Game g{app, cpu, menu};
+    Game g{app, ts, menu};
     return enterScreenCore(g, esp, menu);
 }
 
-Result popMenuOf(App* app, CPU& cpu, reg32 eax)
+Result popMenuOf(App* app, ThreadState& ts, u32 eax)
 {
-    Game g{app, cpu, eax};
+    Game g{app, ts, eax};
     return popMenuCore(g);
 }
 
-Result pushMenuOf(App* app, CPU& cpu, reg32 eax)
+Result pushMenuOf(App* app, ThreadState& ts, u32 eax)
 {
-    Game g{app, cpu, eax};
+    Game g{app, ts, eax};
     return pushMenuCore(g);
 }
 
-Result menuLoopOf(App* app, CPU& cpu, reg32 esp, reg32 name, reg32 history)
+Result menuLoopOf(App* app, ThreadState& ts, u32 esp, u32 name, u32 history)
 {
-    Game g{app, cpu, name};
+    Game g{app, ts, name};
     return menuLoopCore(g, esp, name, history);
 }
 
 /* 0x44aeb0's: the screen shown. */
-reg32 currentMenuOf(App* app)
+u32 currentMenuOf(App* app)
 {
     return kCurrentMenu(app);
 }
@@ -2171,246 +2171,246 @@ reg32 currentMenuOf(App* app)
 /* ---- The thunks ---- */
 
 /* 0x4499b0: whether the item at eax can be used. */
-x86::reg32 itemUsable(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 itemUsable(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    Game g{app, cpu, e.eax};
-    return e.finish(cpu, args, itemUsableCore(g, e.esp, e.eax));
+    const Entry e(ts, args);
+    Game g{app, ts, e.eax};
+    return e.finish(ts, args, itemUsableCore(g, e.esp, e.eax));
 }
 
 /* 0x4499f0: whether a key (edx) may act on the screen at eax. */
-x86::reg32 keyAllowed(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 keyAllowed(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    Game g{app, cpu, e.eax};
-    return e.finish(cpu, args, keyAllowedCore(g, e.esp, e.eax, uint16_t(e.edx)));
+    const Entry e(ts, args);
+    Game g{app, ts, e.eax};
+    return e.finish(ts, args, keyAllowedCore(g, e.esp, e.eax, uint16_t(e.edx)));
 }
 
 /* 0x449aa0: the help box. */
-x86::reg32 drawHelp(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 drawHelp(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    Game g{app, cpu, e.eax};
-    return e.finish(cpu, args, drawHelpCore(g, e.esp));
+    const Entry e(ts, args);
+    Game g{app, ts, e.eax};
+    return e.finish(ts, args, drawHelpCore(g, e.esp));
 }
 
 /* 0x449df0: whether the keys go to something other than the screen. */
-x86::reg32 keysTaken(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 keysTaken(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, keysTakenOf(app, cpu, e.esp, e.eax));
+    const Entry e(ts, args);
+    return e.finish(ts, args, keysTakenOf(app, ts, e.esp, e.eax));
 }
 
 /* 0x449e50: whether the item eax of the screen edx can be selected. */
-x86::reg32 selectable(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 selectable(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, selectableOf(app, cpu, e.esp, int32_t(e.eax), e.edx));
+    const Entry e(ts, args);
+    return e.finish(ts, args, selectableOf(app, ts, e.esp, int32_t(e.eax), e.edx));
 }
 
 /* 0x449ea0: the pointer moved onto the selected item of the screen at eax. */
-x86::reg32 pointAtSelected(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 pointAtSelected(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, pointAtSelectedOf(app, cpu, e.esp, e.eax));
+    const Entry e(ts, args);
+    return e.finish(ts, args, pointAtSelectedOf(app, ts, e.esp, e.eax));
 }
 
 /* 0x449f30: the item before the selected one of the screen at eax selected. */
-x86::reg32 selectPrevious(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 selectPrevious(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    Game g{app, cpu, e.eax};
-    return e.finish(cpu, args, selectPreviousCore(g, e.esp, e.eax));
+    const Entry e(ts, args);
+    Game g{app, ts, e.eax};
+    return e.finish(ts, args, selectPreviousCore(g, e.esp, e.eax));
 }
 
 /* 0x44a0c0: the item after the selected one of the screen at eax selected. */
-x86::reg32 selectNext(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 selectNext(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    Game g{app, cpu, e.eax};
-    return e.finish(cpu, args, selectNextCore(g, e.esp, e.eax));
+    const Entry e(ts, args);
+    Game g{app, ts, e.eax};
+    return e.finish(ts, args, selectNextCore(g, e.esp, e.eax));
 }
 
 /* 0x44a240: the Escape button of the screen at eax, its index into edx. */
-x86::reg32 escapeButton(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 escapeButton(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, escapeButtonOf(app, cpu, e.esp, e.eax, e.edx));
+    const Entry e(ts, args);
+    return e.finish(ts, args, escapeButtonOf(app, ts, e.esp, e.eax, e.edx));
 }
 
 /* 0x44a2d0: the key edx on the screen at eax. */
-x86::reg32 handleKey(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 handleKey(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, handleKeyOf(app, cpu, e.esp, e.eax, e.edx));
+    const Entry e(ts, args);
+    return e.finish(ts, args, handleKeyOf(app, ts, e.esp, e.eax, e.edx));
 }
 
 /* 0x44a440: the selected item of the screen shown. */
-x86::reg32 selectedIndex(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 selectedIndex(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    Game g{app, cpu, e.eax};
-    return e.finish(cpu, args, selectedIndexCore(g));
+    const Entry e(ts, args);
+    Game g{app, ts, e.eax};
+    return e.finish(ts, args, selectedIndexCore(g));
 }
 
 /* 0x44a470: the item at eax selected, if the screen shown has it. */
-x86::reg32 selectItem(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 selectItem(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    Game g{app, cpu, e.eax};
-    return e.finish(cpu, args, selectItemCore(g, e.esp, e.eax));
+    const Entry e(ts, args);
+    Game g{app, ts, e.eax};
+    return e.finish(ts, args, selectItemCore(g, e.esp, e.eax));
 }
 
 /* 0x44a4f0: the items of the screen at eax drawn. */
-x86::reg32 drawItems(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 drawItems(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, drawItemsOf(app, cpu, e.esp, e.eax));
+    const Entry e(ts, args);
+    return e.finish(ts, args, drawItemsOf(app, ts, e.esp, e.eax));
 }
 
 /* 0x44a690: the mouse let go of the item it held. */
-x86::reg32 releaseMouse(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 releaseMouse(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    Game g{app, cpu, e.eax};
-    return e.finish(cpu, args, releaseMouseCore(g));
+    const Entry e(ts, args);
+    Game g{app, ts, e.eax};
+    return e.finish(ts, args, releaseMouseCore(g));
 }
 
 /* 0x44a6b0: the item of the screen at eax under the mouse. */
-x86::reg32 itemUnderMouse(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 itemUnderMouse(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, itemUnderMouseOf(app, cpu, e.esp, e.eax));
+    const Entry e(ts, args);
+    return e.finish(ts, args, itemUnderMouseOf(app, ts, e.esp, e.eax));
 }
 
 /* 0x44a860: every item of the screen at eax told it is up. */
-x86::reg32 itemsShown(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 itemsShown(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    Game g{app, cpu, e.eax};
-    return e.finish(cpu, args, itemsShownCore(g, e.esp, e.eax));
+    const Entry e(ts, args);
+    Game g{app, ts, e.eax};
+    return e.finish(ts, args, itemsShownCore(g, e.esp, e.eax));
 }
 
 /* 0x44a8b0: a pass of the items of the screen at eax. */
-x86::reg32 passItems(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 passItems(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, passItemsOf(app, cpu, e.esp, e.eax));
+    const Entry e(ts, args);
+    return e.finish(ts, args, passItemsOf(app, ts, e.esp, e.eax));
 }
 
 /* 0x44a9e0: every item of the screen at eax told it is hidden. */
-x86::reg32 hideItems(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 hideItems(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    Game g{app, cpu, e.eax};
-    return e.finish(cpu, args, hideItemsCore(g, e.esp, e.eax));
+    const Entry e(ts, args);
+    Game g{app, ts, e.eax};
+    return e.finish(ts, args, hideItemsCore(g, e.esp, e.eax));
 }
 
 /* 0x44aa30: the screen at eax left, how (edx). */
-x86::reg32 leaveScreen(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 leaveScreen(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, leaveScreenOf(app, cpu, e.esp, e.eax, e.edx));
+    const Entry e(ts, args);
+    return e.finish(ts, args, leaveScreenOf(app, ts, e.esp, e.eax, e.edx));
 }
 
 /* 0x44aad0: the items of the screen at eax back to their widgets' states. */
-x86::reg32 resetItems(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 resetItems(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    Game g{app, cpu, e.eax};
-    return e.finish(cpu, args, resetItemsCore(g, e.eax));
+    const Entry e(ts, args);
+    Game g{app, ts, e.eax};
+    return e.finish(ts, args, resetItemsCore(g, e.eax));
 }
 
 /* 0x44ab40: the screen at eax opened. */
-x86::reg32 enterScreen(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 enterScreen(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, enterScreenOf(app, cpu, e.esp, e.eax));
+    const Entry e(ts, args);
+    return e.finish(ts, args, enterScreenOf(app, ts, e.esp, e.eax));
 }
 
 /* 0x44ae60: the screen named eax. */
-x86::reg32 menuByName(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 menuByName(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    Game g{app, cpu, e.eax};
-    return e.finish(cpu, args, menuByNameCore(g, e.esp, e.eax));
+    const Entry e(ts, args);
+    Game g{app, ts, e.eax};
+    return e.finish(ts, args, menuByNameCore(g, e.esp, e.eax));
 }
 
 /* 0x44aeb0: the screen shown. */
-x86::reg32 currentMenu(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 currentMenu(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.back(cpu, args, currentMenuOf(app));
+    const Entry e(ts, args);
+    return e.back(ts, args, currentMenuOf(app));
 }
 
 /* 0x44aec0: back to the screen gone from last. */
-x86::reg32 popMenu(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 popMenu(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, popMenuOf(app, cpu, e.eax));
+    const Entry e(ts, args);
+    return e.finish(ts, args, popMenuOf(app, ts, e.eax));
 }
 
 /* 0x44af10: the screen shown onto the history. */
-x86::reg32 pushMenu(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 pushMenu(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, pushMenuOf(app, cpu, e.eax));
+    const Entry e(ts, args);
+    return e.finish(ts, args, pushMenuOf(app, ts, e.eax));
 }
 
 /* 0x44af50: the history set from the names at eax. */
-x86::reg32 setHistory(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 setHistory(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    Game g{app, cpu, e.eax};
-    return e.finish(cpu, args, setHistoryCore(g, e.esp, e.eax));
+    const Entry e(ts, args);
+    Game g{app, ts, e.eax};
+    return e.finish(ts, args, setHistoryCore(g, e.esp, e.eax));
 }
 
 /* 0x44af90: the answer eax of the dialog asking for player 1's name; edx the
  * byte that closes it. */
-x86::reg32 player1NameAnswer(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 player1NameAnswer(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    Game g{app, cpu, e.eax};
-    return e.finish(cpu, args, nameAnswerCore(g, e.esp, e.eax, e.edx, SETTINGS_ADDRESS(players[0].name), kPlayer1Default));
+    const Entry e(ts, args);
+    Game g{app, ts, e.eax};
+    return e.finish(ts, args, nameAnswerCore(g, e.esp, e.eax, e.edx, SETTINGS_ADDRESS(players[0].name), kPlayer1Default));
 }
 
 /* 0x44b040: and player 2's. */
-x86::reg32 player2NameAnswer(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 player2NameAnswer(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    Game g{app, cpu, e.eax};
-    return e.finish(cpu, args, nameAnswerCore(g, e.esp, e.eax, e.edx, SETTINGS_ADDRESS(players[1].name), kPlayer2Default));
+    const Entry e(ts, args);
+    Game g{app, ts, e.eax};
+    return e.finish(ts, args, nameAnswerCore(g, e.esp, e.eax, e.edx, SETTINGS_ADDRESS(players[1].name), kPlayer2Default));
 }
 
 /* 0x44b0f0: the answer eax of the quit question; edx the byte that closes it. */
-x86::reg32 quitAnswer(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 quitAnswer(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    Game g{app, cpu, e.eax};
-    return e.finish(cpu, args, quitAnswerCore(g, e.esp, e.eax, e.edx));
+    const Entry e(ts, args);
+    Game g{app, ts, e.eax};
+    return e.finish(ts, args, quitAnswerCore(g, e.esp, e.eax, e.edx));
 }
 
 /* 0x44b1a0: the game suspended waited out; edx where the action is kept. */
-x86::reg32 waitWhileSuspended(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 waitWhileSuspended(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    Game g{app, cpu, e.eax};
-    return e.finish(cpu, args, waitWhileSuspendedCore(g, e.esp, e.eax, e.edx));
+    const Entry e(ts, args);
+    Game g{app, ts, e.eax};
+    return e.finish(ts, args, waitWhileSuspendedCore(g, e.esp, e.eax, e.edx));
 }
 
 /* 0x44b230: the menus from the screen named eax, edx the history. */
-x86::reg32 menuLoop(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 menuLoop(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, menuLoopOf(app, cpu, e.esp, e.eax, e.edx));
+    const Entry e(ts, args);
+    return e.finish(ts, args, menuLoopOf(app, ts, e.esp, e.eax, e.edx));
 }
 
 /* 0x44be60: the race settings kept consistent. */
-x86::reg32 fitRaceSettings(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 fitRaceSettings(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    Game g{app, cpu, e.eax};
-    return e.finish(cpu, args, fitRaceSettingsCore(g, e.esp));
+    const Entry e(ts, args);
+    Game g{app, ts, e.eax};
+    return e.finish(ts, args, fitRaceSettingsCore(g, e.esp));
 }
 
 }  // namespace loop

@@ -73,17 +73,12 @@ final class DebugOptions
         new Option("perf_trace", false, "Missing performance data logging [PERF] [PERFTIME]",
             "NFS_PERF_TRACE", "1"),
         new Option("net_trace", false, "EA's comm library, for network races [COMM]", "NFS_NET_TRACE", "1"),
-        /* Every win32 call and File::read's byte counts, and SDL's "opening
-         * file %s" (SDL_LogDebug, silent by default), so a read burst can be
+        /* Every call the game makes through a pointer (its tables, callbacks,
+         * imports) by name, File::read's byte counts, and SDL's "opening file
+         * %s" (SDL_LogDebug, silent by default), so a read burst can be
          * matched back to its path. */
-        new Option("trace_api", false, "Every win32 call and file opened (very heavy)",
+        new Option("trace_api", false, "Every call through a pointer and file opened (very heavy)",
             "NFS_TRACE_API", "1", "SDL_LOGGING", "app=verbose,error=verbose"),
-    };
-
-    /* The natives against the generated code, and the experiments. */
-    static final Option[] CODE = {
-        new Option("natives", true, "Car specs native (off: generated code)", "NFS_NATIVES", "0"),
-        new Option("native_check", false, "Check every checked native [NATIVE]", "NFS_NATIVE_CHECK", "1"),
     };
 
     static final Option[] PICTURE = {
@@ -97,7 +92,11 @@ final class DebugOptions
         new Option("perf_hint", true, "Android performance hint", "NFS_PERF_HINT", "0"),
     };
 
-    static final Option[][] ALL = { TRACES, CODE, PICTURE };
+    static final Option[][] ALL = { TRACES, PICTURE };
+
+    /* Switches of earlier builds, gone with what they switched (the car-specs native against the
+     * generated code, the natives' checks): their preferences cleared with the rest. */
+    static final String[] RETIRED = { "debug_natives", "debug_native_check" };
 
     /** Debug mode as the player left it, or as this launch asks. */
     static boolean enabled(SharedPreferences preferences, Intent launch)
@@ -132,6 +131,8 @@ final class DebugOptions
         for (Option[] group : ALL)
             for (Option option : group)
                 edit.remove(option.preference());
+        for (String retired : RETIRED)
+            edit.remove(retired);
         edit.remove("debug_" + DEPTH16).apply();
     }
 }

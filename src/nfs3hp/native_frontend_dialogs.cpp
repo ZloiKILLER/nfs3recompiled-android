@@ -43,68 +43,68 @@ namespace
 
 using fe::Guest;
 using fx::Arith;
-using x86::Float;
+using nfs::Float;
 
 // The dialog up.
-constexpr x86::reg32 kShown = 0x558b10;            // byte
-constexpr x86::reg32 kKind = 0x558b14;
+constexpr nfs::u32 kShown = 0x558b10;            // byte
+constexpr nfs::u32 kKind = 0x558b14;
 constexpr std::uint32_t kQuestion = 1;              // sub_4446d0
 constexpr std::uint32_t kMessage = 2;               // sub_444a80
 constexpr std::uint32_t kEdit = 3;                  // sub_444c20
-constexpr x86::reg32 kCallback = 0x558b18;          // (answer, &keep up)
-constexpr x86::reg32 kLineCount = 0x558b1c;
-constexpr x86::reg32 kLines = 0x558b20;             // char*[kLineCount]
-constexpr x86::reg32 kButtonCount = 0x558b30;
-constexpr x86::reg32 kButtons = 0x558b34;           // char*[kButtonCount]
-constexpr x86::reg32 kButtonHelp = 0x558b38;        // char*[kButtonCount], or 0
-constexpr x86::reg32 kFocus = 0x558b3c;             // the button highlighted, -1 for none
-constexpr x86::reg32 kButtonsX = 0x558b40;          // a row's left, a column's middle
+constexpr nfs::u32 kCallback = 0x558b18;          // (answer, &keep up)
+constexpr nfs::u32 kLineCount = 0x558b1c;
+constexpr nfs::u32 kLines = 0x558b20;             // char*[kLineCount]
+constexpr nfs::u32 kButtonCount = 0x558b30;
+constexpr nfs::u32 kButtons = 0x558b34;           // char*[kButtonCount]
+constexpr nfs::u32 kButtonHelp = 0x558b38;        // char*[kButtonCount], or 0
+constexpr nfs::u32 kFocus = 0x558b3c;             // the button highlighted, -1 for none
+constexpr nfs::u32 kButtonsX = 0x558b40;          // a row's left, a column's middle
 constexpr std::int32_t kMaxButtons = 10;
 // A message's.
-constexpr x86::reg32 kMessageOpened = 0x558b44;     // the tick it came up at
-constexpr x86::reg32 kMessageTime = 0x558b48;       // the ticks it stays up, 0 for as long as it takes
-constexpr x86::reg32 kMessageKeys = 0x558b4c;       // byte: the keys answer it
-constexpr x86::reg32 kMessageLine = 0x661090;       // sub_444be0's one line
+constexpr nfs::u32 kMessageOpened = 0x558b44;     // the tick it came up at
+constexpr nfs::u32 kMessageTime = 0x558b48;       // the ticks it stays up, 0 for as long as it takes
+constexpr nfs::u32 kMessageKeys = 0x558b4c;       // byte: the keys answer it
+constexpr nfs::u32 kMessageLine = 0x661090;       // sub_444be0's one line
 constexpr std::uint32_t kMessageTicks = 0x226;
 // The line typed in.
-constexpr x86::reg32 kReplaceOnKey = 0x558b2c;      // the first character typed replaces the text given
-constexpr x86::reg32 kEditLength = 0x558b50;
-constexpr x86::reg32 kEditMax = 0x558b54;           // the most characters
-constexpr x86::reg32 kEditText = 0x558b58;
+constexpr nfs::u32 kReplaceOnKey = 0x558b2c;      // the first character typed replaces the text given
+constexpr nfs::u32 kEditLength = 0x558b50;
+constexpr nfs::u32 kEditMax = 0x558b54;           // the most characters
+constexpr nfs::u32 kEditText = 0x558b58;
 constexpr std::uint32_t kEditSize = 0x100;
-constexpr x86::reg32 kEditSource = 0x558c58;        // the text it started from
-constexpr x86::reg32 kEditMode = 0x558c5c;          // what may be typed (sub_443810), below 4
-constexpr x86::reg32 kEditWidth = 0x661070;         // the field's, in pixels
+constexpr nfs::u32 kEditSource = 0x558c58;        // the text it started from
+constexpr nfs::u32 kEditMode = 0x558c5c;          // what may be typed (sub_443810), below 4
+constexpr nfs::u32 kEditWidth = 0x661070;         // the field's, in pixels
 // A list's.
-constexpr x86::reg32 kListCount = 0x558c64;         // byte
+constexpr nfs::u32 kListCount = 0x558c64;         // byte
 
 // Where it is drawn: the box (floats), the buttons' and the entries' boxes
 // (8 bytes each, int16), and how far it has faded in.
-constexpr x86::reg32 kRect = 0x661050;
-constexpr x86::reg32 kTop = 0x0;
-constexpr x86::reg32 kLeft = 0x4;
-constexpr x86::reg32 kBottom = 0x8;
-constexpr x86::reg32 kRight = 0xc;
-constexpr x86::reg32 kButtonBoxes = 0x661000;
-constexpr x86::reg32 kBoxY = 0;
-constexpr x86::reg32 kBoxX = 2;
-constexpr x86::reg32 kBoxWidth = 4;
-constexpr x86::reg32 kBoxHeight = 6;
-constexpr x86::reg32 kBoxSize = 8;
-constexpr x86::reg32 kFade = 0x661064;              // 0 to 255
+constexpr nfs::u32 kRect = 0x661050;
+constexpr nfs::u32 kTop = 0x0;
+constexpr nfs::u32 kLeft = 0x4;
+constexpr nfs::u32 kBottom = 0x8;
+constexpr nfs::u32 kRight = 0xc;
+constexpr nfs::u32 kButtonBoxes = 0x661000;
+constexpr nfs::u32 kBoxY = 0;
+constexpr nfs::u32 kBoxX = 2;
+constexpr nfs::u32 kBoxWidth = 4;
+constexpr nfs::u32 kBoxHeight = 6;
+constexpr nfs::u32 kBoxSize = 8;
+constexpr nfs::u32 kFade = 0x661064;              // 0 to 255
 
 // Its art: the front end's shapes, by name (sub_4d5db0), and in a race's
 // pause screens parts of their art, a texture.
 
 // The help box over a dialog (sub_445ac0), for a button or an entry.
-constexpr x86::reg32 kHelpText = 0x558b0c;
+constexpr nfs::u32 kHelpText = 0x558b0c;
 
 // The menus'.
-constexpr x86::reg32 kInRace = 0x559234;            // the menus are a race's pause screens
-constexpr x86::reg32 kMouseX = 0x55e5e4;
-constexpr x86::reg32 kMouseY = 0x55e5e8;
-constexpr x86::reg32 kTicks = 0x79c1a4;             // the game's clock
-constexpr x86::reg32 kDisplayFlags = 0x7a3a58;      // byte
+constexpr nfs::u32 kInRace = 0x559234;            // the menus are a race's pause screens
+constexpr nfs::u32 kMouseX = 0x55e5e4;
+constexpr nfs::u32 kMouseY = 0x55e5e8;
+constexpr nfs::u32 kTicks = 0x79c1a4;             // the game's clock
+constexpr nfs::u32 kDisplayFlags = 0x7a3a58;      // byte
 constexpr std::uint8_t kNoTranslucency = 0x02;      // no fades
 // The depth range 2D is drawn in.
 
@@ -116,15 +116,15 @@ constexpr std::uint32_t kFont = 0x12;
 // Sounds, sub_4181d0(sound, volume).
 
 // The game's.
-constexpr x86::reg32 kMinus15 = 0x538ae8;           // float -15
-constexpr x86::reg32 kMinus30 = 0x538aec;           // float -30
-constexpr x86::reg32 kMemset = 0x4e0640;
-constexpr x86::reg32 kStrncpy = 0x4e0e30;
-constexpr x86::reg32 kSetMousePosition = 0x49bfc0;
+constexpr nfs::u32 kMinus15 = 0x538ae8;           // float -15
+constexpr nfs::u32 kMinus30 = 0x538aec;           // float -30
+constexpr nfs::u32 kMemset = 0x4e0640;
+constexpr nfs::u32 kStrncpy = 0x4e0e30;
+constexpr nfs::u32 kSetMousePosition = 0x49bfc0;
 
 // This file's own, called by address where the caller goes on with the registers they leave.
-constexpr x86::reg32 kLinesBox = 0x443a90;
-constexpr x86::reg32 kPlaceButtons = 0x443d20;
+constexpr nfs::u32 kLinesBox = 0x443a90;
+constexpr nfs::u32 kPlaceButtons = 0x443d20;
 
 const fe::GuestString kWidest{ 0x538b2c, "W" };
 const fe::GuestString kCursor{ 0x538b04, "_" };
@@ -135,12 +135,12 @@ const fe::GuestString kGlit{ 0x538b9c, "glit" };
 const fe::GuestString kRlit{ 0x538ba4, "rlit" };
 const fe::GuestString kYel1{ 0x538bac, "yel1" };
 
-x86::reg32 reg(std::int32_t value)
+nfs::u32 reg(std::int32_t value)
 {
-    return x86::reg32(value);
+    return nfs::u32(value);
 }
 
-std::int32_t sdword(const Guest& guest, x86::reg32 address)
+std::int32_t sdword(const Guest& guest, nfs::u32 address)
 {
     return std::int32_t(guest.dword(address));
 }
@@ -150,14 +150,14 @@ bool inRace(const Guest& guest)
     return guest.dword(kInRace) != 0;
 }
 
-std::int32_t textWidth(Guest& guest, x86::reg32 text)
+std::int32_t textWidth(Guest& guest, nfs::u32 text)
 {
     return fe::textWidth(guest, text, kFont);
 }
 
-void setFont(Guest& guest, x86::CPU& cpu)
+void setFont(Guest& guest, nfs::ThreadState& ts)
 {
-    fe::direct<0x452100, port::text::selectFontOf>(guest.app(), cpu, kFont);
+    fe::direct<0x452100, port::text::selectFontOf>(guest.app(), ts, kFont);
 }
 
 /* A button's box or a list entry's. */
@@ -166,14 +166,14 @@ struct Box
     std::int32_t y, x, width, height;
 };
 
-x86::reg32 boxAt(x86::reg32 boxes, std::int32_t index)
+nfs::u32 boxAt(nfs::u32 boxes, std::int32_t index)
 {
-    return boxes + x86::reg32(index) * kBoxSize;
+    return boxes + nfs::u32(index) * kBoxSize;
 }
 
-Box box(const Guest& guest, x86::reg32 boxes, std::int32_t index)
+Box box(const Guest& guest, nfs::u32 boxes, std::int32_t index)
 {
-    const x86::reg32 at = boxAt(boxes, index);
+    const nfs::u32 at = boxAt(boxes, index);
     return { std::int16_t(guest.word(at + kBoxY)), std::int16_t(guest.word(at + kBoxX)),
              std::int16_t(guest.word(at + kBoxWidth)), std::int16_t(guest.word(at + kBoxHeight)) };
 }
@@ -213,14 +213,14 @@ void setFirstFocus(Guest& guest, std::int32_t focus, std::int32_t buttonCount)
 
 /* sub_444570, sub_445160: the pointer moved onto the bottom right of a
  * button's or an entry's box. */
-x86::reg32 pointAt(Guest& guest, x86::reg32 boxes, std::int32_t count, std::int32_t index)
+nfs::u32 pointAt(Guest& guest, nfs::u32 boxes, std::int32_t count, std::int32_t index)
 {
     if (index < 0 || index >= count)
         return reg(index);
     const Box b = box(guest, boxes, index);
     guest.setDword(kMouseX, reg(b.x + b.width - 2));
     guest.setDword(kMouseY, reg(b.y + b.height - 2));
-    return fe::direct<kSetMousePosition, frontend::screen::setPointer>(guest.app(), guest.cpu(), guest.dword(kMouseX),
+    return fe::direct<kSetMousePosition, frontend::screen::setPointer>(guest.app(), guest.ts(), guest.dword(kMouseX),
                                                                        guest.dword(kMouseY));
 }
 
@@ -229,9 +229,9 @@ x86::reg32 pointAt(Guest& guest, x86::reg32 boxes, std::int32_t count, std::int3
  * ------------------------------------------------------------------------- */
 
 // A thunk's stack argument, counted from the first.
-x86::reg32 stackArgument(win32::WinApplication* app, const x86::CPU& cpu, x86::reg32 index)
+nfs::u32 stackArgument(nfs::App* app, const nfs::ThreadState& ts, nfs::u32 index)
 {
-    return app->getMemory<x86::reg32>(cpu.esp + 4 + 4 * index);
+    return app->getMemory<nfs::u32>(ts.sp + 4 + 4 * index);
 }
 
 const fe::GuestString kEditStrings[] = { kWidest, kCursor };
@@ -243,22 +243,22 @@ const fe::GuestString kEditStrings[] = { kWidest, kCursor };
  * ------------------------------------------------------------------------- */
 
 /* sub_4446c0: the button highlighted. */
-x86::reg32 frontend::dialogs::focusedButton(App* app, CPU& cpu)
+nfs::u32 frontend::dialogs::focusedButton(App* app, ThreadState& ts)
 {
-    Guest guest(app, cpu);
+    Guest guest(app, ts);
     return guest.dword(kFocus);
 }
 
 /* sub_444c10: the line typed in. */
-x86::reg32 frontend::dialogs::editText(App*, CPU&)
+nfs::u32 frontend::dialogs::editText(App*, ThreadState&)
 {
     return kEditText;
 }
 
 /* sub_445f00: the dialog shown at once, faded in. */
-x86::reg32 frontend::dialogs::fadedIn(App* app, CPU& cpu)
+nfs::u32 frontend::dialogs::fadedIn(App* app, ThreadState& ts)
 {
-    Guest guest(app, cpu);
+    Guest guest(app, ts);
     guest.setDword(kFade, 255);
     return 0;  // eax is left as it came: the thunk's
 }
@@ -272,15 +272,15 @@ x86::reg32 frontend::dialogs::fadedIn(App* app, CPU& cpu)
  * least, but in a race), 30 pixels a line and a margin, 45 more for a row of
  * buttons below and 45 for a field to type in.  The dialog starts to fade
  * in. */
-x86::reg32 frontend::dialogs::linesBox(App* app, CPU& cpu, reg32 count, reg32 lines, reg32 rowBelow,
-                                       reg32 fieldBelow, reg32 rect)
+nfs::u32 frontend::dialogs::linesBox(App* app, ThreadState& ts, u32 count, u32 lines, u32 rowBelow,
+                                       u32 fieldBelow, u32 rect)
 {
-    Guest guest(app, cpu);
-    const fe::Frame frame(guest, cpu, 12 + 0x24);
-    setFont(guest, cpu);
+    Guest guest(app, ts);
+    const fe::Frame frame(guest, ts, 12 + 0x24);
+    setFont(guest, ts);
     std::int32_t width = 0;
     for (std::int32_t i = 0; i < std::int32_t(count); ++i)
-        width = std::max(width, textWidth(guest, guest.dword(lines + 4 * x86::reg32(i))));
+        width = std::max(width, textWidth(guest, guest.dword(lines + 4 * nfs::u32(i))));
     Arith x87(guest);
     if (inRace(guest))
         width = x87.truncated(x87.add(Arith::integer(width), Float(63.5)));
@@ -305,22 +305,22 @@ x86::reg32 frontend::dialogs::linesBox(App* app, CPU& cpu, reg32 count, reg32 li
     guest.setFloat(rect + kBottom, float(Arith::integer(y + height)));
     guest.setDword(kFade, 0);
     if ((guest.byte(kDisplayFlags) & kNoTranslucency) != 0)
-        guest::direct<0x445f00, fadedIn>(app, cpu);
-    return (x86::reg32(y + height) & ~0xff00u) | (x86::reg32(guest.byte(kDisplayFlags)) << 8);
+        guest::direct<0x445f00, fadedIn>(app, ts);
+    return (nfs::u32(y + height) & ~0xff00u) | (nfs::u32(guest.byte(kDisplayFlags)) << 8);
 }
 
 /* sub_443c00: the box round a row of buttons, centred on the screen, in
  * floats at `rect`: the buttons' texts 15 pixels apart and 60 high, 190
  * pixels wide at least but in a race.  The dialog starts to fade in. */
-x86::reg32 frontend::dialogs::buttonRowBox(App* app, CPU& cpu, reg32 count, reg32 buttons, reg32 rect)
+nfs::u32 frontend::dialogs::buttonRowBox(App* app, ThreadState& ts, u32 count, u32 buttons, u32 rect)
 {
-    Guest guest(app, cpu);
-    const fe::Frame frame(guest, cpu, 16 + 0x18);
-    setFont(guest, cpu);
+    Guest guest(app, ts);
+    const fe::Frame frame(guest, ts, 16 + 0x18);
+    setFont(guest, ts);
     std::int32_t width = 15;
     for (std::int32_t i = 0; i < std::int32_t(count); ++i)
     {
-        const x86::reg32 text = guest.dword(buttons + 4 * x86::reg32(i));
+        const nfs::u32 text = guest.dword(buttons + 4 * nfs::u32(i));
         if (text != 0)
             width += textWidth(guest, text) + 15;
     }
@@ -336,7 +336,7 @@ x86::reg32 frontend::dialogs::buttonRowBox(App* app, CPU& cpu, reg32 count, reg3
     guest.setFloat(rect + kBottom, float(Arith::integer(y + height)));
     guest.setDword(kFade, (guest.byte(kDisplayFlags) & kNoTranslucency) != 0 ? 255 : 0);
     // Its eax: the box's bottom with the display's flags in ah.
-    return (reg(y + height) & ~0xff00u) | (x86::reg32(guest.byte(kDisplayFlags)) << 8);
+    return (reg(y + height) & ~0xff00u) | (nfs::u32(guest.byte(kDisplayFlags)) << 8);
 }
 
 /* sub_443d20: the buttons' boxes (kButtonBoxes) in the dialog's box at
@@ -353,31 +353,31 @@ x86::reg32 frontend::dialogs::buttonRowBox(App* app, CPU& cpu, reg32 count, reg3
  * locals.  The arguments go
  * into the registers its code reads them from; its result is the eax it
  * leaves. */
-x86::reg32 frontend::dialogs::placeButtons(App* app, CPU& cpu, reg32 count, reg32 buttons, reg32 column, reg32 rect)
+nfs::u32 frontend::dialogs::placeButtons(App* app, ThreadState& ts, u32 count, u32 buttons, u32 column, u32 rect)
 {
-    using x86::sreg32;
-    auto at = [](win32::WinApplication* app, reg32 address) { return app->getMemory<reg32>(address); };
-    auto put = [](win32::WinApplication* app, reg32 address, reg32 value) { app->getMemory<reg32>(address) = value; };
+    using nfs::s32;
+    auto at = [](nfs::App* app, u32 address) { return app->getMemory<u32>(address); };
+    auto put = [](nfs::App* app, u32 address, u32 value) { app->getMemory<u32>(address) = value; };
     auto chop = [&](Float value) {
         // __CHP keeps every register: nothing to keep here.
-        return fe::direct<0x4dfd56, watcom::clib::chop>(app, cpu, double(value));
+        return fe::direct<0x4dfd56, watcom::clib::chop>(app, ts, double(value));
     };
-    auto setWord = [&](reg32 address, reg32 value) { app->getMemory<x86::reg16>(address) = x86::reg16(value); };
-    auto high = [&](reg32 address) { return reg32(sreg32(at(app, address)) >> 16); };  // mov, sar 0x10
-    auto loadFloat = [&](reg32 address) { return Float(app->getMemory<float>(address)); };
-    auto fistp = [&](reg32 address, double value) { put(app, address, reg32(fp::toInteger<sreg32>(value))); };
-    auto half = [](reg32 value) { return reg32((sreg32(value) - (sreg32(value) >> 31)) >> 1); };  // cdq, sub, sar 1
+    auto setWord = [&](u32 address, u32 value) { app->getMemory<nfs::u16>(address) = nfs::u16(value); };
+    auto high = [&](u32 address) { return u32(s32(at(app, address)) >> 16); };  // mov, sar 0x10
+    auto loadFloat = [&](u32 address) { return Float(app->getMemory<float>(address)); };
+    auto fistp = [&](u32 address, double value) { put(app, address, u32(fp::toInteger<s32>(value))); };
+    auto half = [](u32 value) { return u32((s32(value) - (s32(value) >> 31)) >> 1); };  // cdq, sub, sar 1
 
-    reg32 eax = count, edx = buttons, ebx = column, ecx = rect, esi = 0, edi = 0;
+    u32 eax = count, edx = buttons, ebx = column, ecx = rect, esi = 0, edi = 0;
     // esi, edi and ebp pushed by the code: the frame (ebp is its base), not their values.
-    cpu.esp -= 4 * 3;
-    const reg32 ebp = cpu.esp;
-    cpu.esp -= 0x14;
+    ts.sp -= 4 * 3;
+    const u32 ebp = ts.sp;
+    ts.sp -= 0x14;
     esi = eax;
     put(app, ebp - 4, edx);
     edx = ebx;
     ebx = ecx;
-    fe::direct<0x452100, port::text::selectFontOf>(app, cpu, kFont);
+    fe::direct<0x452100, port::text::selectFontOf>(app, ts, kFont);
     eax = at(app, kButtonsX);
     put(app, ebp - 0x10, eax);
     if (edx != 0)
@@ -388,9 +388,9 @@ x86::reg32 frontend::dialogs::placeButtons(App* app, CPU& cpu, reg32 count, reg3
         bottom = fp::add(bottom, loadFloat(kMinus15));
         ecx = esi - 1;
         fistp(ebp - 8, chop(bottom));
-        for (; sreg32(ecx) >= 0; --ecx)
+        for (; s32(ecx) >= 0; --ecx)
         {
-            if (sreg32(esi) >= kMaxButtons)
+            if (s32(esi) >= kMaxButtons)
                 continue;
             edx = at(app, ebp - 4);
             eax = at(app, ecx * 4 + edx);
@@ -399,15 +399,15 @@ x86::reg32 frontend::dialogs::placeButtons(App* app, CPU& cpu, reg32 count, reg3
             ebx = at(app, ebp - 8);
             edx = kFont;
             ebx -= 0x1e;
-            eax = reg32(*fe::direct<0x452020, port::text::menuTextWidth>(app, cpu, cpu.esp - 4, eax, edx));
+            eax = u32(*fe::direct<0x452020, port::text::menuTextWidth>(app, ts, ts.sp - 4, eax, edx));
             put(app, ebp - 8, ebx);
             ebx = eax + 5;
-            edx = reg32(sreg32(ebx) >> 31);
+            edx = u32(s32(ebx) >> 31);
             eax = half(ebx);
             edx = at(app, ebp - 0x10) - eax + 8;
             setWord(ecx * 8 + kButtonBoxes + kBoxX, edx);
             eax = high(ecx * 8 + kButtonBoxes);
-            if (sreg32(eax) < sreg32(edi))
+            if (s32(eax) < s32(edi))
                 edi = eax;
             eax = ecx * 8;
             edx = at(app, kInRace);
@@ -417,9 +417,9 @@ x86::reg32 frontend::dialogs::placeButtons(App* app, CPU& cpu, reg32 count, reg3
             setWord(ecx * 8 + kButtonBoxes + kBoxY, eax);
         }
         // Lined up on the leftmost.
-        for (ecx = esi - 1; sreg32(ecx) >= 0; --ecx)
+        for (ecx = esi - 1; s32(ecx) >= 0; --ecx)
         {
-            if (sreg32(esi) >= kMaxButtons)
+            if (s32(esi) >= kMaxButtons)
                 continue;
             ebx = at(app, ebp - 4);
             eax = at(app, ecx * 4 + ebx);
@@ -433,27 +433,27 @@ x86::reg32 frontend::dialogs::placeButtons(App* app, CPU& cpu, reg32 count, reg3
         fistp(ebp - 0x14, chop(fp::sub(loadFloat(ebx + kRight), loadFloat(ecx + kLeft))));
         eax = at(app, ebp - 0x14);
         Float bottom = loadFloat(ecx + kBottom);
-        edx = reg32(sreg32(eax) >> 31);
+        edx = u32(s32(eax) >> 31);
         ecx = esi + 1;
         {
-            const sreg32 dividend = sreg32(eax), divisor = sreg32(ecx);  // idiv ecx
-            eax = reg32(dividend / divisor);
-            edx = reg32(dividend % divisor);
+            const s32 dividend = s32(eax), divisor = s32(ecx);  // idiv ecx
+            eax = u32(dividend / divisor);
+            edx = u32(dividend % divisor);
         }
         bottom = fp::add(bottom, loadFloat(kMinus15));
         bottom = fp::add(bottom, loadFloat(kMinus30));
         fistp(ebp - 8, chop(bottom));
         put(app, ebp - 0xc, eax);
-        for (ecx = 0; sreg32(ecx) < sreg32(esi); ++ecx)
+        for (ecx = 0; s32(ecx) < s32(esi); ++ecx)
         {
-            if (sreg32(esi) >= kMaxButtons)
+            if (s32(esi) >= kMaxButtons)
                 continue;
             edi = at(app, ebp - 4);
             eax = at(app, ecx * 4 + edi);
             if (eax == 0)
                 continue;
             edx = kFont;
-            eax = reg32(*fe::direct<0x452020, port::text::menuTextWidth>(app, cpu, cpu.esp - 4, eax, edx));
+            eax = u32(*fe::direct<0x452020, port::text::menuTextWidth>(app, ts, ts.sp - 4, eax, edx));
             setWord(ecx * 8 + kButtonBoxes + kBoxWidth, eax);
             edx = at(app, ebp - 0xc);
             fistp(ebp - 0x14, chop(loadFloat(ebx + kLeft)));
@@ -462,7 +462,7 @@ x86::reg32 frontend::dialogs::placeButtons(App* app, CPU& cpu, reg32 count, reg3
             put(app, ebp - 0x14, at(app, ebp - 0x14) + eax);
             edx = high(ecx * 8 + kButtonBoxes + kBoxX);
             eax = half(edx);
-            edx = reg32(sreg32(edx) >> 31);
+            edx = u32(s32(edx) >> 31);
             edx = at(app, ebp - 0x14) - eax;
             edi = 0x1e;
             setWord(ecx * 8 + kButtonBoxes + kBoxHeight, edi);
@@ -474,15 +474,15 @@ x86::reg32 frontend::dialogs::placeButtons(App* app, CPU& cpu, reg32 count, reg3
         if (gameSettings(app).language == 3 && esi == 2)
         {
             // Two buttons five pixels further apart each.
-            edx = (edx & 0xffff0000u) | app->getMemory<x86::reg16>(kButtonBoxes + kBoxSize + kBoxX);
-            eax = (eax & 0xffff0000u) | app->getMemory<x86::reg16>(kButtonBoxes + kBoxX);
+            edx = (edx & 0xffff0000u) | app->getMemory<nfs::u16>(kButtonBoxes + kBoxSize + kBoxX);
+            eax = (eax & 0xffff0000u) | app->getMemory<nfs::u16>(kButtonBoxes + kBoxX);
             edx += 5;
             eax -= 5;
             setWord(kButtonBoxes + kBoxSize + kBoxX, edx);
             setWord(kButtonBoxes + kBoxX, eax);
         }
     }
-    cpu.esp = ebp + 4 * 3;
+    ts.sp = ebp + 4 * 3;
     return eax;
 }
 
@@ -491,10 +491,10 @@ x86::reg32 frontend::dialogs::placeButtons(App* app, CPU& cpu, reg32 count, reg3
  * ------------------------------------------------------------------------- */
 
 /* sub_444570: the pointer on a button. */
-x86::reg32 frontend::dialogs::pointAtButton(App* app, CPU& cpu, reg32 index)
+nfs::u32 frontend::dialogs::pointAtButton(App* app, ThreadState& ts, u32 index)
 {
-    Guest guest(app, cpu);
-    const fe::Frame frame(guest, cpu, 12);
+    Guest guest(app, ts);
+    const fe::Frame frame(guest, ts, 12);
     return pointAt(guest, kButtonBoxes, sdword(guest, kButtonCount), std::int32_t(index));
 }
 
@@ -506,12 +506,12 @@ x86::reg32 frontend::dialogs::pointAtButton(App* app, CPU& cpu, reg32 index)
  * a row or, with `column`, one above the other; the box round both, the
  * pointer on the button highlighted.  Nothing without lines or buttons, or
  * with ten buttons or more. */
-x86::reg32 frontend::dialogs::openQuestion(App* app, CPU& cpu, reg32 lineCount, reg32 lines, reg32 buttonCount,
-                                           reg32 buttons, reg32 buttonHelp, reg32 focus, reg32 column,
-                                           reg32 callback)
+nfs::u32 frontend::dialogs::openQuestion(App* app, ThreadState& ts, u32 lineCount, u32 lines, u32 buttonCount,
+                                           u32 buttons, u32 buttonHelp, u32 focus, u32 column,
+                                           u32 callback)
 {
-    Guest guest(app, cpu);
-    const fe::Frame frame(guest, cpu, 12 + 0x48);
+    Guest guest(app, ts);
+    const fe::Frame frame(guest, ts, 12 + 0x48);
     guest.setDword(kHelpText, 0);
     guest.setDword(kButtonHelp, 0);
     if (lineCount == 0 || lines == 0 || buttonCount == 0 || buttons == 0 || std::int32_t(buttonCount) >= kMaxButtons)
@@ -525,16 +525,16 @@ x86::reg32 frontend::dialogs::openQuestion(App* app, CPU& cpu, reg32 lineCount, 
     guest.setDword(kButtonHelp, buttonHelp);
     setFirstFocus(guest, std::int32_t(focus), std::int32_t(buttonCount));
 
-    const x86::reg32 linesRect = guest.frame() + 0x10, buttonsRect = guest.frame();  // [ebp - 0x38], [ebp - 0x48]
+    const nfs::u32 linesRect = guest.frame() + 0x10, buttonsRect = guest.frame();  // [ebp - 0x38], [ebp - 0x48]
     if (column != 0)
     {
-        guest::direct<0x443a90, linesBox>(app, cpu, guest.dword(kLineCount), guest.dword(kLines), 0, 0, linesRect);
-        guest::direct<0x443a90, linesBox>(app, cpu, guest.dword(kButtonCount), guest.dword(kButtons), 0, 0, buttonsRect);
+        guest::direct<0x443a90, linesBox>(app, ts, guest.dword(kLineCount), guest.dword(kLines), 0, 0, linesRect);
+        guest::direct<0x443a90, linesBox>(app, ts, guest.dword(kButtonCount), guest.dword(kButtons), 0, 0, buttonsRect);
     }
     else
     {
-        guest::direct<0x443a90, linesBox>(app, cpu, guest.dword(kLineCount), guest.dword(kLines), 1, 0, linesRect);
-        guest::direct<0x443c00, buttonRowBox>(app, cpu, guest.dword(kButtonCount), guest.dword(kButtons), buttonsRect);
+        guest::direct<0x443a90, linesBox>(app, ts, guest.dword(kLineCount), guest.dword(kLines), 1, 0, linesRect);
+        guest::direct<0x443c00, buttonRowBox>(app, ts, guest.dword(kButtonCount), guest.dword(kButtons), buttonsRect);
     }
 
     // The two boxes put together round the lines' middle, as wide as the wider.
@@ -565,8 +565,8 @@ x86::reg32 frontend::dialogs::openQuestion(App* app, CPU& cpu, reg32 lineCount, 
     setDialogRect(guest, x87, Float(middleXF), Float(middleYF), x87.mul(Float(0.5), Float(width)),
                   x87.mul(Float(height), Float(0.5)));
 
-    guest::direct<0x443d20, placeButtons>(app, cpu, guest.dword(kButtonCount), guest.dword(kButtons), column, kRect);
-    guest::direct<0x444570, pointAtButton>(app, cpu, guest.dword(kFocus));
+    guest::direct<0x443d20, placeButtons>(app, ts, guest.dword(kButtonCount), guest.dword(kButtons), column, kRect);
+    guest::direct<0x444570, pointAtButton>(app, ts, guest.dword(kFocus));
     guest.setDword(kCallback, callback);
     return 0;
 }
@@ -577,11 +577,11 @@ x86::reg32 frontend::dialogs::openQuestion(App* app, CPU& cpu, reg32 lineCount, 
 
 /* sub_444a80: a message opened: lines and no buttons, up for `time` ticks (a
  * negative time as long; 0 until a key answers it, whatever `keys` says). */
-x86::reg32 frontend::dialogs::openMessage(App* app, CPU& cpu, reg32 lineCount, reg32 lines, reg32 time, reg32 keys,
-                                          reg32 callback)
+nfs::u32 frontend::dialogs::openMessage(App* app, ThreadState& ts, u32 lineCount, u32 lines, u32 time, u32 keys,
+                                          u32 callback)
 {
-    Guest guest(app, cpu);
-    const fe::Frame frame(guest, cpu, 12);
+    Guest guest(app, ts);
+    const fe::Frame frame(guest, ts, 12);
     guest.setDword(kHelpText, 0);
     guest.setDword(kButtonHelp, 0);
     if (lineCount == 0 || lines == 0)
@@ -595,21 +595,21 @@ x86::reg32 frontend::dialogs::openMessage(App* app, CPU& cpu, reg32 lineCount, r
         time = 0 - time;
     guest.setDword(kMessageTime, time);
     guest.setByte(kMessageKeys, std::int32_t(time) > 0 ? std::uint8_t(keys) : 1);
-    const x86::reg32 result =
-        guest::direct<0x443a90, linesBox>(app, cpu, guest.dword(kLineCount), guest.dword(kLines), 0, 0, kRect);
+    const nfs::u32 result =
+        guest::direct<0x443a90, linesBox>(app, ts, guest.dword(kLineCount), guest.dword(kLines), 0, 0, kRect);
     guest.setDword(kCallback, callback);
     return result;
 }
 
 /* sub_444be0: a message of one line of the language's text, up for 550
  * ticks or until a key answers it. */
-x86::reg32 frontend::dialogs::messageById(App* app, CPU& cpu, reg32 id)
+nfs::u32 frontend::dialogs::messageById(App* app, ThreadState& ts, u32 id)
 {
-    Guest guest(app, cpu);
-    const fe::Frame frame(guest, cpu, 16);
+    Guest guest(app, ts);
+    const fe::Frame frame(guest, ts, 16);
     guest.setDword(kMessageLine,
-                   reg32(*fe::direct<0x4d1850, port::text::lineText>(app, cpu, cpu.esp - 4, std::int32_t(id), 0)));
-    return guest::direct<0x444a80, openMessage>(app, cpu, 1, kMessageLine, kMessageTicks, 1, 0);
+                   u32(*fe::direct<0x4d1850, port::text::lineText>(app, ts, ts.sp - 4, std::int32_t(id), 0)));
+    return guest::direct<0x444a80, openMessage>(app, ts, 1, kMessageLine, kMessageTicks, 1, 0);
 }
 
 /* ---------------------------------------------------------------------------
@@ -623,12 +623,12 @@ x86::reg32 frontend::dialogs::messageById(App* app, CPU& cpu, reg32 id)
  * pixels at most; the box widens for it.  Nothing without lines or buttons,
  * with ten buttons or more, or when the mode the last such dialog was opened
  * with is past 3 (the mode is checked before the new one is kept). */
-x86::reg32 frontend::dialogs::openEdit(App* app, CPU& cpu, reg32 lineCount, reg32 lines, reg32 buttonCount,
-                                       reg32 buttons, reg32 focus, reg32 source, reg32 maxLength, reg32 mode,
-                                       reg32 callback)
+nfs::u32 frontend::dialogs::openEdit(App* app, ThreadState& ts, u32 lineCount, u32 lines, u32 buttonCount,
+                                       u32 buttons, u32 focus, u32 source, u32 maxLength, u32 mode,
+                                       u32 callback)
 {
-    Guest guest(app, cpu);
-    const fe::Frame frame(guest, cpu, 12 + 0x5c);
+    Guest guest(app, ts);
+    const fe::Frame frame(guest, ts, 12 + 0x5c);
     guest.setDword(kHelpText, 0);
     guest.setDword(kButtonHelp, 0);
     if (lineCount == 0 || lines == 0 || sdword(guest, kEditMode) >= 4 || buttonCount == 0 || buttons == 0
@@ -643,9 +643,9 @@ x86::reg32 frontend::dialogs::openEdit(App* app, CPU& cpu, reg32 lineCount, reg3
     guest.setDword(kReplaceOnKey, 1);
     setFirstFocus(guest, std::int32_t(focus), std::int32_t(buttonCount));
 
-    const x86::reg32 linesRect = guest.frame() + 0x10, buttonsRect = guest.frame();  // [ebp - 0x4c], [ebp - 0x5c]
-    guest::direct<0x443a90, linesBox>(app, cpu, guest.dword(kLineCount), guest.dword(kLines), 1, 1, linesRect);
-    guest::direct<0x443c00, buttonRowBox>(app, cpu, guest.dword(kButtonCount), guest.dword(kButtons), buttonsRect);
+    const nfs::u32 linesRect = guest.frame() + 0x10, buttonsRect = guest.frame();  // [ebp - 0x4c], [ebp - 0x5c]
+    guest::direct<0x443a90, linesBox>(app, ts, guest.dword(kLineCount), guest.dword(kLines), 1, 1, linesRect);
+    guest::direct<0x443c00, buttonRowBox>(app, ts, guest.dword(kButtonCount), guest.dword(kButtons), buttonsRect);
 
     Arith x87(guest);
     const Float linesWidth = x87.sub(x87.load(linesRect + kRight), x87.load(linesRect + kLeft));
@@ -664,22 +664,22 @@ x86::reg32 frontend::dialogs::openEdit(App* app, CPU& cpu, reg32 lineCount, reg3
     setDialogRect(guest, x87, Float(middleXF), Float(middleYF), x87.mul(Float(0.5), Float(width)),
                   x87.mul(Float(linesHeightF), Float(0.5)));
 
-    fe::direct<kMemset, watcom::clib::memset>(guest.app(), guest.cpu(), kEditText, 0, kEditSize);
+    fe::direct<kMemset, watcom::clib::memset>(guest.app(), guest.ts(), kEditText, 0, kEditSize);
     guest.setDword(kEditSource, source);
     guest.setDword(kEditMode, mode);
     guest.setDword(kEditMax, maxLength != 0 && maxLength < kEditSize ? maxLength : kEditSize - 1);
-    const x86::reg32 allowed =
-        fe::direct<0x443860, frontend::text::lineAllowed>(app, cpu, guest.dword(kEditSource), guest.dword(kEditMode));
+    const nfs::u32 allowed =
+        fe::direct<0x443860, frontend::text::lineAllowed>(app, ts, guest.dword(kEditSource), guest.dword(kEditMode));
     if ((allowed & 0xff) != 0)
     {
-        fe::direct<kStrncpy, watcom::clib::strncpy>(guest.app(), guest.cpu(), kEditText, guest.dword(kEditSource), guest.dword(kEditMax));
+        fe::direct<kStrncpy, watcom::clib::strncpy>(guest.app(), guest.ts(), kEditText, guest.dword(kEditSource), guest.dword(kEditMax));
         guest.setDword(kEditLength, guest.length(kEditText));
     }
     else
         guest.setDword(kEditLength, 0);
 
     // The field: the most characters, the widest of them, and the cursor.
-    setFont(guest, cpu);
+    setFont(guest, ts);
     const float textWidthF = float(x87.mul(Arith::integer(textWidth(guest, kWidest.address)),
                                            Arith::integer(sdword(guest, kEditMax))));
     const Float room = x87.add(x87.add(Arith::integer(textWidth(guest, kCursor.address)), Float(textWidthF)), Float(5.0));
@@ -701,8 +701,8 @@ x86::reg32 frontend::dialogs::openEdit(App* app, CPU& cpu, reg32 lineCount, reg3
     }
 
     guest.setDword(kCallback, callback);
-    guest::direct<0x443d20, placeButtons>(app, cpu, guest.dword(kButtonCount), guest.dword(kButtons), 0, kRect);
-    return guest::direct<0x444570, pointAtButton>(app, cpu, guest.dword(kFocus));
+    guest::direct<0x443d20, placeButtons>(app, ts, guest.dword(kButtonCount), guest.dword(kButtons), 0, kRect);
+    return guest::direct<0x444570, pointAtButton>(app, ts, guest.dword(kFocus));
 }
 
 /* Each thunk: the game's function, what its ret pops, its frame (the
@@ -721,35 +721,35 @@ namespace frontend
 {
 
 /* The button highlighted, native whole: the main menu's question asks it. */
-x86::reg32 dialogFocusedButton(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 dialogFocusedButton(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site{ "sub_4446c0", 0, 0, nullptr, 0, kRestoreNone };
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return dialogs::focusedButton(app, cpu); });
+    return fe::runThunk(app, ts, args, site, [&](Guest&) { return dialogs::focusedButton(app, ts); });
 }
 
-x86::reg32 dialogLinesBox(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 dialogLinesBox(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site{ "sub_443a90", 4, 0, nullptr, 0, kRestoreEsi | kRestoreEdi };
-    const x86::reg32 count = args.eax, lines = args.edx, rowBelow = args.ebx, fieldBelow = args.ecx;
-    const x86::reg32 rect = stackArgument(app, cpu, 0);
-    return fe::runThunk(app, cpu, args, site,
-                 [&](Guest&) { return dialogs::linesBox(app, cpu, count, lines, rowBelow, fieldBelow, rect); });
+    const nfs::u32 count = args.eax, lines = args.edx, rowBelow = args.ebx, fieldBelow = args.ecx;
+    const nfs::u32 rect = stackArgument(app, ts, 0);
+    return fe::runThunk(app, ts, args, site,
+                 [&](Guest&) { return dialogs::linesBox(app, ts, count, lines, rowBelow, fieldBelow, rect); });
 }
 
-x86::reg32 dialogButtonRowBox(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 dialogButtonRowBox(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site{ "sub_443c00", 0, 0, nullptr, 0, kRestoreEcx | kRestoreEsi | kRestoreEdi };
-    const x86::reg32 count = args.eax, buttons = args.edx, rect = args.ebx;
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return dialogs::buttonRowBox(app, cpu, count, buttons, rect); });
+    const nfs::u32 count = args.eax, buttons = args.edx, rect = args.ebx;
+    return fe::runThunk(app, ts, args, site, [&](Guest&) { return dialogs::buttonRowBox(app, ts, count, buttons, rect); });
 }
 
 /* sub_443d20 as its code is (dialogs::placeButtons): its ret pops the return address. */
-x86::reg32 dialogPlaceButtons(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 dialogPlaceButtons(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     try
     {
-        args.eax = dialogs::placeButtons(app, cpu, args.eax, args.edx, args.ebx, args.ecx);
-        cpu.esp += 4;
+        args.eax = dialogs::placeButtons(app, ts, args.eax, args.edx, args.ebx, args.ecx);
+        ts.sp += 4;
     }
     catch (const fe::Terminated&)
     {
@@ -757,66 +757,66 @@ x86::reg32 dialogPlaceButtons(win32::WinApplication* app, x86::CPU& cpu, x86::Ar
     return args.eax;
 }
 
-x86::reg32 dialogPointAtButton(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 dialogPointAtButton(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site{ "sub_444570", 0, 0, nullptr, 0, kRestoreEcx | kRestoreEdx };
-    const x86::reg32 index = args.eax;
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return dialogs::pointAtButton(app, cpu, index); });
+    const nfs::u32 index = args.eax;
+    return fe::runThunk(app, ts, args, site, [&](Guest&) { return dialogs::pointAtButton(app, ts, index); });
 }
 
-x86::reg32 dialogOpenQuestion(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 dialogOpenQuestion(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site{ "sub_4446d0", 0x10, 0, nullptr, 0, kRestoreEsi | kRestoreEdi };
-    const x86::reg32 lineCount = args.eax, lines = args.edx, buttonCount = args.ebx, buttons = args.ecx;
-    const x86::reg32 buttonHelp = stackArgument(app, cpu, 0), column = stackArgument(app, cpu, 2);
-    const x86::reg32 focus = stackArgument(app, cpu, 1);
-    const x86::reg32 callback = stackArgument(app, cpu, 3);
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
-        return dialogs::openQuestion(app, cpu, lineCount, lines, buttonCount, buttons, buttonHelp, focus, column,
+    const nfs::u32 lineCount = args.eax, lines = args.edx, buttonCount = args.ebx, buttons = args.ecx;
+    const nfs::u32 buttonHelp = stackArgument(app, ts, 0), column = stackArgument(app, ts, 2);
+    const nfs::u32 focus = stackArgument(app, ts, 1);
+    const nfs::u32 callback = stackArgument(app, ts, 3);
+    return fe::runThunk(app, ts, args, site, [&](Guest&) {
+        return dialogs::openQuestion(app, ts, lineCount, lines, buttonCount, buttons, buttonHelp, focus, column,
                                      callback);
     });
 }
 
-x86::reg32 dialogOpenMessage(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 dialogOpenMessage(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site{ "sub_444a80", 4, 0, nullptr, 0, kRestoreEsi | kRestoreEdi };
-    const x86::reg32 lineCount = args.eax, lines = args.edx, time = args.ebx, keys = args.ecx;
-    const x86::reg32 callback = stackArgument(app, cpu, 0);
-    return fe::runThunk(app, cpu, args, site,
-                 [&](Guest&) { return dialogs::openMessage(app, cpu, lineCount, lines, time, keys, callback); });
+    const nfs::u32 lineCount = args.eax, lines = args.edx, time = args.ebx, keys = args.ecx;
+    const nfs::u32 callback = stackArgument(app, ts, 0);
+    return fe::runThunk(app, ts, args, site,
+                 [&](Guest&) { return dialogs::openMessage(app, ts, lineCount, lines, time, keys, callback); });
 }
 
-x86::reg32 dialogMessageById(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 dialogMessageById(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site{ "sub_444be0", 0, 0, nullptr, 0, kRestoreEbx | kRestoreEcx | kRestoreEdx };
-    const x86::reg32 id = args.eax;
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return dialogs::messageById(app, cpu, id); });
+    const nfs::u32 id = args.eax;
+    return fe::runThunk(app, ts, args, site, [&](Guest&) { return dialogs::messageById(app, ts, id); });
 }
 
-x86::reg32 dialogEditText(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 dialogEditText(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site{ "sub_444c10", 0, 0, nullptr, 0, kRestoreNone };
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return dialogs::editText(app, cpu); });
+    return fe::runThunk(app, ts, args, site, [&](Guest&) { return dialogs::editText(app, ts); });
 }
 
-x86::reg32 dialogOpenEdit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 dialogOpenEdit(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site{ "sub_444c20", 0x14, 0, kEditStrings, std::size(kEditStrings), kRestoreEsi | kRestoreEdi };
-    const x86::reg32 lineCount = args.eax, lines = args.edx, buttonCount = args.ebx, buttons = args.ecx;
-    const x86::reg32 focus = stackArgument(app, cpu, 0);
-    const x86::reg32 source = stackArgument(app, cpu, 1), maxLength = stackArgument(app, cpu, 2);
-    const x86::reg32 mode = stackArgument(app, cpu, 3), callback = stackArgument(app, cpu, 4);
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) {
-        return dialogs::openEdit(app, cpu, lineCount, lines, buttonCount, buttons, focus, source, maxLength, mode,
+    const nfs::u32 lineCount = args.eax, lines = args.edx, buttonCount = args.ebx, buttons = args.ecx;
+    const nfs::u32 focus = stackArgument(app, ts, 0);
+    const nfs::u32 source = stackArgument(app, ts, 1), maxLength = stackArgument(app, ts, 2);
+    const nfs::u32 mode = stackArgument(app, ts, 3), callback = stackArgument(app, ts, 4);
+    return fe::runThunk(app, ts, args, site, [&](Guest&) {
+        return dialogs::openEdit(app, ts, lineCount, lines, buttonCount, buttons, focus, source, maxLength, mode,
                                  callback);
     });
 }
 
-x86::reg32 dialogFadedIn(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 dialogFadedIn(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site{ "sub_445f00", 0, 0, nullptr, 0, kRestoreNone };
-    const x86::reg32 eax = args.eax;  // left as it came
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return dialogs::fadedIn(app, cpu), eax; });
+    const nfs::u32 eax = args.eax;  // left as it came
+    return fe::runThunk(app, ts, args, site, [&](Guest&) { return dialogs::fadedIn(app, ts), eax; });
 }
 
 }  // namespace frontend

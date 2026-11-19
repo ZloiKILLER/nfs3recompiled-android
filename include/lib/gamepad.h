@@ -1,11 +1,11 @@
 #ifndef LIB_GAMEPAD_H_
 #define LIB_GAMEPAD_H_
 
-#include <lib/winapp.h>
+#include <lib/app.h>
 #include <SDL3/SDL.h>
 
 
-namespace win32
+namespace nfs
 {
 
 enum InputType
@@ -18,8 +18,8 @@ enum InputType
 class Input : public GenericResource
 {
 public:
-    virtual x86::reg32 getButtonCount() const;
-    virtual x86::reg32 getAxesCount() const;
+    virtual nfs::u32 getButtonCount() const;
+    virtual nfs::u32 getAxesCount() const;
     static void poll();
 };
 
@@ -55,13 +55,13 @@ enum
 class Mouse : public Input
 {
 public:
-    virtual x86::reg32 getButtonCount() const;
-    virtual x86::reg32 getAxesCount() const;
+    virtual nfs::u32 getButtonCount() const;
+    virtual nfs::u32 getAxesCount() const;
 
     struct MouseState
     {
-        x86::sreg32 dx, dy, dz;
-        x86::reg32  buttons;
+        nfs::s32 dx, dy, dz;
+        nfs::u32  buttons;
     };
     /* Consumes and resets the accumulated relative motion/wheel and reports
      * the buttons currently held. */
@@ -69,27 +69,27 @@ public:
 
     struct BufferedEvent
     {
-        x86::reg32  offset;   // DIMOFS_*
-        x86::sreg32 value;
+        nfs::u32  offset;   // DIMOFS_*
+        nfs::s32 value;
     };
     /* Drains up to `max` queued events (oldest first) into `out`, returns how
      * many were written.  Always destructive (DIGDD_PEEK is not honoured). */
-    static x86::reg32 drainBuffer(BufferedEvent* out, x86::reg32 max);
+    static nfs::u32 drainBuffer(BufferedEvent* out, nfs::u32 max);
 
     /* For a pointer that knows where it is rather than how far it moved -- a
      * finger on the screen.  Whoever owns that pointer works out the movement
      * from where the game keeps its own cursor and posts it here, so what
      * arrives is the same shape a mouse would have produced and both read
      * paths stay in step.  `button` is 0 to 3, as DIMOFS_BUTTON0 counts them. */
-    static void movePointer(x86::sreg32 dx, x86::sreg32 dy);
-    static void pressPointer(x86::reg32 button, bool down);
+    static void movePointer(nfs::s32 dx, nfs::s32 dy);
+    static void pressPointer(nfs::u32 button, bool down);
 };
 
 struct GamepadState
 {
-    x86::reg64  buttons;
-    x86::sreg16 axes[10];
-    x86::reg8   hats[10];
+    nfs::u64  buttons;
+    nfs::s16 axes[10];
+    nfs::u8   hats[10];
 };
 
 class Gamepad : public Input
@@ -103,7 +103,7 @@ public:
      * fixed slots cover what the game can actually use on a phone: slot 0 is
      * player one, slot 1 is the second pad for split screen.  The game itself
      * has room for sixteen (its device table at 0x5f1fb8 is indexed 0..15). */
-    static const x86::reg32 kSlotCount = 2;
+    static const nfs::u32 kSlotCount = 2;
     /* A slot is two axes and nothing else: X steers, Y carries both pedals --
      * up accelerates, down brakes -- the classic joystick layout the game binds
      * on its own.  A pad's buttons never reach the game as buttons: each one
@@ -111,16 +111,16 @@ public:
      * launcher writes into config.dat binds those keys.  Slot 0 also carries
      * the touch overlay's steering and pedals, so the overlay and the first pad
      * are one player as far as the game is concerned. */
-    static const x86::reg32 kAxisSteer = 0;
-    static const x86::reg32 kAxisPedals = 1;
+    static const nfs::u32 kAxisSteer = 0;
+    static const nfs::u32 kAxisPedals = 1;
 
-    Gamepad(x86::reg32 gamepadIndex);
+    Gamepad(nfs::u32 gamepadIndex);
     ~Gamepad();
 
-    virtual x86::reg32 getButtonCount() const;
-    virtual x86::reg32 getAxesCount() const;
+    virtual nfs::u32 getButtonCount() const;
+    virtual nfs::u32 getAxesCount() const;
 
-    static x86::reg32 getCount();
+    static nfs::u32 getCount();
 
     /* Which physical pad goes in each slot, as the Android input-device
      * descriptor the launcher resolved; an empty string leaves the slot
@@ -160,14 +160,14 @@ public:
      * them back when it opens a device and applies its saved ones at startup;
      * on Windows the driver did the rest, here getState() does.  A new device
      * starts where a DirectInput one does: no dead zone, saturation at the end. */
-    static const x86::reg32 kDirectInputAxes = 8;
+    static const nfs::u32 kDirectInputAxes = 8;
     struct AxisResponse
     {
-        x86::reg32 deadZone = 0;
-        x86::reg32 saturation = 10000;
+        nfs::u32 deadZone = 0;
+        nfs::u32 saturation = 10000;
     };
-    AxisResponse axisResponse(x86::reg32 axis) const;
-    void setAxisResponse(x86::reg32 axis, const AxisResponse& response);
+    AxisResponse axisResponse(nfs::u32 axis) const;
+    void setAxisResponse(nfs::u32 axis, const AxisResponse& response);
     GamepadState getState() const;
     /* Once a frame, from the renderer: follows pads as they come and go, turns
      * their buttons into the keys the launcher assigned, and runs the
@@ -206,7 +206,7 @@ private:
      * silently start reporting a different pad. */
     SDL_Joystick* joystick() const;
 
-    x86::reg32 m_slot;
+    nfs::u32 m_slot;
     AxisResponse m_axisResponse[kDirectInputAxes];
 };
 

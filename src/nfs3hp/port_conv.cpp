@@ -36,9 +36,9 @@ namespace
 {
 
 /* fistp as the code does it without __CHP: `value` rounded the way the x87's control word says. */
-int32_t stored(CPU& cpu, double value)
+int32_t stored(ThreadState& ts, double value)
 {
-    return fp::toInteger<int32_t>(x86::Float(value));
+    return fp::toInteger<int32_t>(nfs::Float(value));
 }
 
 /* A tiny x87 stack of doubles: the functions move floats through the x87 (a store rounds to float). */
@@ -62,21 +62,21 @@ struct X87
 /* The x87's sums, differences, products and quotients as it rounds them: to
  * the precision its control word asks for -- a race's single precision, the
  * menus' extended -- by the emulated FPU's own operations (include/fpu.h). */
-double xadd(CPU& cpu, double a, double b) { return double(fp::add(x86::Float(a), x86::Float(b))); }
-double xsub(CPU& cpu, double a, double b) { return double(fp::sub(x86::Float(a), x86::Float(b))); }
-double xmul(CPU& cpu, double a, double b) { return double(fp::mul(x86::Float(a), x86::Float(b))); }
-double xdiv(CPU& cpu, double a, double b) { return double(fp::div(x86::Float(a), x86::Float(b))); }
+double xadd(ThreadState& ts, double a, double b) { return double(fp::add(nfs::Float(a), nfs::Float(b))); }
+double xsub(ThreadState& ts, double a, double b) { return double(fp::sub(nfs::Float(a), nfs::Float(b))); }
+double xmul(ThreadState& ts, double a, double b) { return double(fp::mul(nfs::Float(a), nfs::Float(b))); }
+double xdiv(ThreadState& ts, double a, double b) { return double(fp::div(nfs::Float(a), nfs::Float(b))); }
 
 /* The flags the last instruction left, for the conditional jump after it. */
 struct Flags
 {
     enum Kind { Logic, Sub, Arith, Fpu } k = Logic;
-    reg32 fa = 0, fb = 0, fr = 0;
+    u32 fa = 0, fb = 0, fr = 0;
     bool c = false, lt = false, eq = false, un = false;
-    void sub(reg32 x, reg32 y) { k = Sub; fa = x; fb = y; fr = x - y; }
-    void add(reg32 x, reg32 y) { k = Arith; fr = x + y; c = fr < x; }
-    void arith(reg32 v) { k = Arith; fr = v; }
-    void logic(reg32 v) { k = Logic; fr = v; }
+    void sub(u32 x, u32 y) { k = Sub; fa = x; fb = y; fr = x - y; }
+    void add(u32 x, u32 y) { k = Arith; fr = x + y; c = fr < x; }
+    void arith(u32 v) { k = Arith; fr = v; }
+    void logic(u32 v) { k = Logic; fr = v; }
     void fcmp(double x, double y) { k = Fpu; lt = x < y; eq = x == y; un = !(lt || eq || x > y); }
     bool e() const { return k == Fpu ? (eq || un) : k == Sub ? fa == fb : fr == 0; }
     bool ne() const { return !e(); }
@@ -91,26 +91,26 @@ struct Flags
     bool s() const { return k == Sub ? int32_t(fa - fb) < 0 : int32_t(fr) < 0; }
     bool ns() const { return !s(); }
     /* fnstsw ax after a compare: C0, C2 and C3. */
-    reg32 status() const { return un ? 0x4500u : lt ? 0x100u : eq ? 0x4000u : 0u; }
+    u32 status() const { return un ? 0x4500u : lt ? 0x100u : eq ? 0x4000u : 0u; }
 };
 
 /* A call from such a function to a typed core of another file's (its header's), as C++
  * (guest::direct, feCore): esp as the code has it -- the arguments on the guest's stack where the
  * code pushed them, the return address's slot 0 -- the core's own arguments its parameters (the
  * registers the code holds are its locals, not handed over). */
-void handOver(App* app, CPU& cpu, reg32 esp, reg32, reg32, reg32, reg32, reg32)
+void handOver(App* app, ThreadState& ts, u32 esp, u32, u32, u32, u32, u32)
 {
-    cpu.esp = esp;
-    app->getMemory<reg32>(esp - 4) = 0;
+    ts.sp = esp;
+    app->getMemory<u32>(esp - 4) = 0;
 }
 
 /* A native_frontend_* file's typed core called as C++ (guest::direct): nothing (false) when the
  * game stopped in it (its calls into the game throw fe::Terminated). */
-template <reg32 Address, auto Core, typename... Args>
-auto feCore(App* app, CPU& cpu, Args... args)
+template <u32 Address, auto Core, typename... Args>
+auto feCore(App* app, ThreadState& ts, Args... args)
 {
     const auto run = [&] {
-        return guest::direct<Address, Core>(app, cpu, args...);
+        return guest::direct<Address, Core>(app, ts, args...);
     };
     using Result = decltype(run());
     const auto spoil = [&] {};
@@ -125,16 +125,16 @@ auto feCore(App* app, CPU& cpu, Args... args)
             return false;
         }
         spoil();
-        return !cpu.terminate;
+        return !ts.terminate;
     }
     else
     {
         try
         {
             const Result result = run();
-            if constexpr (!std::is_same_v<Result, x86::reg32>)
-                spoil();  // a reg32 result is the eax the caller takes from it
-            return cpu.terminate ? std::optional<Result>() : std::optional<Result>(result);
+            if constexpr (!std::is_same_v<Result, nfs::u32>)
+                spoil();  // a u32 result is the eax the caller takes from it
+            return ts.terminate ? std::optional<Result>() : std::optional<Result>(result);
         }
         catch (const fe::Terminated&)
         {
@@ -147,10 +147,10 @@ auto feCore(App* app, CPU& cpu, Args... args)
  * callee's core run, and what it leaves on the x87's stack taken into the caller's own (X87).  eax
  * back as the callee's result; the other registers are as they went in. */
 template <typename Core>
-bool ownCall(Core core, App* app, CPU& cpu, const Entry& caller, reg32 esp, reg32& eax, reg32 edx, reg32 ebx, reg32 ecx, reg32 ebp, X87& x)
+bool ownCall(Core core, App* app, ThreadState& ts, const Entry& caller, u32 esp, u32& eax, u32 edx, u32 ebx, u32 ecx, u32 ebp, X87& x)
 {
-    cpu.esp = esp - 4;
-    app->getMemory<reg32>(esp - 4) = 0;
+    ts.sp = esp - 4;
+    app->getMemory<u32>(esp - 4) = 0;
     Entry e(caller);
     e.esp = esp - 4;
     e.eax = eax;
@@ -158,34 +158,34 @@ bool ownCall(Core core, App* app, CPU& cpu, const Entry& caller, reg32 esp, reg3
     e.ebx = ebx;
     e.ecx = ecx;
     e.ebp = ebp;
-    reg32 result, popped = 0;
+    u32 result, popped = 0;
     X87 left;
-    if (!core(app, cpu, e, result, popped, &left))
+    if (!core(app, ts, e, result, popped, &left))
         return false;
-    cpu.esp = esp;
+    ts.sp = esp;
     eax = result;
     for (int i = 0; i < left.n; ++i)
         x.push(left.v[i]);
     return true;
 }
 
-bool core49fe70(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped_, X87* xout)
+bool core49fe70(App* app, ThreadState& ts, const Entry& e, u32& result, u32& popped_, X87* xout)
 {
-    reg32 eax = e.eax, ebx = e.ebx, ecx = e.ecx, edx = e.edx, esi = e.esi, edi = e.edi, ebp = e.ebp, esp = e.esp;
+    u32 eax = e.eax, ebx = e.ebx, ecx = e.ecx, edx = e.edx, esi = e.esi, edi = e.edi, ebp = e.ebp, esp = e.esp;
     Flags fl;
     X87 x;
-    reg32 carry_ = 0;
+    u32 carry_ = 0;
     (void)carry_;
-    const auto rd32 = [&](reg32 a) { return app->getMemory<reg32>(a); };
-    const auto rd16 = [&](reg32 a) { return reg32(app->getMemory<uint16_t>(a)); };
-    const auto rd8 = [&](reg32 a) { return reg32(app->getMemory<uint8_t>(a)); };
-    const auto wr32 = [&](reg32 a, reg32 v) { app->getMemory<reg32>(a) = v; };
-    const auto wr16 = [&](reg32 a, reg32 v) { app->getMemory<uint16_t>(a) = uint16_t(v); };
-    const auto wr8 = [&](reg32 a, reg32 v) { app->getMemory<uint8_t>(a) = uint8_t(v); };
-    const auto F = [&](reg32 a) { return double(app->getMemory<float>(a)); };
-    const auto D = [&](reg32 a) { return app->getMemory<double>(a); };
-    const auto SF = [&](reg32 a, double v) { app->getMemory<float>(a) = float(v); };
-    const auto SD = [&](reg32 a, double v) { app->getMemory<double>(a) = v; };
+    const auto rd32 = [&](u32 a) { return app->getMemory<u32>(a); };
+    const auto rd16 = [&](u32 a) { return u32(app->getMemory<uint16_t>(a)); };
+    const auto rd8 = [&](u32 a) { return u32(app->getMemory<uint8_t>(a)); };
+    const auto wr32 = [&](u32 a, u32 v) { app->getMemory<u32>(a) = v; };
+    const auto wr16 = [&](u32 a, u32 v) { app->getMemory<uint16_t>(a) = uint16_t(v); };
+    const auto wr8 = [&](u32 a, u32 v) { app->getMemory<uint8_t>(a) = uint8_t(v); };
+    const auto F = [&](u32 a) { return double(app->getMemory<float>(a)); };
+    const auto D = [&](u32 a) { return app->getMemory<double>(a); };
+    const auto SF = [&](u32 a, double v) { app->getMemory<float>(a) = float(v); };
+    const auto SD = [&](u32 a, double v) { app->getMemory<double>(a) = v; };
     esp -= 4; wr32(esp, ebx);  // 49fe70 push ebx
     esp -= 4; wr32(esp, edx);  // 49fe71 push edx
     esp -= 4; wr32(esp, ebp);  // 49fe72 push ebp
@@ -193,31 +193,31 @@ bool core49fe70(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped
     esp -= 12u;  // 49fe75 sub esp, 0xc
     edx = eax;  // 49fe78 mov edx, eax
     x.push(F(eax + 0x98u));  // 49fe7a fld dword ptr [eax + 0x98]
-    x.st(0) = xmul(cpu, x.st(0), D(0x53c7a4u));  // 49fe80 fmul qword ptr [0x53c7a4]
+    x.st(0) = xmul(ts, x.st(0), D(0x53c7a4u));  // 49fe80 fmul qword ptr [0x53c7a4]
     esp -= 4u;  // 49fe86 sub esp, 4
-    wr32((esp), stored(cpu, x.pop()));  // 49fe89 fistp dword ptr [esp]
+    wr32((esp), stored(ts, x.pop()));  // 49fe89 fistp dword ptr [esp]
     eax = rd32(esp); esp += 4;  // 49fe8c pop eax
     wr32((ebp - 0xcu), eax);  // 49fe8d mov dword ptr [ebp - 0xc], eax
     x.push(F(edx + 0x9cu));  // 49fe90 fld dword ptr [edx + 0x9c]
-    x.st(0) = xmul(cpu, x.st(0), D(0x53c7a4u));  // 49fe96 fmul qword ptr [0x53c7a4]
+    x.st(0) = xmul(ts, x.st(0), D(0x53c7a4u));  // 49fe96 fmul qword ptr [0x53c7a4]
     esp -= 4u;  // 49fe9c sub esp, 4
-    wr32((esp), stored(cpu, x.pop()));  // 49fe9f fistp dword ptr [esp]
+    wr32((esp), stored(ts, x.pop()));  // 49fe9f fistp dword ptr [esp]
     eax = rd32(esp); esp += 4;  // 49fea2 pop eax
     wr32((ebp - 8u), eax);  // 49fea3 mov dword ptr [ebp - 8], eax
     x.push(F(edx + 0xa0u));  // 49fea6 fld dword ptr [edx + 0xa0]
-    x.st(0) = xmul(cpu, x.st(0), D(0x53c7a4u));  // 49feac fmul qword ptr [0x53c7a4]
+    x.st(0) = xmul(ts, x.st(0), D(0x53c7a4u));  // 49feac fmul qword ptr [0x53c7a4]
     esp -= 4u;  // 49feb2 sub esp, 4
-    wr32((esp), stored(cpu, x.pop()));  // 49feb5 fistp dword ptr [esp]
+    wr32((esp), stored(ts, x.pop()));  // 49feb5 fistp dword ptr [esp]
     eax = rd32(esp); esp += 4;  // 49feb8 pop eax
     wr32((ebp - 4u), eax);  // 49feb9 mov dword ptr [ebp - 4], eax
     eax = 0u;  // 49febc xor eax, eax
     fl.logic(0u);  // 49febc xor eax, eax
     ebx = 1u;  // 49febe mov ebx, 1
     eax = (eax & 0xffffff00u) | ((rd8((edx + 0x88u))) & 0xffu);  // 49fec3 mov al, byte ptr [edx + 0x88]
-    { const reg32 a_ = edx, b_ = 12u; edx = a_ + b_; fl.add(a_, b_); }  // 49fec9 add edx, 0xc
-    { const reg32 a_ = ebx, b_ = eax; ebx = a_ - b_; fl.sub(a_, b_); }  // 49fecc sub ebx, eax
+    { const u32 a_ = edx, b_ = 12u; edx = a_ + b_; fl.add(a_, b_); }  // 49fec9 add edx, 0xc
+    { const u32 a_ = ebx, b_ = eax; ebx = a_ - b_; fl.sub(a_, b_); }  // 49fecc sub ebx, eax
     eax = (ebp - 0xcu);  // 49fece lea eax, [ebp - 0xc]
-    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); const std::optional<reg32> r_ = guest::direct<0x41f6e0, trackdata::bringPlace>(app, cpu, eax, edx, ebx); if (!r_) return false; eax = *r_; }  // 49fed1 call 0x41f6e0
+    { handOver(app, ts, esp, eax, edx, ebx, ecx, ebp); const std::optional<u32> r_ = guest::direct<0x41f6e0, trackdata::bringPlace>(app, ts, eax, edx, ebx); if (!r_) return false; eax = *r_; }  // 49fed1 call 0x41f6e0
     esp += 0u;  // 49fed1 call 0x41f6e0
     esp = ebp;  // 49fed6 mov esp, ebp
     ebp = rd32(esp); esp += 4;  // 49fed8 pop ebp
@@ -229,23 +229,23 @@ bool core49fe70(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped
 }
 
 
-bool core4a00d0(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped_, X87* xout)
+bool core4a00d0(App* app, ThreadState& ts, const Entry& e, u32& result, u32& popped_, X87* xout)
 {
-    reg32 eax = e.eax, ebx = e.ebx, ecx = e.ecx, edx = e.edx, esi = e.esi, edi = e.edi, ebp = e.ebp, esp = e.esp;
+    u32 eax = e.eax, ebx = e.ebx, ecx = e.ecx, edx = e.edx, esi = e.esi, edi = e.edi, ebp = e.ebp, esp = e.esp;
     Flags fl;
     X87 x;
-    reg32 carry_ = 0;
+    u32 carry_ = 0;
     (void)carry_;
-    const auto rd32 = [&](reg32 a) { return app->getMemory<reg32>(a); };
-    const auto rd16 = [&](reg32 a) { return reg32(app->getMemory<uint16_t>(a)); };
-    const auto rd8 = [&](reg32 a) { return reg32(app->getMemory<uint8_t>(a)); };
-    const auto wr32 = [&](reg32 a, reg32 v) { app->getMemory<reg32>(a) = v; };
-    const auto wr16 = [&](reg32 a, reg32 v) { app->getMemory<uint16_t>(a) = uint16_t(v); };
-    const auto wr8 = [&](reg32 a, reg32 v) { app->getMemory<uint8_t>(a) = uint8_t(v); };
-    const auto F = [&](reg32 a) { return double(app->getMemory<float>(a)); };
-    const auto D = [&](reg32 a) { return app->getMemory<double>(a); };
-    const auto SF = [&](reg32 a, double v) { app->getMemory<float>(a) = float(v); };
-    const auto SD = [&](reg32 a, double v) { app->getMemory<double>(a) = v; };
+    const auto rd32 = [&](u32 a) { return app->getMemory<u32>(a); };
+    const auto rd16 = [&](u32 a) { return u32(app->getMemory<uint16_t>(a)); };
+    const auto rd8 = [&](u32 a) { return u32(app->getMemory<uint8_t>(a)); };
+    const auto wr32 = [&](u32 a, u32 v) { app->getMemory<u32>(a) = v; };
+    const auto wr16 = [&](u32 a, u32 v) { app->getMemory<uint16_t>(a) = uint16_t(v); };
+    const auto wr8 = [&](u32 a, u32 v) { app->getMemory<uint8_t>(a) = uint8_t(v); };
+    const auto F = [&](u32 a) { return double(app->getMemory<float>(a)); };
+    const auto D = [&](u32 a) { return app->getMemory<double>(a); };
+    const auto SF = [&](u32 a, double v) { app->getMemory<float>(a) = float(v); };
+    const auto SD = [&](u32 a, double v) { app->getMemory<double>(a) = v; };
     esp -= 4; wr32(esp, ebx);  // 4a00d0 push ebx
     esp -= 4; wr32(esp, ecx);  // 4a00d1 push ecx
     esp -= 4; wr32(esp, edx);  // 4a00d2 push edx
@@ -273,8 +273,8 @@ bool core4a00d0(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped
     esp -= 4; wr32(esp, edx);  // 4a0112 push edx
     ecx = rd32((eax + 0x148u));  // 4a0113 mov ecx, dword ptr [eax + 0x148]
     esp -= 4; wr32(esp, ecx);  // 4a0119 push ecx
-    { const reg32 a_ = eax, b_ = 292u; eax = a_ + b_; fl.add(a_, b_); }  // 4a011a add eax, 0x124
-    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); const auto w_ = [&](reg32 i) { return app->getMemory<float>(esp + 4u * i); }; const float r_ = guest::direct<0x4968a0, vertices::groundHeightAt>(app, cpu, eax, w_(0), w_(1), w_(2), w_(3), w_(4), w_(5)); if (cpu.terminate) return false; x.push(double(r_)); eax = esp - 32u; }  // 4a011f call 0x4968a0
+    { const u32 a_ = eax, b_ = 292u; eax = a_ + b_; fl.add(a_, b_); }  // 4a011a add eax, 0x124
+    { handOver(app, ts, esp, eax, edx, ebx, ecx, ebp); const auto w_ = [&](u32 i) { return app->getMemory<float>(esp + 4u * i); }; const float r_ = guest::direct<0x4968a0, vertices::groundHeightAt>(app, ts, eax, w_(0), w_(1), w_(2), w_(3), w_(4), w_(5)); if (ts.terminate) return false; x.push(double(r_)); eax = esp - 32u; }  // 4a011f call 0x4968a0
     esp += 24u;  // 4a011f call 0x4968a0
     SF((ebp - 4u), x.st(0));  // 4a0124 fstp dword ptr [ebp - 4]
     x.pop();  // 4a0124 fstp dword ptr [ebp - 4]
@@ -296,23 +296,23 @@ L_4a0130:
 }
 
 
-bool core4a0440(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped_, X87* xout)
+bool core4a0440(App* app, ThreadState& ts, const Entry& e, u32& result, u32& popped_, X87* xout)
 {
-    reg32 eax = e.eax, ebx = e.ebx, ecx = e.ecx, edx = e.edx, esi = e.esi, edi = e.edi, ebp = e.ebp, esp = e.esp;
+    u32 eax = e.eax, ebx = e.ebx, ecx = e.ecx, edx = e.edx, esi = e.esi, edi = e.edi, ebp = e.ebp, esp = e.esp;
     Flags fl;
     X87 x;
-    reg32 carry_ = 0;
+    u32 carry_ = 0;
     (void)carry_;
-    const auto rd32 = [&](reg32 a) { return app->getMemory<reg32>(a); };
-    const auto rd16 = [&](reg32 a) { return reg32(app->getMemory<uint16_t>(a)); };
-    const auto rd8 = [&](reg32 a) { return reg32(app->getMemory<uint8_t>(a)); };
-    const auto wr32 = [&](reg32 a, reg32 v) { app->getMemory<reg32>(a) = v; };
-    const auto wr16 = [&](reg32 a, reg32 v) { app->getMemory<uint16_t>(a) = uint16_t(v); };
-    const auto wr8 = [&](reg32 a, reg32 v) { app->getMemory<uint8_t>(a) = uint8_t(v); };
-    const auto F = [&](reg32 a) { return double(app->getMemory<float>(a)); };
-    const auto D = [&](reg32 a) { return app->getMemory<double>(a); };
-    const auto SF = [&](reg32 a, double v) { app->getMemory<float>(a) = float(v); };
-    const auto SD = [&](reg32 a, double v) { app->getMemory<double>(a) = v; };
+    const auto rd32 = [&](u32 a) { return app->getMemory<u32>(a); };
+    const auto rd16 = [&](u32 a) { return u32(app->getMemory<uint16_t>(a)); };
+    const auto rd8 = [&](u32 a) { return u32(app->getMemory<uint8_t>(a)); };
+    const auto wr32 = [&](u32 a, u32 v) { app->getMemory<u32>(a) = v; };
+    const auto wr16 = [&](u32 a, u32 v) { app->getMemory<uint16_t>(a) = uint16_t(v); };
+    const auto wr8 = [&](u32 a, u32 v) { app->getMemory<uint8_t>(a) = uint8_t(v); };
+    const auto F = [&](u32 a) { return double(app->getMemory<float>(a)); };
+    const auto D = [&](u32 a) { return app->getMemory<double>(a); };
+    const auto SF = [&](u32 a, double v) { app->getMemory<float>(a) = float(v); };
+    const auto SD = [&](u32 a, double v) { app->getMemory<double>(a) = v; };
     esp -= 4; wr32(esp, ebx);  // 4a0440 push ebx
     esp -= 4; wr32(esp, ecx);  // 4a0441 push ecx
     esp -= 4; wr32(esp, edx);  // 4a0442 push edx
@@ -339,23 +339,23 @@ L_4a046d:
     wr32(edi, rd32(esi)); esi += 4; edi += 4;  // 4a047f movsd dword ptr es:[edi], dword ptr [esi]
     wr32(edi, rd32(esi)); esi += 4; edi += 4;  // 4a0480 movsd dword ptr es:[edi], dword ptr [esi]
     wr32(edi, rd32(esi)); esi += 4; edi += 4;  // 4a0481 movsd dword ptr es:[edi], dword ptr [esi]
-    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); const double r_ = guest::direct<0x4e01f0, vertices::dotProduct>(app, cpu, eax, edx); if (cpu.terminate) return false; x.push(r_); }  // 4a0482 call 0x4e01f0
+    { handOver(app, ts, esp, eax, edx, ebx, ecx, ebp); const double r_ = guest::direct<0x4e01f0, vertices::dotProduct>(app, ts, eax, edx); if (ts.terminate) return false; x.push(r_); }  // 4a0482 call 0x4e01f0
     esp += 0u;  // 4a0482 call 0x4e01f0
-    x.st(0) = xmul(cpu, x.st(0), F(ecx + 0x114u));  // 4a0487 fmul dword ptr [ecx + 0x114]
+    x.st(0) = xmul(ts, x.st(0), F(ecx + 0x114u));  // 4a0487 fmul dword ptr [ecx + 0x114]
     eax = (ebp - 0x28u);  // 4a048d lea eax, [ebp - 0x28]
     edx = (ecx + 0xccu);  // 4a0490 lea edx, [ecx + 0xcc]
     SF((ebp - 0x34u), x.st(0));  // 4a0496 fstp dword ptr [ebp - 0x34]
     x.pop();  // 4a0496 fstp dword ptr [ebp - 0x34]
-    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); const double r_ = guest::direct<0x4e01f0, vertices::dotProduct>(app, cpu, eax, edx); if (cpu.terminate) return false; x.push(r_); }  // 4a0499 call 0x4e01f0
+    { handOver(app, ts, esp, eax, edx, ebx, ecx, ebp); const double r_ = guest::direct<0x4e01f0, vertices::dotProduct>(app, ts, eax, edx); if (ts.terminate) return false; x.push(r_); }  // 4a0499 call 0x4e01f0
     esp += 0u;  // 4a0499 call 0x4e01f0
-    x.st(0) = xmul(cpu, x.st(0), F(ecx + 0x118u));  // 4a049e fmul dword ptr [ecx + 0x118]
+    x.st(0) = xmul(ts, x.st(0), F(ecx + 0x118u));  // 4a049e fmul dword ptr [ecx + 0x118]
     eax = (ebp - 0x28u);  // 4a04a4 lea eax, [ebp - 0x28]
     edx = (ecx + 0xd8u);  // 4a04a7 lea edx, [ecx + 0xd8]
     SF((ebp - 0x30u), x.st(0));  // 4a04ad fstp dword ptr [ebp - 0x30]
     x.pop();  // 4a04ad fstp dword ptr [ebp - 0x30]
-    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); const double r_ = guest::direct<0x4e01f0, vertices::dotProduct>(app, cpu, eax, edx); if (cpu.terminate) return false; x.push(r_); }  // 4a04b0 call 0x4e01f0
+    { handOver(app, ts, esp, eax, edx, ebx, ecx, ebp); const double r_ = guest::direct<0x4e01f0, vertices::dotProduct>(app, ts, eax, edx); if (ts.terminate) return false; x.push(r_); }  // 4a04b0 call 0x4e01f0
     esp += 0u;  // 4a04b0 call 0x4e01f0
-    x.st(0) = xmul(cpu, x.st(0), F(ecx + 0x11cu));  // 4a04b5 fmul dword ptr [ecx + 0x11c]
+    x.st(0) = xmul(ts, x.st(0), F(ecx + 0x11cu));  // 4a04b5 fmul dword ptr [ecx + 0x11c]
     x.push(0.0);  // 4a04bb fldz
     x.fxch(1);  // 4a04bd fxch st(1)
     SF((ebp - 0x2cu), x.st(0));  // 4a04bf fstp dword ptr [ebp - 0x2c]
@@ -402,27 +402,27 @@ L_4a0506:
     ecx = (ebp - 0x40u);  // 4a0527 lea ecx, [ebp - 0x40]
     wr32((ebp - 0x14u), eax);  // 4a052a mov dword ptr [ebp - 0x14], eax
     eax = 1u;  // 4a052d mov eax, 1
-    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); guest::direct<0x4e0000, vertices::offsetVectorList<false>>(app, cpu, int32_t(eax), edx, ebx, ecx); if (cpu.terminate) return false; }  // 4a0532 call 0x4e0000
+    { handOver(app, ts, esp, eax, edx, ebx, ecx, ebp); guest::direct<0x4e0000, vertices::offsetVectorList<false>>(app, ts, int32_t(eax), edx, ebx, ecx); if (ts.terminate) return false; }  // 4a0532 call 0x4e0000
     esp += 0u;  // 4a0532 call 0x4e0000
     edx = (ebp - 0x40u);  // 4a0537 lea edx, [ebp - 0x40]
     eax = (ebp - 0x28u);  // 4a053a lea eax, [ebp - 0x28]
-    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); const double r_ = guest::direct<0x4e01f0, vertices::dotProduct>(app, cpu, eax, edx); if (cpu.terminate) return false; x.push(r_); }  // 4a053d call 0x4e01f0
+    { handOver(app, ts, esp, eax, edx, ebx, ecx, ebp); const double r_ = guest::direct<0x4e01f0, vertices::dotProduct>(app, ts, eax, edx); if (ts.terminate) return false; x.push(r_); }  // 4a053d call 0x4e01f0
     esp += 0u;  // 4a053d call 0x4e01f0
     eax = rd32((ebp - 0xcu));  // 4a0542 mov eax, dword ptr [ebp - 0xc]
     wr32((ebp - 4u), eax);  // 4a0545 mov dword ptr [ebp - 4], eax
     x.push(double(int32_t(rd32((ebp - 4u)))));  // 4a0548 fild dword ptr [ebp - 4]
-    x.st(0) = xmul(cpu, x.st(0), F(ebp - 0x30u));  // 4a054b fmul dword ptr [ebp - 0x30]
+    x.st(0) = xmul(ts, x.st(0), F(ebp - 0x30u));  // 4a054b fmul dword ptr [ebp - 0x30]
     wr32((ebp - 4u), edi);  // 4a054e mov dword ptr [ebp - 4], edi
     x.push(double(int32_t(rd32((ebp - 4u)))));  // 4a0551 fild dword ptr [ebp - 4]
-    x.st(0) = xmul(cpu, x.st(0), F(ebp - 0x34u));  // 4a0554 fmul dword ptr [ebp - 0x34]
-    x.st(1) = xadd(cpu, x.st(1), x.st(0));  // 4a0557 faddp st(1)
+    x.st(0) = xmul(ts, x.st(0), F(ebp - 0x34u));  // 4a0554 fmul dword ptr [ebp - 0x34]
+    x.st(1) = xadd(ts, x.st(1), x.st(0));  // 4a0557 faddp st(1)
     x.pop();  // 4a0557 faddp st(1)
     wr32((ebp - 4u), esi);  // 4a0559 mov dword ptr [ebp - 4], esi
     x.push(double(int32_t(rd32((ebp - 4u)))));  // 4a055c fild dword ptr [ebp - 4]
-    x.st(0) = xmul(cpu, x.st(0), F(ebp - 0x2cu));  // 4a055f fmul dword ptr [ebp - 0x2c]
-    x.st(1) = xadd(cpu, x.st(1), x.st(0));  // 4a0562 faddp st(1)
+    x.st(0) = xmul(ts, x.st(0), F(ebp - 0x2cu));  // 4a055f fmul dword ptr [ebp - 0x2c]
+    x.st(1) = xadd(ts, x.st(1), x.st(0));  // 4a0562 faddp st(1)
     x.pop();  // 4a0562 faddp st(1)
-    x.st(1) = xadd(cpu, x.st(1), x.st(0));  // 4a0564 faddp st(1)
+    x.st(1) = xadd(ts, x.st(1), x.st(0));  // 4a0564 faddp st(1)
     x.pop();  // 4a0564 faddp st(1)
     SF((ebp - 8u), x.st(0));  // 4a0566 fstp dword ptr [ebp - 8]
     x.pop();  // 4a0566 fstp dword ptr [ebp - 8]
@@ -441,23 +441,23 @@ L_4a0569:
 }
 
 
-bool core4a0980(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped_, X87* xout)
+bool core4a0980(App* app, ThreadState& ts, const Entry& e, u32& result, u32& popped_, X87* xout)
 {
-    reg32 eax = e.eax, ebx = e.ebx, ecx = e.ecx, edx = e.edx, esi = e.esi, edi = e.edi, ebp = e.ebp, esp = e.esp;
+    u32 eax = e.eax, ebx = e.ebx, ecx = e.ecx, edx = e.edx, esi = e.esi, edi = e.edi, ebp = e.ebp, esp = e.esp;
     Flags fl;
     X87 x;
-    reg32 carry_ = 0;
+    u32 carry_ = 0;
     (void)carry_;
-    const auto rd32 = [&](reg32 a) { return app->getMemory<reg32>(a); };
-    const auto rd16 = [&](reg32 a) { return reg32(app->getMemory<uint16_t>(a)); };
-    const auto rd8 = [&](reg32 a) { return reg32(app->getMemory<uint8_t>(a)); };
-    const auto wr32 = [&](reg32 a, reg32 v) { app->getMemory<reg32>(a) = v; };
-    const auto wr16 = [&](reg32 a, reg32 v) { app->getMemory<uint16_t>(a) = uint16_t(v); };
-    const auto wr8 = [&](reg32 a, reg32 v) { app->getMemory<uint8_t>(a) = uint8_t(v); };
-    const auto F = [&](reg32 a) { return double(app->getMemory<float>(a)); };
-    const auto D = [&](reg32 a) { return app->getMemory<double>(a); };
-    const auto SF = [&](reg32 a, double v) { app->getMemory<float>(a) = float(v); };
-    const auto SD = [&](reg32 a, double v) { app->getMemory<double>(a) = v; };
+    const auto rd32 = [&](u32 a) { return app->getMemory<u32>(a); };
+    const auto rd16 = [&](u32 a) { return u32(app->getMemory<uint16_t>(a)); };
+    const auto rd8 = [&](u32 a) { return u32(app->getMemory<uint8_t>(a)); };
+    const auto wr32 = [&](u32 a, u32 v) { app->getMemory<u32>(a) = v; };
+    const auto wr16 = [&](u32 a, u32 v) { app->getMemory<uint16_t>(a) = uint16_t(v); };
+    const auto wr8 = [&](u32 a, u32 v) { app->getMemory<uint8_t>(a) = uint8_t(v); };
+    const auto F = [&](u32 a) { return double(app->getMemory<float>(a)); };
+    const auto D = [&](u32 a) { return app->getMemory<double>(a); };
+    const auto SF = [&](u32 a, double v) { app->getMemory<float>(a) = float(v); };
+    const auto SD = [&](u32 a, double v) { app->getMemory<double>(a) = v; };
     esp -= 4; wr32(esp, ecx);  // 4a0980 push ecx
     esp -= 4; wr32(esp, esi);  // 4a0981 push esi
     esp -= 4; wr32(esp, edi);  // 4a0982 push edi
@@ -517,23 +517,23 @@ L_4a09a2:
 }
 
 
-bool core4a0a10(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped_, X87* xout)
+bool core4a0a10(App* app, ThreadState& ts, const Entry& e, u32& result, u32& popped_, X87* xout)
 {
-    reg32 eax = e.eax, ebx = e.ebx, ecx = e.ecx, edx = e.edx, esi = e.esi, edi = e.edi, ebp = e.ebp, esp = e.esp;
+    u32 eax = e.eax, ebx = e.ebx, ecx = e.ecx, edx = e.edx, esi = e.esi, edi = e.edi, ebp = e.ebp, esp = e.esp;
     Flags fl;
     X87 x;
-    reg32 carry_ = 0;
+    u32 carry_ = 0;
     (void)carry_;
-    const auto rd32 = [&](reg32 a) { return app->getMemory<reg32>(a); };
-    const auto rd16 = [&](reg32 a) { return reg32(app->getMemory<uint16_t>(a)); };
-    const auto rd8 = [&](reg32 a) { return reg32(app->getMemory<uint8_t>(a)); };
-    const auto wr32 = [&](reg32 a, reg32 v) { app->getMemory<reg32>(a) = v; };
-    const auto wr16 = [&](reg32 a, reg32 v) { app->getMemory<uint16_t>(a) = uint16_t(v); };
-    const auto wr8 = [&](reg32 a, reg32 v) { app->getMemory<uint8_t>(a) = uint8_t(v); };
-    const auto F = [&](reg32 a) { return double(app->getMemory<float>(a)); };
-    const auto D = [&](reg32 a) { return app->getMemory<double>(a); };
-    const auto SF = [&](reg32 a, double v) { app->getMemory<float>(a) = float(v); };
-    const auto SD = [&](reg32 a, double v) { app->getMemory<double>(a) = v; };
+    const auto rd32 = [&](u32 a) { return app->getMemory<u32>(a); };
+    const auto rd16 = [&](u32 a) { return u32(app->getMemory<uint16_t>(a)); };
+    const auto rd8 = [&](u32 a) { return u32(app->getMemory<uint8_t>(a)); };
+    const auto wr32 = [&](u32 a, u32 v) { app->getMemory<u32>(a) = v; };
+    const auto wr16 = [&](u32 a, u32 v) { app->getMemory<uint16_t>(a) = uint16_t(v); };
+    const auto wr8 = [&](u32 a, u32 v) { app->getMemory<uint8_t>(a) = uint8_t(v); };
+    const auto F = [&](u32 a) { return double(app->getMemory<float>(a)); };
+    const auto D = [&](u32 a) { return app->getMemory<double>(a); };
+    const auto SF = [&](u32 a, double v) { app->getMemory<float>(a) = float(v); };
+    const auto SD = [&](u32 a, double v) { app->getMemory<double>(a) = v; };
     esp -= 4; wr32(esp, ecx);  // 4a0a10 push ecx
     esp -= 4; wr32(esp, esi);  // 4a0a11 push esi
     esp -= 4; wr32(esp, edi);  // 4a0a12 push edi
@@ -593,23 +593,23 @@ L_4a0a32:
 }
 
 
-bool core4a0d20(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped_, X87* xout)
+bool core4a0d20(App* app, ThreadState& ts, const Entry& e, u32& result, u32& popped_, X87* xout)
 {
-    reg32 eax = e.eax, ebx = e.ebx, ecx = e.ecx, edx = e.edx, esi = e.esi, edi = e.edi, ebp = e.ebp, esp = e.esp;
+    u32 eax = e.eax, ebx = e.ebx, ecx = e.ecx, edx = e.edx, esi = e.esi, edi = e.edi, ebp = e.ebp, esp = e.esp;
     Flags fl;
     X87 x;
-    reg32 carry_ = 0;
+    u32 carry_ = 0;
     (void)carry_;
-    const auto rd32 = [&](reg32 a) { return app->getMemory<reg32>(a); };
-    const auto rd16 = [&](reg32 a) { return reg32(app->getMemory<uint16_t>(a)); };
-    const auto rd8 = [&](reg32 a) { return reg32(app->getMemory<uint8_t>(a)); };
-    const auto wr32 = [&](reg32 a, reg32 v) { app->getMemory<reg32>(a) = v; };
-    const auto wr16 = [&](reg32 a, reg32 v) { app->getMemory<uint16_t>(a) = uint16_t(v); };
-    const auto wr8 = [&](reg32 a, reg32 v) { app->getMemory<uint8_t>(a) = uint8_t(v); };
-    const auto F = [&](reg32 a) { return double(app->getMemory<float>(a)); };
-    const auto D = [&](reg32 a) { return app->getMemory<double>(a); };
-    const auto SF = [&](reg32 a, double v) { app->getMemory<float>(a) = float(v); };
-    const auto SD = [&](reg32 a, double v) { app->getMemory<double>(a) = v; };
+    const auto rd32 = [&](u32 a) { return app->getMemory<u32>(a); };
+    const auto rd16 = [&](u32 a) { return u32(app->getMemory<uint16_t>(a)); };
+    const auto rd8 = [&](u32 a) { return u32(app->getMemory<uint8_t>(a)); };
+    const auto wr32 = [&](u32 a, u32 v) { app->getMemory<u32>(a) = v; };
+    const auto wr16 = [&](u32 a, u32 v) { app->getMemory<uint16_t>(a) = uint16_t(v); };
+    const auto wr8 = [&](u32 a, u32 v) { app->getMemory<uint8_t>(a) = uint8_t(v); };
+    const auto F = [&](u32 a) { return double(app->getMemory<float>(a)); };
+    const auto D = [&](u32 a) { return app->getMemory<double>(a); };
+    const auto SF = [&](u32 a, double v) { app->getMemory<float>(a) = float(v); };
+    const auto SD = [&](u32 a, double v) { app->getMemory<double>(a) = v; };
     esp -= 4; wr32(esp, ebx);  // 4a0d20 push ebx
     esp -= 4; wr32(esp, ecx);  // 4a0d21 push ecx
     esp -= 4; wr32(esp, ebp);  // 4a0d22 push ebp
@@ -618,29 +618,29 @@ bool core4a0d20(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped
     ecx = eax;  // 4a0d28 mov ecx, eax
     ebx = edx;  // 4a0d2a mov ebx, edx
     edx = 484u;  // 4a0d2c mov edx, 0x1e4
-    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); eax = guest::direct<0x4e070c, ea::clearBytes>(app, cpu, eax, edx); if (cpu.terminate) return false; }  // 4a0d31 call 0x4e070c
+    { handOver(app, ts, esp, eax, edx, ebx, ecx, ebp); eax = guest::direct<0x4e070c, ea::clearBytes>(app, ts, eax, edx); if (ts.terminate) return false; }  // 4a0d31 call 0x4e070c
     esp += 0u;  // 4a0d31 call 0x4e070c
     x.push(F(ebp + 0x14u));  // 4a0d36 fld dword ptr [ebp + 0x14]
     eax = rd32((ebp + 0x14u));  // 4a0d39 mov eax, dword ptr [ebp + 0x14]
     wr32((ecx), ebx);  // 4a0d3c mov dword ptr [ecx], ebx
-    x.st(0) = xmul(cpu, x.st(0), F(ebp + 0x14u));  // 4a0d3e fmul dword ptr [ebp + 0x14]
+    x.st(0) = xmul(ts, x.st(0), F(ebp + 0x14u));  // 4a0d3e fmul dword ptr [ebp + 0x14]
     wr32((ecx + 0x114u), eax);  // 4a0d41 mov dword ptr [ecx + 0x114], eax
     x.push(F(ebp + 0x18u));  // 4a0d47 fld dword ptr [ebp + 0x18]
     eax = rd32((ebp + 0x18u));  // 4a0d4a mov eax, dword ptr [ebp + 0x18]
-    x.st(0) = xmul(cpu, x.st(0), F(ebp + 0x18u));  // 4a0d4d fmul dword ptr [ebp + 0x18]
+    x.st(0) = xmul(ts, x.st(0), F(ebp + 0x18u));  // 4a0d4d fmul dword ptr [ebp + 0x18]
     wr32((ecx + 0x118u), eax);  // 4a0d50 mov dword ptr [ecx + 0x118], eax
-    x.st(1) = xadd(cpu, x.st(1), x.st(0));  // 4a0d56 faddp st(1)
+    x.st(1) = xadd(ts, x.st(1), x.st(0));  // 4a0d56 faddp st(1)
     x.pop();  // 4a0d56 faddp st(1)
     eax = rd32((ebp + 0x1cu));  // 4a0d58 mov eax, dword ptr [ebp + 0x1c]
     x.push(F(ebp + 0x1cu));  // 4a0d5b fld dword ptr [ebp + 0x1c]
-    x.st(0) = xmul(cpu, x.st(0), x.st(0));  // 4a0d5e fmul st(0)
+    x.st(0) = xmul(ts, x.st(0), x.st(0));  // 4a0d5e fmul st(0)
     wr32((ecx + 0x11cu), eax);  // 4a0d60 mov dword ptr [ecx + 0x11c], eax
-    x.st(1) = xadd(cpu, x.st(1), x.st(0));  // 4a0d66 faddp st(1)
+    x.st(1) = xadd(ts, x.st(1), x.st(0));  // 4a0d66 faddp st(1)
     x.pop();  // 4a0d66 faddp st(1)
     esp -= 4u;  // 4a0d68 sub esp, 4
     SF((esp), x.st(0));  // 4a0d6b fstp dword ptr [esp]
     x.pop();  // 4a0d6b fstp dword ptr [esp]
-    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); const std::optional<double> r_ = feCore<0x4ea920, frontend::simc::squareRootOf>(app, cpu, rd32(esp)); if (!r_) return false; x.push(*r_); }  // 4a0d6e call 0x4ea920
+    { handOver(app, ts, esp, eax, edx, ebx, ecx, ebp); const std::optional<double> r_ = feCore<0x4ea920, frontend::simc::squareRootOf>(app, ts, rd32(esp)); if (!r_) return false; x.push(*r_); }  // 4a0d6e call 0x4ea920
     esp += 4u;  // 4a0d6e call 0x4ea920
     eax = rd32((ebp + 0x10u));  // 4a0d73 mov eax, dword ptr [ebp + 0x10]
     SF((ecx + 0x120u), x.st(0));  // 4a0d76 fstp dword ptr [ecx + 0x120]
@@ -652,49 +652,49 @@ bool core4a0d20(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped
 L_4a0d93:
     x.push(F(ecx + 0xb0u));  // 4a0d93 fld dword ptr [ecx + 0xb0]
     x.push(1.0);  // 4a0d99 fld1
-    x.st(1) = xdiv(cpu, x.st(0), x.st(1));  // 4a0d9b fdivrp st(1)
+    x.st(1) = xdiv(ts, x.st(0), x.st(1));  // 4a0d9b fdivrp st(1)
     x.pop();  // 4a0d9b fdivrp st(1)
     x.push(F(ebp + 0x1cu));  // 4a0d9d fld dword ptr [ebp + 0x1c]
-    x.st(0) = xmul(cpu, x.st(0), x.st(0));  // 4a0da0 fmul st(0), st(0)
+    x.st(0) = xmul(ts, x.st(0), x.st(0));  // 4a0da0 fmul st(0), st(0)
     x.push(F(ebp + 0x18u));  // 4a0da2 fld dword ptr [ebp + 0x18]
-    x.st(0) = xmul(cpu, x.st(0), x.st(0));  // 4a0da5 fmul st(0), st(0)
+    x.st(0) = xmul(ts, x.st(0), x.st(0));  // 4a0da5 fmul st(0), st(0)
     x.push(x.st(1));  // 4a0da7 fld st(1)
-    x.st(0) = xadd(cpu, x.st(0), x.st(1));  // 4a0da9 fadd st(1)
+    x.st(0) = xadd(ts, x.st(0), x.st(1));  // 4a0da9 fadd st(1)
     x.push(D(0x53c7ecu));  // 4a0dab fld qword ptr [0x53c7ec]
     x.push(F(ecx + 0xb0u));  // 4a0db1 fld dword ptr [ecx + 0xb0]
-    x.st(0) = xmul(cpu, x.st(0), x.st(1));  // 4a0db7 fmul st(1)
-    x.st(2) = xmul(cpu, x.st(2), x.st(0));  // 4a0db9 fmulp st(2)
+    x.st(0) = xmul(ts, x.st(0), x.st(1));  // 4a0db7 fmul st(1)
+    x.st(2) = xmul(ts, x.st(2), x.st(0));  // 4a0db9 fmulp st(2)
     x.pop();  // 4a0db9 fmulp st(2)
     x.fxch(1);  // 4a0dbb fxch st(1)
     SF((ecx + 0xf0u), x.st(0));  // 4a0dbd fst dword ptr [ecx + 0xf0]
     x.push(1.0);  // 4a0dc3 fld1
-    x.st(1) = xdiv(cpu, x.st(0), x.st(1));  // 4a0dc5 fdivrp st(1)
+    x.st(1) = xdiv(ts, x.st(0), x.st(1));  // 4a0dc5 fdivrp st(1)
     x.pop();  // 4a0dc5 fdivrp st(1)
     x.push(F(ebp + 0x14u));  // 4a0dc7 fld dword ptr [ebp + 0x14]
-    x.st(0) = xmul(cpu, x.st(0), x.st(0));  // 4a0dca fmul st(0), st(0)
-    x.st(4) = xadd(cpu, x.st(4), x.st(0));  // 4a0dcc fadd st(4), st(0)
+    x.st(0) = xmul(ts, x.st(0), x.st(0));  // 4a0dca fmul st(0), st(0)
+    x.st(4) = xadd(ts, x.st(4), x.st(0));  // 4a0dcc fadd st(4), st(0)
     x.push(F(ecx + 0xb0u));  // 4a0dce fld dword ptr [ecx + 0xb0]
-    x.st(0) = xmul(cpu, x.st(0), x.st(3));  // 4a0dd4 fmul st(3)
-    x.st(5) = xmul(cpu, x.st(5), x.st(0));  // 4a0dd6 fmulp st(5)
+    x.st(0) = xmul(ts, x.st(0), x.st(3));  // 4a0dd4 fmul st(3)
+    x.st(5) = xmul(ts, x.st(5), x.st(0));  // 4a0dd6 fmulp st(5)
     x.pop();  // 4a0dd6 fmulp st(5)
     x.fxch(4);  // 4a0dd8 fxch st(4)
     SF((ecx + 0xf4u), x.st(0));  // 4a0dda fst dword ptr [ecx + 0xf4]
     x.push(1.0);  // 4a0de0 fld1
-    x.st(1) = xdiv(cpu, x.st(0), x.st(1));  // 4a0de2 fdivrp st(1)
+    x.st(1) = xdiv(ts, x.st(0), x.st(1));  // 4a0de2 fdivrp st(1)
     x.pop();  // 4a0de2 fdivrp st(1)
     x.fxch(4);  // 4a0de4 fxch st(4)
-    x.st(3) = xadd(cpu, x.st(3), x.st(0));  // 4a0de6 faddp st(3)
+    x.st(3) = xadd(ts, x.st(3), x.st(0));  // 4a0de6 faddp st(3)
     x.pop();  // 4a0de6 faddp st(3)
     x.push(F(ecx + 0xb0u));  // 4a0de8 fld dword ptr [ecx + 0xb0]
-    x.st(2) = xmul(cpu, x.st(2), x.st(0));  // 4a0dee fmulp st(2)
+    x.st(2) = xmul(ts, x.st(2), x.st(0));  // 4a0dee fmulp st(2)
     x.pop();  // 4a0dee fmulp st(2)
     x.fxch(1);  // 4a0df0 fxch st(1)
-    x.st(2) = xmul(cpu, x.st(2), x.st(0));  // 4a0df2 fmulp st(2)
+    x.st(2) = xmul(ts, x.st(2), x.st(0));  // 4a0df2 fmulp st(2)
     x.pop();  // 4a0df2 fmulp st(2)
     x.fxch(1);  // 4a0df4 fxch st(1)
     SF((ecx + 0xf8u), x.st(0));  // 4a0df6 fst dword ptr [ecx + 0xf8]
     x.push(1.0);  // 4a0dfc fld1
-    x.st(1) = xdiv(cpu, x.st(0), x.st(1));  // 4a0dfe fdivrp st(1)
+    x.st(1) = xdiv(ts, x.st(0), x.st(1));  // 4a0dfe fdivrp st(1)
     x.pop();  // 4a0dfe fdivrp st(1)
     wr32((ecx + 0x20u), 0u);  // 4a0e00 mov dword ptr [ecx + 0x20], 0
     wr32((ecx + 0x2cu), 0u);  // 4a0e07 mov dword ptr [ecx + 0x2c], 0
@@ -745,23 +745,23 @@ L_4a0d93:
 }
 
 
-bool core4a0f30(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped_, X87* xout)
+bool core4a0f30(App* app, ThreadState& ts, const Entry& e, u32& result, u32& popped_, X87* xout)
 {
-    reg32 eax = e.eax, ebx = e.ebx, ecx = e.ecx, edx = e.edx, esi = e.esi, edi = e.edi, ebp = e.ebp, esp = e.esp;
+    u32 eax = e.eax, ebx = e.ebx, ecx = e.ecx, edx = e.edx, esi = e.esi, edi = e.edi, ebp = e.ebp, esp = e.esp;
     Flags fl;
     X87 x;
-    reg32 carry_ = 0;
+    u32 carry_ = 0;
     (void)carry_;
-    const auto rd32 = [&](reg32 a) { return app->getMemory<reg32>(a); };
-    const auto rd16 = [&](reg32 a) { return reg32(app->getMemory<uint16_t>(a)); };
-    const auto rd8 = [&](reg32 a) { return reg32(app->getMemory<uint8_t>(a)); };
-    const auto wr32 = [&](reg32 a, reg32 v) { app->getMemory<reg32>(a) = v; };
-    const auto wr16 = [&](reg32 a, reg32 v) { app->getMemory<uint16_t>(a) = uint16_t(v); };
-    const auto wr8 = [&](reg32 a, reg32 v) { app->getMemory<uint8_t>(a) = uint8_t(v); };
-    const auto F = [&](reg32 a) { return double(app->getMemory<float>(a)); };
-    const auto D = [&](reg32 a) { return app->getMemory<double>(a); };
-    const auto SF = [&](reg32 a, double v) { app->getMemory<float>(a) = float(v); };
-    const auto SD = [&](reg32 a, double v) { app->getMemory<double>(a) = v; };
+    const auto rd32 = [&](u32 a) { return app->getMemory<u32>(a); };
+    const auto rd16 = [&](u32 a) { return u32(app->getMemory<uint16_t>(a)); };
+    const auto rd8 = [&](u32 a) { return u32(app->getMemory<uint8_t>(a)); };
+    const auto wr32 = [&](u32 a, u32 v) { app->getMemory<u32>(a) = v; };
+    const auto wr16 = [&](u32 a, u32 v) { app->getMemory<uint16_t>(a) = uint16_t(v); };
+    const auto wr8 = [&](u32 a, u32 v) { app->getMemory<uint8_t>(a) = uint8_t(v); };
+    const auto F = [&](u32 a) { return double(app->getMemory<float>(a)); };
+    const auto D = [&](u32 a) { return app->getMemory<double>(a); };
+    const auto SF = [&](u32 a, double v) { app->getMemory<float>(a) = float(v); };
+    const auto SD = [&](u32 a, double v) { app->getMemory<double>(a) = v; };
     esp -= 4; wr32(esp, ebx);  // 4a0f30 push ebx
     esp -= 4; wr32(esp, ecx);  // 4a0f31 push ecx
     esp -= 4; wr32(esp, esi);  // 4a0f32 push esi
@@ -806,10 +806,10 @@ L_4a0f8b:
     // sahf  // 4a0fb3 sahf
     if (fl.ae()) goto L_4a1038;  // 4a0fb4 jae 0x4a1038
     ecx = rd32((ebp - 4u));  // 4a0fba mov ecx, dword ptr [ebp - 4]
-    { const reg32 a_ = ecx, b_ = 192u; ecx = a_ + b_; fl.add(a_, b_); }  // 4a0fbd add ecx, 0xc0
+    { const u32 a_ = ecx, b_ = 192u; ecx = a_ + b_; fl.add(a_, b_); }  // 4a0fbd add ecx, 0xc0
     edx = ebx;  // 4a0fc3 mov edx, ebx
     eax = ecx;  // 4a0fc5 mov eax, ecx
-    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); const double r_ = guest::direct<0x4e01f0, vertices::dotProduct>(app, cpu, eax, edx); if (cpu.terminate) return false; x.push(r_); }  // 4a0fc7 call 0x4e01f0
+    { handOver(app, ts, esp, eax, edx, ebx, ecx, ebp); const double r_ = guest::direct<0x4e01f0, vertices::dotProduct>(app, ts, eax, edx); if (ts.terminate) return false; x.push(r_); }  // 4a0fc7 call 0x4e01f0
     esp += 0u;  // 4a0fc7 call 0x4e01f0
     x.push(0.0);  // 4a0fcc fldz
     fl.fcmp(x.st(0), x.st(1));  // 4a0fce fcompp
@@ -819,13 +819,13 @@ L_4a0f8b:
     if (fl.ae()) goto L_4a0fe0;  // 4a0fd3 jae 0x4a0fe0
     edx = ebx;  // 4a0fd5 mov edx, ebx
     eax = ecx;  // 4a0fd7 mov eax, ecx
-    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); const double r_ = guest::direct<0x4e01f0, vertices::dotProduct>(app, cpu, eax, edx); if (cpu.terminate) return false; x.push(r_); }  // 4a0fd9 call 0x4e01f0
+    { handOver(app, ts, esp, eax, edx, ebx, ecx, ebp); const double r_ = guest::direct<0x4e01f0, vertices::dotProduct>(app, ts, eax, edx); if (ts.terminate) return false; x.push(r_); }  // 4a0fd9 call 0x4e01f0
     esp += 0u;  // 4a0fd9 call 0x4e01f0
     goto L_4a0feb;  // 4a0fde jmp 0x4a0feb
 L_4a0fe0:
     edx = ebx;  // 4a0fe0 mov edx, ebx
     eax = ecx;  // 4a0fe2 mov eax, ecx
-    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); const double r_ = guest::direct<0x4e01f0, vertices::dotProduct>(app, cpu, eax, edx); if (cpu.terminate) return false; x.push(r_); }  // 4a0fe4 call 0x4e01f0
+    { handOver(app, ts, esp, eax, edx, ebx, ecx, ebp); const double r_ = guest::direct<0x4e01f0, vertices::dotProduct>(app, ts, eax, edx); if (ts.terminate) return false; x.push(r_); }  // 4a0fe4 call 0x4e01f0
     esp += 0u;  // 4a0fe4 call 0x4e01f0
     x.st(0) = -x.st(0);  // 4a0fe9 fchs
 L_4a0feb:
@@ -840,17 +840,17 @@ L_4a0feb:
     ecx = rd32((ebp - 4u));  // 4a0ffc mov ecx, dword ptr [ebp - 4]
     edx = rd32((ebp - 4u));  // 4a0fff mov edx, dword ptr [ebp - 4]
     edi = rd32((ebp - 4u));  // 4a1002 mov edi, dword ptr [ebp - 4]
-    { const reg32 a_ = ecx, b_ = 400u; ecx = a_ + b_; fl.add(a_, b_); }  // 4a1005 add ecx, 0x190
-    { const reg32 a_ = edx, b_ = 216u; edx = a_ + b_; fl.add(a_, b_); }  // 4a100b add edx, 0xd8
-    { const reg32 a_ = edi, b_ = 412u; edi = a_ + b_; fl.add(a_, b_); }  // 4a1011 add edi, 0x19c
+    { const u32 a_ = ecx, b_ = 400u; ecx = a_ + b_; fl.add(a_, b_); }  // 4a1005 add ecx, 0x190
+    { const u32 a_ = edx, b_ = 216u; edx = a_ + b_; fl.add(a_, b_); }  // 4a100b add edx, 0xd8
+    { const u32 a_ = edi, b_ = 412u; edi = a_ + b_; fl.add(a_, b_); }  // 4a1011 add edi, 0x19c
     ebx = ecx;  // 4a1017 mov ebx, ecx
     eax = edi;  // 4a1019 mov eax, edi
     esi = rd32((ebp - 4u));  // 4a101b mov esi, dword ptr [ebp - 4]
-    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); const std::optional<reg32> r_ = feCore<0x4e0160, frontend::simd::cross>(app, cpu, eax, edx, ebx); if (!r_) return false; eax = *r_; }  // 4a101e call 0x4e0160
+    { handOver(app, ts, esp, eax, edx, ebx, ecx, ebp); const std::optional<u32> r_ = feCore<0x4e0160, frontend::simd::cross>(app, ts, eax, edx, ebx); if (!r_) return false; eax = *r_; }  // 4a101e call 0x4e0160
     esp += 0u;  // 4a101e call 0x4e0160
     eax = ecx;  // 4a1023 mov eax, ecx
-    { const reg32 a_ = esi, b_ = 424u; esi = a_ + b_; fl.add(a_, b_); }  // 4a1025 add esi, 0x1a8
-    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); const float r_ = guest::direct<0x4972f0, vertices::normaliseVector>(app, cpu, eax); if (cpu.terminate) return false; x.push(double(r_)); }  // 4a102b call 0x4972f0
+    { const u32 a_ = esi, b_ = 424u; esi = a_ + b_; fl.add(a_, b_); }  // 4a1025 add esi, 0x1a8
+    { handOver(app, ts, esp, eax, edx, ebx, ecx, ebp); const float r_ = guest::direct<0x4972f0, vertices::normaliseVector>(app, ts, eax); if (ts.terminate) return false; x.push(double(r_)); }  // 4a102b call 0x4972f0
     esp += 0u;  // 4a102b call 0x4972f0
     ebx = esi;  // 4a1030 mov ebx, esi
     edx = edi;  // 4a1032 mov edx, edi
@@ -860,27 +860,27 @@ L_4a1038:
     ecx = rd32((ebp - 4u));  // 4a1038 mov ecx, dword ptr [ebp - 4]
     edi = rd32((ebp - 4u));  // 4a103b mov edi, dword ptr [ebp - 4]
     eax = rd32((ebp - 4u));  // 4a103e mov eax, dword ptr [ebp - 4]
-    { const reg32 a_ = ecx, b_ = 424u; ecx = a_ + b_; fl.add(a_, b_); }  // 4a1041 add ecx, 0x1a8
-    { const reg32 a_ = edi, b_ = 412u; edi = a_ + b_; fl.add(a_, b_); }  // 4a1047 add edi, 0x19c
-    { const reg32 a_ = eax, b_ = 192u; eax = a_ + b_; fl.add(a_, b_); }  // 4a104d add eax, 0xc0
+    { const u32 a_ = ecx, b_ = 424u; ecx = a_ + b_; fl.add(a_, b_); }  // 4a1041 add ecx, 0x1a8
+    { const u32 a_ = edi, b_ = 412u; edi = a_ + b_; fl.add(a_, b_); }  // 4a1047 add edi, 0x19c
+    { const u32 a_ = eax, b_ = 192u; eax = a_ + b_; fl.add(a_, b_); }  // 4a104d add eax, 0xc0
     ebx = ecx;  // 4a1052 mov ebx, ecx
     edx = edi;  // 4a1054 mov edx, edi
     esi = rd32((ebp - 4u));  // 4a1056 mov esi, dword ptr [ebp - 4]
-    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); const std::optional<reg32> r_ = feCore<0x4e0160, frontend::simd::cross>(app, cpu, eax, edx, ebx); if (!r_) return false; eax = *r_; }  // 4a1059 call 0x4e0160
+    { handOver(app, ts, esp, eax, edx, ebx, ecx, ebp); const std::optional<u32> r_ = feCore<0x4e0160, frontend::simd::cross>(app, ts, eax, edx, ebx); if (!r_) return false; eax = *r_; }  // 4a1059 call 0x4e0160
     esp += 0u;  // 4a1059 call 0x4e0160
     eax = ecx;  // 4a105e mov eax, ecx
-    { const reg32 a_ = esi, b_ = 400u; esi = a_ + b_; fl.add(a_, b_); }  // 4a1060 add esi, 0x190
-    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); const float r_ = guest::direct<0x4972f0, vertices::normaliseVector>(app, cpu, eax); if (cpu.terminate) return false; x.push(double(r_)); }  // 4a1066 call 0x4972f0
+    { const u32 a_ = esi, b_ = 400u; esi = a_ + b_; fl.add(a_, b_); }  // 4a1060 add esi, 0x190
+    { handOver(app, ts, esp, eax, edx, ebx, ecx, ebp); const float r_ = guest::direct<0x4972f0, vertices::normaliseVector>(app, ts, eax); if (ts.terminate) return false; x.push(double(r_)); }  // 4a1066 call 0x4972f0
     esp += 0u;  // 4a1066 call 0x4972f0
     ebx = esi;  // 4a106b mov ebx, esi
     edx = ecx;  // 4a106d mov edx, ecx
     eax = edi;  // 4a106f mov eax, edi
 L_4a1071:
     x.fstp_st(0);  // 4a1071 fstp st(0)
-    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); const std::optional<reg32> r_ = feCore<0x4e0160, frontend::simd::cross>(app, cpu, eax, edx, ebx); if (!r_) return false; eax = *r_; }  // 4a1073 call 0x4e0160
+    { handOver(app, ts, esp, eax, edx, ebx, ecx, ebp); const std::optional<u32> r_ = feCore<0x4e0160, frontend::simd::cross>(app, ts, eax, edx, ebx); if (!r_) return false; eax = *r_; }  // 4a1073 call 0x4e0160
     esp += 0u;  // 4a1073 call 0x4e0160
     eax = esi;  // 4a1078 mov eax, esi
-    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); const float r_ = guest::direct<0x4972f0, vertices::normaliseVector>(app, cpu, eax); if (cpu.terminate) return false; x.push(double(r_)); }  // 4a107a call 0x4972f0
+    { handOver(app, ts, esp, eax, edx, ebx, ecx, ebp); const float r_ = guest::direct<0x4972f0, vertices::normaliseVector>(app, ts, eax); if (ts.terminate) return false; x.push(double(r_)); }  // 4a107a call 0x4972f0
     esp += 0u;  // 4a107a call 0x4972f0
     x.fstp_st(0);  // 4a107f fstp st(0)
 L_4a1081:
@@ -896,23 +896,23 @@ L_4a1081:
 }
 
 
-bool core4a1090(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped_, X87* xout)
+bool core4a1090(App* app, ThreadState& ts, const Entry& e, u32& result, u32& popped_, X87* xout)
 {
-    reg32 eax = e.eax, ebx = e.ebx, ecx = e.ecx, edx = e.edx, esi = e.esi, edi = e.edi, ebp = e.ebp, esp = e.esp;
+    u32 eax = e.eax, ebx = e.ebx, ecx = e.ecx, edx = e.edx, esi = e.esi, edi = e.edi, ebp = e.ebp, esp = e.esp;
     Flags fl;
     X87 x;
-    reg32 carry_ = 0;
+    u32 carry_ = 0;
     (void)carry_;
-    const auto rd32 = [&](reg32 a) { return app->getMemory<reg32>(a); };
-    const auto rd16 = [&](reg32 a) { return reg32(app->getMemory<uint16_t>(a)); };
-    const auto rd8 = [&](reg32 a) { return reg32(app->getMemory<uint8_t>(a)); };
-    const auto wr32 = [&](reg32 a, reg32 v) { app->getMemory<reg32>(a) = v; };
-    const auto wr16 = [&](reg32 a, reg32 v) { app->getMemory<uint16_t>(a) = uint16_t(v); };
-    const auto wr8 = [&](reg32 a, reg32 v) { app->getMemory<uint8_t>(a) = uint8_t(v); };
-    const auto F = [&](reg32 a) { return double(app->getMemory<float>(a)); };
-    const auto D = [&](reg32 a) { return app->getMemory<double>(a); };
-    const auto SF = [&](reg32 a, double v) { app->getMemory<float>(a) = float(v); };
-    const auto SD = [&](reg32 a, double v) { app->getMemory<double>(a) = v; };
+    const auto rd32 = [&](u32 a) { return app->getMemory<u32>(a); };
+    const auto rd16 = [&](u32 a) { return u32(app->getMemory<uint16_t>(a)); };
+    const auto rd8 = [&](u32 a) { return u32(app->getMemory<uint8_t>(a)); };
+    const auto wr32 = [&](u32 a, u32 v) { app->getMemory<u32>(a) = v; };
+    const auto wr16 = [&](u32 a, u32 v) { app->getMemory<uint16_t>(a) = uint16_t(v); };
+    const auto wr8 = [&](u32 a, u32 v) { app->getMemory<uint8_t>(a) = uint8_t(v); };
+    const auto F = [&](u32 a) { return double(app->getMemory<float>(a)); };
+    const auto D = [&](u32 a) { return app->getMemory<double>(a); };
+    const auto SF = [&](u32 a, double v) { app->getMemory<float>(a) = float(v); };
+    const auto SD = [&](u32 a, double v) { app->getMemory<double>(a) = v; };
     esp -= 4; wr32(esp, ebx);  // 4a1090 push ebx
     esp -= 4; wr32(esp, ecx);  // 4a1091 push ecx
     esp -= 4; wr32(esp, edx);  // 4a1092 push edx
@@ -926,14 +926,14 @@ bool core4a1090(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped
     edx = (esi + 0x1a8u);  // 4a10a0 lea edx, [esi + 0x1a8]
     eax = 1u;  // 4a10a6 mov eax, 1
     esp -= 4; wr32(esp, rd32((esi + 0x11cu)));  // 4a10ab push dword ptr [esi + 0x11c]
-    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); guest::direct<0x4e0050, vertices::scaleVectorsBy>(app, cpu, int32_t(eax), edx, app->getMemory<float>(esp), rd32(esp + 4u)); if (cpu.terminate) return false; }  // 4a10b1 call 0x4e0050
+    { handOver(app, ts, esp, eax, edx, ebx, ecx, ebp); guest::direct<0x4e0050, vertices::scaleVectorsBy>(app, ts, int32_t(eax), edx, app->getMemory<float>(esp), rd32(esp + 4u)); if (ts.terminate) return false; }  // 4a10b1 call 0x4e0050
     esp += 8u;  // 4a10b1 call 0x4e0050
     eax = (ebp - 0x30u);  // 4a10b6 lea eax, [ebp - 0x30]
     esp -= 4; wr32(esp, eax);  // 4a10b9 push eax
     edx = (esi + 0x190u);  // 4a10ba lea edx, [esi + 0x190]
     eax = 1u;  // 4a10c0 mov eax, 1
     esp -= 4; wr32(esp, rd32((esi + 0x114u)));  // 4a10c5 push dword ptr [esi + 0x114]
-    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); guest::direct<0x4e0050, vertices::scaleVectorsBy>(app, cpu, int32_t(eax), edx, app->getMemory<float>(esp), rd32(esp + 4u)); if (cpu.terminate) return false; }  // 4a10cb call 0x4e0050
+    { handOver(app, ts, esp, eax, edx, ebx, ecx, ebp); guest::direct<0x4e0050, vertices::scaleVectorsBy>(app, ts, int32_t(eax), edx, app->getMemory<float>(esp), rd32(esp + 4u)); if (ts.terminate) return false; }  // 4a10cb call 0x4e0050
     esp += 8u;  // 4a10cb call 0x4e0050
     fl.sub(rd32((esi + 0x10cu)), 1061997773u);  // 4a10d0 cmp dword ptr [esi + 0x10c], 0x3f4ccccd
     if (fl.le()) goto L_4a1134;  // 4a10da jle 0x4a1134
@@ -943,11 +943,11 @@ bool core4a1090(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped
     x.st(0) = -x.st(0);  // 4a10e6 fchs
     edx = (esi + 0x130u);  // 4a10e8 lea edx, [esi + 0x130]
     esp -= 4u;  // 4a10ee sub esp, 4
-    x.st(0) = xsub(cpu, x.st(0), F(esi + 0x15cu));  // 4a10f1 fsub dword ptr [esi + 0x15c]
+    x.st(0) = xsub(ts, x.st(0), F(esi + 0x15cu));  // 4a10f1 fsub dword ptr [esi + 0x15c]
     eax = 1u;  // 4a10f7 mov eax, 1
     SF((esp), x.st(0));  // 4a10fc fstp dword ptr [esp]
     x.pop();  // 4a10fc fstp dword ptr [esp]
-    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); guest::direct<0x4e0050, vertices::scaleVectorsBy>(app, cpu, int32_t(eax), edx, app->getMemory<float>(esp), rd32(esp + 4u)); if (cpu.terminate) return false; }  // 4a10ff call 0x4e0050
+    { handOver(app, ts, esp, eax, edx, ebx, ecx, ebp); guest::direct<0x4e0050, vertices::scaleVectorsBy>(app, ts, int32_t(eax), edx, app->getMemory<float>(esp), rd32(esp + 4u)); if (ts.terminate) return false; }  // 4a10ff call 0x4e0050
     esp += 8u;  // 4a10ff call 0x4e0050
     eax = rd32((esi + 0x98u));  // 4a1104 mov eax, dword ptr [esi + 0x98]
     wr32((ebp - 0x3cu), eax);  // 4a110a mov dword ptr [ebp - 0x3c], eax
@@ -959,7 +959,7 @@ bool core4a1090(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped
     edx = (ebp - 0x3cu);  // 4a1122 lea edx, [ebp - 0x3c]
     wr32((ebp - 0x34u), eax);  // 4a1125 mov dword ptr [ebp - 0x34], eax
     eax = 1u;  // 4a1128 mov eax, 1
-    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); guest::direct<0x4dffb0, vertices::offsetVectorList<true>>(app, cpu, int32_t(eax), edx, ebx, ecx); if (cpu.terminate) return false; }  // 4a112d call 0x4dffb0
+    { handOver(app, ts, esp, eax, edx, ebx, ecx, ebp); guest::direct<0x4dffb0, vertices::offsetVectorList<true>>(app, ts, int32_t(eax), edx, ebx, ecx); if (ts.terminate) return false; }  // 4a112d call 0x4dffb0
     esp += 0u;  // 4a112d call 0x4dffb0
     goto L_4a1158;  // 4a1132 jmp 0x4a1158
 L_4a1134:
@@ -976,49 +976,49 @@ L_4a1158:
     ebx = (ebp - 0x48u);  // 4a115b lea ebx, [ebp - 0x48]
     edx = (ebp - 0x24u);  // 4a115e lea edx, [ebp - 0x24]
     eax = 1u;  // 4a1161 mov eax, 1
-    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); guest::direct<0x4dffb0, vertices::offsetVectorList<true>>(app, cpu, int32_t(eax), edx, ebx, ecx); if (cpu.terminate) return false; }  // 4a1166 call 0x4dffb0
+    { handOver(app, ts, esp, eax, edx, ebx, ecx, ebp); guest::direct<0x4dffb0, vertices::offsetVectorList<true>>(app, ts, int32_t(eax), edx, ebx, ecx); if (ts.terminate) return false; }  // 4a1166 call 0x4dffb0
     esp += 0u;  // 4a1166 call 0x4dffb0
     ebx = (ebp - 0x30u);  // 4a116b lea ebx, [ebp - 0x30]
     edx = (ebp - 0x18u);  // 4a116e lea edx, [ebp - 0x18]
     eax = 1u;  // 4a1171 mov eax, 1
     ecx = (esi + 0x1b4u);  // 4a1176 lea ecx, [esi + 0x1b4]
-    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); guest::direct<0x4e0000, vertices::offsetVectorList<false>>(app, cpu, int32_t(eax), edx, ebx, ecx); if (cpu.terminate) return false; }  // 4a117c call 0x4e0000
+    { handOver(app, ts, esp, eax, edx, ebx, ecx, ebp); guest::direct<0x4e0000, vertices::offsetVectorList<false>>(app, ts, int32_t(eax), edx, ebx, ecx); if (ts.terminate) return false; }  // 4a117c call 0x4e0000
     esp += 0u;  // 4a117c call 0x4e0000
     ebx = (ebp - 0x30u);  // 4a1181 lea ebx, [ebp - 0x30]
     edx = (ebp - 0x18u);  // 4a1184 lea edx, [ebp - 0x18]
     eax = 1u;  // 4a1187 mov eax, 1
     ecx = (esi + 0x1c0u);  // 4a118c lea ecx, [esi + 0x1c0]
-    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); guest::direct<0x4dffb0, vertices::offsetVectorList<true>>(app, cpu, int32_t(eax), edx, ebx, ecx); if (cpu.terminate) return false; }  // 4a1192 call 0x4dffb0
+    { handOver(app, ts, esp, eax, edx, ebx, ecx, ebp); guest::direct<0x4dffb0, vertices::offsetVectorList<true>>(app, ts, int32_t(eax), edx, ebx, ecx); if (ts.terminate) return false; }  // 4a1192 call 0x4dffb0
     esp += 0u;  // 4a1192 call 0x4dffb0
     ecx = (ebp - 0x18u);  // 4a1197 lea ecx, [ebp - 0x18]
     ebx = (ebp - 0x48u);  // 4a119a lea ebx, [ebp - 0x48]
     edx = (ebp - 0x24u);  // 4a119d lea edx, [ebp - 0x24]
     eax = 1u;  // 4a11a0 mov eax, 1
-    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); guest::direct<0x4e0000, vertices::offsetVectorList<false>>(app, cpu, int32_t(eax), edx, ebx, ecx); if (cpu.terminate) return false; }  // 4a11a5 call 0x4e0000
+    { handOver(app, ts, esp, eax, edx, ebx, ecx, ebp); guest::direct<0x4e0000, vertices::offsetVectorList<false>>(app, ts, int32_t(eax), edx, ebx, ecx); if (ts.terminate) return false; }  // 4a11a5 call 0x4e0000
     esp += 0u;  // 4a11a5 call 0x4e0000
     ebx = (ebp - 0x30u);  // 4a11aa lea ebx, [ebp - 0x30]
     edx = (ebp - 0x18u);  // 4a11ad lea edx, [ebp - 0x18]
     eax = 1u;  // 4a11b0 mov eax, 1
     ecx = (esi + 0x1ccu);  // 4a11b5 lea ecx, [esi + 0x1cc]
-    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); guest::direct<0x4e0000, vertices::offsetVectorList<false>>(app, cpu, int32_t(eax), edx, ebx, ecx); if (cpu.terminate) return false; }  // 4a11bb call 0x4e0000
+    { handOver(app, ts, esp, eax, edx, ebx, ecx, ebp); guest::direct<0x4e0000, vertices::offsetVectorList<false>>(app, ts, int32_t(eax), edx, ebx, ecx); if (ts.terminate) return false; }  // 4a11bb call 0x4e0000
     esp += 0u;  // 4a11bb call 0x4e0000
     x.push(F(ebp - 0x18u));  // 4a11c0 fld dword ptr [ebp - 0x18]
     ebx = (ebp - 0x30u);  // 4a11c3 lea ebx, [ebp - 0x30]
-    x.st(0) = xadd(cpu, x.st(0), F(ebp - 0x30u));  // 4a11c6 fadd dword ptr [ebp - 0x30]
+    x.st(0) = xadd(ts, x.st(0), F(ebp - 0x30u));  // 4a11c6 fadd dword ptr [ebp - 0x30]
     edx = (ebp - 0x18u);  // 4a11c9 lea edx, [ebp - 0x18]
     SF((esi + 0x1d8u), x.st(0));  // 4a11cc fstp dword ptr [esi + 0x1d8]
     x.pop();  // 4a11cc fstp dword ptr [esi + 0x1d8]
     x.push(F(ebp - 0x14u));  // 4a11d2 fld dword ptr [ebp - 0x14]
-    x.st(0) = xadd(cpu, x.st(0), F(ebp - 0x2cu));  // 4a11d5 fadd dword ptr [ebp - 0x2c]
+    x.st(0) = xadd(ts, x.st(0), F(ebp - 0x2cu));  // 4a11d5 fadd dword ptr [ebp - 0x2c]
     eax = 1u;  // 4a11d8 mov eax, 1
     SF((esi + 0x1dcu), x.st(0));  // 4a11dd fstp dword ptr [esi + 0x1dc]
     x.pop();  // 4a11dd fstp dword ptr [esi + 0x1dc]
     x.push(F(ebp - 0x10u));  // 4a11e3 fld dword ptr [ebp - 0x10]
-    x.st(0) = xadd(cpu, x.st(0), F(ebp - 0x28u));  // 4a11e6 fadd dword ptr [ebp - 0x28]
+    x.st(0) = xadd(ts, x.st(0), F(ebp - 0x28u));  // 4a11e6 fadd dword ptr [ebp - 0x28]
     ecx = (esi + 0x1d8u);  // 4a11e9 lea ecx, [esi + 0x1d8]
     SF((esi + 0x1e0u), x.st(0));  // 4a11ef fstp dword ptr [esi + 0x1e0]
     x.pop();  // 4a11ef fstp dword ptr [esi + 0x1e0]
-    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); const int32_t n_ = int32_t(eax); const reg32 in_ = edx; guest::direct<0x4dffb0, vertices::offsetVectorList<true>>(app, cpu, n_, edx, ebx, ecx); if (cpu.terminate) return false; eax = n_ > 0 ? in_ + reg32(n_) * 12u : in_; }  // 4a11f5 call 0x4dffb0
+    { handOver(app, ts, esp, eax, edx, ebx, ecx, ebp); const int32_t n_ = int32_t(eax); const u32 in_ = edx; guest::direct<0x4dffb0, vertices::offsetVectorList<true>>(app, ts, n_, edx, ebx, ecx); if (ts.terminate) return false; eax = n_ > 0 ? in_ + u32(n_) * 12u : in_; }  // 4a11f5 call 0x4dffb0
     esp += 0u;  // 4a11f5 call 0x4dffb0
     esp = ebp;  // 4a11fa mov esp, ebp
     ebp = rd32(esp); esp += 4;  // 4a11fc pop ebp
@@ -1032,23 +1032,23 @@ L_4a1158:
 }
 
 
-bool core4a20c0(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped_, X87* xout)
+bool core4a20c0(App* app, ThreadState& ts, const Entry& e, u32& result, u32& popped_, X87* xout)
 {
-    reg32 eax = e.eax, ebx = e.ebx, ecx = e.ecx, edx = e.edx, esi = e.esi, edi = e.edi, ebp = e.ebp, esp = e.esp;
+    u32 eax = e.eax, ebx = e.ebx, ecx = e.ecx, edx = e.edx, esi = e.esi, edi = e.edi, ebp = e.ebp, esp = e.esp;
     Flags fl;
     X87 x;
-    reg32 carry_ = 0;
+    u32 carry_ = 0;
     (void)carry_;
-    const auto rd32 = [&](reg32 a) { return app->getMemory<reg32>(a); };
-    const auto rd16 = [&](reg32 a) { return reg32(app->getMemory<uint16_t>(a)); };
-    const auto rd8 = [&](reg32 a) { return reg32(app->getMemory<uint8_t>(a)); };
-    const auto wr32 = [&](reg32 a, reg32 v) { app->getMemory<reg32>(a) = v; };
-    const auto wr16 = [&](reg32 a, reg32 v) { app->getMemory<uint16_t>(a) = uint16_t(v); };
-    const auto wr8 = [&](reg32 a, reg32 v) { app->getMemory<uint8_t>(a) = uint8_t(v); };
-    const auto F = [&](reg32 a) { return double(app->getMemory<float>(a)); };
-    const auto D = [&](reg32 a) { return app->getMemory<double>(a); };
-    const auto SF = [&](reg32 a, double v) { app->getMemory<float>(a) = float(v); };
-    const auto SD = [&](reg32 a, double v) { app->getMemory<double>(a) = v; };
+    const auto rd32 = [&](u32 a) { return app->getMemory<u32>(a); };
+    const auto rd16 = [&](u32 a) { return u32(app->getMemory<uint16_t>(a)); };
+    const auto rd8 = [&](u32 a) { return u32(app->getMemory<uint8_t>(a)); };
+    const auto wr32 = [&](u32 a, u32 v) { app->getMemory<u32>(a) = v; };
+    const auto wr16 = [&](u32 a, u32 v) { app->getMemory<uint16_t>(a) = uint16_t(v); };
+    const auto wr8 = [&](u32 a, u32 v) { app->getMemory<uint8_t>(a) = uint8_t(v); };
+    const auto F = [&](u32 a) { return double(app->getMemory<float>(a)); };
+    const auto D = [&](u32 a) { return app->getMemory<double>(a); };
+    const auto SF = [&](u32 a, double v) { app->getMemory<float>(a) = float(v); };
+    const auto SD = [&](u32 a, double v) { app->getMemory<double>(a) = v; };
     esp -= 4; wr32(esp, ebx);  // 4a20c0 push ebx
     esp -= 4; wr32(esp, edx);  // 4a20c1 push edx
     esp -= 4; wr32(esp, esi);  // 4a20c2 push esi
@@ -1133,23 +1133,23 @@ L_4a218a:
 }
 
 
-bool core4a2630(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped_, X87* xout)
+bool core4a2630(App* app, ThreadState& ts, const Entry& e, u32& result, u32& popped_, X87* xout)
 {
-    reg32 eax = e.eax, ebx = e.ebx, ecx = e.ecx, edx = e.edx, esi = e.esi, edi = e.edi, ebp = e.ebp, esp = e.esp;
+    u32 eax = e.eax, ebx = e.ebx, ecx = e.ecx, edx = e.edx, esi = e.esi, edi = e.edi, ebp = e.ebp, esp = e.esp;
     Flags fl;
     X87 x;
-    reg32 carry_ = 0;
+    u32 carry_ = 0;
     (void)carry_;
-    const auto rd32 = [&](reg32 a) { return app->getMemory<reg32>(a); };
-    const auto rd16 = [&](reg32 a) { return reg32(app->getMemory<uint16_t>(a)); };
-    const auto rd8 = [&](reg32 a) { return reg32(app->getMemory<uint8_t>(a)); };
-    const auto wr32 = [&](reg32 a, reg32 v) { app->getMemory<reg32>(a) = v; };
-    const auto wr16 = [&](reg32 a, reg32 v) { app->getMemory<uint16_t>(a) = uint16_t(v); };
-    const auto wr8 = [&](reg32 a, reg32 v) { app->getMemory<uint8_t>(a) = uint8_t(v); };
-    const auto F = [&](reg32 a) { return double(app->getMemory<float>(a)); };
-    const auto D = [&](reg32 a) { return app->getMemory<double>(a); };
-    const auto SF = [&](reg32 a, double v) { app->getMemory<float>(a) = float(v); };
-    const auto SD = [&](reg32 a, double v) { app->getMemory<double>(a) = v; };
+    const auto rd32 = [&](u32 a) { return app->getMemory<u32>(a); };
+    const auto rd16 = [&](u32 a) { return u32(app->getMemory<uint16_t>(a)); };
+    const auto rd8 = [&](u32 a) { return u32(app->getMemory<uint8_t>(a)); };
+    const auto wr32 = [&](u32 a, u32 v) { app->getMemory<u32>(a) = v; };
+    const auto wr16 = [&](u32 a, u32 v) { app->getMemory<uint16_t>(a) = uint16_t(v); };
+    const auto wr8 = [&](u32 a, u32 v) { app->getMemory<uint8_t>(a) = uint8_t(v); };
+    const auto F = [&](u32 a) { return double(app->getMemory<float>(a)); };
+    const auto D = [&](u32 a) { return app->getMemory<double>(a); };
+    const auto SF = [&](u32 a, double v) { app->getMemory<float>(a) = float(v); };
+    const auto SD = [&](u32 a, double v) { app->getMemory<double>(a) = v; };
     esp -= 4; wr32(esp, edx);  // 4a2630 push edx
     esp -= 4; wr32(esp, ebp);  // 4a2631 push ebp
     ebp = esp;  // 4a2632 mov ebp, esp
@@ -1161,13 +1161,13 @@ bool core4a2630(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped
     goto L_4a266e;  // 4a264b jmp 0x4a266e
 L_4a264d:
     eax = edx;  // 4a264d mov eax, edx
-    if (!ownCall(core4a00d0, app, cpu, e, esp, eax, edx, ebx, ecx, ebp, x)) return false;  // 4a264f call 0x4a00d0
+    if (!ownCall(core4a00d0, app, ts, e, esp, eax, edx, ebx, ecx, ebp, x)) return false;  // 4a264f call 0x4a00d0
     esp += 0u;  // 4a264f call 0x4a00d0
     x.push(F(edx + 0x118u));  // 4a2654 fld dword ptr [edx + 0x118]
     x.fxch(1);  // 4a265a fxch st(1)
     SF((edx + 0x9cu), x.st(0));  // 4a265c fstp dword ptr [edx + 0x9c]
     x.pop();  // 4a265c fstp dword ptr [edx + 0x9c]
-    x.st(0) = xadd(cpu, x.st(0), F(edx + 0x9cu));  // 4a2662 fadd dword ptr [edx + 0x9c]
+    x.st(0) = xadd(ts, x.st(0), F(edx + 0x9cu));  // 4a2662 fadd dword ptr [edx + 0x9c]
     SF((edx + 0x9cu), x.st(0));  // 4a2668 fstp dword ptr [edx + 0x9c]
     x.pop();  // 4a2668 fstp dword ptr [edx + 0x9c]
 L_4a266e:
@@ -1182,23 +1182,23 @@ L_4a266e:
 }
 
 
-bool core4a2830(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped_, X87* xout)
+bool core4a2830(App* app, ThreadState& ts, const Entry& e, u32& result, u32& popped_, X87* xout)
 {
-    reg32 eax = e.eax, ebx = e.ebx, ecx = e.ecx, edx = e.edx, esi = e.esi, edi = e.edi, ebp = e.ebp, esp = e.esp;
+    u32 eax = e.eax, ebx = e.ebx, ecx = e.ecx, edx = e.edx, esi = e.esi, edi = e.edi, ebp = e.ebp, esp = e.esp;
     Flags fl;
     X87 x;
-    reg32 carry_ = 0;
+    u32 carry_ = 0;
     (void)carry_;
-    const auto rd32 = [&](reg32 a) { return app->getMemory<reg32>(a); };
-    const auto rd16 = [&](reg32 a) { return reg32(app->getMemory<uint16_t>(a)); };
-    const auto rd8 = [&](reg32 a) { return reg32(app->getMemory<uint8_t>(a)); };
-    const auto wr32 = [&](reg32 a, reg32 v) { app->getMemory<reg32>(a) = v; };
-    const auto wr16 = [&](reg32 a, reg32 v) { app->getMemory<uint16_t>(a) = uint16_t(v); };
-    const auto wr8 = [&](reg32 a, reg32 v) { app->getMemory<uint8_t>(a) = uint8_t(v); };
-    const auto F = [&](reg32 a) { return double(app->getMemory<float>(a)); };
-    const auto D = [&](reg32 a) { return app->getMemory<double>(a); };
-    const auto SF = [&](reg32 a, double v) { app->getMemory<float>(a) = float(v); };
-    const auto SD = [&](reg32 a, double v) { app->getMemory<double>(a) = v; };
+    const auto rd32 = [&](u32 a) { return app->getMemory<u32>(a); };
+    const auto rd16 = [&](u32 a) { return u32(app->getMemory<uint16_t>(a)); };
+    const auto rd8 = [&](u32 a) { return u32(app->getMemory<uint8_t>(a)); };
+    const auto wr32 = [&](u32 a, u32 v) { app->getMemory<u32>(a) = v; };
+    const auto wr16 = [&](u32 a, u32 v) { app->getMemory<uint16_t>(a) = uint16_t(v); };
+    const auto wr8 = [&](u32 a, u32 v) { app->getMemory<uint8_t>(a) = uint8_t(v); };
+    const auto F = [&](u32 a) { return double(app->getMemory<float>(a)); };
+    const auto D = [&](u32 a) { return app->getMemory<double>(a); };
+    const auto SF = [&](u32 a, double v) { app->getMemory<float>(a) = float(v); };
+    const auto SD = [&](u32 a, double v) { app->getMemory<double>(a) = v; };
     esp -= 4; wr32(esp, ebx);  // 4a2830 push ebx
     esp -= 4; wr32(esp, ecx);  // 4a2831 push ecx
     esp -= 4; wr32(esp, edx);  // 4a2832 push edx
@@ -1215,24 +1215,24 @@ bool core4a2830(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped
     fl.sub(rd8((ecx + 0x88u)), 0u);  // 4a285a cmp byte ptr [ecx + 0x88], 0
     if (fl.e()) goto L_4a286f;  // 4a2861 je 0x4a286f
     eax = ecx;  // 4a2863 mov eax, ecx
-    if (!ownCall(core4a2630, app, cpu, e, esp, eax, edx, ebx, ecx, ebp, x)) return false;  // 4a2865 call 0x4a2630
+    if (!ownCall(core4a2630, app, ts, e, esp, eax, edx, ebx, ecx, ebp, x)) return false;  // 4a2865 call 0x4a2630
     esp += 0u;  // 4a2865 call 0x4a2630
     goto L_4a2bad;  // 4a286a jmp 0x4a2bad
 L_4a286f:
     eax = ecx;  // 4a286f mov eax, ecx
-    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); const std::optional<reg32> r_ = feCore<0x4a2260, frontend::simb::downforceAndDrag>(app, cpu, eax); if (!r_) return false; eax = *r_; }  // 4a2871 call 0x4a2260
+    { handOver(app, ts, esp, eax, edx, ebx, ecx, ebp); const std::optional<u32> r_ = feCore<0x4a2260, frontend::simb::downforceAndDrag>(app, ts, eax); if (!r_) return false; eax = *r_; }  // 4a2871 call 0x4a2260
     esp += 0u;  // 4a2871 call 0x4a2260
     eax = ecx;  // 4a2876 mov eax, ecx
-    if (!ownCall(core4a00d0, app, cpu, e, esp, eax, edx, ebx, ecx, ebp, x)) return false;  // 4a2878 call 0x4a00d0
+    if (!ownCall(core4a00d0, app, ts, e, esp, eax, edx, ebx, ecx, ebp, x)) return false;  // 4a2878 call 0x4a00d0
     esp += 0u;  // 4a2878 call 0x4a00d0
     eax = ecx;  // 4a287d mov eax, ecx
     SF((ecx + 0x158u), x.st(0));  // 4a287f fstp dword ptr [ecx + 0x158]
     x.pop();  // 4a287f fstp dword ptr [ecx + 0x158]
-    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); const std::optional<reg32> r_ = feCore<0x4a21a0, frontend::simb::hitTunnelRoof>(app, cpu, eax); if (!r_) return false; eax = *r_; }  // 4a2885 call 0x4a21a0
+    { handOver(app, ts, esp, eax, edx, ebx, ecx, ebp); const std::optional<u32> r_ = feCore<0x4a21a0, frontend::simb::hitTunnelRoof>(app, ts, eax); if (!r_) return false; eax = *r_; }  // 4a2885 call 0x4a21a0
     esp += 0u;  // 4a2885 call 0x4a21a0
     eax = ecx;  // 4a288a mov eax, ecx
     edi = (ebp - 0x5cu);  // 4a288c lea edi, [ebp - 0x5c]
-    if (!ownCall(core4a0440, app, cpu, e, esp, eax, edx, ebx, ecx, ebp, x)) return false;  // 4a288f call 0x4a0440
+    if (!ownCall(core4a0440, app, ts, e, esp, eax, edx, ebx, ecx, ebp, x)) return false;  // 4a288f call 0x4a0440
     esp += 0u;  // 4a288f call 0x4a0440
     esi = (ecx + 0x130u);  // 4a2894 lea esi, [ecx + 0x130]
     SF((ecx + 0x15cu), x.st(0));  // 4a289a fstp dword ptr [ecx + 0x15c]
@@ -1241,7 +1241,7 @@ L_4a286f:
     wr32(edi, rd32(esi)); esi += 4; edi += 4;  // 4a28a2 movsd dword ptr es:[edi], dword ptr [esi]
     wr32(edi, rd32(esi)); esi += 4; edi += 4;  // 4a28a3 movsd dword ptr es:[edi], dword ptr [esi]
     wr32(edi, rd32(esi)); esi += 4; edi += 4;  // 4a28a4 movsd dword ptr es:[edi], dword ptr [esi]
-    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); const std::optional<reg32> r_ = feCore<0x49fde0, frontend::sima::carTiltedOver>(app, cpu, eax); if (!r_) return false; eax = *r_; }  // 4a28a5 call 0x49fde0
+    { handOver(app, ts, esp, eax, edx, ebx, ecx, ebp); const std::optional<u32> r_ = feCore<0x49fde0, frontend::sima::carTiltedOver>(app, ts, eax); if (!r_) return false; eax = *r_; }  // 4a28a5 call 0x49fde0
     esp += 0u;  // 4a28a5 call 0x49fde0
     fl.logic(eax & eax);  // 4a28aa test eax, eax
     if (fl.e()) goto L_4a28bc;  // 4a28ac je 0x4a28bc
@@ -1309,7 +1309,7 @@ L_4a293b:
     x.pop();  // 4a2943 fstp dword ptr [ebp - 0x1c]
 L_4a2946:
     x.push(F(ebp - 0x1cu));  // 4a2946 fld dword ptr [ebp - 0x1c]
-    x.st(0) = xmul(cpu, x.st(0), F(0x53c8ccu));  // 4a2949 fmul dword ptr [0x53c8cc]
+    x.st(0) = xmul(ts, x.st(0), F(0x53c8ccu));  // 4a2949 fmul dword ptr [0x53c8cc]
     x.push(0.0);  // 4a294f fldz
     x.fxch(1);  // 4a2951 fxch st(1)
     SF((ebp - 0x24u), x.st(0));  // 4a2953 fstp dword ptr [ebp - 0x24]
@@ -1329,7 +1329,7 @@ L_4a296c:
     x.pop();  // 4a2974 fstp dword ptr [ebp - 0xc]
 L_4a2977:
     x.push(F(ebp - 0xcu));  // 4a2977 fld dword ptr [ebp - 0xc]
-    x.st(0) = xadd(cpu, x.st(0), F(ebp - 0x24u));  // 4a297a fadd dword ptr [ebp - 0x24]
+    x.st(0) = xadd(ts, x.st(0), F(ebp - 0x24u));  // 4a297a fadd dword ptr [ebp - 0x24]
     goto L_4a29d9;  // 4a297d jmp 0x4a29d9
 L_4a297f:
     x.push(0.0);  // 4a297f fldz
@@ -1348,7 +1348,7 @@ L_4a2997:
     x.pop();  // 4a299f fstp dword ptr [ebp - 0x18]
 L_4a29a2:
     x.push(F(ebp - 0x18u));  // 4a29a2 fld dword ptr [ebp - 0x18]
-    x.st(0) = xmul(cpu, x.st(0), F(0x53c8ccu));  // 4a29a5 fmul dword ptr [0x53c8cc]
+    x.st(0) = xmul(ts, x.st(0), F(0x53c8ccu));  // 4a29a5 fmul dword ptr [0x53c8cc]
     x.push(0.0);  // 4a29ab fldz
     x.fxch(1);  // 4a29ad fxch st(1)
     SF((ebp - 0x20u), x.st(0));  // 4a29af fstp dword ptr [ebp - 0x20]
@@ -1368,7 +1368,7 @@ L_4a29c8:
     x.pop();  // 4a29d0 fstp dword ptr [ebp - 0x14]
 L_4a29d3:
     x.push(F(ebp - 0x14u));  // 4a29d3 fld dword ptr [ebp - 0x14]
-    x.st(0) = xadd(cpu, x.st(0), F(ebp - 0x20u));  // 4a29d6 fadd dword ptr [ebp - 0x20]
+    x.st(0) = xadd(ts, x.st(0), F(ebp - 0x20u));  // 4a29d6 fadd dword ptr [ebp - 0x20]
 L_4a29d9:
     SF((ebp - 4u), x.st(0));  // 4a29d9 fstp dword ptr [ebp - 4]
     x.pop();  // 4a29d9 fstp dword ptr [ebp - 4]
@@ -1379,7 +1379,7 @@ L_4a29d9:
     if (fl.e()) goto L_4a2a0c;  // 4a29ef je 0x4a2a0c
     x.push(F(ecx + 0xa8u));  // 4a29f1 fld dword ptr [ecx + 0xa8]
     x.push(x.st(0));  // 4a29f7 fld st(0)
-    x.st(0) = xadd(cpu, x.st(0), D(0x53c8d4u));  // 4a29f9 fadd qword ptr [0x53c8d4]
+    x.st(0) = xadd(ts, x.st(0), D(0x53c8d4u));  // 4a29f9 fadd qword ptr [0x53c8d4]
     x.fstp_st(1);  // 4a29ff fstp st(1)
     SF((ecx + 0xa8u), x.st(0));  // 4a2a01 fstp dword ptr [ecx + 0xa8]
     x.pop();  // 4a2a01 fstp dword ptr [ecx + 0xa8]
@@ -1387,11 +1387,11 @@ L_4a29d9:
 L_4a2a0c:
     x.push(F(0x53c8dcu));  // 4a2a0c fld dword ptr [0x53c8dc]
     x.push(F(ecx + 0x194u));  // 4a2a12 fld dword ptr [ecx + 0x194]
-    x.st(0) = xmul(cpu, x.st(0), x.st(1));  // 4a2a18 fmul st(1)
+    x.st(0) = xmul(ts, x.st(0), x.st(1));  // 4a2a18 fmul st(1)
     x.push(F(ecx + 0x1a0u));  // 4a2a1a fld dword ptr [ecx + 0x1a0]
-    x.st(0) = xmul(cpu, x.st(0), x.st(2));  // 4a2a20 fmul st(2)
+    x.st(0) = xmul(ts, x.st(0), x.st(2));  // 4a2a20 fmul st(2)
     x.push(F(ecx + 0x1acu));  // 4a2a22 fld dword ptr [ecx + 0x1ac]
-    x.st(3) = xmul(cpu, x.st(3), x.st(0));  // 4a2a28 fmulp st(3)
+    x.st(3) = xmul(ts, x.st(3), x.st(0));  // 4a2a28 fmulp st(3)
     x.pop();  // 4a2a28 fmulp st(3)
     eax = (ebp - 0x68u);  // 4a2a2a lea eax, [ebp - 0x68]
     edx = (ecx + 0x190u);  // 4a2a2d lea edx, [ecx + 0x190]
@@ -1405,34 +1405,34 @@ L_4a2a0c:
     eax = 1u;  // 4a2a3f mov eax, 1
     SF((ebp - 0x28u), x.st(0));  // 4a2a44 fstp dword ptr [ebp - 0x28]
     x.pop();  // 4a2a44 fstp dword ptr [ebp - 0x28]
-    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); guest::direct<0x4e0050, vertices::scaleVectorsBy>(app, cpu, int32_t(eax), edx, app->getMemory<float>(esp), rd32(esp + 4u)); if (cpu.terminate) return false; }  // 4a2a47 call 0x4e0050
+    { handOver(app, ts, esp, eax, edx, ebx, ecx, ebp); guest::direct<0x4e0050, vertices::scaleVectorsBy>(app, ts, int32_t(eax), edx, app->getMemory<float>(esp), rd32(esp + 4u)); if (ts.terminate) return false; }  // 4a2a47 call 0x4e0050
     esp += 8u;  // 4a2a47 call 0x4e0050
     eax = (ebp - 0x50u);  // 4a2a4c lea eax, [ebp - 0x50]
     esp -= 4; wr32(esp, eax);  // 4a2a4f push eax
     edx = (ecx + 0x19cu);  // 4a2a50 lea edx, [ecx + 0x19c]
     eax = 1u;  // 4a2a56 mov eax, 1
     esp -= 4; wr32(esp, rd32((ebp - 0x2cu)));  // 4a2a5b push dword ptr [ebp - 0x2c]
-    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); guest::direct<0x4e0050, vertices::scaleVectorsBy>(app, cpu, int32_t(eax), edx, app->getMemory<float>(esp), rd32(esp + 4u)); if (cpu.terminate) return false; }  // 4a2a5e call 0x4e0050
+    { handOver(app, ts, esp, eax, edx, ebx, ecx, ebp); guest::direct<0x4e0050, vertices::scaleVectorsBy>(app, ts, int32_t(eax), edx, app->getMemory<float>(esp), rd32(esp + 4u)); if (ts.terminate) return false; }  // 4a2a5e call 0x4e0050
     esp += 8u;  // 4a2a5e call 0x4e0050
     eax = (ebp - 0x44u);  // 4a2a63 lea eax, [ebp - 0x44]
     esp -= 4; wr32(esp, eax);  // 4a2a66 push eax
     edx = (ecx + 0x1a8u);  // 4a2a67 lea edx, [ecx + 0x1a8]
     eax = 1u;  // 4a2a6d mov eax, 1
     esp -= 4; wr32(esp, rd32((ebp - 0x28u)));  // 4a2a72 push dword ptr [ebp - 0x28]
-    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); guest::direct<0x4e0050, vertices::scaleVectorsBy>(app, cpu, int32_t(eax), edx, app->getMemory<float>(esp), rd32(esp + 4u)); if (cpu.terminate) return false; }  // 4a2a75 call 0x4e0050
+    { handOver(app, ts, esp, eax, edx, ebx, ecx, ebp); guest::direct<0x4e0050, vertices::scaleVectorsBy>(app, ts, int32_t(eax), edx, app->getMemory<float>(esp), rd32(esp + 4u)); if (ts.terminate) return false; }  // 4a2a75 call 0x4e0050
     esp += 8u;  // 4a2a75 call 0x4e0050
     x.push(F(ecx + 0xa4u));  // 4a2a7a fld dword ptr [ecx + 0xa4]
-    x.st(0) = xadd(cpu, x.st(0), F(ebp - 0x50u));  // 4a2a80 fadd dword ptr [ebp - 0x50]
+    x.st(0) = xadd(ts, x.st(0), F(ebp - 0x50u));  // 4a2a80 fadd dword ptr [ebp - 0x50]
     x.push(F(ecx + 0xa8u));  // 4a2a83 fld dword ptr [ecx + 0xa8]
     x.fxch(1);  // 4a2a89 fxch st(1)
     SF((ecx + 0xa4u), x.st(0));  // 4a2a8b fstp dword ptr [ecx + 0xa4]
     x.pop();  // 4a2a8b fstp dword ptr [ecx + 0xa4]
-    x.st(0) = xadd(cpu, x.st(0), F(ebp - 0x4cu));  // 4a2a91 fadd dword ptr [ebp - 0x4c]
+    x.st(0) = xadd(ts, x.st(0), F(ebp - 0x4cu));  // 4a2a91 fadd dword ptr [ebp - 0x4c]
     x.push(F(ecx + 0xacu));  // 4a2a94 fld dword ptr [ecx + 0xac]
     x.fxch(1);  // 4a2a9a fxch st(1)
     SF((ecx + 0xa8u), x.st(0));  // 4a2a9c fstp dword ptr [ecx + 0xa8]
     x.pop();  // 4a2a9c fstp dword ptr [ecx + 0xa8]
-    x.st(0) = xadd(cpu, x.st(0), F(ebp - 0x48u));  // 4a2aa2 fadd dword ptr [ebp - 0x48]
+    x.st(0) = xadd(ts, x.st(0), F(ebp - 0x48u));  // 4a2aa2 fadd dword ptr [ebp - 0x48]
     SF((ecx + 0xacu), x.st(0));  // 4a2aa5 fstp dword ptr [ecx + 0xac]
     x.pop();  // 4a2aa5 fstp dword ptr [ecx + 0xac]
     x.push(F(ebp - 0x58u));  // 4a2aab fld dword ptr [ebp - 0x58]
@@ -1442,34 +1442,34 @@ L_4a2a0c:
     // sahf  // 4a2ab6 sahf
     if (fl.ae()) goto L_4a2aeb;  // 4a2ab7 jae 0x4a2aeb
     x.push(F(ebp - 0x68u));  // 4a2ab9 fld dword ptr [ebp - 0x68]
-    x.st(0) = xadd(cpu, x.st(0), F(ebp - 0x44u));  // 4a2abc fadd dword ptr [ebp - 0x44]
-    x.st(0) = xadd(cpu, x.st(0), F(ecx + 0xa4u));  // 4a2abf fadd dword ptr [ecx + 0xa4]
+    x.st(0) = xadd(ts, x.st(0), F(ebp - 0x44u));  // 4a2abc fadd dword ptr [ebp - 0x44]
+    x.st(0) = xadd(ts, x.st(0), F(ecx + 0xa4u));  // 4a2abf fadd dword ptr [ecx + 0xa4]
     SF((ecx + 0xa4u), x.st(0));  // 4a2ac5 fstp dword ptr [ecx + 0xa4]
     x.pop();  // 4a2ac5 fstp dword ptr [ecx + 0xa4]
     x.push(F(ebp - 0x64u));  // 4a2acb fld dword ptr [ebp - 0x64]
-    x.st(0) = xadd(cpu, x.st(0), F(ebp - 0x40u));  // 4a2ace fadd dword ptr [ebp - 0x40]
-    x.st(0) = xadd(cpu, x.st(0), F(ecx + 0xa8u));  // 4a2ad1 fadd dword ptr [ecx + 0xa8]
+    x.st(0) = xadd(ts, x.st(0), F(ebp - 0x40u));  // 4a2ace fadd dword ptr [ebp - 0x40]
+    x.st(0) = xadd(ts, x.st(0), F(ecx + 0xa8u));  // 4a2ad1 fadd dword ptr [ecx + 0xa8]
     SF((ecx + 0xa8u), x.st(0));  // 4a2ad7 fstp dword ptr [ecx + 0xa8]
     x.pop();  // 4a2ad7 fstp dword ptr [ecx + 0xa8]
     x.push(F(ebp - 0x60u));  // 4a2add fld dword ptr [ebp - 0x60]
-    x.st(0) = xadd(cpu, x.st(0), F(ebp - 0x3cu));  // 4a2ae0 fadd dword ptr [ebp - 0x3c]
-    x.st(0) = xadd(cpu, x.st(0), F(ecx + 0xacu));  // 4a2ae3 fadd dword ptr [ecx + 0xac]
+    x.st(0) = xadd(ts, x.st(0), F(ebp - 0x3cu));  // 4a2ae0 fadd dword ptr [ebp - 0x3c]
+    x.st(0) = xadd(ts, x.st(0), F(ecx + 0xacu));  // 4a2ae3 fadd dword ptr [ecx + 0xac]
     goto L_4a2b22;  // 4a2ae9 jmp 0x4a2b22
 L_4a2aeb:
     fl.sub(rd32((ecx + 0x10cu)), 1063675494u);  // 4a2aeb cmp dword ptr [ecx + 0x10c], 0x3f666666
     if (fl.le()) goto L_4a2b28;  // 4a2af5 jle 0x4a2b28
     x.push(F(ecx + 0xa4u));  // 4a2af7 fld dword ptr [ecx + 0xa4]
-    x.st(0) = xadd(cpu, x.st(0), F(ebp - 0x44u));  // 4a2afd fadd dword ptr [ebp - 0x44]
+    x.st(0) = xadd(ts, x.st(0), F(ebp - 0x44u));  // 4a2afd fadd dword ptr [ebp - 0x44]
     x.push(F(ecx + 0xa8u));  // 4a2b00 fld dword ptr [ecx + 0xa8]
     x.fxch(1);  // 4a2b06 fxch st(1)
     SF((ecx + 0xa4u), x.st(0));  // 4a2b08 fstp dword ptr [ecx + 0xa4]
     x.pop();  // 4a2b08 fstp dword ptr [ecx + 0xa4]
-    x.st(0) = xadd(cpu, x.st(0), F(ebp - 0x40u));  // 4a2b0e fadd dword ptr [ebp - 0x40]
+    x.st(0) = xadd(ts, x.st(0), F(ebp - 0x40u));  // 4a2b0e fadd dword ptr [ebp - 0x40]
     x.push(F(ecx + 0xacu));  // 4a2b11 fld dword ptr [ecx + 0xac]
     x.fxch(1);  // 4a2b17 fxch st(1)
     SF((ecx + 0xa8u), x.st(0));  // 4a2b19 fstp dword ptr [ecx + 0xa8]
     x.pop();  // 4a2b19 fstp dword ptr [ecx + 0xa8]
-    x.st(0) = xadd(cpu, x.st(0), F(ebp - 0x3cu));  // 4a2b1f fadd dword ptr [ebp - 0x3c]
+    x.st(0) = xadd(ts, x.st(0), F(ebp - 0x3cu));  // 4a2b1f fadd dword ptr [ebp - 0x3c]
 L_4a2b22:
     SF((ecx + 0xacu), x.st(0));  // 4a2b22 fstp dword ptr [ecx + 0xac]
     x.pop();  // 4a2b22 fstp dword ptr [ecx + 0xac]
@@ -1483,12 +1483,12 @@ L_4a2b28:
     fl.logic(rd8((ecx + 0x200u)) & 4u);  // 4a2b47 test byte ptr [ecx + 0x200], 4
     if (fl.e()) goto L_4a2b57;  // 4a2b4e je 0x4a2b57
     eax = ecx;  // 4a2b50 mov eax, ecx
-    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); guest::direct<0x4aa4f4, handling::matchToSpeed>(app, cpu, eax); if (cpu.terminate) return false; }  // 4a2b52 call 0x4aa4f4
+    { handOver(app, ts, esp, eax, edx, ebx, ecx, ebp); guest::direct<0x4aa4f4, handling::matchToSpeed>(app, ts, eax); if (ts.terminate) return false; }  // 4a2b52 call 0x4aa4f4
     esp += 0u;  // 4a2b52 call 0x4aa4f4
 L_4a2b57:
     edx = (ebp - 0x5cu);  // 4a2b57 lea edx, [ebp - 0x5c]
     eax = ecx;  // 4a2b5a mov eax, ecx
-    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); const std::optional<reg32> r_ = feCore<0x4a1ce0, frontend::simb::reactToSurface>(app, cpu, eax, edx); if (!r_) return false; eax = *r_; }  // 4a2b5c call 0x4a1ce0
+    { handOver(app, ts, esp, eax, edx, ebx, ecx, ebp); const std::optional<u32> r_ = feCore<0x4a1ce0, frontend::simb::reactToSurface>(app, ts, eax, edx); if (!r_) return false; eax = *r_; }  // 4a2b5c call 0x4a1ce0
     esp += 0u;  // 4a2b5c call 0x4a1ce0
     esp = ebp;  // 4a2b61 mov esp, ebp
     ebp = rd32(esp); esp += 4;  // 4a2b63 pop ebp
@@ -1507,7 +1507,7 @@ L_4a2b6a:
     edx = rd32((ebp - 0x5cu));  // 4a2b72 mov edx, dword ptr [ebp - 0x5c]
     esp -= 4; wr32(esp, edx);  // 4a2b75 push edx
     eax = ecx;  // 4a2b76 mov eax, ecx
-    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); const std::optional<reg32> r_ = feCore<0x4a1610, frontend::simb::predictContact>(app, cpu, eax, esp); if (!r_) return false; eax = *r_; }  // 4a2b78 call 0x4a1610
+    { handOver(app, ts, esp, eax, edx, ebx, ecx, ebp); const std::optional<u32> r_ = feCore<0x4a1610, frontend::simb::predictContact>(app, ts, eax, esp); if (!r_) return false; eax = *r_; }  // 4a2b78 call 0x4a1610
     esp += -12u;  // 4a2b78 call 0x4a1610
     esp = ebp;  // 4a2b7d mov esp, ebp
     ebp = rd32(esp); esp += 4;  // 4a2b7f pop ebp
@@ -1524,10 +1524,10 @@ L_4a2b86:
     wr8((ecx + 0x8bu), 1u);  // 4a2b90 mov byte ptr [ecx + 0x8b], 1
 L_4a2b97:
     edx = (edx & 0xffff0000u) | ((rd16((ecx + 0x164u))) & 0xffffu);  // 4a2b97 mov dx, word ptr [ecx + 0x164]
-    { const reg32 r_ = edx + 1u; edx = r_; fl.arith(r_); }  // 4a2b9e inc edx
+    { const u32 r_ = edx + 1u; edx = r_; fl.arith(r_); }  // 4a2b9e inc edx
     eax = ecx;  // 4a2b9f mov eax, ecx
     wr16((ecx + 0x164u), (edx & 0xffffu));  // 4a2ba1 mov word ptr [ecx + 0x164], dx
-    if (!ownCall(core4a20c0, app, cpu, e, esp, eax, edx, ebx, ecx, ebp, x)) return false;  // 4a2ba8 call 0x4a20c0
+    if (!ownCall(core4a20c0, app, ts, e, esp, eax, edx, ebx, ecx, ebp, x)) return false;  // 4a2ba8 call 0x4a20c0
     esp += -24u;  // 4a2ba8 call 0x4a20c0
 L_4a2bad:
     esp = ebp;  // 4a2bad mov esp, ebp
@@ -1543,41 +1543,41 @@ L_4a2bad:
 }
 
 
-bool core4a2c60(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped_, X87* xout)
+bool core4a2c60(App* app, ThreadState& ts, const Entry& e, u32& result, u32& popped_, X87* xout)
 {
-    reg32 eax = e.eax, ebx = e.ebx, ecx = e.ecx, edx = e.edx, esi = e.esi, edi = e.edi, ebp = e.ebp, esp = e.esp;
+    u32 eax = e.eax, ebx = e.ebx, ecx = e.ecx, edx = e.edx, esi = e.esi, edi = e.edi, ebp = e.ebp, esp = e.esp;
     Flags fl;
     X87 x;
-    reg32 carry_ = 0;
+    u32 carry_ = 0;
     (void)carry_;
-    const auto rd32 = [&](reg32 a) { return app->getMemory<reg32>(a); };
-    const auto rd16 = [&](reg32 a) { return reg32(app->getMemory<uint16_t>(a)); };
-    const auto rd8 = [&](reg32 a) { return reg32(app->getMemory<uint8_t>(a)); };
-    const auto wr32 = [&](reg32 a, reg32 v) { app->getMemory<reg32>(a) = v; };
-    const auto wr16 = [&](reg32 a, reg32 v) { app->getMemory<uint16_t>(a) = uint16_t(v); };
-    const auto wr8 = [&](reg32 a, reg32 v) { app->getMemory<uint8_t>(a) = uint8_t(v); };
-    const auto F = [&](reg32 a) { return double(app->getMemory<float>(a)); };
-    const auto D = [&](reg32 a) { return app->getMemory<double>(a); };
-    const auto SF = [&](reg32 a, double v) { app->getMemory<float>(a) = float(v); };
-    const auto SD = [&](reg32 a, double v) { app->getMemory<double>(a) = v; };
+    const auto rd32 = [&](u32 a) { return app->getMemory<u32>(a); };
+    const auto rd16 = [&](u32 a) { return u32(app->getMemory<uint16_t>(a)); };
+    const auto rd8 = [&](u32 a) { return u32(app->getMemory<uint8_t>(a)); };
+    const auto wr32 = [&](u32 a, u32 v) { app->getMemory<u32>(a) = v; };
+    const auto wr16 = [&](u32 a, u32 v) { app->getMemory<uint16_t>(a) = uint16_t(v); };
+    const auto wr8 = [&](u32 a, u32 v) { app->getMemory<uint8_t>(a) = uint8_t(v); };
+    const auto F = [&](u32 a) { return double(app->getMemory<float>(a)); };
+    const auto D = [&](u32 a) { return app->getMemory<double>(a); };
+    const auto SF = [&](u32 a, double v) { app->getMemory<float>(a) = float(v); };
+    const auto SD = [&](u32 a, double v) { app->getMemory<double>(a) = v; };
     esp -= 4; wr32(esp, ebp);  // 4a2c60 push ebp
     ebp = esp;  // 4a2c61 mov ebp, esp
     fl.sub(rd8((eax + 0x89u)), 0u);  // 4a2c63 cmp byte ptr [eax + 0x89], 0
     if (fl.e()) goto L_4a2cb8;  // 4a2c6a je 0x4a2cb8
     x.push(F(0x53c8ecu));  // 4a2c6c fld dword ptr [0x53c8ec]
     x.push(F(eax + 0xa4u));  // 4a2c72 fld dword ptr [eax + 0xa4]
-    x.st(0) = xmul(cpu, x.st(0), x.st(1));  // 4a2c78 fmul st(1)
+    x.st(0) = xmul(ts, x.st(0), x.st(1));  // 4a2c78 fmul st(1)
     x.push(F(eax + 0xa8u));  // 4a2c7a fld dword ptr [eax + 0xa8]
-    x.st(0) = xmul(cpu, x.st(0), x.st(2));  // 4a2c80 fmul st(2)
+    x.st(0) = xmul(ts, x.st(0), x.st(2));  // 4a2c80 fmul st(2)
     x.push(F(eax + 0xacu));  // 4a2c82 fld dword ptr [eax + 0xac]
-    x.st(3) = xmul(cpu, x.st(3), x.st(0));  // 4a2c88 fmulp st(3)
+    x.st(3) = xmul(ts, x.st(3), x.st(0));  // 4a2c88 fmulp st(3)
     x.pop();  // 4a2c88 fmulp st(3)
     x.fxch(1);  // 4a2c8a fxch st(1)
-    x.st(0) = xadd(cpu, x.st(0), F(eax + 0x98u));  // 4a2c8c fadd dword ptr [eax + 0x98]
+    x.st(0) = xadd(ts, x.st(0), F(eax + 0x98u));  // 4a2c8c fadd dword ptr [eax + 0x98]
     x.fxch(1);  // 4a2c92 fxch st(1)
-    x.st(0) = xadd(cpu, x.st(0), F(eax + 0x9cu));  // 4a2c94 fadd dword ptr [eax + 0x9c]
+    x.st(0) = xadd(ts, x.st(0), F(eax + 0x9cu));  // 4a2c94 fadd dword ptr [eax + 0x9c]
     x.fxch(2);  // 4a2c9a fxch st(2)
-    x.st(0) = xadd(cpu, x.st(0), F(eax + 0xa0u));  // 4a2c9c fadd dword ptr [eax + 0xa0]
+    x.st(0) = xadd(ts, x.st(0), F(eax + 0xa0u));  // 4a2c9c fadd dword ptr [eax + 0xa0]
     x.fxch(2);  // 4a2ca2 fxch st(2)
     SF((eax + 0x9cu), x.st(0));  // 4a2ca4 fstp dword ptr [eax + 0x9c]
     x.pop();  // 4a2ca4 fstp dword ptr [eax + 0x9c]
@@ -1594,23 +1594,23 @@ L_4a2cb8:
 }
 
 
-bool core4a2e20(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped_, X87* xout)
+bool core4a2e20(App* app, ThreadState& ts, const Entry& e, u32& result, u32& popped_, X87* xout)
 {
-    reg32 eax = e.eax, ebx = e.ebx, ecx = e.ecx, edx = e.edx, esi = e.esi, edi = e.edi, ebp = e.ebp, esp = e.esp;
+    u32 eax = e.eax, ebx = e.ebx, ecx = e.ecx, edx = e.edx, esi = e.esi, edi = e.edi, ebp = e.ebp, esp = e.esp;
     Flags fl;
     X87 x;
-    reg32 carry_ = 0;
+    u32 carry_ = 0;
     (void)carry_;
-    const auto rd32 = [&](reg32 a) { return app->getMemory<reg32>(a); };
-    const auto rd16 = [&](reg32 a) { return reg32(app->getMemory<uint16_t>(a)); };
-    const auto rd8 = [&](reg32 a) { return reg32(app->getMemory<uint8_t>(a)); };
-    const auto wr32 = [&](reg32 a, reg32 v) { app->getMemory<reg32>(a) = v; };
-    const auto wr16 = [&](reg32 a, reg32 v) { app->getMemory<uint16_t>(a) = uint16_t(v); };
-    const auto wr8 = [&](reg32 a, reg32 v) { app->getMemory<uint8_t>(a) = uint8_t(v); };
-    const auto F = [&](reg32 a) { return double(app->getMemory<float>(a)); };
-    const auto D = [&](reg32 a) { return app->getMemory<double>(a); };
-    const auto SF = [&](reg32 a, double v) { app->getMemory<float>(a) = float(v); };
-    const auto SD = [&](reg32 a, double v) { app->getMemory<double>(a) = v; };
+    const auto rd32 = [&](u32 a) { return app->getMemory<u32>(a); };
+    const auto rd16 = [&](u32 a) { return u32(app->getMemory<uint16_t>(a)); };
+    const auto rd8 = [&](u32 a) { return u32(app->getMemory<uint8_t>(a)); };
+    const auto wr32 = [&](u32 a, u32 v) { app->getMemory<u32>(a) = v; };
+    const auto wr16 = [&](u32 a, u32 v) { app->getMemory<uint16_t>(a) = uint16_t(v); };
+    const auto wr8 = [&](u32 a, u32 v) { app->getMemory<uint8_t>(a) = uint8_t(v); };
+    const auto F = [&](u32 a) { return double(app->getMemory<float>(a)); };
+    const auto D = [&](u32 a) { return app->getMemory<double>(a); };
+    const auto SF = [&](u32 a, double v) { app->getMemory<float>(a) = float(v); };
+    const auto SD = [&](u32 a, double v) { app->getMemory<double>(a) = v; };
     esp -= 4; wr32(esp, ebx);  // 4a2e20 push ebx
     esp -= 4; wr32(esp, ecx);  // 4a2e21 push ecx
     esp -= 4; wr32(esp, ebp);  // 4a2e22 push ebp
@@ -1631,31 +1631,31 @@ bool core4a2e20(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped
     x.push(F(ecx + 0xecu));  // 4a2e64 fld dword ptr [ecx + 0xec]
     x.push(double(int32_t(rd32((ebp - 4u)))));  // 4a2e6a fild dword ptr [ebp - 4]
     x.push(1.0);  // 4a2e6d fld1
-    x.st(1) = xdiv(cpu, x.st(0), x.st(1));  // 4a2e6f fdivrp st(1)
+    x.st(1) = xdiv(ts, x.st(0), x.st(1));  // 4a2e6f fdivrp st(1)
     x.pop();  // 4a2e6f fdivrp st(1)
     x.fxch(1);  // 4a2e71 fxch st(1)
-    x.st(0) = xmul(cpu, x.st(0), x.st(1));  // 4a2e73 fmul st(1)
+    x.st(0) = xmul(ts, x.st(0), x.st(1));  // 4a2e73 fmul st(1)
     esp -= 4u;  // 4a2e75 sub esp, 4
     SF((esp), x.st(0));  // 4a2e78 fstp dword ptr [esp]
     x.pop();  // 4a2e78 fstp dword ptr [esp]
     x.push(F(ecx + 0xe8u));  // 4a2e7b fld dword ptr [ecx + 0xe8]
-    x.st(0) = xmul(cpu, x.st(0), x.st(1));  // 4a2e81 fmul st(1)
+    x.st(0) = xmul(ts, x.st(0), x.st(1));  // 4a2e81 fmul st(1)
     esp -= 4u;  // 4a2e83 sub esp, 4
     SF((esp), x.st(0));  // 4a2e86 fstp dword ptr [esp]
     x.pop();  // 4a2e86 fstp dword ptr [esp]
-    x.st(0) = xmul(cpu, x.st(0), F(ecx + 0xe4u));  // 4a2e89 fmul dword ptr [ecx + 0xe4]
+    x.st(0) = xmul(ts, x.st(0), F(ecx + 0xe4u));  // 4a2e89 fmul dword ptr [ecx + 0xe4]
     esp -= 4u;  // 4a2e8f sub esp, 4
     eax = (ebp - 0x2cu);  // 4a2e92 lea eax, [ebp - 0x2c]
     SF((esp), x.st(0));  // 4a2e95 fstp dword ptr [esp]
     x.pop();  // 4a2e95 fstp dword ptr [esp]
-    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); const std::optional<reg32> r_ = feCore<0x4a2cc0, frontend::simb::turnMatrix>(app, cpu, eax, rd32(esp), rd32(esp + 4u), rd32(esp + 8u), rd32(esp + 12u)); if (!r_) return false; eax = *r_; }  // 4a2e98 call 0x4a2cc0
+    { handOver(app, ts, esp, eax, edx, ebx, ecx, ebp); const std::optional<u32> r_ = feCore<0x4a2cc0, frontend::simb::turnMatrix>(app, ts, eax, rd32(esp), rd32(esp + 4u), rd32(esp + 8u), rd32(esp + 12u)); if (!r_) return false; eax = *r_; }  // 4a2e98 call 0x4a2cc0
     esp += 16u;  // 4a2e98 call 0x4a2cc0
     fl.logic(eax & eax);  // 4a2e9d test eax, eax
     if (fl.e()) goto L_4a2ef7;  // 4a2e9f je 0x4a2ef7
     eax = (ecx + 0xc0u);  // 4a2ea1 lea eax, [ecx + 0xc0]
     edx = (ebp - 0x2cu);  // 4a2ea7 lea edx, [ebp - 0x2c]
     ebx = eax;  // 4a2eaa mov ebx, eax
-    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); guest::direct<0x4e0280, vertices::multiplyMatrix>(app, cpu, eax, edx, ebx); if (cpu.terminate) return false; eax = esp - 0x3cu; }  // 4a2eac (eax equals ebx here: the callee leaves its frame's copy) call 0x4e0280
+    { handOver(app, ts, esp, eax, edx, ebx, ecx, ebp); guest::direct<0x4e0280, vertices::multiplyMatrix>(app, ts, eax, edx, ebx); if (ts.terminate) return false; eax = esp - 0x3cu; }  // 4a2eac (eax equals ebx here: the callee leaves its frame's copy) call 0x4e0280
     esp += 0u;  // 4a2eac call 0x4e0280
     x.push(F(ecx + 0x94u));  // 4a2eb1 fld dword ptr [ecx + 0x94]
     fl.fcmp(x.st(0), D(0x53c8f4u));  // 4a2eb7 fcomp qword ptr [0x53c8f4]
@@ -1664,21 +1664,21 @@ bool core4a2e20(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped
     // sahf  // 4a2ebf sahf
     if (fl.a()) goto L_4a2ed4;  // 4a2ec0 ja 0x4a2ed4
     edx = (edx & 0xffff00ffu) | (((rd8((ecx + 0x8cu))) & 0xffu) << 8);  // 4a2ec2 mov dh, byte ptr [ecx + 0x8c]
-    { const reg32 r_ = ((edx >> 8) & 0xffu) - 1u; edx = (edx & 0xffff00ffu) | (((r_) & 0xffu) << 8); fl.arith(r_); }  // 4a2ec8 dec dh
+    { const u32 r_ = ((edx >> 8) & 0xffu) - 1u; edx = (edx & 0xffff00ffu) | (((r_) & 0xffu) << 8); fl.arith(r_); }  // 4a2ec8 dec dh
     wr8((ecx + 0x8cu), ((edx >> 8) & 0xffu));  // 4a2eca mov byte ptr [ecx + 0x8c], dh
     fl.logic(((edx >> 8) & 0xffu) & ((edx >> 8) & 0xffu));  // 4a2ed0 test dh, dh
     if (fl.a()) goto L_4a2ef7;  // 4a2ed2 ja 0x4a2ef7
 L_4a2ed4:
     edx = 10u;  // 4a2ed4 mov edx, 0xa
     eax = (ecx + 0xc0u);  // 4a2ed9 lea eax, [ecx + 0xc0]
-    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); const std::optional<reg32> r_ = feCore<0x4b7840, frontend::simc::matrixOrthonormalise>(app, cpu, eax, edx); if (!r_) return false; eax = *r_; }  // 4a2edf call 0x4b7840
+    { handOver(app, ts, esp, eax, edx, ebx, ecx, ebp); const std::optional<u32> r_ = feCore<0x4b7840, frontend::simc::matrixOrthonormalise>(app, ts, eax, edx); if (!r_) return false; eax = *r_; }  // 4a2edf call 0x4b7840
     esp += 0u;  // 4a2edf call 0x4b7840
     eax = (eax & 0xffffff00u) | ((rd8((ebp - 8u))) & 0xffu);  // 4a2ee4 mov al, byte ptr [ebp - 8]
     wr32((ecx + 0x94u), 0u);  // 4a2ee7 mov dword ptr [ecx + 0x94], 0
     wr8((ecx + 0x8cu), (eax & 0xffu));  // 4a2ef1 mov byte ptr [ecx + 0x8c], al
 L_4a2ef7:
     eax = ecx;  // 4a2ef7 mov eax, ecx
-    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); const std::optional<reg32> r_ = feCore<0x4a2690, frontend::simb::settle>(app, cpu, eax); if (!r_) return false; eax = *r_; }  // 4a2ef9 call 0x4a2690
+    { handOver(app, ts, esp, eax, edx, ebx, ecx, ebp); const std::optional<u32> r_ = feCore<0x4a2690, frontend::simb::settle>(app, ts, eax); if (!r_) return false; eax = *r_; }  // 4a2ef9 call 0x4a2690
     esp += 0u;  // 4a2ef9 call 0x4a2690
 L_4a2efe:
     esp = ebp;  // 4a2efe mov esp, ebp
@@ -1697,27 +1697,27 @@ L_4a2efe:
 
 /* ---- The typed functions (port_conv.h) ---- */
 
-bool scaleHandling(App* app, CPU& cpu, reg32 car, reg32 number, reg32 words)
+bool scaleHandling(App* app, ThreadState& ts, u32 car, u32 number, u32 words)
 {
-    Entry e(cpu, x86::Args{});
+    Entry e(ts, nfs::Args{});
     e.eax = car;
     e.edx = number;
     e.esp = words - 4;
-    reg32 result, popped = 0;
+    u32 result, popped = 0;
     X87 x;
-    return core4a0d20(app, cpu, e, result, popped, &x);
+    return core4a0d20(app, ts, e, result, popped, &x);
 }
 
 /* ---- The thunks ---- */
 
-x86::reg32 fn49fe70(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 fn49fe70(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    reg32 result, popped = 0;
+    const Entry e(ts, args);
+    u32 result, popped = 0;
     X87 x;
-    if (core49fe70(app, cpu, e, result, popped, &x))
+    if (core49fe70(app, ts, e, result, popped, &x))
     {
-        e.back(cpu, args, result, popped);
+        e.back(ts, args, result, popped);
         if (x.n > 0)
         {
             args.floatSet = true;
@@ -1728,14 +1728,14 @@ x86::reg32 fn49fe70(App* app, CPU& cpu, x86::Args& args)
     return args.eax;
 }
 
-x86::reg32 fn4a00d0(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 fn4a00d0(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    reg32 result, popped = 0;
+    const Entry e(ts, args);
+    u32 result, popped = 0;
     X87 x;
-    if (core4a00d0(app, cpu, e, result, popped, &x))
+    if (core4a00d0(app, ts, e, result, popped, &x))
     {
-        e.back(cpu, args, result, popped);
+        e.back(ts, args, result, popped);
         if (x.n > 0)
         {
             args.floatSet = true;
@@ -1746,14 +1746,14 @@ x86::reg32 fn4a00d0(App* app, CPU& cpu, x86::Args& args)
     return args.eax;
 }
 
-x86::reg32 fn4a0440(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 fn4a0440(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    reg32 result, popped = 0;
+    const Entry e(ts, args);
+    u32 result, popped = 0;
     X87 x;
-    if (core4a0440(app, cpu, e, result, popped, &x))
+    if (core4a0440(app, ts, e, result, popped, &x))
     {
-        e.back(cpu, args, result, popped);
+        e.back(ts, args, result, popped);
         if (x.n > 0)
         {
             args.floatSet = true;
@@ -1764,14 +1764,14 @@ x86::reg32 fn4a0440(App* app, CPU& cpu, x86::Args& args)
     return args.eax;
 }
 
-x86::reg32 fn4a0980(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 fn4a0980(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    reg32 result, popped = 0;
+    const Entry e(ts, args);
+    u32 result, popped = 0;
     X87 x;
-    if (core4a0980(app, cpu, e, result, popped, &x))
+    if (core4a0980(app, ts, e, result, popped, &x))
     {
-        e.back(cpu, args, result, popped);
+        e.back(ts, args, result, popped);
         if (x.n > 0)
         {
             args.floatSet = true;
@@ -1782,14 +1782,14 @@ x86::reg32 fn4a0980(App* app, CPU& cpu, x86::Args& args)
     return args.eax;
 }
 
-x86::reg32 fn4a0a10(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 fn4a0a10(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    reg32 result, popped = 0;
+    const Entry e(ts, args);
+    u32 result, popped = 0;
     X87 x;
-    if (core4a0a10(app, cpu, e, result, popped, &x))
+    if (core4a0a10(app, ts, e, result, popped, &x))
     {
-        e.back(cpu, args, result, popped);
+        e.back(ts, args, result, popped);
         if (x.n > 0)
         {
             args.floatSet = true;
@@ -1800,14 +1800,14 @@ x86::reg32 fn4a0a10(App* app, CPU& cpu, x86::Args& args)
     return args.eax;
 }
 
-x86::reg32 fn4a0d20(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 fn4a0d20(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    reg32 result, popped = 0;
+    const Entry e(ts, args);
+    u32 result, popped = 0;
     X87 x;
-    if (core4a0d20(app, cpu, e, result, popped, &x))
+    if (core4a0d20(app, ts, e, result, popped, &x))
     {
-        e.back(cpu, args, result, popped);
+        e.back(ts, args, result, popped);
         if (x.n > 0)
         {
             args.floatSet = true;
@@ -1818,14 +1818,14 @@ x86::reg32 fn4a0d20(App* app, CPU& cpu, x86::Args& args)
     return args.eax;
 }
 
-x86::reg32 fn4a0f30(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 fn4a0f30(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    reg32 result, popped = 0;
+    const Entry e(ts, args);
+    u32 result, popped = 0;
     X87 x;
-    if (core4a0f30(app, cpu, e, result, popped, &x))
+    if (core4a0f30(app, ts, e, result, popped, &x))
     {
-        e.back(cpu, args, result, popped);
+        e.back(ts, args, result, popped);
         if (x.n > 0)
         {
             args.floatSet = true;
@@ -1836,14 +1836,14 @@ x86::reg32 fn4a0f30(App* app, CPU& cpu, x86::Args& args)
     return args.eax;
 }
 
-x86::reg32 fn4a1090(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 fn4a1090(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    reg32 result, popped = 0;
+    const Entry e(ts, args);
+    u32 result, popped = 0;
     X87 x;
-    if (core4a1090(app, cpu, e, result, popped, &x))
+    if (core4a1090(app, ts, e, result, popped, &x))
     {
-        e.back(cpu, args, result, popped);
+        e.back(ts, args, result, popped);
         if (x.n > 0)
         {
             args.floatSet = true;
@@ -1854,14 +1854,14 @@ x86::reg32 fn4a1090(App* app, CPU& cpu, x86::Args& args)
     return args.eax;
 }
 
-x86::reg32 fn4a20c0(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 fn4a20c0(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    reg32 result, popped = 0;
+    const Entry e(ts, args);
+    u32 result, popped = 0;
     X87 x;
-    if (core4a20c0(app, cpu, e, result, popped, &x))
+    if (core4a20c0(app, ts, e, result, popped, &x))
     {
-        e.back(cpu, args, result, popped);
+        e.back(ts, args, result, popped);
         if (x.n > 0)
         {
             args.floatSet = true;
@@ -1872,14 +1872,14 @@ x86::reg32 fn4a20c0(App* app, CPU& cpu, x86::Args& args)
     return args.eax;
 }
 
-x86::reg32 fn4a2630(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 fn4a2630(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    reg32 result, popped = 0;
+    const Entry e(ts, args);
+    u32 result, popped = 0;
     X87 x;
-    if (core4a2630(app, cpu, e, result, popped, &x))
+    if (core4a2630(app, ts, e, result, popped, &x))
     {
-        e.back(cpu, args, result, popped);
+        e.back(ts, args, result, popped);
         if (x.n > 0)
         {
             args.floatSet = true;
@@ -1890,14 +1890,14 @@ x86::reg32 fn4a2630(App* app, CPU& cpu, x86::Args& args)
     return args.eax;
 }
 
-x86::reg32 fn4a2830(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 fn4a2830(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    reg32 result, popped = 0;
+    const Entry e(ts, args);
+    u32 result, popped = 0;
     X87 x;
-    if (core4a2830(app, cpu, e, result, popped, &x))
+    if (core4a2830(app, ts, e, result, popped, &x))
     {
-        e.back(cpu, args, result, popped);
+        e.back(ts, args, result, popped);
         if (x.n > 0)
         {
             args.floatSet = true;
@@ -1908,14 +1908,14 @@ x86::reg32 fn4a2830(App* app, CPU& cpu, x86::Args& args)
     return args.eax;
 }
 
-x86::reg32 fn4a2c60(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 fn4a2c60(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    reg32 result, popped = 0;
+    const Entry e(ts, args);
+    u32 result, popped = 0;
     X87 x;
-    if (core4a2c60(app, cpu, e, result, popped, &x))
+    if (core4a2c60(app, ts, e, result, popped, &x))
     {
-        e.back(cpu, args, result, popped);
+        e.back(ts, args, result, popped);
         if (x.n > 0)
         {
             args.floatSet = true;
@@ -1926,14 +1926,14 @@ x86::reg32 fn4a2c60(App* app, CPU& cpu, x86::Args& args)
     return args.eax;
 }
 
-x86::reg32 fn4a2e20(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 fn4a2e20(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    reg32 result, popped = 0;
+    const Entry e(ts, args);
+    u32 result, popped = 0;
     X87 x;
-    if (core4a2e20(app, cpu, e, result, popped, &x))
+    if (core4a2e20(app, ts, e, result, popped, &x))
     {
-        e.back(cpu, args, result, popped);
+        e.back(ts, args, result, popped);
         if (x.n > 0)
         {
             args.floatSet = true;
@@ -1951,28 +1951,28 @@ x86::reg32 fn4a2e20(App* app, CPU& cpu, x86::Args& args)
 namespace
 {
 
-using ConvCore = bool (*)(App*, CPU&, const Entry&, reg32&, reg32&, X87*);
+using ConvCore = bool (*)(App*, ThreadState&, const Entry&, u32&, u32&, X87*);
 
-std::optional<Left> runConv(ConvCore core, App* app, CPU& cpu, reg32 eax, reg32 edx,
-                            std::initializer_list<reg32> stack = {})
+std::optional<Left> runConv(ConvCore core, App* app, ThreadState& ts, u32 eax, u32 edx,
+                            std::initializer_list<u32> stack = {})
 {
-    const reg32 slot = cpu.esp;
-    const reg32 entry = slot - 4 * reg32(stack.size());
-    reg32 at = entry + 4;
-    for (const reg32 word : stack)
+    const u32 slot = ts.sp;
+    const u32 entry = slot - 4 * u32(stack.size());
+    u32 at = entry + 4;
+    for (const u32 word : stack)
     {
-        app->getMemory<reg32>(at) = word;
+        app->getMemory<u32>(at) = word;
         at += 4;
     }
-    app->getMemory<reg32>(entry) = 0;
-    cpu.esp = entry;
-    Entry e(cpu, x86::Args{});
+    app->getMemory<u32>(entry) = 0;
+    ts.sp = entry;
+    Entry e(ts, nfs::Args{});
     e.eax = eax;
     e.edx = edx;
-    reg32 result, popped = 0;
+    u32 result, popped = 0;
     X87 left;
-    const bool ran = core(app, cpu, e, result, popped, &left);
-    cpu.esp = slot;
+    const bool ran = core(app, ts, e, result, popped, &left);
+    ts.sp = slot;
     if (!ran)
         return std::nullopt;
     return Left{result, left.n > 0 ? left.v[left.n - 1] : 0.0};
@@ -1980,26 +1980,26 @@ std::optional<Left> runConv(ConvCore core, App* app, CPU& cpu, reg32 eax, reg32 
 
 }  // namespace
 
-std::optional<Left> carNodeNow(App* app, CPU& cpu, reg32 car) { return runConv(core49fe70, app, cpu, car, 0); }
-std::optional<Left> carHeightOverRoad(App* app, CPU& cpu, reg32 car) { return runConv(core4a00d0, app, cpu, car, 0); }
-std::optional<Left> carLowestPoint(App* app, CPU& cpu, reg32 car) { return runConv(core4a0440, app, cpu, car, 0); }
-std::optional<Left> frameFromRoad(App* app, CPU& cpu, reg32 car, reg32 facesBack)
+std::optional<Left> carNodeNow(App* app, ThreadState& ts, u32 car) { return runConv(core49fe70, app, ts, car, 0); }
+std::optional<Left> carHeightOverRoad(App* app, ThreadState& ts, u32 car) { return runConv(core4a00d0, app, ts, car, 0); }
+std::optional<Left> carLowestPoint(App* app, ThreadState& ts, u32 car) { return runConv(core4a0440, app, ts, car, 0); }
+std::optional<Left> frameFromRoad(App* app, ThreadState& ts, u32 car, u32 facesBack)
 {
-    return runConv(core4a0980, app, cpu, car, facesBack);
+    return runConv(core4a0980, app, ts, car, facesBack);
 }
-std::optional<Left> lastFrameFromRoad(App* app, CPU& cpu, reg32 car, reg32 facesBack)
+std::optional<Left> lastFrameFromRoad(App* app, ThreadState& ts, u32 car, u32 facesBack)
 {
-    return runConv(core4a0a10, app, cpu, car, facesBack);
+    return runConv(core4a0a10, app, ts, car, facesBack);
 }
-std::optional<Left> followFrame(App* app, CPU& cpu, reg32 car, reg32 up, reg32 upright)
+std::optional<Left> followFrame(App* app, ThreadState& ts, u32 car, u32 up, u32 upright)
 {
-    return runConv(core4a0f30, app, cpu, car, up, {upright});
+    return runConv(core4a0f30, app, ts, car, up, {upright});
 }
-std::optional<Left> easeFrame(App* app, CPU& cpu, reg32 car) { return runConv(core4a1090, app, cpu, car, 0); }
-std::optional<Left> clampSpin(App* app, CPU& cpu, reg32 car) { return runConv(core4a20c0, app, cpu, car, 0); }
-std::optional<Left> spinStep(App* app, CPU& cpu, reg32 car, reg32 steps)
+std::optional<Left> easeFrame(App* app, ThreadState& ts, u32 car) { return runConv(core4a1090, app, ts, car, 0); }
+std::optional<Left> clampSpin(App* app, ThreadState& ts, u32 car) { return runConv(core4a20c0, app, ts, car, 0); }
+std::optional<Left> spinStep(App* app, ThreadState& ts, u32 car, u32 steps)
 {
-    return runConv(core4a2e20, app, cpu, car, steps);
+    return runConv(core4a2e20, app, ts, car, steps);
 }
 
 }  // namespace conv

@@ -1,11 +1,11 @@
 #include <SDL3/SDL_main.h>
 #include <lib/file.h>
-#include <lib/registry.h>
+#include <lib/settings.h>
 #include <lib/gamepad.h>
 #include <lib/memmap.h>
 #include <lib/timer.h>
 #include <nfs3hp.h>
-#include "host_system.h"
+#include "os_system.h"
 #include <lib/thrashrenderer.h>
 #include "game_settings.h"
 #include "native_thrash.h"
@@ -35,11 +35,9 @@ namespace nfs3hp
 // menu_data.cpp: the port's versions of menu files, read in place of the game's.
 void installMenuData();
 // port_display.cpp: gamma, brightness and contrast on the game's graphics screens.
-void installDisplaySliders(win32::WinApplication* app);
+void installDisplaySliders(nfs::App* app);
 // port_connect.cpp: the TCP/IP port and this phone's address on the connection screen.
-void installConnectScreen(win32::WinApplication* app);
-// host_video.cpp: ddraw.dll, which the game loads by name for its DirectDrawCreate.
-namespace host { void installVideo(win32::WinApplication* app); }
+void installConnectScreen(nfs::App* app);
 
 /* The MAD player runs on the game thread. Android's UI thread only requests
  * that its normal cleanup path run at the next frame boundary. */
@@ -99,22 +97,22 @@ bool fullCarDetail()
  * NFS_NET_PORT to start with, 9803 as the Modern Patch has it unless the player
  * chose 1030, the original's, and the connection screen moves it from there
  * (port_connect.cpp).  Every player of one race needs the same. */
-static std::atomic<x86::reg32>& networkPortChosen()
+static std::atomic<nfs::u32>& networkPortChosen()
 {
-    static std::atomic<x86::reg32> port{ []() {
+    static std::atomic<nfs::u32> port{ []() {
         const char* value = SDL_getenv("NFS_NET_PORT");
         const int chosen = value ? SDL_atoi(value) : 0;
-        return x86::reg32(chosen > 0 && chosen < 65536 ? chosen : 9803);
+        return nfs::u32(chosen > 0 && chosen < 65536 ? chosen : 9803);
     }() };
     return port;
 }
 
-x86::reg32 networkPort()
+nfs::u32 networkPort()
 {
     return networkPortChosen().load(std::memory_order_relaxed);
 }
 
-void setNetworkPort(x86::reg32 port)
+void setNetworkPort(nfs::u32 port)
 {
     networkPortChosen().store(port, std::memory_order_relaxed);
 }
@@ -155,10 +153,10 @@ bool perfTraceOn()
     return on;
 }
 
-void logPerformance(win32::WinApplication* app, const char* where);
+void logPerformance(nfs::App* app, const char* where);
 
 /* A step of takeDownRace: the timings said, and at its first the trace closed. */
-static void raceDownStep(win32::WinApplication* app, const char* where)
+static void raceDownStep(nfs::App* app, const char* where)
 {
     logPerformance(app, where);
     if (SDL_strcmp(where, "race taken down") == 0)
@@ -167,43 +165,43 @@ static void raceDownStep(win32::WinApplication* app, const char* where)
 
 /* Player one's timings in the car and in the results' first record (0x6647b0,
  * the race's copies of the players' cars, sub_455210), said with `where`. */
-void logPerformance(win32::WinApplication* app, const char* where)
+void logPerformance(nfs::App* app, const char* where)
 {
     if (!perfTraceOn())
         return;
-    const x86::reg32 player = gameSettings(app).localPlayer;
-    const x86::reg32 car = player < 16 ? x86::reg32(app->getMemory<x86::reg32>(0x5efa48 + player * 4)) : 0u;
+    const nfs::u32 player = gameSettings(app).localPlayer;
+    const nfs::u32 car = player < 16 ? nfs::u32(app->getMemory<nfs::u32>(0x5efa48 + player * 4)) : 0u;
     if (!car)
         return;
     SDL_Log("[PERFTIME] %s: car %08x 0-100=%u 0-160=%u, results %u records, first's 0-100=%u, replay %u, "
             "ended %u",
-            where, unsigned(car), unsigned(app->getMemory<x86::reg32>(car + 0x26c)),
-            unsigned(app->getMemory<x86::reg32>(car + 0x270)), unsigned(app->getMemory<x86::reg32>(0x677d30)),
-            unsigned(app->getMemory<x86::reg32>(0x6647b0 + 0x26c)), unsigned(gameSettings(app).replayMode),
-            unsigned(app->getMemory<x86::reg32>(0x7d36b4)));
+            where, unsigned(car), unsigned(app->getMemory<nfs::u32>(car + 0x26c)),
+            unsigned(app->getMemory<nfs::u32>(car + 0x270)), unsigned(app->getMemory<nfs::u32>(0x677d30)),
+            unsigned(app->getMemory<nfs::u32>(0x6647b0 + 0x26c)), unsigned(gameSettings(app).replayMode),
+            unsigned(app->getMemory<nfs::u32>(0x7d36b4)));
 }
 
 /* The results' records as the menus have them (sub_455410 copies the players'
  * cars there after the race, 0x9ac bytes each from 0x6647b0, their number at
  * 0x677d30; the cops' from 0x66e270, at 0x677d34): each record's player
  * (+0x1f0), flags (+0x200) and 0-100 km/h (+0x26c), written when they change. */
-void logResults(win32::WinApplication* app)
+void logResults(nfs::App* app)
 {
     if (!perfTraceOn())
         return;
     static std::string s_last;
     std::string now = "players";
-    const x86::reg32 count = app->getMemory<x86::reg32>(0x677d30);
-    for (x86::reg32 i = 0; i < count && i < 16; ++i)
+    const nfs::u32 count = app->getMemory<nfs::u32>(0x677d30);
+    for (nfs::u32 i = 0; i < count && i < 16; ++i)
     {
-        const x86::reg32 r = 0x6647b0 + i * 0x9ac;
+        const nfs::u32 r = 0x6647b0 + i * 0x9ac;
         char one[64];
-        SDL_snprintf(one, sizeof one, " #%u:p%u f%02x 0-100=%u", unsigned(i), unsigned(app->getMemory<x86::reg32>(r + 0x1f0)),
-                     unsigned(app->getMemory<x86::reg8>(r + 0x200)), unsigned(app->getMemory<x86::reg32>(r + 0x26c)));
+        SDL_snprintf(one, sizeof one, " #%u:p%u f%02x 0-100=%u", unsigned(i), unsigned(app->getMemory<nfs::u32>(r + 0x1f0)),
+                     unsigned(app->getMemory<nfs::u8>(r + 0x200)), unsigned(app->getMemory<nfs::u32>(r + 0x26c)));
         now += one;
     }
     char tail[64];
-    SDL_snprintf(tail, sizeof tail, "; cops %u; player %u", unsigned(app->getMemory<x86::reg32>(0x677d34)),
+    SDL_snprintf(tail, sizeof tail, "; cops %u; player %u", unsigned(app->getMemory<nfs::u32>(0x677d34)),
                  unsigned(gameSettings(app).localPlayer));
     now += tail;
     if (now == s_last)
@@ -216,10 +214,10 @@ void logResults(win32::WinApplication* app)
  * shows it (the port's loading screen change): from the start of the loading
  * picture, the whole picture black and everything drawn squeezed into the 4:3
  * rectangle in its middle; once the race is loaded, the whole screen again. */
-void loadingScreenFit(win32::WinApplication* app, x86::CPU& cpu, bool on)
+void loadingScreenFit(nfs::App* app, nfs::ThreadState& ts, bool on)
 {
     if (on)
-        nfs3hp::port::driver::clearPicture(app, cpu);
+        nfs3hp::port::driver::clearPicture(app, ts);
     nfs3hp::port::driver::fitFourThree(on);
     s_loadingScreen = on;
 }
@@ -264,7 +262,7 @@ bool takingText()
 /* The depth a Screen Size entry reads (the port's full colour change): the mode
  * table's 16 is what the game keeps, but a race is drawn in full colour and,
  * with the game's 32-bit textures taken, in full colour throughout. */
-x86::reg32 shownDepth(x86::reg32 depth)
+nfs::u32 shownDepth(nfs::u32 depth)
 {
     return depth == 16 && nfs3hp::port::driver::fullColourTextures() ? 32 : depth;
 }
@@ -273,7 +271,7 @@ x86::reg32 shownDepth(x86::reg32 depth)
  * Full to Close as 0 to 3.  At Full the game already draws the track at full
  * detail out to its far distance; the port's track detail change has the ones below
  * take that distance to 500 wherever the game held it shorter, and past it. */
-static bool viewDistanceFull(win32::WinApplication* app)
+static bool viewDistanceFull(nfs::App* app)
 {
     return gameSettings(app).viewDistance == 0;
 }
@@ -282,7 +280,7 @@ static bool viewDistanceFull(win32::WinApplication* app)
  * widest row leaves the far distance whole, or 0x41a8b0, whose widest row keeps
  * three quarters of it.  `reduced` is the game's own choice, [0x6fd4c8]; at Full
  * the distance is whole. */
-x86::reg32 viewDistanceReduced(win32::WinApplication* app, x86::reg32 reduced)
+nfs::u32 viewDistanceReduced(nfs::App* app, nfs::u32 reduced)
 {
     return viewDistanceFull(app) ? 0u : reduced;
 }
@@ -293,18 +291,18 @@ x86::reg32 viewDistanceReduced(win32::WinApplication* app, x86::reg32 reduced)
  * own lists of the blocks seen from each still bound it (2026-10-22: 600 on
  * trial, better; 800 no better than 600 until the track lists grew
  * (native_loading.cpp, extendNeighbours, which reaches as far); with them 700). */
-constexpr x86::reg32 kFullFarDistance = x86::reg32(700) << 16;
+constexpr nfs::u32 kFullFarDistance = nfs::u32(700) << 16;
 
 /* The far distance of each split-screen view, in 16.16: the game's 440, or at
  * Full the reach a single view has. */
-x86::reg32 splitFarDistance(win32::WinApplication* app, x86::reg32 distance)
+nfs::u32 splitFarDistance(nfs::App* app, nfs::u32 distance)
 {
     return viewDistanceFull(app) ? kFullFarDistance : distance;
 }
 
 /* A view's 500 -- the main view's far distance, the cull distance of the main
  * and split views -- in 16.16, or at Full kFullFarDistance. */
-x86::reg32 fullFarDistance(win32::WinApplication* app, x86::reg32 distance)
+nfs::u32 fullFarDistance(nfs::App* app, nfs::u32 distance)
 {
     return viewDistanceFull(app) ? kFullFarDistance : distance;
 }
@@ -329,20 +327,20 @@ static bool fullMirror()
  * here, before it turns them into floats for every view, the mirror takes the
  * main view's whole set, +0x20 to +0x4c of its 84-byte record (the camera's
  * own record at +0x1c stays).  Split screen has no mirror and is left alone. */
-void mirrorFollowsMain(win32::WinApplication* app)
+void mirrorFollowsMain(nfs::App* app)
 {
-    if (!fullMirror() || gameSettings(app).playMode == 1 || app->getMemory<x86::reg32>(0x5dd0dc) != 2)
+    if (!fullMirror() || gameSettings(app).playMode == 1 || app->getMemory<nfs::u32>(0x5dd0dc) != 2)
         return;
-    const x86::reg32 mainView = 0x5dd0e0;
-    const x86::reg32 mirror = mainView + 0x54;
-    for (x86::reg32 at = 0x20; at < 0x50; at += 4)
-        app->getMemory<x86::reg32>(mirror + at) = app->getMemory<x86::reg32>(mainView + at);
+    const nfs::u32 mainView = 0x5dd0e0;
+    const nfs::u32 mirror = mainView + 0x54;
+    for (nfs::u32 at = 0x20; at < 0x50; at += 4)
+        app->getMemory<nfs::u32>(mirror + at) = app->getMemory<nfs::u32>(mainView + at);
 }
 
 /* A view pass's kind ([0x7a3d14], 1 for the mirror) where the game asks it to
  * leave something out of the mirror: with the mirror drawn in full, the main
  * view's 0 (the port's mirror detail change). */
-x86::reg32 mirrorAsMain(x86::reg32 kind)
+nfs::u32 mirrorAsMain(nfs::u32 kind)
 {
     return kind == 1 && fullMirror() ? 0 : kind;
 }
@@ -363,13 +361,13 @@ double mirrorCarScale(double scale)
  * that stamp here: sub_4b9140 and sub_4b9280 for the two wheel angles, and
  * sub_4b90e0, two ways, for the body.  Each keeps its own stamp per car, so a
  * car still advances once per frame, whichever view draws it first. */
-x86::reg32 carWheelStamp(win32::WinApplication* app, x86::reg32 car, x86::reg32 which)
+nfs::u32 carWheelStamp(nfs::App* app, nfs::u32 car, nfs::u32 which)
 {
-    static std::unordered_map<x86::reg32, std::array<x86::reg32, 4>> s_stamps;
-    const x86::reg32 frame = app->getMemory<x86::reg32>(0x7d3684);
+    static std::unordered_map<nfs::u32, std::array<nfs::u32, 4>> s_stamps;
+    const nfs::u32 frame = app->getMemory<nfs::u32>(0x7d3684);
     auto entry = s_stamps.try_emplace(car);
-    x86::reg32& stamp = entry.first->second[which & 3];
-    x86::reg32 last = entry.second ? app->getMemory<x86::reg32>(0x55fe28) : stamp;
+    nfs::u32& stamp = entry.first->second[which & 3];
+    nfs::u32 last = entry.second ? app->getMemory<nfs::u32>(0x55fe28) : stamp;
     /* A stamp from an earlier race -- the frame count starts over and car
      * records are reused -- would freeze the wheels until the count caught up,
      * and one from long ago would spin them through hundreds of turns at once. */
@@ -396,12 +394,12 @@ x86::reg32 carWheelStamp(win32::WinApplication* app, x86::reg32 car, x86::reg32 
  * "Dynamic Fullscreen", and the settings keep kDynamicFullscreenWidth for it
  * in place of a width, which sub_4bee80 (the port's widescreen change) turns
  * back into the mode at start, on any screen. */
-constexpr x86::reg32 kModeTable = 0xa92018;       // voodoo2a's modes, 40 bytes each
-constexpr x86::reg32 kModeResolutions = 0xa922e8; // each mode's resolution id
-constexpr x86::reg32 kDynamicEntry = 16;
-constexpr x86::reg32 kDynamicMaxHeight = 1080;
-static x86::reg32 s_dynamicWidth = 0;
-static x86::reg32 s_dynamicHeight = 0;
+constexpr nfs::u32 kModeTable = 0xa92018;       // voodoo2a's modes, 40 bytes each
+constexpr nfs::u32 kModeResolutions = 0xa922e8; // each mode's resolution id
+constexpr nfs::u32 kDynamicEntry = 16;
+constexpr nfs::u32 kDynamicMaxHeight = 1080;
+static nfs::u32 s_dynamicWidth = 0;
+static nfs::u32 s_dynamicHeight = 0;
 
 /* The size of the screen the game is drawn on, in pixels: its window's, or
  * before there is one, the display's. */
@@ -429,7 +427,7 @@ static bool screenPixels(int& w, int& h)
 /* Dynamic Fullscreen's size for the screen as it is now, landscape: the
  * screen's height up to 1080, the width in its proportion, a multiple of 8
  * and no narrower than 4:3. */
-static void dynamicFullscreenSize(x86::reg32& width, x86::reg32& height)
+static void dynamicFullscreenSize(nfs::u32& width, nfs::u32& height)
 {
     int w = 0, h = 0;
     if (!screenPixels(w, h))
@@ -438,24 +436,24 @@ static void dynamicFullscreenSize(x86::reg32& width, x86::reg32& height)
         height = 1080;
         return;
     }
-    const x86::reg32 across = x86::reg32(SDL_max(w, h)), down = x86::reg32(SDL_min(w, h));
+    const nfs::u32 across = nfs::u32(SDL_max(w, h)), down = nfs::u32(SDL_min(w, h));
     height = SDL_min(down, kDynamicMaxHeight) & ~1u;
     width = ((across * height / down + 4) / 8) * 8;
     width = SDL_max(width, (height * 4 / 3 + 7) / 8 * 8);
 }
 
-bool dynamicFullscreenMode(x86::reg32 mode)
+bool dynamicFullscreenMode(nfs::u32 mode)
 {
     return mode == kDynamicEntry && s_dynamicWidth != 0;
 }
 
 /* Dynamic Fullscreen's mode measured again and put in the driver's table and
  * its size for the id.  True when its size changed. */
-bool dynamicFullscreenRefresh(win32::WinApplication* app)
+bool dynamicFullscreenRefresh(nfs::App* app)
 {
     if (s_dynamicWidth == 0)
         return false;
-    x86::reg32 width, height;
+    nfs::u32 width, height;
     dynamicFullscreenSize(width, height);
     if (width == s_dynamicWidth && height == s_dynamicHeight)
         return false;
@@ -463,8 +461,8 @@ bool dynamicFullscreenRefresh(win32::WinApplication* app)
             unsigned(width), unsigned(height));
     s_dynamicWidth = width;
     s_dynamicHeight = height;
-    app->getMemory<x86::reg32>(kModeTable + kDynamicEntry * 40) = width;
-    app->getMemory<x86::reg32>(kModeTable + kDynamicEntry * 40 + 4) = height;
+    app->getMemory<nfs::u32>(kModeTable + kDynamicEntry * 40) = width;
+    app->getMemory<nfs::u32>(kModeTable + kDynamicEntry * 40 + 4) = height;
     nfs3hp::port::driver::setDynamicResolution(width, height);
     return true;
 }
@@ -472,39 +470,39 @@ bool dynamicFullscreenRefresh(win32::WinApplication* app)
 /* View Angle ([0x6fbc40]) in the Graphics menu: Normal, 0 -- the game's Wide,
  * 90 degrees -- Narrow, 1, 75, and Wide, 2, 105, the Modern Patch's widest
  * (the port's View Angle change). */
-constexpr x86::reg32 kViewAngleList = 0x55675c;   // the settings record's (0x556758) list of its choices
-constexpr x86::reg16 kNormalText = 0xaf, kNarrowText = 0x113, kWideText = 0x112;
+constexpr nfs::u32 kViewAngleList = 0x55675c;   // the settings record's (0x556758) list of its choices
+constexpr nfs::u16 kNormalText = 0xaf, kNarrowText = 0x113, kWideText = 0x112;
 
-x86::reg32 viewAngleFor(win32::WinApplication* app, x86::reg32 angle)
+nfs::u32 viewAngleFor(nfs::App* app, nfs::u32 angle)
 {
     return gameSettings(app).viewAngle == 2 ? 105u : angle;
 }
 
 /* The menu's three choices, a list of text lines ending at a zero, in a guest
  * block of the port's own (the game's list has no room for a third). */
-void viewAngleStart(win32::WinApplication* app)
+void viewAngleStart(nfs::App* app)
 {
-    static win32::MemMap* const block = new win32::MemMap(win32::MemMap::granularity());
-    const x86::reg32 list = block->getBlockStart();
-    const x86::reg16 lines[] = {kNormalText, kNarrowText, kWideText, 0};
-    for (x86::reg32 i = 0; i < 4; ++i)
-        app->getMemory<x86::reg16>(list + i * 2) = lines[i];
-    app->getMemory<x86::reg32>(kViewAngleList) = list;
+    static nfs::MemMap* const block = new nfs::MemMap(nfs::MemMap::granularity());
+    const nfs::u32 list = block->getBlockStart();
+    const nfs::u16 lines[] = {kNormalText, kNarrowText, kWideText, 0};
+    for (nfs::u32 i = 0; i < 4; ++i)
+        app->getMemory<nfs::u16>(list + i * 2) = lines[i];
+    app->getMemory<nfs::u32>(kViewAngleList) = list;
 }
 
 /* Dynamic Fullscreen put in the driver's table at start (main), measured
  * against the display. */
-void dynamicFullscreenStart(win32::WinApplication* app)
+void dynamicFullscreenStart(nfs::App* app)
 {
-    x86::reg32 width, height;
+    nfs::u32 width, height;
     dynamicFullscreenSize(width, height);
     s_dynamicWidth = width;
     s_dynamicHeight = height;
-    const x86::reg32 mode = kModeTable + kDynamicEntry * 40;
-    app->getMemory<x86::reg32>(mode) = width;
-    app->getMemory<x86::reg32>(mode + 4) = height;
-    app->getMemory<x86::reg32>(mode + 16) = 1;
-    app->getMemory<x86::reg32>(kModeResolutions + kDynamicEntry * 4) = nfs3hp::port::driver::kResolutionDynamic;
+    const nfs::u32 mode = kModeTable + kDynamicEntry * 40;
+    app->getMemory<nfs::u32>(mode) = width;
+    app->getMemory<nfs::u32>(mode + 4) = height;
+    app->getMemory<nfs::u32>(mode + 16) = 1;
+    app->getMemory<nfs::u32>(kModeResolutions + kDynamicEntry * 4) = nfs3hp::port::driver::kResolutionDynamic;
     nfs3hp::port::driver::setDynamicResolution(width, height);
     SDL_Log("[SCREEN] Dynamic Fullscreen %ux%u", unsigned(width), unsigned(height));
 }
@@ -512,9 +510,9 @@ void dynamicFullscreenStart(win32::WinApplication* app)
 /* The Graphics menu's line for a mode as sub_448210 has just written it (a
  * list entry: the mode at +0, its line from +0x14 on, 0x100 bytes of room):
  * Dynamic Fullscreen's by its name (the port's widescreen change, 0x448291). */
-void dynamicFullscreenLabel(win32::WinApplication* app, x86::reg32 entry)
+void dynamicFullscreenLabel(nfs::App* app, nfs::u32 entry)
 {
-    if (!dynamicFullscreenMode(app->getMemory<x86::reg32>(entry)))
+    if (!dynamicFullscreenMode(app->getMemory<nfs::u32>(entry)))
         return;
     char* line = &app->getMemory<char>(entry + 0x14);
     SDL_strlcpy(line, kDynamicFullscreenName, 0x100);
@@ -523,7 +521,7 @@ void dynamicFullscreenLabel(win32::WinApplication* app, x86::reg32 entry)
 /* sub_4bee80's answer for the saved screen size (the port's widescreen change, at
  * 0x4bef35): Dynamic Fullscreen's mode where the settings keep its marker,
  * the nearest mode of that width otherwise. */
-x86::reg32 dynamicSavedMode(x86::reg32 found, x86::reg32 width)
+nfs::u32 dynamicSavedMode(nfs::u32 found, nfs::u32 width)
 {
     return width == kDynamicFullscreenWidth && s_dynamicWidth != 0 ? kDynamicEntry : found;
 }
@@ -534,7 +532,7 @@ x86::reg32 dynamicSavedMode(x86::reg32 found, x86::reg32 width)
  * well, which is the 1280x720 main() adds to the Voodoo2 driver's table, and
  * Dynamic Fullscreen's size, whatever its shape.  The driver's own 856x480 is
  * not quite 16:9 and stays unlisted. */
-bool widescreenMode(x86::reg32 width, x86::reg32 height)
+bool widescreenMode(nfs::u32 width, nfs::u32 height)
 {
     return width * 9 == height * 16 || (s_dynamicWidth != 0 && width == s_dynamicWidth && height == s_dynamicHeight);
 }
@@ -542,10 +540,10 @@ bool widescreenMode(x86::reg32 width, x86::reg32 height)
 /* Wide Screen in the Graphics menu ([0x6fbc4c]) has a race of one screen drawn
  * between bars: a view less high than the screen ([0x7cdba4] against
  * [0x7cdae4]). */
-static bool letterboxed(win32::WinApplication* app)
+static bool letterboxed(nfs::App* app)
 {
     return raceIsRunning() && gameSettings(app).wideScreen != 0 && gameSettings(app).playMode != 1
-           && x86::sreg32(app->getMemory<x86::reg32>(0x7cdba4)) < x86::sreg32(app->getMemory<x86::reg32>(0x7cdae4));
+           && nfs::s32(app->getMemory<nfs::u32>(0x7cdba4)) < nfs::s32(app->getMemory<nfs::u32>(0x7cdae4));
 }
 
 /* A camera's horizontal half field of view, in whole degrees, for the view it
@@ -570,25 +568,25 @@ static bool letterboxed(win32::WinApplication* app)
  * any screen it is the game's proportions put right, at every camera angle,
  * which is what a round wheel wants.  The view is the rectangle being drawn
  * into ([0x7cdba0]), so split screen's halves each get their own shape. */
-x86::reg32 widescreenHalfAngle(win32::WinApplication* app, x86::reg32 half, x86::reg32 vertical)
+nfs::u32 widescreenHalfAngle(nfs::App* app, nfs::u32 half, nfs::u32 vertical)
 {
     /* Outside a race the view rectangle is stale: a race leaves its own there
      * (1920x1080 on a 1080p race) and the menus never set it again, so the
      * Player Car screen, drawn at 640x480, got Hor+ after the first race --
      * even one quit on its loading screen.  There the screen is the view. */
-    const x86::reg32 at = raceIsRunning() ? 0x7cdba0 : 0x7cdae0;
-    const x86::sreg32 width = x86::sreg32(app->getMemory<x86::reg32>(at));
+    const nfs::u32 at = raceIsRunning() ? 0x7cdba0 : 0x7cdae0;
+    const nfs::s32 width = nfs::s32(app->getMemory<nfs::u32>(at));
     /* Behind Wide Screen's bars the game projects through the whole screen's
      * height (sub_4beb00's rectangle) and draws only into the bars' (sub_4beb40's,
      * [0x7cdb98]): the angle is the whole screen's. */
-    const x86::sreg32 height = x86::sreg32(app->getMemory<x86::reg32>(letterboxed(app) ? 0x7cdae4 : at + 4));
-    const x86::sreg32 down = x86::sreg32(vertical);
-    if (width <= 0 || height <= 0 || down <= 0 || down >= 90 || x86::sreg32(half) <= 0 || half >= 90)
+    const nfs::s32 height = nfs::s32(app->getMemory<nfs::u32>(letterboxed(app) ? 0x7cdae4 : at + 4));
+    const nfs::s32 down = nfs::s32(vertical);
+    if (width <= 0 || height <= 0 || down <= 0 || down >= 90 || nfs::s32(half) <= 0 || half >= 90)
         return half;
     const double across = SDL_atan(SDL_tan(double(down) * SDL_PI_D / 180.0) * double(width) / double(height))
                           * 180.0 / SDL_PI_D;
-    const x86::sreg32 rounded = x86::sreg32(SDL_lround(across));
-    return rounded > 0 && rounded < 90 ? x86::reg32(rounded) : half;
+    const nfs::s32 rounded = nfs::s32(SDL_lround(across));
+    return rounded > 0 && rounded < 90 ? nfs::u32(rounded) : half;
 }
 
 /* Wide Screen's view height (the port's widescreen change, in sub_4be5e0): the
@@ -597,11 +595,11 @@ x86::reg32 widescreenHalfAngle(win32::WinApplication* app, x86::reg32 half, x86:
  * the screen, kLetterbox's -- 2.76:1, Ultra Panavision's. */
 constexpr double kLetterbox = 2.76;
 
-x86::reg32 letterboxHeight(x86::reg32 width, x86::reg32 height, x86::reg32 half)
+nfs::u32 letterboxHeight(nfs::u32 width, nfs::u32 height, nfs::u32 half)
 {
-    if (x86::sreg32(width) <= 0 || x86::sreg32(height) <= 0 || width < height * 2)
+    if (nfs::s32(width) <= 0 || nfs::s32(height) <= 0 || width < height * 2)
         return half;
-    return x86::reg32(SDL_min(x86::sreg32(height), x86::sreg32(SDL_lround(double(width) / kLetterbox))));
+    return nfs::u32(SDL_min(nfs::s32(height), nfs::s32(SDL_lround(double(width) / kLetterbox))));
 }
 
 /* The half width a zoomed camera's x scale is made of (the port's widescreen change,
@@ -615,7 +613,7 @@ x86::reg32 letterboxHeight(x86::reg32 width, x86::reg32 height, x86::reg32 half)
  * world shows at the sides.  Only an active race gets Hor+; a 4:3 race keeps
  * the game's half width.  (The Player Car screen does not come through here, as
  * a log showed: it takes the angle projection, see widescreenHalfAngle.) */
-float zoomHalfWidth(win32::WinApplication* app)
+float zoomHalfWidth(nfs::App* app)
 {
     const float halfWidth = app->getMemory<float>(0x5600ac);
     const float halfHeight = app->getMemory<float>(0x5600b0);
@@ -639,23 +637,23 @@ float zoomHalfWidth(win32::WinApplication* app)
  * split-screen half, which the game squashes to half height on a 4:3 screen too,
  * keeps that look and loses the same share.  A screen no wider than 4:3 keeps the
  * game's own rectangle. */
-x86::reg32 cabinRect(win32::WinApplication* app, x86::reg32 field)
+nfs::u32 cabinRect(nfs::App* app, nfs::u32 field)
 {
-    const x86::sreg32 x = x86::sreg32(app->getMemory<x86::reg32>(0x7cdb98));
-    const x86::sreg32 y = x86::sreg32(app->getMemory<x86::reg32>(0x7cdb9c));
-    const x86::sreg32 width = x86::sreg32(app->getMemory<x86::reg32>(0x7cdba0));
-    const x86::sreg32 height = x86::sreg32(app->getMemory<x86::reg32>(0x7cdba4));
-    const x86::reg32 screenWidth = app->getMemory<x86::reg32>(0x7cdae0);
-    const x86::reg32 screenHeight = app->getMemory<x86::reg32>(0x7cdae4);
-    x86::sreg32 fitHeight = height;
+    const nfs::s32 x = nfs::s32(app->getMemory<nfs::u32>(0x7cdb98));
+    const nfs::s32 y = nfs::s32(app->getMemory<nfs::u32>(0x7cdb9c));
+    const nfs::s32 width = nfs::s32(app->getMemory<nfs::u32>(0x7cdba0));
+    const nfs::s32 height = nfs::s32(app->getMemory<nfs::u32>(0x7cdba4));
+    const nfs::u32 screenWidth = app->getMemory<nfs::u32>(0x7cdae0);
+    const nfs::u32 screenHeight = app->getMemory<nfs::u32>(0x7cdae4);
+    nfs::s32 fitHeight = height;
     if (height > 0 && screenHeight && screenWidth * 3 > screenHeight * 4)
-        fitHeight = x86::sreg32(SDL_lround(double(height) * double(screenWidth) * 3.0 / (double(screenHeight) * 4.0)));
+        fitHeight = nfs::s32(SDL_lround(double(height) * double(screenWidth) * 3.0 / (double(screenHeight) * 4.0)));
     switch (field)
     {
-    case 0: return x86::reg32(x);
-    case 1: return x86::reg32(y + (height - fitHeight) / 2);
-    case 2: return x86::reg32(width);
-    default: return x86::reg32(fitHeight);
+    case 0: return nfs::u32(x);
+    case 1: return nfs::u32(y + (height - fitHeight) / 2);
+    case 2: return nfs::u32(width);
+    default: return nfs::u32(fitHeight);
     }
 }
 
@@ -668,19 +666,19 @@ x86::reg32 cabinRect(win32::WinApplication* app, x86::reg32 field)
  * the height that width would have.  A border then stays the thickness it was
  * drawn with and text the size.  Where an element sits is a separate question,
  * answered in widescreenHudRect; these only say how big its parts are. */
-x86::reg32 hudReferenceWidth(win32::WinApplication* app)
+nfs::u32 hudReferenceWidth(nfs::App* app)
 {
-    const x86::reg32 width = app->getMemory<x86::reg32>(0x7cdac8);
-    const x86::reg32 height = app->getMemory<x86::reg32>(0x7cdacc);
+    const nfs::u32 width = app->getMemory<nfs::u32>(0x7cdac8);
+    const nfs::u32 height = app->getMemory<nfs::u32>(0x7cdacc);
     if (!height || width * 3 <= height * 4)
         return width;
     return (height * 4) / 3;
 }
 
-x86::reg32 hudReferenceHeight(win32::WinApplication* app)
+nfs::u32 hudReferenceHeight(nfs::App* app)
 {
-    const x86::reg32 width = app->getMemory<x86::reg32>(0x7cdac8);
-    const x86::reg32 height = app->getMemory<x86::reg32>(0x7cdacc);
+    const nfs::u32 width = app->getMemory<nfs::u32>(0x7cdac8);
+    const nfs::u32 height = app->getMemory<nfs::u32>(0x7cdacc);
     if (!width || height * 4 <= width * 3)
         return height;
     return (width * 3) / 4;
@@ -690,10 +688,10 @@ x86::reg32 hudReferenceHeight(win32::WinApplication* app)
  * its left and right edges move or its top and bottom, and by what factor about
  * their centre.  False for an element drawn as laid out -- all of them on a
  * screen no wider than 4:3.  See widescreenHudRect. */
-static bool widescreenHudScale(win32::WinApplication* app, x86::reg32 element, bool& across, double& scale)
+static bool widescreenHudScale(nfs::App* app, nfs::u32 element, bool& across, double& scale)
 {
-    const x86::reg32 width = app->getMemory<x86::reg32>(0x7cdae0);
-    const x86::reg32 height = app->getMemory<x86::reg32>(0x7cdae4);
+    const nfs::u32 width = app->getMemory<nfs::u32>(0x7cdae0);
+    const nfs::u32 height = app->getMemory<nfs::u32>(0x7cdae4);
     if (!height || width * 3 <= height * 4)
         return false;
     const double narrow = double(height) * 4.0 / (double(width) * 3.0);
@@ -728,27 +726,27 @@ static bool widescreenHudScale(win32::WinApplication* app, x86::reg32 element, b
  * 23 per player, four ints each -- x0, y0, x1, y1.  How much wider is taken from
  * the screen mode itself, not from the size sub_480910 was handed, which in
  * split screen is one player's half. */
-void widescreenHudRect(win32::WinApplication* app, x86::reg32 slot)
+void widescreenHudRect(nfs::App* app, nfs::u32 slot)
 {
     bool across;
     double scale;
     if (!widescreenHudScale(app, (slot % (23 * 16)) / 16, across, scale))
         return;
-    const x86::reg32 rect = 0x749758 + slot;
-    const x86::reg32 first = across ? 0 : 4, second = across ? 8 : 12;  // x0 and x1, or y0 and y1
-    const double a = double(x86::sreg32(app->getMemory<x86::reg32>(rect + first)));
-    const double b = double(x86::sreg32(app->getMemory<x86::reg32>(rect + second)));
+    const nfs::u32 rect = 0x749758 + slot;
+    const nfs::u32 first = across ? 0 : 4, second = across ? 8 : 12;  // x0 and x1, or y0 and y1
+    const double a = double(nfs::s32(app->getMemory<nfs::u32>(rect + first)));
+    const double b = double(nfs::s32(app->getMemory<nfs::u32>(rect + second)));
     const double centre = (a + b) / 2.0, half = (b - a) * scale / 2.0;
-    app->getMemory<x86::reg32>(rect + first) = x86::reg32(x86::sreg32(SDL_lround(centre - half)));
-    app->getMemory<x86::reg32>(rect + second) = x86::reg32(x86::sreg32(SDL_lround(centre + half)));
+    app->getMemory<nfs::u32>(rect + first) = nfs::u32(nfs::s32(SDL_lround(centre - half)));
+    app->getMemory<nfs::u32>(rect + second) = nfs::u32(nfs::s32(SDL_lround(centre + half)));
 }
 
 /* The same change on an element's layout, the fractions of the screen the game
  * keeps it at: four floats, top, left, bottom and right (the port's HUD editor change).
  * By `scale` for as it is drawn, by its inverse for as it is laid out. */
-static void scaleHudLayout(win32::WinApplication* app, x86::reg32 rect, bool across, double scale)
+static void scaleHudLayout(nfs::App* app, nfs::u32 rect, bool across, double scale)
 {
-    const x86::reg32 first = across ? 4 : 0, second = across ? 12 : 8;  // left and right, or top and bottom
+    const nfs::u32 first = across ? 4 : 0, second = across ? 12 : 8;  // left and right, or top and bottom
     const double a = app->getMemory<float>(rect + first), b = app->getMemory<float>(rect + second);
     const double centre = (a + b) / 2.0, half = (b - a) * scale / 2.0;
     app->getMemory<float>(rect + first) = float(centre - half);
@@ -758,7 +756,7 @@ static void scaleHudLayout(win32::WinApplication* app, x86::reg32 rect, bool acr
 /* The HUD editor writing an element's place into its layout, from the rectangle
  * it moves -- the one drawn: put back as laid out, or every edit would narrow a
  * gauge that drawing then narrows again.  `rect` is the layout's four floats. */
-void hudLayoutDesigned(win32::WinApplication* app, x86::reg32 rect, x86::reg32 element)
+void hudLayoutDesigned(nfs::App* app, nfs::u32 rect, nfs::u32 element)
 {
     bool across;
     double scale;
@@ -779,22 +777,22 @@ void hudLayoutDesigned(win32::WinApplication* app, x86::reg32 rect, x86::reg32 e
  * table is drawn where it was, and the editor frames what is on the screen.
  * The table is element 13 of the 23 per player at 0x749758, or 20 in its other
  * layout. */
-void hudTablePanel(win32::WinApplication* app, x86::reg32 player, bool otherLayout)
+void hudTablePanel(nfs::App* app, nfs::u32 player, bool otherLayout)
 {
-    const x86::sreg32 width = x86::sreg32(app->getMemory<x86::reg32>(otherLayout ? 0x7925cc : 0x7925c8));
-    const x86::sreg32 top = x86::sreg32(app->getMemory<x86::reg32>(0x724780 + player * 4));
-    const x86::sreg32 bottom = x86::sreg32(app->getMemory<x86::reg32>(0x724788 + player * 4));
+    const nfs::s32 width = nfs::s32(app->getMemory<nfs::u32>(otherLayout ? 0x7925cc : 0x7925c8));
+    const nfs::s32 top = nfs::s32(app->getMemory<nfs::u32>(0x724780 + player * 4));
+    const nfs::s32 bottom = nfs::s32(app->getMemory<nfs::u32>(0x724788 + player * 4));
     if (width <= 0 || bottom <= top || player > 1)
         return;
-    const x86::reg32 rect = 0x749758 + player * 23 * 16 + (otherLayout ? 20 : 13) * 16;
-    const x86::sreg32 left = x86::sreg32(app->getMemory<x86::reg32>(rect));
-    app->getMemory<x86::reg32>(rect + 4) = x86::reg32(top);
-    app->getMemory<x86::reg32>(rect + 8) = x86::reg32(left + width);
-    app->getMemory<x86::reg32>(rect + 12) = x86::reg32(bottom);
+    const nfs::u32 rect = 0x749758 + player * 23 * 16 + (otherLayout ? 20 : 13) * 16;
+    const nfs::s32 left = nfs::s32(app->getMemory<nfs::u32>(rect));
+    app->getMemory<nfs::u32>(rect + 4) = nfs::u32(top);
+    app->getMemory<nfs::u32>(rect + 8) = nfs::u32(left + width);
+    app->getMemory<nfs::u32>(rect + 12) = nfs::u32(bottom);
 }
 
 /* Buffer swaps so far, counted in onSwap: how old a measurement is. */
-static x86::reg32 s_swaps = 0;
+static nfs::u32 s_swaps = 0;
 
 /* Where each HUD element really is on the screen, as the HUD editor draws it
  * (the port's HUD editor change, around the call sub_45bcb0 makes to sub_45ab30 for
@@ -813,9 +811,9 @@ static x86::reg32 s_swaps = 0;
  * game had it. */
 struct HudDrawn
 {
-    x86::reg32  swap = 0;       // s_swaps when measured; 0 is never
-    x86::sreg32 x0, y0, x1, y1; // what was drawn, pixels
-    x86::sreg32 left, top, right, bottom;  // the element's rectangle then
+    nfs::u32  swap = 0;       // s_swaps when measured; 0 is never
+    nfs::s32 x0, y0, x1, y1; // what was drawn, pixels
+    nfs::s32 left, top, right, bottom;  // the element's rectangle then
 };
 /* Per player, per layout -- the racer's and the cop's -- and per element.  The
  * editor names an element by its place in the pair of layouts, 0 to 45, which
@@ -826,7 +824,7 @@ struct HudDrawn
  * enough -- but the racer's and the cop's own layouts are different HUDs, and
  * measurements of one said nothing about the other. */
 static HudDrawn s_hudDrawn[2][2][23];
-static x86::reg32 s_hudPlayer = 0;
+static nfs::u32 s_hudPlayer = 0;
 
 static bool hudDrawnFresh(const HudDrawn& drawn)
 {
@@ -840,11 +838,11 @@ static float s_hudX0, s_hudY0, s_hudX1, s_hudY1;
 /* One quad into one of the game's 2D queues (the port's HUD editor change, at the
  * start of sub_49bd30): four vertex numbers into the queue's vertices, 32 bytes
  * each from list+0x10, x and y the first two floats. */
-void hudQueueQuad(win32::WinApplication* app, x86::reg32 list, x86::reg32 a, x86::reg32 b, x86::reg32 c, x86::reg32 d)
+void hudQueueQuad(nfs::App* app, nfs::u32 list, nfs::u32 a, nfs::u32 b, nfs::u32 c, nfs::u32 d)
 {
     if (!s_hudMeasuring)
         return;
-    for (x86::reg32 vertex : { a, b, c, d })
+    for (nfs::u32 vertex : { a, b, c, d })
     {
         if (vertex >= 0x1000)
             continue;
@@ -857,7 +855,7 @@ void hudQueueQuad(win32::WinApplication* app, x86::reg32 list, x86::reg32 a, x86
     }
 }
 
-void hudEditorDraw(win32::WinApplication* app, x86::reg32 object, bool begin)
+void hudEditorDraw(nfs::App* app, nfs::u32 object, bool begin)
 {
     if (begin)
     {
@@ -867,14 +865,14 @@ void hudEditorDraw(win32::WinApplication* app, x86::reg32 object, bool begin)
         return;
     }
     s_hudMeasuring = false;
-    const x86::reg32 index = app->getMemory<x86::reg32>(object + 0x3c);
+    const nfs::u32 index = app->getMemory<nfs::u32>(object + 0x3c);
     if (index >= 46)
         return;
     HudDrawn& drawn = s_hudDrawn[s_hudPlayer][index / 23][index % 23];
-    const x86::sreg32 left = x86::sreg16(app->getMemory<x86::reg16>(object + 6));
-    const x86::sreg32 top = x86::sreg16(app->getMemory<x86::reg16>(object + 8));
-    const x86::sreg32 right = x86::sreg32(app->getMemory<x86::reg32>(object + 0x60));
-    const x86::sreg32 bottom = x86::sreg32(app->getMemory<x86::reg32>(object + 0x64));
+    const nfs::s32 left = nfs::s16(app->getMemory<nfs::u16>(object + 6));
+    const nfs::s32 top = nfs::s16(app->getMemory<nfs::u16>(object + 8));
+    const nfs::s32 right = nfs::s32(app->getMemory<nfs::u32>(object + 0x60));
+    const nfs::s32 bottom = nfs::s32(app->getMemory<nfs::u32>(object + 0x64));
     const int x0 = int(SDL_floor(s_hudX0)), y0 = int(SDL_floor(s_hudY0));
     const int x1 = int(SDL_ceil(s_hudX1)), y1 = int(SDL_ceil(s_hudY1));
     if (x1 <= x0 || y1 <= y0 || x1 - x0 > 2 * (right - left) + 64 || y1 - y0 > 2 * (bottom - top) + 64)
@@ -887,15 +885,15 @@ void hudEditorDraw(win32::WinApplication* app, x86::reg32 object, bool begin)
      * what a line of text is centred between (sub_4897f0), and it is the
      * element's layout in pixels (sub_480910) as sub_4800a0 leaves it, not the
      * box the editor moves. */
-    const x86::reg32 pixels = 0x749758 + s_hudPlayer * 23 * 16 + (index % 23) * 16;
+    const nfs::u32 pixels = 0x749758 + s_hudPlayer * 23 * 16 + (index % 23) * 16;
     if (!drawn.swap || x0 - left != drawn.x0 - drawn.left || y0 - top != drawn.y0 - drawn.top
         || x1 - right != drawn.x1 - drawn.right || y1 - bottom != drawn.y1 - drawn.bottom)
         SDL_Log("[HUDEDIT] element %u drawn at %d,%d-%d,%d in its box %d,%d-%d,%d, the game's %d,%d-%d,%d",
                 unsigned(index % 23), x0, y0, x1, y1, int(left), int(top), int(right), int(bottom),
-                int(x86::sreg32(app->getMemory<x86::reg32>(pixels))),
-                int(x86::sreg32(app->getMemory<x86::reg32>(pixels + 4))),
-                int(x86::sreg32(app->getMemory<x86::reg32>(pixels + 8))),
-                int(x86::sreg32(app->getMemory<x86::reg32>(pixels + 12))));
+                int(nfs::s32(app->getMemory<nfs::u32>(pixels))),
+                int(nfs::s32(app->getMemory<nfs::u32>(pixels + 4))),
+                int(nfs::s32(app->getMemory<nfs::u32>(pixels + 8))),
+                int(nfs::s32(app->getMemory<nfs::u32>(pixels + 12))));
     drawn.swap = s_swaps ? s_swaps : 1;
     drawn.x0 = x0;
     drawn.y0 = y0;
@@ -923,9 +921,9 @@ void hudEditorDraw(win32::WinApplication* app, x86::reg32 object, bool begin)
  * always centred in it (the port's HUD editor change) -- so what an element draws
  * stands in the same place in its box wherever the box goes, which is what
  * makes this measurement worth anything. */
-x86::sreg32 hudDragSlack(win32::WinApplication* app, x86::reg32 object, x86::reg32 side)
+nfs::s32 hudDragSlack(nfs::App* app, nfs::u32 object, nfs::u32 side)
 {
-    const x86::reg32 index = app->getMemory<x86::reg32>(object + 0x3c);
+    const nfs::u32 index = app->getMemory<nfs::u32>(object + 0x3c);
     if (index >= 46 || !hudDrawnFresh(s_hudDrawn[s_hudPlayer][index / 23][index % 23]))
         return 0;
     const HudDrawn& measured = s_hudDrawn[s_hudPlayer][index / 23][index % 23];
@@ -942,35 +940,35 @@ x86::sreg32 hudDragSlack(win32::WinApplication* app, x86::reg32 object, x86::reg
  * element's rectangle): for the length of the call the rectangle is what was
  * drawn, measured a moment before, then it is put back.  `drawn` before the
  * call, not after it. */
-void hudEditorFrame(win32::WinApplication* app, x86::reg32 object, bool drawn)
+void hudEditorFrame(nfs::App* app, nfs::u32 object, bool drawn)
 {
-    static x86::reg32 s_object = 0;
-    static x86::reg16 s_left, s_top;
-    static x86::reg32 s_right, s_bottom;
+    static nfs::u32 s_object = 0;
+    static nfs::u16 s_left, s_top;
+    static nfs::u32 s_right, s_bottom;
     if (!drawn)
     {
         if (s_object != object)
             return;
-        app->getMemory<x86::reg16>(object + 6) = s_left;
-        app->getMemory<x86::reg16>(object + 8) = s_top;
-        app->getMemory<x86::reg32>(object + 0x60) = s_right;
-        app->getMemory<x86::reg32>(object + 0x64) = s_bottom;
+        app->getMemory<nfs::u16>(object + 6) = s_left;
+        app->getMemory<nfs::u16>(object + 8) = s_top;
+        app->getMemory<nfs::u32>(object + 0x60) = s_right;
+        app->getMemory<nfs::u32>(object + 0x64) = s_bottom;
         s_object = 0;
         return;
     }
-    const x86::reg32 index = app->getMemory<x86::reg32>(object + 0x3c);
+    const nfs::u32 index = app->getMemory<nfs::u32>(object + 0x3c);
     if (index >= 46 || !hudDrawnFresh(s_hudDrawn[s_hudPlayer][index / 23][index % 23]))
         return;
     const HudDrawn& measured = s_hudDrawn[s_hudPlayer][index / 23][index % 23];
     s_object = object;
-    s_left = app->getMemory<x86::reg16>(object + 6);
-    s_top = app->getMemory<x86::reg16>(object + 8);
-    s_right = app->getMemory<x86::reg32>(object + 0x60);
-    s_bottom = app->getMemory<x86::reg32>(object + 0x64);
-    app->getMemory<x86::reg16>(object + 6) = x86::reg16(measured.x0);
-    app->getMemory<x86::reg16>(object + 8) = x86::reg16(measured.y0);
-    app->getMemory<x86::reg32>(object + 0x60) = x86::reg32(measured.x1);
-    app->getMemory<x86::reg32>(object + 0x64) = x86::reg32(measured.y1);
+    s_left = app->getMemory<nfs::u16>(object + 6);
+    s_top = app->getMemory<nfs::u16>(object + 8);
+    s_right = app->getMemory<nfs::u32>(object + 0x60);
+    s_bottom = app->getMemory<nfs::u32>(object + 0x64);
+    app->getMemory<nfs::u16>(object + 6) = nfs::u16(measured.x0);
+    app->getMemory<nfs::u16>(object + 8) = nfs::u16(measured.y0);
+    app->getMemory<nfs::u32>(object + 0x60) = nfs::u32(measured.x1);
+    app->getMemory<nfs::u32>(object + 0x64) = nfs::u32(measured.y1);
 }
 
 /* What the HUD editor's test answered, in the log whenever the answer changes
@@ -979,23 +977,23 @@ void hudEditorFrame(win32::WinApplication* app, x86::reg32 object, bool drawn)
  * at [ebp-0x10] of sub_459db0, and only when it found one: an element off the
  * screen, or one refused for split screen's half, is said as such.  Read while
  * the layouts are still as the test saw them. */
-static void traceHudLayoutTest(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 element, x86::reg32 rect,
-                               x86::reg32 mode, x86::reg32 base, bool answered, x86::reg32 blockerAt)
+static void traceHudLayoutTest(nfs::App* app, nfs::ThreadState& ts, nfs::u32 element, nfs::u32 rect,
+                               nfs::u32 mode, nfs::u32 base, bool answered, nfs::u32 blockerAt)
 {
     static int s_last = -2;
-    static x86::reg32 s_lastElement = ~0u;
+    static nfs::u32 s_lastElement = ~0u;
     const bool fits = answered;
     const float y0 = app->getMemory<float>(rect), x0 = app->getMemory<float>(rect + 4);
     const float y1 = app->getMemory<float>(rect + 8), x1 = app->getMemory<float>(rect + 12);
     int blocker = -1;
-    x86::reg32 variant = 0;
+    nfs::u32 variant = 0;
     if (!fits && y0 >= 0 && x0 >= 0 && y1 <= 1 && x1 <= 1)
     {
         /* One of the front end's items, 0xbc bytes each from 0x604ee0 (the
          * array sub_459670 searches), or the local was never written. */
-        const x86::reg32 other = app->getMemory<x86::reg32>(blockerAt);
+        const nfs::u32 other = app->getMemory<nfs::u32>(blockerAt);
         if (other >= 0x604ee0 && other < 0x604ee0 + 1024 * 0xbc && (other - 0x604ee0) % 0xbc == 0)
-            blocker = int(app->getMemory<x86::reg32>(other + 0x3c) % 23);
+            blocker = int(app->getMemory<nfs::u32>(other + 0x3c) % 23);
     }
     const int answer = fits ? -2 : blocker;
     if (answer == s_last && element == s_lastElement)
@@ -1013,7 +1011,7 @@ static void traceHudLayoutTest(win32::WinApplication* app, x86::CPU& cpu, x86::r
         {
             /* Read into floats first: getMemory hands back an accessor, which
              * a variadic call would pass as it is rather than as its value. */
-            const x86::reg32 in = base + variant * 0x1a4 + x86::reg32(blocker) * 16;
+            const nfs::u32 in = base + variant * 0x1a4 + nfs::u32(blocker) * 16;
             const float top = app->getMemory<float>(in), left = app->getMemory<float>(in + 4);
             const float bottom = app->getMemory<float>(in + 8), right = app->getMemory<float>(in + 12);
             SDL_Log("[HUDEDIT] element %u (mode %u) at top %.3f left %.3f bottom %.3f right %.3f: element %d in the way,"
@@ -1046,41 +1044,41 @@ static void traceHudLayoutTest(win32::WinApplication* app, x86::CPU& cpu, x86::r
  * Before the test it is handed its arguments (the rectangle being tried, the
  * player, the element and the editor's mode); after it, its answer and the
  * address of the local it hands the item in the way through. */
-void hudLayoutsDrawn(win32::WinApplication* app, x86::CPU& cpu, bool drawn, x86::reg32 rect, x86::reg32 playerIn,
-                     x86::reg32 elementIn, x86::reg32 modeIn, x86::reg32 fits, x86::reg32 blockerAt)
+void hudLayoutsDrawn(nfs::App* app, nfs::ThreadState& ts, bool drawn, nfs::u32 rect, nfs::u32 playerIn,
+                     nfs::u32 elementIn, nfs::u32 modeIn, nfs::u32 fits, nfs::u32 blockerAt)
 {
-    const x86::reg32 kElements = 23;
+    const nfs::u32 kElements = 23;
     const float kSlack = 0.01f;
     static float s_saved[2][kElements][4];
     static float s_savedTried[4];
     static bool s_triedMeasured = false;
-    static x86::reg32 s_base = 0, s_element = 0, s_rect = 0, s_mode = 0;
+    static nfs::u32 s_base = 0, s_element = 0, s_rect = 0, s_mode = 0;
     if (!drawn)
     {
         if (!s_base)
             return;
-        traceHudLayoutTest(app, cpu, s_element, s_rect, s_mode, s_base, fits != 0, blockerAt);
-        for (x86::reg32 layout = 0; layout < 2; ++layout)
-            for (x86::reg32 element = 0; element < kElements; ++element)
-                for (x86::reg32 edge = 0; edge < 4; ++edge)
+        traceHudLayoutTest(app, ts, s_element, s_rect, s_mode, s_base, fits != 0, blockerAt);
+        for (nfs::u32 layout = 0; layout < 2; ++layout)
+            for (nfs::u32 element = 0; element < kElements; ++element)
+                for (nfs::u32 edge = 0; edge < 4; ++edge)
                     app->getMemory<float>(s_base + layout * 0x1a4 + element * 16 + edge * 4) = s_saved[layout][element][edge];
         if (s_triedMeasured)
-            for (x86::reg32 edge = 0; edge < 4; ++edge)
+            for (nfs::u32 edge = 0; edge < 4; ++edge)
                 app->getMemory<float>(s_rect + edge * 4) = s_savedTried[edge];
         s_triedMeasured = false;
         s_base = 0;
         return;
     }
-    const x86::reg32 player = playerIn;
+    const nfs::u32 player = playerIn;
     s_element = elementIn;
     s_rect = rect;
     s_mode = modeIn;
-    const x86::reg32 slot = player + (gameSettings(app).playMode == 1 ? 1 : 0);
+    const nfs::u32 slot = player + (gameSettings(app).playMode == 1 ? 1 : 0);
     s_base = SETTINGS_ADDRESS(hud[0].rects) + slot * 0x348;
-    const x86::reg32 hudWidth = app->getMemory<x86::reg32>(0x7cdac8);
-    const x86::reg32 hudHeight = app->getMemory<x86::reg32>(0x7cdacc);
+    const nfs::u32 hudWidth = app->getMemory<nfs::u32>(0x7cdac8);
+    const nfs::u32 hudHeight = app->getMemory<nfs::u32>(0x7cdacc);
     const bool measurable = player < 2 && hudWidth && hudHeight;
-    auto putFractions = [&](x86::reg32 at, x86::sreg32 left, x86::sreg32 top, x86::sreg32 right, x86::sreg32 bottom) {
+    auto putFractions = [&](nfs::u32 at, nfs::s32 left, nfs::s32 top, nfs::s32 right, nfs::s32 bottom) {
         app->getMemory<float>(at) = float(top) / float(hudHeight);
         app->getMemory<float>(at + 4) = float(left) / float(hudWidth);
         app->getMemory<float>(at + 8) = float(bottom) / float(hudHeight);
@@ -1094,28 +1092,28 @@ void hudLayoutsDrawn(win32::WinApplication* app, x86::CPU& cpu, bool drawn, x86:
      * racer's elements and then the cop's, and the rectangle being tried is
      * that item's own (object + 0x40).  An element measured in one layout says
      * nothing about the other: they are different HUDs. */
-    const x86::reg32 named = app->getMemory<x86::reg32>(s_rect - 0x40 + 0x3c);
-    const x86::reg32 variant = named < 46 ? named / 23 : 0;
+    const nfs::u32 named = app->getMemory<nfs::u32>(s_rect - 0x40 + 0x3c);
+    const nfs::u32 variant = named < 46 ? named / 23 : 0;
     if (measurable && s_element < kElements && hudDrawnFresh(s_hudDrawn[player][variant][s_element]))
     {
-        for (x86::reg32 edge = 0; edge < 4; ++edge)
+        for (nfs::u32 edge = 0; edge < 4; ++edge)
             s_savedTried[edge] = app->getMemory<float>(s_rect + edge * 4);
         const HudDrawn& measured = s_hudDrawn[player][variant][s_element];
-        const x86::reg32 object = s_rect - 0x40;
-        const x86::sreg32 left = x86::sreg16(app->getMemory<x86::reg16>(object + 6));
-        const x86::sreg32 top = x86::sreg16(app->getMemory<x86::reg16>(object + 8));
-        const x86::sreg32 right = x86::sreg32(app->getMemory<x86::reg32>(object + 0x60));
-        const x86::sreg32 bottom = x86::sreg32(app->getMemory<x86::reg32>(object + 0x64));
+        const nfs::u32 object = s_rect - 0x40;
+        const nfs::s32 left = nfs::s16(app->getMemory<nfs::u16>(object + 6));
+        const nfs::s32 top = nfs::s16(app->getMemory<nfs::u16>(object + 8));
+        const nfs::s32 right = nfs::s32(app->getMemory<nfs::u32>(object + 0x60));
+        const nfs::s32 bottom = nfs::s32(app->getMemory<nfs::u32>(object + 0x64));
         putFractions(s_rect, left + measured.x0 - measured.left, top + measured.y0 - measured.top,
                      right + measured.x1 - measured.right, bottom + measured.y1 - measured.bottom);
         s_triedMeasured = true;
     }
 
-    for (x86::reg32 layout = 0; layout < 2; ++layout)
-        for (x86::reg32 element = 0; element < kElements; ++element)
+    for (nfs::u32 layout = 0; layout < 2; ++layout)
+        for (nfs::u32 element = 0; element < kElements; ++element)
         {
-            const x86::reg32 rect = s_base + layout * 0x1a4 + element * 16;
-            for (x86::reg32 edge = 0; edge < 4; ++edge)
+            const nfs::u32 rect = s_base + layout * 0x1a4 + element * 16;
+            for (nfs::u32 edge = 0; edge < 4; ++edge)
                 s_saved[layout][element][edge] = app->getMemory<float>(rect + edge * 4);
             if (measurable && !(layout == variant && element == s_element)
                 && hudDrawnFresh(s_hudDrawn[player][layout][element]))
@@ -1125,11 +1123,11 @@ void hudLayoutsDrawn(win32::WinApplication* app, x86::CPU& cpu, bool drawn, x86:
             }
             else if (element == (layout ? 20u : 13u) && measurable)
             {
-                const x86::reg32 panel = 0x749758 + player * 23 * 16 + element * 16;
-                const x86::sreg32 panelLeft = x86::sreg32(app->getMemory<x86::reg32>(panel));
-                const x86::sreg32 panelTop = x86::sreg32(app->getMemory<x86::reg32>(panel + 4));
-                const x86::sreg32 panelRight = x86::sreg32(app->getMemory<x86::reg32>(panel + 8));
-                const x86::sreg32 panelBottom = x86::sreg32(app->getMemory<x86::reg32>(panel + 12));
+                const nfs::u32 panel = 0x749758 + player * 23 * 16 + element * 16;
+                const nfs::s32 panelLeft = nfs::s32(app->getMemory<nfs::u32>(panel));
+                const nfs::s32 panelTop = nfs::s32(app->getMemory<nfs::u32>(panel + 4));
+                const nfs::s32 panelRight = nfs::s32(app->getMemory<nfs::u32>(panel + 8));
+                const nfs::s32 panelBottom = nfs::s32(app->getMemory<nfs::u32>(panel + 12));
                 if (panelRight > panelLeft && panelBottom > panelTop)
                     putFractions(rect, panelLeft, panelTop, panelRight, panelBottom);
             }
@@ -1173,12 +1171,12 @@ void hudLayoutsDrawn(win32::WinApplication* app, x86::CPU& cpu, bool drawn, x86:
  * used to be: a race without music rather than a race with the wrong one. */
 static char s_musicIndex[256];
 
-void musicIndexOpened(win32::WinApplication* app, x86::reg32 path)
+void musicIndexOpened(nfs::App* app, nfs::u32 path)
 {
     s_musicIndex[0] = '\0';
     for (size_t i = 0; i + 1 < sizeof(s_musicIndex); ++i)
     {
-        const char letter = char(app->getMemory<x86::reg8>(path + x86::reg32(i)));
+        const char letter = char(app->getMemory<nfs::u8>(path + nfs::u32(i)));
         s_musicIndex[i] = letter;
         s_musicIndex[i + 1] = '\0';
         if (!letter)
@@ -1188,14 +1186,14 @@ void musicIndexOpened(win32::WinApplication* app, x86::reg32 path)
     s_musicIndex[0] = '\0';
 }
 
-void musicStreamFile(win32::WinApplication* app, x86::reg32 path)
+void musicStreamFile(nfs::App* app, nfs::u32 path)
 {
     const size_t length = SDL_strlen(s_musicIndex);
     if (length < 5 || s_musicIndex[length - 4] != '.')
         return;
     SDL_memcpy(s_musicIndex + length - 4, ".mus", 5);
     for (size_t i = 0; i <= length; ++i)
-        app->getMemory<x86::reg8>(path + x86::reg32(i)) = x86::reg8(s_musicIndex[i]);
+        app->getMemory<nfs::u8>(path + nfs::u32(i)) = nfs::u8(s_musicIndex[i]);
     SDL_Log("[MUSIC] streaming %s", s_musicIndex);
 }
 
@@ -1209,7 +1207,7 @@ void musicStreamFile(win32::WinApplication* app, x86::reg32 path)
  * file word for word, as an import writes them into a settings file that came
  * with the data.  Returns whether it did, for the caller to have the game take
  * up the new bindings and save the file. */
-bool firstSettings(win32::WinApplication* app)
+bool firstSettings(nfs::App* app)
 {
     bool laid = false;
 #ifdef __ANDROID__
@@ -1247,7 +1245,7 @@ bool firstSettings(win32::WinApplication* app)
 
 // The most of Render_GetTm's buffer a view pass used since the last call
 // (native_vertices.cpp, at sub_4bbd70).
-x86::reg32 takeArenaPeak();
+nfs::u32 takeArenaPeak();
 }
 
 namespace
@@ -1261,7 +1259,7 @@ namespace
  * one force feedback follows (0x678b54); while its flag at +0x164 is set or
  * +0x15c is negative the game stops its effects, and there is no cornering to
  * feel either. */
-void phoneTick(win32::WinApplication* app)
+void phoneTick(nfs::App* app)
 {
     static Uint64 last = 0;
     const Uint64 now = SDL_GetTicks();
@@ -1269,12 +1267,12 @@ void phoneTick(win32::WinApplication* app)
         return;
     last = now;
     float turn = 0;
-    const x86::reg32 car = app->getMemory<x86::reg32>(0x678b54);
+    const nfs::u32 car = app->getMemory<nfs::u32>(0x678b54);
     const float scale = app->getMemory<float>(0x5efde4);
-    if (car && scale > 0 && app->getMemory<x86::reg16>(car + 0x164) == 0
+    if (car && scale > 0 && app->getMemory<nfs::u16>(car + 0x164) == 0
         && app->getMemory<float>(car + 0x15c) >= 0)
         turn = SDL_min(1.0f, SDL_fabsf(app->getMemory<float>(car + 0x924)) / scale);
-    win32::Gamepad::phoneTick(turn);
+    nfs::Gamepad::phoneTick(turn);
 }
 
 /* The on-screen steering buttons steer the way the game steers for a key.  A
@@ -1288,10 +1286,10 @@ void phoneTick(win32::WinApplication* app)
  * While the buttons are what steers player one it is raised, and the pad's
  * stick lowers it again.  Player one's car is the one force feedback follows
  * (0x678b54, as in phoneTick). */
-void steeringTick(win32::WinApplication* app)
+void steeringTick(nfs::App* app)
 {
     static int s_last = -1;
-    static x86::reg32 s_raced = 0;
+    static nfs::u32 s_raced = 0;
     /* Nothing to do where the on-screen controls are bound as the keyboard they
      * are (NFS_TOUCH_DRIVE): the game sees keys steering the car and raises the
      * flag itself, at the start of the race, where a replay raises it again. */
@@ -1313,10 +1311,10 @@ void steeringTick(win32::WinApplication* app)
      * differently on this machine than on the rest. */
     if (gameSettings(app).playMode >= 2)
         return;
-    const x86::reg32 car = app->getMemory<x86::reg32>(0x678b54);
+    const nfs::u32 car = app->getMemory<nfs::u32>(0x678b54);
     if (!car)
         return;
-    const x86::reg32 record = app->getMemory<x86::reg32>(car + 0x220);
+    const nfs::u32 record = app->getMemory<nfs::u32>(car + 0x220);
     if (record < SETTINGS_ADDRESS(entries) || record >= SETTINGS_ADDRESS(entries) + 16 * 0x6c || (record - SETTINGS_ADDRESS(entries)) % 0x6c)
         return;
     /* A replay is the race driven again from what the game recorded of it, so
@@ -1324,11 +1322,11 @@ void steeringTick(win32::WinApplication* app)
      * the race left it at rather than following a screen nobody is touching.
      * ([0x6fd3a0] is 2 while a replay runs, as sub_4bcb00 sets it.) */
     const bool replay = gameSettings(app).replayMode == 2;
-    const x86::reg32 digital = replay ? s_raced : x86::reg32(win32::Gamepad::touchSteering() ? 1 : 0);
+    const nfs::u32 digital = replay ? s_raced : nfs::u32(nfs::Gamepad::touchSteering() ? 1 : 0);
     if (!replay)
         s_raced = digital;
-    if (app->getMemory<x86::reg32>(record + 0x24) != digital)
-        app->getMemory<x86::reg32>(record + 0x24) = digital;
+    if (app->getMemory<nfs::u32>(record + 0x24) != digital)
+        app->getMemory<nfs::u32>(record + 0x24) = digital;
     if (s_last != int(digital))
     {
         SDL_Log("[STEERING] player %u: %s%s", unsigned((record - SETTINGS_ADDRESS(entries)) / 0x6c),
@@ -1353,32 +1351,32 @@ bool s_traceInput = false;
  * words from +0x1c: the gearbox, the steering as given, the flag that says
  * whether the car turns towards it, the pedals.  The place is the car's own
  * (+0x98), which is what the ghost recorder writes down too. */
-void traceInput(win32::WinApplication* app)
+void traceInput(nfs::App* app)
 {
-    static x86::reg32 s_step = ~x86::reg32(0);
+    static nfs::u32 s_step = ~nfs::u32(0);
     if (!nfs3hp::raceIsRunning())
     {
-        s_step = ~x86::reg32(0);
+        s_step = ~nfs::u32(0);
         return;
     }
-    const x86::reg32 step = app->getMemory<x86::reg32>(0x7d3684) >> 3;
+    const nfs::u32 step = app->getMemory<nfs::u32>(0x7d3684) >> 3;
     if (step == s_step)
         return;
     s_step = step;
-    const x86::reg32 car = app->getMemory<x86::reg32>(0x678b54);
+    const nfs::u32 car = app->getMemory<nfs::u32>(0x678b54);
     if (!car)
         return;
-    const x86::reg32 record = app->getMemory<x86::reg32>(car + 0x220);
+    const nfs::u32 record = app->getMemory<nfs::u32>(car + 0x220);
     if (record < SETTINGS_ADDRESS(entries) || record >= SETTINGS_ADDRESS(entries) + 16 * 0x6c || (record - SETTINGS_ADDRESS(entries)) % 0x6c)
         return;
     SDL_Log("[INPUT] step %u mode %u rec %08x %08x %08x %08x %08x %08x at %.1f %.1f %.1f",
             unsigned(step), unsigned(gameSettings(app).replayMode),
-            unsigned(app->getMemory<x86::reg32>(record + 0x1c)),
-            unsigned(app->getMemory<x86::reg32>(record + 0x20)),
-            unsigned(app->getMemory<x86::reg32>(record + 0x24)),
-            unsigned(app->getMemory<x86::reg32>(record + 0x28)),
-            unsigned(app->getMemory<x86::reg32>(record + 0x2c)),
-            unsigned(app->getMemory<x86::reg32>(record + 0x30)),
+            unsigned(app->getMemory<nfs::u32>(record + 0x1c)),
+            unsigned(app->getMemory<nfs::u32>(record + 0x20)),
+            unsigned(app->getMemory<nfs::u32>(record + 0x24)),
+            unsigned(app->getMemory<nfs::u32>(record + 0x28)),
+            unsigned(app->getMemory<nfs::u32>(record + 0x2c)),
+            unsigned(app->getMemory<nfs::u32>(record + 0x30)),
             double(app->getMemory<float>(car + 0x98)), double(app->getMemory<float>(car + 0x9c)),
             double(app->getMemory<float>(car + 0xa0)));
 }
@@ -1403,9 +1401,9 @@ void traceInput(win32::WinApplication* app)
  * reach (block records of 0x5c0 bytes at 0x571370, the centre at +0x78, the
  * list at +0xb4, four bytes an entry, -1 ending it; [0x5dd83c] the last block):
  * a block no list names is never drawn, however far the view reaches. */
-bool playerDriving(win32::WinApplication* app);
+bool playerDriving(nfs::App* app);
 
-void viewTick(win32::WinApplication* app)
+void viewTick(nfs::App* app)
 {
     static bool reachLogged = false;
     static Uint64 last = 0;
@@ -1417,22 +1415,22 @@ void viewTick(win32::WinApplication* app)
     if (!reachLogged && playerDriving(app))
     {
         reachLogged = true;
-        const x86::sreg32 lastBlock = x86::sreg32(app->getMemory<x86::reg32>(0x5dd83c));
+        const nfs::s32 lastBlock = nfs::s32(app->getMemory<nfs::u32>(0x5dd83c));
         std::vector<float> reach;
         unsigned longest = 0;
-        for (x86::sreg32 block = 0; block <= lastBlock && block < 2000; ++block)
+        for (nfs::s32 block = 0; block <= lastBlock && block < 2000; ++block)
         {
-            const x86::reg32 record = 0x571370 + x86::reg32(block) * 0x5c0;
+            const nfs::u32 record = 0x571370 + nfs::u32(block) * 0x5c0;
             const float x = app->getMemory<float>(record + 0x78);
             const float z = app->getMemory<float>(record + 0x80);
             float farthest = 0.0f;
             unsigned listed = 0;
             for (; listed < 300; ++listed)
             {
-                const x86::sreg32 other = x86::sreg16(app->getMemory<x86::reg16>(record + 0xb4 + listed * 4));
+                const nfs::s32 other = nfs::s16(app->getMemory<nfs::u16>(record + 0xb4 + listed * 4));
                 if (other < 0 || other > lastBlock)
                     break;
-                const x86::reg32 at = 0x571370 + x86::reg32(other) * 0x5c0;
+                const nfs::u32 at = 0x571370 + nfs::u32(other) * 0x5c0;
                 const float dx = app->getMemory<float>(at + 0x78) - x;
                 const float dz = app->getMemory<float>(at + 0x80) - z;
                 farthest = std::max(farthest, std::sqrt(dx * dx + dz * dz));
@@ -1457,12 +1455,12 @@ void viewTick(win32::WinApplication* app)
     if (now - last < 2000)
         return;
     last = now;
-    const x86::reg32 peak = nfs3hp::takeArenaPeak();
+    const nfs::u32 peak = nfs3hp::takeArenaPeak();
     SDL_Log("[VIEW] far %.0f, split %.0f; fog %.0f to %.0f; buffer %u of %u KB",
-            double(x86::sreg32(app->getMemory<x86::reg32>(0x5dd108))) / 65536.0,
-            double(x86::sreg32(app->getMemory<x86::reg32>(0x5dd15c))) / 65536.0,
+            double(nfs::s32(app->getMemory<nfs::u32>(0x5dd108))) / 65536.0,
+            double(nfs::s32(app->getMemory<nfs::u32>(0x5dd15c))) / 65536.0,
             double(app->getMemory<float>(0x552e04)), double(app->getMemory<float>(0x552e08)),
-            unsigned(peak >> 10), unsigned(app->getMemory<x86::reg32>(0x7a3d04) >> 10));
+            unsigned(peak >> 10), unsigned(app->getMemory<nfs::u32>(0x7a3d04) >> 10));
 }
 
 bool s_traceCars = false;
@@ -1473,7 +1471,7 @@ bool s_traceCars = false;
  * is set up: 16 cars of 0x9ac bytes at 0x5e1120, and 16 records of 0x4ac bytes
  * at 0x5eabe0 beside them.  Each record: "SCAR", the race clock, the number of
  * cars in the race [0x6fd510], 0, then the two arrays. */
-void traceCars(win32::WinApplication* app, x86::reg32 clock)
+void traceCars(nfs::App* app, nfs::u32 clock)
 {
     static SDL_IOStream* s_file = nullptr;
     static bool s_failed = false;
@@ -1496,11 +1494,11 @@ void traceCars(win32::WinApplication* app, x86::reg32 clock)
         }
         SDL_Log("[CARS] writing %s", path.c_str());
     }
-    const x86::reg32 header[4] = { 0x52414353, clock, gameSettings(app).entryCount, 0 };
+    const nfs::u32 header[4] = { 0x52414353, clock, gameSettings(app).entryCount, 0 };
     SDL_WriteIO(s_file, header, sizeof header);
-    SDL_WriteIO(s_file, &app->getMemory<x86::reg8>(0x5e1120), 0x9ac0);
-    SDL_WriteIO(s_file, &app->getMemory<x86::reg8>(0x5eabe0), 0x4ac0);
-    static x86::reg32 s_flushed = 0;
+    SDL_WriteIO(s_file, &app->getMemory<nfs::u8>(0x5e1120), 0x9ac0);
+    SDL_WriteIO(s_file, &app->getMemory<nfs::u8>(0x5eabe0), 0x4ac0);
+    static nfs::u32 s_flushed = 0;
     if (clock / 64 != s_flushed)
     {
         s_flushed = clock / 64;
@@ -1510,10 +1508,10 @@ void traceCars(win32::WinApplication* app, x86::reg32 clock)
 
 /* NFS_CAR_TRACE, closer: every frame from 26 to 38 s of the race clock (64
  * ticks a second), where on Aquatica the opponents pile up at the tunnel. */
-void traceCarsCloser(win32::WinApplication* app)
+void traceCarsCloser(nfs::App* app)
 {
-    const x86::reg32 clock = app->getMemory<x86::reg32>(0x7d3684);
-    static x86::reg32 s_last = 0;
+    const nfs::u32 clock = app->getMemory<nfs::u32>(0x7d3684);
+    static nfs::u32 s_last = 0;
     if (clock < 26 * 64 || clock > 38 * 64 || clock == s_last)
         return;
     s_last = clock;
@@ -1522,8 +1520,8 @@ void traceCarsCloser(win32::WinApplication* app)
 
 struct TickTrace
 {
-    x86::reg32 clock = 0;
-    x86::reg32 swaps = 0;
+    nfs::u32 clock = 0;
+    nfs::u32 swaps = 0;
     Uint64     at = 0;
     // The GPU, looked at every frame: load in percent times clock in MHz.
     double     gpuLoad = 0;
@@ -1534,7 +1532,7 @@ struct TickTrace
     /* How many of the game's ticks each frame took, 0 to 4 and more: the
      * race's clock follows a timer the game re-arms itself, and a late timer
      * shows up here as frames that run several ticks at once. */
-    x86::reg32 frameClock = 0;
+    nfs::u32 frameClock = 0;
     unsigned   ticksAFrame[5] = {};
 };
 TickTrace s_ticks;
@@ -1580,15 +1578,15 @@ void lookAtGpu()
     ++s_ticks.gpuLooks;
 }
 
-void traceTicks(win32::WinApplication* app)
+void traceTicks(nfs::App* app)
 {
     const Uint64 now = SDL_GetTicks();
-    const x86::reg32 clock = app->getMemory<x86::reg32>(0x7d3684);
+    const nfs::u32 clock = app->getMemory<nfs::u32>(0x7d3684);
     lookAtGpu();
     if (s_traceCars)
         traceCarsCloser(app);
     if (clock >= s_ticks.frameClock)
-        ++s_ticks.ticksAFrame[SDL_min(clock - s_ticks.frameClock, x86::reg32(4))];
+        ++s_ticks.ticksAFrame[SDL_min(clock - s_ticks.frameClock, nfs::u32(4))];
     s_ticks.frameClock = clock;
     if (!s_ticks.at || clock < s_ticks.clock)
     {
@@ -1602,9 +1600,9 @@ void traceTicks(win32::WinApplication* app)
     const Uint64 span = now - s_ticks.at;
     if (span < 1000)
         return;
-    const x86::reg32 ticks = clock - s_ticks.clock;
-    const x86::reg32 frames = nfs3hp::s_swaps - s_ticks.swaps;
-    const win32::DrawCounters drawn = win32::ThrashRenderer::takeCounters();
+    const nfs::u32 ticks = clock - s_ticks.clock;
+    const nfs::u32 frames = nfs3hp::s_swaps - s_ticks.swaps;
+    const nfs::DrawCounters drawn = nfs::ThrashRenderer::takeCounters();
     SDL_Log("[TICKS] %u in %llu ms (%.1f/s), %u frames (%.1f/s), %.2f ticks a frame, clock %u, mode %u; "
             "%u triangles a frame, %u fogged, %u fog tables, %u batches (%u empty), %u cut",
             unsigned(ticks), (unsigned long long)span, double(ticks) * 1000.0 / double(span),
@@ -1633,19 +1631,19 @@ void traceTicks(win32::WinApplication* app)
     /* And the x87's special cases this second, all threads together: compares
      * that met a NaN, and fistp with no integer to store. */
     static unsigned s_unordered = 0, s_indefinite = 0;
-    const unsigned unordered = x86::FloatEnv::s_unordered, indefinite = x86::FloatEnv::s_indefinite;
+    const unsigned unordered = nfs::FloatEnv::s_unordered, indefinite = nfs::FloatEnv::s_indefinite;
     /* The C runtime's rand() (sub_4eb1fc) keeps its seed at +0xc of the
      * thread's data, which it finds through the pointer at [0x567764]:
      * 0x4ff0ec returns the main thread's block [0x9f642c]; once a thread has
      * been started, 0x51e7a8 looks it up with TlsGetValue([0x567760]). */
-    const x86::reg32 threadData = app->getMemory<x86::reg32>(0x9f642c);
+    const nfs::u32 threadData = app->getMemory<nfs::u32>(0x9f642c);
     if (ticks)
         SDL_Log("[STEP] frames with 0/1/2/3/4+ ticks: %u/%u/%u/%u/%u; NaN compares %u, fistp indefinite %u; "
                 "thread data by %08x, tls %08x, main seed %08x",
                 s_ticks.ticksAFrame[0], s_ticks.ticksAFrame[1], s_ticks.ticksAFrame[2], s_ticks.ticksAFrame[3],
                 s_ticks.ticksAFrame[4], unordered - s_unordered, indefinite - s_indefinite,
-                unsigned(app->getMemory<x86::reg32>(0x567764)), unsigned(app->getMemory<x86::reg32>(0x567760)),
-                threadData ? unsigned(app->getMemory<x86::reg32>(threadData + 0xc)) : 0u);
+                unsigned(app->getMemory<nfs::u32>(0x567764)), unsigned(app->getMemory<nfs::u32>(0x567760)),
+                threadData ? unsigned(app->getMemory<nfs::u32>(threadData + 0xc)) : 0u);
     s_unordered = unordered;
     s_indefinite = indefinite;
     if (ticks && s_traceCars)
@@ -1655,15 +1653,15 @@ void traceTicks(win32::WinApplication* app)
          * [0x552558], its second half at [0x55255c]; [0x56f22c] = 1 when it
          * could not be read.  FNV-1a of the first 2152 bytes, the file's size
          * on Aquatica, to compare with the file. */
-        const x86::reg32 table = app->getMemory<x86::reg32>(0x552558);
+        const nfs::u32 table = app->getMemory<nfs::u32>(0x552558);
         std::uint32_t hash = 2166136261u;
         if (table)
-            for (x86::reg32 i = 0; i < 2152; ++i)
-                hash = (hash ^ app->getMemory<x86::reg8>(table + i)) * 16777619u;
+            for (nfs::u32 i = 0; i < 2152; ++i)
+                hash = (hash ^ app->getMemory<nfs::u8>(table + i)) * 16777619u;
         SDL_Log("[AIDATA] speeds %08x, half %08x, missing %u, nodes %d, fnv %08x",
-                unsigned(table), unsigned(app->getMemory<x86::reg32>(0x55255c)),
-                unsigned(app->getMemory<x86::reg32>(0x56f22c)),
-                int(x86::sreg32(app->getMemory<x86::reg32>(0x5dd940))), unsigned(hash));
+                unsigned(table), unsigned(app->getMemory<nfs::u32>(0x55255c)),
+                unsigned(app->getMemory<nfs::u32>(0x56f22c)),
+                int(nfs::s32(app->getMemory<nfs::u32>(0x5dd940))), unsigned(hash));
     }
     SDL_memset(s_ticks.ticksAFrame, 0, sizeof s_ticks.ticksAFrame);
     s_ticks.gpuLoad = s_ticks.gpuClock = s_ticks.gpuBusy = 0;
@@ -1726,7 +1724,7 @@ int          s_pointerCount;
 bool         s_touchHeld;
 int          s_mouseButtons;
 
-x86::sreg32 clampAxis(x86::sreg32 value, x86::sreg32 low, x86::sreg32 high)
+nfs::s32 clampAxis(nfs::s32 value, nfs::s32 low, nfs::s32 high)
 {
     return value < low ? low : (value > high ? high : value);
 }
@@ -1738,9 +1736,9 @@ x86::sreg32 clampAxis(x86::sreg32 value, x86::sreg32 low, x86::sreg32 high)
  * hands are for the replay's own bar, which is worked with the pointer, and for
  * the camera.  The game says which it is in [0x6fd3a0]: 0 a race, 1 split
  * screen, 2 a replay, as sub_4bcb00 sets it while it plays one back. */
-bool playerDriving(win32::WinApplication* app)
+bool playerDriving(nfs::App* app)
 {
-    return nfs3hp::raceIsRunning() && app->getMemory<x86::reg32>(0x7a3d10) == 0
+    return nfs3hp::raceIsRunning() && app->getMemory<nfs::u32>(0x7a3d10) == 0
         && gameSettings(app).replayMode != 2;
 }
 
@@ -1769,7 +1767,7 @@ bool tellActivity(const char* method, bool value)
     return true;
 }
 
-bool frontEndTakingText(win32::WinApplication* app);
+bool frontEndTakingText(nfs::App* app);
 
 /* The line the game's name box types into, in the 640x480 its menus are laid
  * out in, as sub_444350 draws its frame.  The box itself is four floats at
@@ -1780,24 +1778,24 @@ bool frontEndTakingText(win32::WinApplication* app);
  * bottom (the -30 and -60 at 0x538b08).  A finger is no cursor, so the line
  * reaches a little way beyond itself -- short of the prompt above it and of
  * Ok and Cancel below. */
-bool textFieldRect(win32::WinApplication* app, x86::sreg32& left, x86::sreg32& top,
-                   x86::sreg32& right, x86::sreg32& bottom)
+bool textFieldRect(nfs::App* app, nfs::s32& left, nfs::s32& top,
+                   nfs::s32& right, nfs::s32& bottom)
 {
     const float boxLeft = app->getMemory<float>(0x661054), boxRight = app->getMemory<float>(0x66105c);
     const float boxBottom = app->getMemory<float>(0x661058);
-    const x86::sreg32 width = x86::sreg32(app->getMemory<x86::reg32>(0x661070));
+    const nfs::s32 width = nfs::s32(app->getMemory<nfs::u32>(0x661070));
     if (!(boxRight > boxLeft) || width <= 0 || width > 640)
         return false;
-    left = x86::sreg32(boxLeft) + (x86::sreg32(boxRight - boxLeft) - width) / 2;
+    left = nfs::s32(boxLeft) + (nfs::s32(boxRight - boxLeft) - width) / 2;
     right = left + width;
-    top = x86::sreg32(boxBottom - 90) - 1;
+    top = nfs::s32(boxBottom - 90) - 1;
     bottom = top + 20;
     return true;
 }
 
-bool inTextField(win32::WinApplication* app, x86::sreg32 x, x86::sreg32 y)
+bool inTextField(nfs::App* app, nfs::s32 x, nfs::s32 y)
 {
-    x86::sreg32 left, top, right, bottom;
+    nfs::s32 left, top, right, bottom;
     return textFieldRect(app, left, top, right, bottom)
         && x >= left - 10 && x <= right + 10 && y >= top - 10 && y <= bottom + 10;
 }
@@ -1805,7 +1803,7 @@ bool inTextField(win32::WinApplication* app, x86::sreg32 x, x86::sreg32 y)
 /* A press on the picture while the name box is up: on its line the phone's
  * keyboard comes up, anywhere else it goes away (NFS3Activity.onTextFieldTap).
  * The press goes on to the game either way. */
-void textFieldPress(win32::WinApplication* app, x86::sreg32 x, x86::sreg32 y)
+void textFieldPress(nfs::App* app, nfs::s32 x, nfs::s32 y)
 {
     if (!frontEndTakingText(app))
         return;
@@ -1814,14 +1812,14 @@ void textFieldPress(win32::WinApplication* app, x86::sreg32 x, x86::sreg32 y)
     tellActivity("onTextFieldTap", inside);
 }
 
-void pointerTick(win32::WinApplication* app)
+void pointerTick(nfs::App* app)
 {
     if (!s_touchMutex)
         return;
     const bool driving = playerDriving(app);
     if (driving && s_touchHeld)
     {
-        win32::Mouse::pressPointer(0, false);
+        nfs::Mouse::pressPointer(0, false);
         s_touchHeld = false;
     }
     SDL_LockMutex(s_touchMutex);
@@ -1843,17 +1841,17 @@ void pointerTick(win32::WinApplication* app)
      * sub_4352d0 sets the bounds either way.  So a touch is placed in those
      * bounds rather than in pixels of the picture, and follows the menus
      * wherever they are drawn. */
-    const x86::sreg32 lowX = x86::sreg32(app->getMemory<x86::reg32>(0x5f38e0));
-    const x86::sreg32 lowY = x86::sreg32(app->getMemory<x86::reg32>(0x5f38e4));
-    const x86::sreg32 highX = x86::sreg32(app->getMemory<x86::reg32>(0x5f38e8));
-    const x86::sreg32 highY = x86::sreg32(app->getMemory<x86::reg32>(0x5f38ec));
+    const nfs::s32 lowX = nfs::s32(app->getMemory<nfs::u32>(0x5f38e0));
+    const nfs::s32 lowY = nfs::s32(app->getMemory<nfs::u32>(0x5f38e4));
+    const nfs::s32 highX = nfs::s32(app->getMemory<nfs::u32>(0x5f38e8));
+    const nfs::s32 highY = nfs::s32(app->getMemory<nfs::u32>(0x5f38ec));
     if (highX <= lowX || highY <= lowY)
         return;
     /* Where the game has the cursor now; from here on it is followed in step
      * with what it is told, since it only catches up when the game next reads
      * the queue -- once for everything handed over this frame. */
-    x86::sreg32 atX = clampAxis(x86::sreg32(app->getMemory<x86::reg32>(0x5f38f0)), lowX, highX);
-    x86::sreg32 atY = clampAxis(x86::sreg32(app->getMemory<x86::reg32>(0x5f38f4)), lowY, highY);
+    nfs::s32 atX = clampAxis(nfs::s32(app->getMemory<nfs::u32>(0x5f38f0)), lowX, highX);
+    nfs::s32 atY = clampAxis(nfs::s32(app->getMemory<nfs::u32>(0x5f38f4)), lowY, highY);
 
     int taken = 0;
     for (; taken < count; ++taken)
@@ -1865,11 +1863,11 @@ void pointerTick(win32::WinApplication* app)
                 continue;
             s_touchpadRestX += input.x;
             s_touchpadRestY += input.y;
-            const x86::sreg32 moveX = x86::sreg32(s_touchpadRestX), moveY = x86::sreg32(s_touchpadRestY);
+            const nfs::s32 moveX = nfs::s32(s_touchpadRestX), moveY = nfs::s32(s_touchpadRestY);
             s_touchpadRestX -= float(moveX);
             s_touchpadRestY -= float(moveY);
-            const x86::sreg32 toX = clampAxis(atX + moveX, lowX, highX), toY = clampAxis(atY + moveY, lowY, highY);
-            win32::Mouse::movePointer(toX - atX, toY - atY);
+            const nfs::s32 toX = clampAxis(atX + moveX, lowX, highX), toY = clampAxis(atY + moveY, lowY, highY);
+            nfs::Mouse::movePointer(toX - atX, toY - atY);
             atX = toX;
             atY = toY;
             const bool down = (input.buttons & 1) != 0;
@@ -1879,14 +1877,14 @@ void pointerTick(win32::WinApplication* app)
             if (down && !s_touchHeld)
             {
                 textFieldPress(app, toX, toY);
-                win32::Mouse::pressPointer(0, true);
+                nfs::Mouse::pressPointer(0, true);
                 s_touchHeld = true;
                 ++taken;
                 break;  // as for a finger: the release waits for the next frame
             }
             if (!down && s_touchHeld)
             {
-                win32::Mouse::pressPointer(0, false);
+                nfs::Mouse::pressPointer(0, false);
                 s_touchHeld = false;
             }
             continue;
@@ -1894,16 +1892,16 @@ void pointerTick(win32::WinApplication* app)
         const bool touch = input.source == kSourceTouch;
         if (touch && driving)
             continue;
-        x86::sreg32 toX = clampAxis(
-            lowX + x86::sreg32(SDL_lround(double(input.x - rectX) * double(highX - lowX) / double(rectW))), lowX, highX);
-        x86::sreg32 toY = clampAxis(
-            lowY + x86::sreg32(SDL_lround(double(input.y - rectY) * double(highY - lowY) / double(rectH))), lowY, highY);
+        nfs::s32 toX = clampAxis(
+            lowX + nfs::s32(SDL_lround(double(input.x - rectX) * double(highX - lowX) / double(rectW))), lowX, highX);
+        nfs::s32 toY = clampAxis(
+            lowY + nfs::s32(SDL_lround(double(input.y - rectY) * double(highY - lowY) / double(rectH))), lowY, highY);
         if (touch && input.action == kTouchDown && !s_touchHeld)
         {
             textFieldPress(app, toX, toY);
         }
         // Preserve the actual hit point: name text can be covered by a dropdown.
-        win32::Mouse::movePointer(toX - atX, toY - atY);
+        nfs::Mouse::movePointer(toX - atX, toY - atY);
         atX = toX;
         atY = toY;
         if (s_tracePointer)
@@ -1920,14 +1918,14 @@ void pointerTick(win32::WinApplication* app)
         {
             if (input.action == kTouchDown && !s_touchHeld)
             {
-                win32::Mouse::pressPointer(0, true);
+                nfs::Mouse::pressPointer(0, true);
                 s_touchHeld = true;
                 ++taken;
                 break;  // the release waits for the next frame, so the press is its own poll
             }
             if (input.action == kTouchUp && s_touchHeld)
             {
-                win32::Mouse::pressPointer(0, false);
+                nfs::Mouse::pressPointer(0, false);
                 s_touchHeld = false;
             }
             continue;
@@ -1939,7 +1937,7 @@ void pointerTick(win32::WinApplication* app)
             if ((input.buttons ^ s_mouseButtons) & bit)
             {
                 const bool down = (input.buttons & bit) != 0;
-                win32::Mouse::pressPointer(x86::reg32(button), down);
+                nfs::Mouse::pressPointer(nfs::u32(button), down);
                 pressed = pressed || down;
             }
         }
@@ -2137,7 +2135,7 @@ void scriptTick()
  * resolution, the loading screen among them, and it stays set for the whole of a
  * race that was never paused.)  So the controls follow the game instead of the
  * player pressing a button to say which of the two they are looking at. */
-void layoutTick(win32::WinApplication* app)
+void layoutTick(nfs::App* app)
 {
     static int last = -1;
     // Not while the loading screen is still up: nothing to drive yet.
@@ -2147,9 +2145,9 @@ void layoutTick(win32::WinApplication* app)
      * to confirm, one to go back, the D-pad to move -- everywhere else, a
      * replay included.  With the menu open over a race the button that opened
      * it closes it too (Gamepad::Context::Pause). */
-    const bool paused = nfs3hp::raceIsRunning() && app->getMemory<x86::reg32>(0x7a3d10) != 0;
-    win32::Gamepad::context(driving ? win32::Gamepad::Context::Race
-                            : paused ? win32::Gamepad::Context::Pause : win32::Gamepad::Context::Menu);
+    const bool paused = nfs3hp::raceIsRunning() && app->getMemory<nfs::u32>(0x7a3d10) != 0;
+    nfs::Gamepad::context(driving ? nfs::Gamepad::Context::Race
+                            : paused ? nfs::Gamepad::Context::Pause : nfs::Gamepad::Context::Menu);
     if (last == int(driving))
         return;
 #ifdef __ANDROID__
@@ -2167,7 +2165,7 @@ void layoutTick(win32::WinApplication* app)
     env->DeleteLocalRef(activity);
 #endif
     SDL_Log("[LAYOUT] %s, screen %ux%u", driving ? "race" : "menu",
-            unsigned(app->getMemory<x86::reg32>(0x7cdae0)), unsigned(app->getMemory<x86::reg32>(0x7cdae4)));
+            unsigned(app->getMemory<nfs::u32>(0x7cdae0)), unsigned(app->getMemory<nfs::u32>(0x7cdae4)));
     last = int(driving);
 }
 
@@ -2180,7 +2178,7 @@ void layoutTick(win32::WinApplication* app)
  * car when it shifts (0x43149a).  A police car carries bit 0x20 of its flags
  * byte at +0x200: the bit the game tells the siren from the horn by (0x43154e)
  * and picks the pause screen by (0x44d4fb). */
-void raceControlsTick(win32::WinApplication* app)
+void raceControlsTick(nfs::App* app)
 {
     static int s_last = -1;
     if (!nfs3hp::raceIsRunning())
@@ -2188,15 +2186,15 @@ void raceControlsTick(win32::WinApplication* app)
         s_last = -1;
         return;
     }
-    const x86::reg32 view = app->getMemory<x86::reg32>(0x5e10b0);
-    const x86::reg32 car = view ? x86::reg32(app->getMemory<x86::reg32>(view + 8)) : 0;
+    const nfs::u32 view = app->getMemory<nfs::u32>(0x5e10b0);
+    const nfs::u32 car = view ? nfs::u32(app->getMemory<nfs::u32>(view + 8)) : 0;
     if (!car)
         return;
-    const x86::reg32 record = app->getMemory<x86::reg32>(car + 0x220);
+    const nfs::u32 record = app->getMemory<nfs::u32>(car + 0x220);
     if (record < SETTINGS_ADDRESS(entries) || record >= SETTINGS_ADDRESS(entries) + 16 * 0x6c || (record - SETTINGS_ADDRESS(entries)) % 0x6c)
         return;
-    const bool gears = app->getMemory<x86::reg32>(record + 0x1c) != 1;
-    const bool spikes = (app->getMemory<x86::reg8>(car + 0x200) & 0x20) != 0;
+    const bool gears = app->getMemory<nfs::u32>(record + 0x1c) != 1;
+    const bool spikes = (app->getMemory<nfs::u8>(car + 0x200) & 0x20) != 0;
     const int state = int(gears) | int(spikes) << 1;
     if (state == s_last)
         return;
@@ -2249,13 +2247,13 @@ void raceControlsTick(win32::WinApplication* app)
  * -- each screen hands its own handler out, and the first two the port watched
  * were the car screen's, which a player who renames themselves from the main
  * menu never touches. */
-bool frontEndTakingText(win32::WinApplication* app)
+bool frontEndTakingText(nfs::App* app)
 {
-    return app->getMemory<x86::reg8>(0x558b10) != 0
-        && app->getMemory<x86::reg32>(0x558b14) == 3;
+    return app->getMemory<nfs::u8>(0x558b10) != 0
+        && app->getMemory<nfs::u32>(0x558b14) == 3;
 }
 
-void textEntryTick(win32::WinApplication* app)
+void textEntryTick(nfs::App* app)
 {
     static int last = -1;
     const bool racing = nfs3hp::raceIsRunning();
@@ -2271,7 +2269,7 @@ void textEntryTick(win32::WinApplication* app)
         last = -1;  // asked again next frame
         return;
     }
-    x86::sreg32 left, top, right, bottom;
+    nfs::s32 left, top, right, bottom;
     if (typing && frontEndTakingText(app) && textFieldRect(app, left, top, right, bottom))
         SDL_Log("[TEXT] a name is asked for; its line runs %d..%d across, %d..%d down",
                 int(left), int(right), int(top), int(bottom));
@@ -2293,14 +2291,14 @@ void textEntryTick(win32::WinApplication* app)
  * two), and the defaults the game restores them from at 0x490430 (sub_490c40):
  * three tables of thirteen bindings each, compared as they are, so any binding
  * the player changed in the game's own Controls screen lifts it. */
-void padKeysTick(win32::WinApplication* app)
+void padKeysTick(nfs::App* app)
 {
     bool muted = false;
     if (playerDriving(app) && gameSettings(app).playMode == 1)
     {
         muted = true;
-        for (x86::reg32 i = 0; i < 3 * 13 && muted; ++i)
-            muted = gameSettings(app).controls[0][i] == app->getMemory<x86::reg32>(0x490430 + i * 4);
+        for (nfs::u32 i = 0; i < 3 * 13 && muted; ++i)
+            muted = gameSettings(app).controls[0][i] == app->getMemory<nfs::u32>(0x490430 + i * 4);
     }
     static int last = -1;
     if (last != int(muted))
@@ -2308,7 +2306,7 @@ void padKeysTick(win32::WinApplication* app)
         SDL_Log("[PADKEYS] %s", muted ? "muted: split screen on the game's keyboard controls" : "on");
         last = int(muted);
     }
-    win32::Gamepad::muteGameKeys(muted);
+    nfs::Gamepad::muteGameKeys(muted);
 }
 
 /* Diagnostics for the bots (2026-09-29): what decides how hard sub_4064f0 lets a
@@ -2317,7 +2315,7 @@ void padKeysTick(win32::WinApplication* app)
  * either way -- a catch-up, if that is what the flag is.  Every five seconds of a
  * race the flags and, for each bot, how far it is from the player in nodes, the
  * factor that gives, its place and speed. */
-void botForceTick(win32::WinApplication* app)
+void botForceTick(nfs::App* app)
 {
     static Uint64 s_last = 0;
     if (!playerDriving(app))
@@ -2326,29 +2324,29 @@ void botForceTick(win32::WinApplication* app)
     if (now - s_last < 5000)
         return;
     s_last = now;
-    const x86::reg32 player = gameSettings(app).localPlayer;
-    const x86::reg32 playerCar = player < 16 ? x86::reg32(app->getMemory<x86::reg32>(0x5efa48 + player * 4)) : 0u;
-    const x86::sreg32 playerNode = playerCar ? x86::sreg32(app->getMemory<x86::reg32>(playerCar + 0x1c)) : 0;
+    const nfs::u32 player = gameSettings(app).localPlayer;
+    const nfs::u32 playerCar = player < 16 ? nfs::u32(app->getMemory<nfs::u32>(0x5efa48 + player * 4)) : 0u;
+    const nfs::s32 playerNode = playerCar ? nfs::s32(app->getMemory<nfs::u32>(playerCar + 0x1c)) : 0;
     std::string bots;
-    const x86::reg32 cars = gameSettings(app).entryCount;
-    for (x86::reg32 i = 0; i < cars && i < 16; ++i)
+    const nfs::u32 cars = gameSettings(app).entryCount;
+    for (nfs::u32 i = 0; i < cars && i < 16; ++i)
     {
-        const x86::reg32 car = 0x5e1120 + i * 0x9ac;
+        const nfs::u32 car = 0x5e1120 + i * 0x9ac;
         if (car == playerCar)
             continue;
-        const x86::sreg32 d = x86::sreg32(app->getMemory<x86::reg32>(car + 0x1c)) - playerNode;
+        const nfs::s32 d = nfs::s32(app->getMemory<nfs::u32>(car + 0x1c)) - playerNode;
         const int factor = (d > -3 && d < 15) ? 1 : (d > -8 && d < 30) ? 2 : 3;
         char one[96];
-        SDL_snprintf(one, sizeof one, " #%u:d%d x%d p%u v%.0f/%.0f", unsigned(app->getMemory<x86::reg32>(car + 0x1f0)),
-                     int(d), factor, unsigned(app->getMemory<x86::reg32>(car + 0x1fc)),
+        SDL_snprintf(one, sizeof one, " #%u:d%d x%d p%u v%.0f/%.0f", unsigned(app->getMemory<nfs::u32>(car + 0x1f0)),
+                     int(d), factor, unsigned(app->getMemory<nfs::u32>(car + 0x1fc)),
                      double(app->getMemory<float>(car + 0x7c4)), double(app->getMemory<float>(car + 0x7b0)));
         bots += one;
     }
     SDL_Log("[BOTFORCE] flag50c=%u 4cc=%u 4f0=%u player=%u node=%d 7a22da=%u 518=%u 508=%u 55eb2e=%02x:%s",
             unsigned(gameSettings(app).networkGame), unsigned(gameSettings(app).weather),
             unsigned(gameSettings(app).seriesRace), unsigned(player), int(playerNode),
-            unsigned(app->getMemory<x86::reg16>(0x7a22da)), unsigned(gameSettings(app).humanCount),
-            unsigned(gameSettings(app).networkLobby), unsigned(app->getMemory<x86::reg8>(0x55eb2e)),
+            unsigned(app->getMemory<nfs::u16>(0x7a22da)), unsigned(gameSettings(app).humanCount),
+            unsigned(gameSettings(app).networkLobby), unsigned(app->getMemory<nfs::u8>(0x55eb2e)),
             bots.c_str());
 }
 
@@ -2359,11 +2357,11 @@ void botForceTick(win32::WinApplication* app)
  * and 1000 m (+0x280, +0x284) -- and what restarts them: in neutral
  * (+0x50b 1) slower than 0.5 along its axis (+0x4f4).  Written whenever one
  * of them changes, the race's clock [0x7d3684] beside it. */
-void perfTick(win32::WinApplication* app)
+void perfTick(nfs::App* app)
 {
     if (!nfs3hp::perfTraceOn())
         return;
-    static x86::reg32 s_last[12] = {};
+    static nfs::u32 s_last[12] = {};
     static bool s_had = false;
     static bool s_raced = false;
     if (!nfs3hp::raceIsRunning())
@@ -2377,27 +2375,27 @@ void perfTick(win32::WinApplication* app)
         return;
     }
     s_raced = true;
-    const x86::reg32 player = gameSettings(app).localPlayer;
-    const x86::reg32 car = player < 16 ? x86::reg32(app->getMemory<x86::reg32>(0x5efa48 + player * 4)) : 0u;
+    const nfs::u32 player = gameSettings(app).localPlayer;
+    const nfs::u32 car = player < 16 ? nfs::u32(app->getMemory<nfs::u32>(0x5efa48 + player * 4)) : 0u;
     if (!car)
         return;
-    x86::reg32 now[12];
+    nfs::u32 now[12];
     for (int i = 0; i < 10; ++i)
-        now[i] = app->getMemory<x86::reg32>(car + 0x260 + 4 * i);
+        now[i] = app->getMemory<nfs::u32>(car + 0x260 + 4 * i);
     // The start's clock moves every frame of a restart: kept out of the comparison.
-    const x86::reg32 startClock = now[1];
+    const nfs::u32 startClock = now[1];
     now[1] = 0;
     const float speed = app->getMemory<float>(car + 0x4f4);
-    const x86::reg32 gear = app->getMemory<x86::reg8>(car + 0x50b);
+    const nfs::u32 gear = app->getMemory<nfs::u8>(car + 0x50b);
     now[10] = gear == 1 && speed > -0.5f && speed < 0.5f;
-    now[11] = app->getMemory<x86::reg8>(car + 0x200);
+    now[11] = app->getMemory<nfs::u8>(car + 0x200);
     if (s_had && SDL_memcmp(now, s_last, sizeof now) == 0)
         return;
     s_had = true;
     SDL_memcpy(s_last, now, sizeof now);
     SDL_Log("[PERF] clock=%u gear=%u v=%.1f flags=%02x restart=%u start=%d/%u 0-60=%u 0-100=%u 0-100mph=%u "
             "0-160=%u quarter=%u 400m=%u mile=%u 1000m=%u",
-            unsigned(app->getMemory<x86::reg32>(0x7d3684)), unsigned(gear), double(speed), unsigned(now[11]),
+            unsigned(app->getMemory<nfs::u32>(0x7d3684)), unsigned(gear), double(speed), unsigned(now[11]),
             unsigned(now[10]), int(now[0]), unsigned(startClock), unsigned(now[2]), unsigned(now[3]), unsigned(now[4]),
             unsigned(now[5]), unsigned(now[6]), unsigned(now[7]), unsigned(now[8]), unsigned(now[9]));
 }
@@ -2405,7 +2403,7 @@ void perfTick(win32::WinApplication* app)
 /* Every buffer swap: the finger and the mouse on the picture, which layout the
  * controls should be showing and which of the race's buttons, whether the pads'
  * keys go out, the phone's cornering and how the touch buttons steer. */
-void onSwap(win32::WinApplication* app)
+void onSwap(nfs::App* app)
 {
     ++nfs3hp::s_swaps;
 #ifndef __ANDROID__
@@ -2429,7 +2427,7 @@ void onSwap(win32::WinApplication* app)
 
 /* The app to the background and back, on the thread that pumps the events.
  *
- * The game's time stands still in the background (win32::suspendTime): before,
+ * The game's time stands still in the background (nfs::suspendTime): before,
  * its timer went on counting while the game itself was stopped, and on the
  * player's return the race made up for every tick at once -- the opponents had
  * driven on meanwhile.  And a race the player was driving comes back paused,
@@ -2469,17 +2467,17 @@ Uint32 SDLCALL pressEscape(void*, SDL_TimerID, Uint32)
 
 bool SDLCALL backgroundWatch(void* userdata, SDL_Event* event)
 {
-    win32::WinApplication* app = static_cast<win32::WinApplication*>(userdata);
+    nfs::App* app = static_cast<nfs::App*>(userdata);
     if (event->type == SDL_EVENT_WILL_ENTER_BACKGROUND)
     {
         s_pauseOnReturn = playerDriving(app) && !nfs3hp::loadingScreenUp()
                        && gameSettings(app).playMode < 2;
-        win32::suspendTime(true);
+        nfs::suspendTime(true);
         SDL_Log("[TIME] to the background%s", s_pauseOnReturn ? "; the race comes back paused" : "");
     }
     else if (event->type == SDL_EVENT_DID_ENTER_FOREGROUND)
     {
-        win32::suspendTime(false);
+        nfs::suspendTime(false);
         if (s_pauseOnReturn)
         {
             s_pauseOnReturn = false;
@@ -2521,24 +2519,24 @@ int main(int argc, char* argv[])
     NFS2_USE(argv);
     const char* dataPath = SDL_GetAndroidExternalStoragePath();
     NFS2_ASSERT(dataPath);
-    win32::File::setDataDirectory(dataPath);
-    win32::File::setCdDirectory(dataPath);
+    nfs::File::setDataDirectory(dataPath);
+    nfs::File::setCdDirectory(dataPath);
 #else
     if (argc >= 3)
     {
-        win32::File::setDataDirectory(argv[1]);
-        win32::File::setCdDirectory(argv[2]);
+        nfs::File::setDataDirectory(argv[1]);
+        nfs::File::setCdDirectory(argv[2]);
     }
     else if (argc == 2)
     {
-        win32::File::setDataDirectory(argv[1]);
-        win32::File::setCdDirectory(argv[1]);
+        nfs::File::setDataDirectory(argv[1]);
+        nfs::File::setCdDirectory(argv[1]);
     }
     else
     {
         std::string exeDir = getExeDirectory(argv[0]);
-        win32::File::setDataDirectory(exeDir.c_str());
-        win32::File::setCdDirectory(exeDir.c_str());
+        nfs::File::setDataDirectory(exeDir.c_str());
+        nfs::File::setCdDirectory(exeDir.c_str());
     }
 #endif
     nfs3hp::installMenuData();
@@ -2552,7 +2550,7 @@ int main(int argc, char* argv[])
     /* No poll sentinels.  On Android SDL_WaitEvent spins with them: each round
      * of its wait pumps events, the pump puts a sentinel on the queue, and
      * anything put on the queue wakes the waiter -- which is itself.  The
-     * game's message pump waits in SDL_WaitEvent for good (GetMessageA), so a
+     * game's window thread waits in SDL_WaitEvent for good (GetMessageA), so a
      * profile showed that thread taking most of a core, polling joysticks and
      * the clock without end, and the heat of it pulling the big cores' clock
      * down.  Nothing in the port asks for sentinels: SDL_PollEvent is not
@@ -2599,12 +2597,12 @@ int main(int argc, char* argv[])
     nfs3hp::diag::takeAutoReplay = nfs3hp::takeAutoReplay;
     nfs3hp::diag::raceDown = nfs3hp::raceDownStep;
     SDL_Init(SDL_INIT_EVENTS|SDL_INIT_VIDEO|SDL_INIT_AUDIO|SDL_INIT_JOYSTICK|SDL_INIT_GAMEPAD);
-    /* Window::getMessage consumes key, text, quit and its own registered user
+    /* The window's wait (os::window) consumes key, text, quit and the port's own
      * events; everything else falls through its switch and is thrown away.  The
      * pad is read by polling its state (Gamepad::update), never from
      * events.  Leaving those event types enabled meant a connected controller,
      * reporting at its native rate, kept the queue non-empty -- so SDL_WaitEvent
-     * never actually blocked and the message pump ran SDL_PumpEvents thousands
+     * never actually blocked and the window's wait ran SDL_PumpEvents thousands
      * of times a second for nothing.  A simpleperf profile showed that thread
      * burning most of a core inside SDL with zero game code on it. */
     SDL_SetJoystickEventsEnabled(false);
@@ -2612,20 +2610,19 @@ int main(int argc, char* argv[])
     {
         /* nfs3.exe's own version resource (StringFileInfo 040904b0,
          * FileVersion): the version a network race checks between machines. */
-        nfs3hp::host::setFileVersion("27, 2.0");
+        nfs3hp::os::setFileVersion("27, 2.0");
         nfs3hp::Application app("nfs3.exe");
         nfs3hp::installDisplaySliders(&app);
         nfs3hp::installConnectScreen(&app);
-        nfs3hp::host::installVideo(&app);
-        app.addRegistryKey(win32::HKEY_LOCAL_MACHINE, "SOFTWARE\\Electronic Arts\\Need For Speed III", "3D Device Description", new win32::RegistryValue("3Dfx Voodoo 2"));
-        app.addRegistryKey(win32::HKEY_LOCAL_MACHINE, "SOFTWARE\\Electronic Arts\\Need For Speed III", "3D Card", new win32::RegistryValue("3Dfx Voodoo 2"));
-        //app.addRegistryKey(win32::HKEY_LOCAL_MACHINE, "SOFTWARE\\Electronic Arts\\Need For Speed III", "Thrash Driver", new win32::RegistryValue("softtri"));
-        app.addRegistryKey(win32::HKEY_LOCAL_MACHINE, "SOFTWARE\\Electronic Arts\\Need For Speed III", "Thrash Driver", new win32::RegistryValue("voodoo2"));
-        app.addRegistryKey(win32::HKEY_LOCAL_MACHINE, "SOFTWARE\\Electronic Arts\\Need For Speed III", "Group", new win32::RegistryValue("3Dfx"));
-        app.addRegistryKey(win32::HKEY_LOCAL_MACHINE, "SOFTWARE\\Electronic Arts\\Need For Speed III", "D3D Device", new win32::RegistryValue(x86::reg32(0)));
-        app.addRegistryKey(win32::HKEY_LOCAL_MACHINE, "SOFTWARE\\Electronic Arts\\Need For Speed III", "Triple Buffer", new win32::RegistryValue(x86::reg32(0)));
-        //app.addRegistryKey(win32::HKEY_LOCAL_MACHINE, "SOFTWARE\\Electronic Arts\\Need For Speed III", "Hardware Acceleration", new win32::RegistryValue(x86::reg32(0)));
-        app.addRegistryKey(win32::HKEY_LOCAL_MACHINE, "SOFTWARE\\Electronic Arts\\Need For Speed III", "Hardware Acceleration", new win32::RegistryValue(x86::reg32(1)));
+        app.addSetting(nfs::SettingsRoot::localMachine, "SOFTWARE\\Electronic Arts\\Need For Speed III", "3D Device Description", new nfs::SettingValue("3Dfx Voodoo 2"));
+        app.addSetting(nfs::SettingsRoot::localMachine, "SOFTWARE\\Electronic Arts\\Need For Speed III", "3D Card", new nfs::SettingValue("3Dfx Voodoo 2"));
+        //app.addSetting(nfs::SettingsRoot::localMachine, "SOFTWARE\\Electronic Arts\\Need For Speed III", "Thrash Driver", new nfs::SettingValue("softtri"));
+        app.addSetting(nfs::SettingsRoot::localMachine, "SOFTWARE\\Electronic Arts\\Need For Speed III", "Thrash Driver", new nfs::SettingValue("voodoo2"));
+        app.addSetting(nfs::SettingsRoot::localMachine, "SOFTWARE\\Electronic Arts\\Need For Speed III", "Group", new nfs::SettingValue("3Dfx"));
+        app.addSetting(nfs::SettingsRoot::localMachine, "SOFTWARE\\Electronic Arts\\Need For Speed III", "D3D Device", new nfs::SettingValue(nfs::u32(0)));
+        app.addSetting(nfs::SettingsRoot::localMachine, "SOFTWARE\\Electronic Arts\\Need For Speed III", "Triple Buffer", new nfs::SettingValue(nfs::u32(0)));
+        //app.addSetting(nfs::SettingsRoot::localMachine, "SOFTWARE\\Electronic Arts\\Need For Speed III", "Hardware Acceleration", new nfs::SettingValue(nfs::u32(0)));
+        app.addSetting(nfs::SettingsRoot::localMachine, "SOFTWARE\\Electronic Arts\\Need For Speed III", "Hardware Acceleration", new nfs::SettingValue(nfs::u32(1)));
 
         /* Car detail is chosen by distance alone -- there is no per-car role
          * anywhere in the selection.  The table at 0x55fdf4 holds four floats
@@ -2653,9 +2650,9 @@ int main(int argc, char* argv[])
              * on the detailed model or not drawn at all, in every view.  Held at
              * just the cull distance, split screen drew every car beyond 225 as
              * the tiny box. */
-            const x86::reg32 highRow = 0x55fdf4;
-            const float cull = app.getMemory<float>(highRow + x86::reg32(12));
-            for (x86::reg32 level = 0; level < 3; ++level)
+            const nfs::u32 highRow = 0x55fdf4;
+            const float cull = app.getMemory<float>(highRow + nfs::u32(12));
+            for (nfs::u32 level = 0; level < 3; ++level)
                 app.getMemory<float>(highRow + level * 4) = cull * 2.0f;
             /* The distances alone did not do it.  Once every car has its level,
              * sub_4bbad0 charges each car it will draw 4 minus that level against
@@ -2668,8 +2665,8 @@ int main(int argc, char* argv[])
              * however close they are: detail that fell with the number of cars
              * and, of all places, up close.  The game copies the table on every
              * call, so lifting High's budget here is enough. */
-            const x86::reg32 budgetTable = 0x4b7a50;
-            app.getMemory<x86::reg32>(budgetTable) = 0x7fffffff;
+            const nfs::u32 budgetTable = 0x4b7a50;
+            app.getMemory<nfs::u32>(budgetTable) = 0x7fffffff;
         }
         const char* pointerTrace = SDL_getenv("NFS_POINTER_TRACE");
         s_tracePointer = pointerTrace && *pointerTrace && *pointerTrace != '0';
@@ -2684,7 +2681,7 @@ int main(int argc, char* argv[])
         loadTouchScript();
 #endif
         nfs3hp::port::driver::setSwapObserver(onSwap);
-        SDL_AddEventWatch(backgroundWatch, static_cast<win32::WinApplication*>(&app));
+        SDL_AddEventWatch(backgroundWatch, static_cast<nfs::App*>(&app));
 
         /* The screen sizes the Graphics menu offers.  The Voodoo2 driver's mode
          * table (0xa92018, 40 bytes a mode: width, height, depth, LFB format,
@@ -2705,18 +2702,18 @@ int main(int argc, char* argv[])
         const char* widescreen = SDL_getenv("NFS_WIDESCREEN");
         if (!widescreen || SDL_strcmp(widescreen, "0") != 0)
         {
-            static const struct { x86::reg32 entry, width, height, resolution; } kWide[] = {
+            static const struct { nfs::u32 entry, width, height, resolution; } kWide[] = {
                 { 12, 1280, 720, nfs3hp::port::driver::kResolution1280x720 },
                 { 14, 1600, 900, nfs3hp::port::driver::kResolution1600x900 },
                 { 15, 1920, 1080, nfs3hp::port::driver::kResolution1920x1080 },
             };
             for (const auto& wide : kWide)
             {
-                const x86::reg32 mode = 0xa92018 + wide.entry * 40;
-                app.getMemory<x86::reg32>(mode) = wide.width;
-                app.getMemory<x86::reg32>(mode + 4) = wide.height;
-                app.getMemory<x86::reg32>(mode + 16) = 1;
-                app.getMemory<x86::reg32>(0xa922e8 + wide.entry * 4) = wide.resolution;
+                const nfs::u32 mode = 0xa92018 + wide.entry * 40;
+                app.getMemory<nfs::u32>(mode) = wide.width;
+                app.getMemory<nfs::u32>(mode + 4) = wide.height;
+                app.getMemory<nfs::u32>(mode + 16) = 1;
+                app.getMemory<nfs::u32>(0xa922e8 + wide.entry * 4) = wide.resolution;
             }
             nfs3hp::dynamicFullscreenStart(&app);
         }
@@ -2724,27 +2721,27 @@ int main(int argc, char* argv[])
          * phone has pixels to spare and every menu is drawn for 640x480, so it
          * leaves the table the same way the widescreen modes join it: by the
          * available flag. */
-        app.getMemory<x86::reg32>(0xa92018 + 6 * 40 + 16) = 0;
+        app.getMemory<nfs::u32>(0xa92018 + 6 * 40 + 16) = 0;
         nfs3hp::viewAngleStart(&app);
 
 #ifndef __ANDROID__
         // Headless driver metadata regression: exercise the real recompiled queries.
         if (SDL_getenv("NFS_CHECK_GLIDE_MODES")) {
             for (const auto entry : {0x504e00u, 0xa83c60u}) {
-                x86::CPU cpu{};
-                const x86::reg32 descriptor = app.runThread(cpu, entry);
-                const auto table = app.getMemory<x86::reg32>(descriptor + 0x40);
-                const auto count = app.getMemory<x86::reg32>(descriptor + 0x3c);
+                nfs::ThreadState ts{};
+                const nfs::u32 descriptor = app.runThread(ts, entry);
+                const auto table = app.getMemory<nfs::u32>(descriptor + 0x40);
+                const auto count = app.getMemory<nfs::u32>(descriptor + 0x3c);
                 if (count != 16) return 2;
                 for (unsigned i = 1; i <= count; ++i) {
-                    const auto* mode = &app.getMemory<x86::reg32>(table + i*40);
+                    const auto* mode = &app.getMemory<nfs::u32>(table + i*40);
                     if (mode[2] != 32 || mode[3] != 4) return 3;
                     SDL_Log("[OUTPUT32] driver=%x id=%u %ux%ux%u LFB-format=%u available=%u buffers=%u",
                             entry, i, mode[0], mode[1], mode[2], mode[3], mode[4], mode[5]);
                 }
                 // Repeat query, including the cached descriptor path.
-                app.runThread(cpu, entry);
-                if (app.getMemory<x86::reg32>(table + 40 + 8) != 32) return 4;
+                app.runThread(ts, entry);
+                if (app.getMemory<nfs::u32>(table + 40 + 8) != 32) return 4;
             }
             SDL_Log("[OUTPUT32] PASS: both drivers and cached queries");
         } else
@@ -2844,7 +2841,7 @@ Java_dev_nfs3hp_port_NFS3Activity_nativeSetGamepadSlots(JNIEnv* env, jclass, jst
 {
     const char* a = first ? env->GetStringUTFChars(first, nullptr) : nullptr;
     const char* b = second ? env->GetStringUTFChars(second, nullptr) : nullptr;
-    win32::Gamepad::setSlotDescriptors(a, b);
+    nfs::Gamepad::setSlotDescriptors(a, b);
     if (a)
         env->ReleaseStringUTFChars(first, a);
     if (b)

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.15)
-project(nfs_recompiled LANGUAGES C CXX ASM)
+project(nfs_recompiled LANGUAGES C CXX)
 
 # CMAKE_SOURCE_DIR is the *top-level* project's source dir, not this file's
 # own directory.  This file doubles as a standalone project (Windows/Linux
@@ -15,24 +15,12 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # options
-option(NFS_TRACE_MSG "Trace the win32 message pump to the log" OFF)
+option(NFS_TRACE_MSG "Trace the window's events and the game's timers to the log" OFF)
 option(NFS2_ASSERT_TRAP "Make NFS2_ASSERT a hard trap (debugger break) instead of logging and continuing" OFF)
 
 # add compile definitions based on options
 if(NFS2_ASSERT_TRAP)
     add_compile_definitions(NFS2_ASSERT_TRAP)
-endif()
-
-# Detect Windows target: covers native Windows (WIN32/MINGW), an explicit
-# -DCMAKE_SYSTEM_NAME=Windows, and cross-compilation via a MinGW toolchain
-# supplied directly with -DCMAKE_C_COMPILER=…/x86_64-w64-mingw32-gcc (in
-# which case WIN32/MINGW may not yet be set if no toolchain file is used).
-if(WIN32 OR MINGW OR CMAKE_SYSTEM_NAME STREQUAL "Windows"
-        OR CMAKE_C_COMPILER MATCHES "mingw"
-        OR CMAKE_CXX_COMPILER MATCHES "mingw")
-    set(TARGET_WINDOWS TRUE)
-else()
-    set(TARGET_WINDOWS FALSE)
 endif()
 
 # Warning policy is per target, not global:
@@ -45,12 +33,12 @@ endif()
 if (MSVC)
     add_compile_options(/W4)
     # C4201 unnamed unions and C4458 shadowing: the bit-field unions of
-    # include/fpu.h's FloatEnv and the win32 structures.
+    # include/game_float.h's FloatEnv and the port's structures.
     #   C4127 constant conditional -- inherent to the NFS2_ASSERT macro.
     #   C4702 unreachable code -- for the Glide renderer's texture upload,
     #     gone since; kept, as no desktop build says what else may need it.
-    #   C4245 signed/unsigned in return -- the win32 layer returns -1 as the
-    #     documented Win32 sentinel from functions with unsigned return types.
+    #   C4245 signed/unsigned in return -- the port returns -1 as the
+    #     game's sentinel from functions with unsigned return types.
     set(NFS_STRICT_FLAGS /EHsc /WX /wd4201 /wd4458 /wd4127 /wd4702 /wd4245)
     add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
 else()
@@ -58,18 +46,8 @@ else()
     set(NFS_STRICT_FLAGS -Werror)
 endif()
 
-# When building for Windows we have a local copy of SDL3 under the
-# `sdl3` subdirectory.  Point CMake at it so find_package() will
-# locate the bundled config file automatically.
-if(TARGET_WINDOWS)
-    message(STATUS "Windows target detected – adding ${NFS_ROOT_DIR}/sdl3/cmake to CMAKE_PREFIX_PATH for SDL3")
-    list(APPEND CMAKE_PREFIX_PATH "${NFS_ROOT_DIR}/sdl3/cmake")
-    set(SDL3_DIR "${NFS_ROOT_DIR}/sdl3/cmake" CACHE PATH "SDL3 CMake directory")
-endif()
-
-# The repository only ships prebuilt SDL3 for Windows; on Android
-# android/app/jni/CMakeLists.txt add_subdirectory()s SDL3 from source (cloned
-# into third_party/SDL) before this file, so SDL3::SDL3 already exists by the
+# On Android android/app/jni/CMakeLists.txt add_subdirectory()s SDL3 from
+# source (cloned into third_party/SDL) before this file, so SDL3::SDL3 already exists by the
 # time we get here.  find_package() would try to redefine that target and
 # fail with "target already exists" -- only call it when nothing did this yet.
 if(NOT TARGET SDL3::SDL3)
@@ -124,8 +102,7 @@ file(GLOB NFS3HP_DISASM_HEADERS CONFIGURE_DEPENDS
 
 file(GLOB LIB_CPP_SOURCES CONFIGURE_DEPENDS
      "${NFS_ROOT_DIR}/src/lib/*.cpp"
-     "${NFS_ROOT_DIR}/src/lib/sdl-backend/*.cpp"
-     "${NFS_ROOT_DIR}/src/lib/winapi/*.cpp")
+     "${NFS_ROOT_DIR}/src/lib/sdl-backend/*.cpp")
 
 add_library(nfs_core STATIC ${LIB_CPP_SOURCES})
 target_include_directories(nfs_core PRIVATE
@@ -208,19 +185,3 @@ function(add_game_exe name)
 endfunction()
 
 add_game_exe(nfs3hp)
-option(NFS_BUILD_FF_TESTS "Build guest COM force-feedback regression checks" OFF)
-if(NFS_BUILD_FF_TESTS AND NOT ANDROID)
-    add_executable(force_feedback_checks tools/force_feedback_checks.cpp)
-    target_include_directories(force_feedback_checks PRIVATE ${NFS_ROOT_DIR}/include)
-    target_link_libraries(force_feedback_checks PRIVATE nfs_core ${SDL3_LIB_TARGET} ${NFS_GL_LIBS})
-endif()
-
-option(NFS_BUILD_MEMORY_TESTS "Build guest memory allocator checks" OFF)
-if(NFS_BUILD_MEMORY_TESTS AND NOT ANDROID)
-    add_executable(memmap_checks tools/memmap_checks.cpp)
-    if(MSVC)
-        target_compile_options(memmap_checks PRIVATE /EHsc)
-    endif()
-    target_include_directories(memmap_checks PRIVATE ${NFS_ROOT_DIR}/include)
-    target_link_libraries(memmap_checks PRIVATE nfs_core ${SDL3_LIB_TARGET} ${NFS_GL_LIBS})
-endif()

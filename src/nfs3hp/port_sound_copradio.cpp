@@ -24,18 +24,18 @@ namespace port
 namespace
 {
 
-constexpr reg32 kListener = 0x570a78;
+constexpr u32 kListener = 0x570a78;
 
 // What it calls.
-constexpr reg32 kRadioKindOf = 0x4124d0, kDistanceFrom = 0x410cb0, kAngleFrom = 0x410d30, kCameraView = 0x4229c0;
+constexpr u32 kRadioKindOf = 0x4124d0, kDistanceFrom = 0x410cb0, kAngleFrom = 0x410d30, kCameraView = 0x4229c0;
 
 /* A place of a car's -- its three coordinates, as they are in the car -- written
  * where the code builds it on its stack. */
-void writePlace(App* app, reg32 to, reg32 car)
+void writePlace(App* app, u32 to, u32 car)
 {
-    store<reg32>(app, to, load<reg32>(app, car + 0x98));
-    store<reg32>(app, to + 4, load<reg32>(app, car + 0x9c));
-    store<reg32>(app, to + 8, load<reg32>(app, car + 0xa0));
+    store<u32>(app, to, load<u32>(app, car + 0x98));
+    store<u32>(app, to + 4, load<u32>(app, car + 0x9c));
+    store<u32>(app, to + 8, load<u32>(app, car + 0xa0));
 }
 
 /* A distance (16.16) as the radio's: its whole part squared, at most 0x15f9. */
@@ -50,53 +50,53 @@ int32_t distanceSquared(int32_t distance)
 
 /* 0x4127c0's: car `car`'s radio, where its driver (0x4124d0's) speaks: heard
  * from the car's place.  eax as the code leaves it: the radio's answer. */
-static Result carRadioHeard(App* app, CPU& cpu, reg32 esp, world::Arithmetic a, reg32 car)
+static Result carRadioHeard(App* app, ThreadState& ts, u32 esp, world::Arithmetic a, u32 car)
 {
-    const reg32 frame = esp - 5 * 4;
-    const reg32 place = frame - 0x10, sp = place;
+    const u32 frame = esp - 5 * 4;
+    const u32 place = frame - 0x10, sp = place;
     writePlace(app, place, car);
-    const reg32 player = load<reg32>(app, load<reg32>(app, car + 0x624) + 0x1f0);
-    cpu.esp = sp;
-    const Result kind = guest::direct<kRadioKindOf, world::aheadAt>(app, cpu, sp - 4, a, place, car + 0xa4);
+    const u32 player = load<u32>(app, load<u32>(app, car + 0x624) + 0x1f0);
+    ts.sp = sp;
+    const Result kind = guest::direct<kRadioKindOf, world::aheadAt>(app, ts, sp - 4, a, place, car + 0xa4);
     if (!kind)
         return {};
     if (*kind < 0)
         return kind;
-    cpu.esp = sp;
-    const Result distance = guest::direct<kDistanceFrom, world::distanceAt>(app, cpu, a, kListener, place);
+    ts.sp = sp;
+    const Result distance = guest::direct<kDistanceFrom, world::distanceAt>(app, ts, a, kListener, place);
     if (!distance)
         return {};
-    reg32 pan;
+    u32 pan;
     if (gameSettings(app).playMode == 1)
         pan = player != 0 ? kSideRight : kSideLeft;
     else
     {
-        cpu.esp = sp;
-        const Result angle = guest::direct<kAngleFrom, world::angleAt>(app, cpu, sp - 4, a, kListener, place);
+        ts.sp = sp;
+        const Result angle = guest::direct<kAngleFrom, world::angleAt>(app, ts, sp - 4, a, kListener, place);
         if (!angle)
             return {};
-        pan = reg32(*angle);
+        pan = u32(*angle);
     }
-    return radioStarted(app, cpu, sp - 4 - 4, car, distanceSquared(*distance), *kind, pan, int32_t(player));
+    return radioStarted(app, ts, sp - 4 - 4, car, distanceSquared(*distance), *kind, pan, int32_t(player));
 }
 
 /* 0x412880's: the cop radio of `kind` for car `car`'s player (its +0x624's),
  * from that car's place.  eax as the code leaves it: the cop radio's. */
-static Result playerCopRadioHeard(App* app, CPU& cpu, reg32 esp, world::Arithmetic a, reg32 car, int32_t kind)
+static Result playerCopRadioHeard(App* app, ThreadState& ts, u32 esp, world::Arithmetic a, u32 car, int32_t kind)
 {
-    const reg32 frame = esp - 3 * 4;
-    const reg32 place = frame - 0xc, sp = place;
-    const reg32 driver = load<reg32>(app, car + 0x624);
+    const u32 frame = esp - 3 * 4;
+    const u32 place = frame - 0xc, sp = place;
+    const u32 driver = load<u32>(app, car + 0x624);
     writePlace(app, place, driver);
-    const reg32 player = load<reg32>(app, driver + 0x1f0);
-    cpu.esp = sp;
+    const u32 player = load<u32>(app, driver + 0x1f0);
+    ts.sp = sp;
     if (gameSettings(app).playMode == 1)
-        guest::direct<kCameraView, carstate::viewCopied>(app, cpu, player, kListener);
-    cpu.esp = sp;
-    const Result distance = guest::direct<kDistanceFrom, world::distanceAt>(app, cpu, a, kListener, place);
+        guest::direct<kCameraView, carstate::viewCopied>(app, ts, player, kListener);
+    ts.sp = sp;
+    const Result distance = guest::direct<kDistanceFrom, world::distanceAt>(app, ts, a, kListener, place);
     if (!distance)
         return {};
-    return copRadioStarted(app, cpu, sp - 4, int32_t(player), kind, distanceSquared(*distance));
+    return copRadioStarted(app, ts, sp - 4, int32_t(player), kind, distanceSquared(*distance));
 }
 
 /* 0x412be0's: the radio's line for event `event`: by the event (at random
@@ -106,17 +106,17 @@ static Result playerCopRadioHeard(App* app, CPU& cpu, reg32 esp, world::Arithmet
  *
  * The answer of 0x4cdee0 is what the code finds in eax: so eax is passed in
  * as the code has it at each call. */
-Result copLineChosen(App* app, CPU& cpu, reg32 esp, int32_t event)
+Result copLineChosen(App* app, ThreadState& ts, u32 esp, int32_t event)
 {
-    const reg32 sp = esp - 4 * 4;
+    const u32 sp = esp - 4 * 4;
     // Random's remainder of 100: past half or not.
     const auto pastHalf = [&]() { return nextRandom(app) % 100 > 0x32; };
     // The last line said, with eax as the code has it there.
     // (0x4cdee0, loopb's racerCount: the last line the radio said; it reads no register.)
-    const auto last = [&](reg32) -> std::optional<reg32> {
-        cpu.esp = sp;
-        const reg32 line = guest::direct<0x4cdee0, frontend::loopb::racerCount>(app, cpu);
-        if (cpu.terminate)
+    const auto last = [&](u32) -> std::optional<u32> {
+        ts.sp = sp;
+        const u32 line = guest::direct<0x4cdee0, frontend::loopb::racerCount>(app, ts);
+        if (ts.terminate)
             return std::nullopt;
         return line;
     };
@@ -126,24 +126,24 @@ Result copLineChosen(App* app, CPU& cpu, reg32 esp, int32_t event)
         if (event == 1)
             return pastHalf() ? 0x20 : 0x21;
         const int32_t line = event + 0x20;
-        const Result said = last(reg32(event));
+        const Result said = last(u32(event));
         if (!said)
             return {};
         if (event != *said)
             return line;
         return pastHalf() ? 0x29 : line;
     }
-    const Result first = last(reg32(event));
+    const Result first = last(u32(event));
     if (!first)
         return {};
     if (*first == 2)
         return event == 1 ? 0x12 : 0x1c;
     int32_t line;
-    reg32 eax = reg32(*first);
+    u32 eax = u32(*first);
     if (event == 1)
     {
         // The code divides by 3 in eax:edx, leaving the quotient in eax.
-        const reg32 n = nextRandom(app);
+        const u32 n = nextRandom(app);
         line = 0x10 + int32_t(n % 3);
         eax = n / 3;
     }
@@ -168,36 +168,36 @@ Result copLineChosen(App* app, CPU& cpu, reg32 esp, int32_t event)
  * the result in eax out) around what it does. */
 
 /* 0x4127c0: car eax's radio. */
-x86::reg32 carRadio(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 carRadio(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, carRadioCalled(app, cpu, e.esp, e.eax));
+    const Entry e(ts, args);
+    return e.finish(ts, args, carRadioCalled(app, ts, e.esp, e.eax));
 }
 
 /* 0x4127c0's core: car `car`'s radio; esp the frame base. */
-Result carRadioCalled(App* app, CPU& cpu, reg32 esp, reg32 car)
+Result carRadioCalled(App* app, ThreadState& ts, u32 esp, u32 car)
 {
-    return carRadioHeard(app, cpu, esp, world::arithmeticOf(cpu.fenv.rounding), car);
+    return carRadioHeard(app, ts, esp, world::arithmeticOf(ts.fenv.rounding), car);
 }
 
 /* 0x412880: the cop radio of kind ebx for car eax's player. */
-x86::reg32 playerCopRadio(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 playerCopRadio(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, playerCopRadioCalled(app, cpu, e.esp, e.eax, int32_t(e.ebx)));
+    const Entry e(ts, args);
+    return e.finish(ts, args, playerCopRadioCalled(app, ts, e.esp, e.eax, int32_t(e.ebx)));
 }
 
 /* 0x412880's core: the cop radio of `kind` for car `car`'s player; esp the frame base. */
-Result playerCopRadioCalled(App* app, CPU& cpu, reg32 esp, reg32 car, int32_t kind)
+Result playerCopRadioCalled(App* app, ThreadState& ts, u32 esp, u32 car, int32_t kind)
 {
-    return playerCopRadioHeard(app, cpu, esp, world::arithmeticOf(cpu.fenv.rounding), car, kind);
+    return playerCopRadioHeard(app, ts, esp, world::arithmeticOf(ts.fenv.rounding), car, kind);
 }
 
 /* 0x412be0: the radio's line for event eax. */
-x86::reg32 copLineFor(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 copLineFor(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, copLineChosen(app, cpu, e.esp, int32_t(e.eax)));
+    const Entry e(ts, args);
+    return e.finish(ts, args, copLineChosen(app, ts, e.esp, int32_t(e.eax)));
 }
 
 }  // namespace port

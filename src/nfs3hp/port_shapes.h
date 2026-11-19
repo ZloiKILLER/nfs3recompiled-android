@@ -28,44 +28,44 @@ namespace shapes
  * shape's alpha, else chosen and written there.  `flag` where the
  * converters say whether the pixels have alpha.  `esp` the game's at the
  * call (its return address).  The height. */
-Result shapeToPixelsOf(App* app, CPU& cpu, reg32 esp, reg32 target, reg32 shape, reg32 flag, int32_t limit,
-                       reg32 format);
+Result shapeToPixelsOf(App* app, ThreadState& ts, u32 esp, u32 target, u32 shape, u32 flag, int32_t limit,
+                       u32 format);
 
 /* 0x4d1ce0 (stdcall 0xc): the 8-bit pixels at `from` (`width` by `height`) resized into `to`, `a`, `b` and `c` the
  * stack's words (the first lowest). */
-void pixelsConverted8(App* app, CPU& cpu, reg32 to, reg32 from, int32_t width, int32_t height, int32_t a, int32_t b,
-                      reg32 c);
+void pixelsConverted8(App* app, ThreadState& ts, u32 to, u32 from, int32_t width, int32_t height, int32_t a, int32_t b,
+                      u32 c);
 
 /* The menus' shape named at `name` (4 characters): its record, found or made
  * from the menus' art; 0 for none. */
-Result shapeNamed(App* app, CPU& cpu, reg32 esp, reg32 name);
+Result shapeNamed(App* app, ThreadState& ts, u32 esp, u32 name);
 
 /* Art record `record` drawn at `x`, `y` in `colour`, a tile at a time. */
-Result drawArt(App* app, CPU& cpu, reg32 esp, int32_t record, int32_t x, int32_t y, reg32 colour);
+Result drawArt(App* app, ThreadState& ts, u32 esp, int32_t record, int32_t x, int32_t y, u32 colour);
 
 /* The thunks the 2D drawing calls as the game's code does (port_draw2d.cpp). */
-x86::reg32 resetTextures(App* app, CPU& cpu, x86::Args& args);  // 0x4d5c40
-x86::reg32 shapeTexture(App* app, CPU& cpu, x86::Args& args);   // 0x4d6070
+nfs::u32 resetTextures(App* app, ThreadState& ts, nfs::Args& args);  // 0x4d5c40
+nfs::u32 shapeTexture(App* app, ThreadState& ts, nfs::Args& args);   // 0x4d6070
 
 /* The typed cores the menus call as C++ (guest::direct) -- shapeNamed (0x4d5db0) and drawArt (0x4d7160) above,
  * and these -- and how the game's code calls each by address.  A
  * Result is nullopt when the game stopped in a call.  A core's `esp` is the frame base its thunk hands it:
- * the game's esp on entry, at the return address.  A caller through guest::direct passes cpu.esp - 4 - 4 * N, N
+ * the game's esp on entry, at the return address.  A caller through guest::direct passes ts.sp - 4 - 4 * N, N
  * the stack words the game's call pushes: the esp the thunk hands it, so the core's frame lies where the
  * game's does; by address the call makes it. */
 
 // The game's 0x4d5c40: the textures let go of; esp the frame base.
-Result texturesLetGo(App* app, CPU& cpu, reg32 esp);
+Result texturesLetGo(App* app, ThreadState& ts, u32 esp);
 // The game's 0x4d6070: shape `shape` made a texture into the record at `out`, at most `size` a side, in the format
 // at `format`; esp the frame base.
-Result textureOf(App* app, CPU& cpu, reg32 esp, reg32 out, reg32 shape, int32_t size, reg32 format);
+Result textureOf(App* app, ThreadState& ts, u32 esp, u32 out, u32 shape, int32_t size, u32 format);
 // The game's 0x4d6390: the art shape `shape` made textures, `again` the record to fill again (0 a new one), `ecx`
 // handed on; the record; esp the frame base.
-Result artTexturesOf(App* app, CPU& cpu, reg32 esp, reg32 shape, int32_t again, reg32 ecx);
+Result artTexturesOf(App* app, ThreadState& ts, u32 esp, u32 shape, int32_t again, u32 ecx);
 // The game's 0x4d7990: art record `record` drawn at x, y, opaque; esp the frame base.
-Result drawShapeOf(App* app, CPU& cpu, reg32 esp, int32_t record, int32_t x, int32_t y);
+Result drawShapeOf(App* app, ThreadState& ts, u32 esp, int32_t record, int32_t x, int32_t y);
 // The game's 0x4d66f0: record `record`'s width and height into the words at `widthAt` and `heightAt`; eax as the code leaves it.
-reg32 shapeSizeOf(App* app, int32_t record, reg32 widthAt, reg32 heightAt);
+u32 shapeSizeOf(App* app, int32_t record, u32 widthAt, u32 heightAt);
 
 }  // namespace shapes
 }  // namespace port

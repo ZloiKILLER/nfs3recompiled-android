@@ -20,29 +20,64 @@
 #include <SDL3/SDL.h>
 #include <cstring>
 
-namespace win32
+namespace nfs
 {
 
 namespace
 {
 
-/* The Winsock codes the layer itself hands out. */
-constexpr int kWouldBlock = 10035;
-constexpr int kAlready = 10037;
-constexpr int kNetDown = 10050;
-
-thread_local int t_lastError = 0;
+thread_local SocketError t_lastError = SocketError::none;
 
 #ifdef _WIN32
 
 typedef SOCKET Native;
 const Native kNoSocket = INVALID_SOCKET;
 constexpr int kSendFlags = 0;
+constexpr int kShutBoth = SD_BOTH;
 typedef int AddressLength;
 
-int nativeError()
+/* The system's code for a failure as the layer's. */
+SocketError errorOf(int error)
 {
-    return WSAGetLastError();
+    switch (error)
+    {
+    case WSAEINTR:           return SocketError::interrupted;
+    case WSAEACCES:          return SocketError::accessDenied;
+    case WSAEFAULT:          return SocketError::fault;
+    case WSAEINVAL:          return SocketError::invalid;
+    case WSAEMFILE:          return SocketError::tooManySockets;
+    case WSAEWOULDBLOCK:
+    case WSAEINPROGRESS:     return SocketError::wouldBlock;
+    case WSAEALREADY:        return SocketError::already;
+    case WSAENOTSOCK:        return SocketError::notSocket;
+    case WSAEDESTADDRREQ:    return SocketError::destinationRequired;
+    case WSAEMSGSIZE:        return SocketError::messageSize;
+    case WSAEPROTOTYPE:      return SocketError::protocolType;
+    case WSAENOPROTOOPT:     return SocketError::noProtocolOption;
+    case WSAEPROTONOSUPPORT: return SocketError::protocolNotSupported;
+    case WSAEOPNOTSUPP:      return SocketError::operationNotSupported;
+    case WSAEAFNOSUPPORT:    return SocketError::familyNotSupported;
+    case WSAEADDRINUSE:      return SocketError::addressInUse;
+    case WSAEADDRNOTAVAIL:   return SocketError::addressNotAvailable;
+    case WSAENETUNREACH:     return SocketError::networkUnreachable;
+    case WSAENETRESET:       return SocketError::networkReset;
+    case WSAECONNABORTED:    return SocketError::connectionAborted;
+    case WSAECONNRESET:      return SocketError::connectionReset;
+    case WSAENOBUFS:         return SocketError::noBuffers;
+    case WSAEISCONN:         return SocketError::isConnected;
+    case WSAENOTCONN:        return SocketError::notConnected;
+    case WSAESHUTDOWN:       return SocketError::shutDown;
+    case WSAETIMEDOUT:       return SocketError::timedOut;
+    case WSAECONNREFUSED:    return SocketError::connectionRefused;
+    case WSAEHOSTDOWN:       return SocketError::hostDown;
+    case WSAEHOSTUNREACH:    return SocketError::hostUnreachable;
+    default:                 return SocketError::networkDown;
+    }
+}
+
+SocketError nativeError()
+{
+    return errorOf(WSAGetLastError());
 }
 
 void closeNative(Native s)
@@ -62,59 +97,60 @@ typedef int Native;
 const Native kNoSocket = -1;
 /* A connection the other side dropped must fail the call, not raise SIGPIPE. */
 constexpr int kSendFlags = MSG_NOSIGNAL;
+constexpr int kShutBoth = SHUT_RDWR;
 typedef socklen_t AddressLength;
 
-/* errno as the Winsock code of the same failure. */
-int winsockError(int error)
+/* errno as the layer's failure. */
+SocketError errorOf(int error)
 {
     switch (error)
     {
-    case EINTR:           return 10004;
+    case EINTR:           return SocketError::interrupted;
     case EACCES:
-    case EPERM:           return 10013;
-    case EFAULT:          return 10014;
-    case EINVAL:          return 10022;
+    case EPERM:           return SocketError::accessDenied;
+    case EFAULT:          return SocketError::fault;
+    case EINVAL:          return SocketError::invalid;
     case EMFILE:
-    case ENFILE:          return 10024;
+    case ENFILE:          return SocketError::tooManySockets;
     case EAGAIN:
 #if EWOULDBLOCK != EAGAIN
     case EWOULDBLOCK:
 #endif
-    case EINPROGRESS:     return kWouldBlock;
-    case EALREADY:        return kAlready;
+    case EINPROGRESS:     return SocketError::wouldBlock;
+    case EALREADY:        return SocketError::already;
     case EBADF:
-    case ENOTSOCK:        return 10038;
-    case EDESTADDRREQ:    return 10039;
-    case EMSGSIZE:        return 10040;
-    case EPROTOTYPE:      return 10041;
-    case ENOPROTOOPT:     return 10042;
-    case EPROTONOSUPPORT: return 10043;
-    case EOPNOTSUPP:      return 10045;
-    case EAFNOSUPPORT:    return 10047;
-    case EADDRINUSE:      return 10048;
-    case EADDRNOTAVAIL:   return 10049;
-    case ENETDOWN:        return kNetDown;
-    case ENETUNREACH:     return 10051;
-    case ENETRESET:       return 10052;
-    case ECONNABORTED:    return 10053;
+    case ENOTSOCK:        return SocketError::notSocket;
+    case EDESTADDRREQ:    return SocketError::destinationRequired;
+    case EMSGSIZE:        return SocketError::messageSize;
+    case EPROTOTYPE:      return SocketError::protocolType;
+    case ENOPROTOOPT:     return SocketError::noProtocolOption;
+    case EPROTONOSUPPORT: return SocketError::protocolNotSupported;
+    case EOPNOTSUPP:      return SocketError::operationNotSupported;
+    case EAFNOSUPPORT:    return SocketError::familyNotSupported;
+    case EADDRINUSE:      return SocketError::addressInUse;
+    case EADDRNOTAVAIL:   return SocketError::addressNotAvailable;
+    case ENETDOWN:        return SocketError::networkDown;
+    case ENETUNREACH:     return SocketError::networkUnreachable;
+    case ENETRESET:       return SocketError::networkReset;
+    case ECONNABORTED:    return SocketError::connectionAborted;
     case ECONNRESET:
-    case EPIPE:           return 10054;
+    case EPIPE:           return SocketError::connectionReset;
     case ENOBUFS:
-    case ENOMEM:          return 10055;
-    case EISCONN:         return 10056;
-    case ENOTCONN:        return 10057;
-    case ESHUTDOWN:       return 10058;
-    case ETIMEDOUT:       return 10060;
-    case ECONNREFUSED:    return 10061;
-    case EHOSTDOWN:       return 10064;
-    case EHOSTUNREACH:    return 10065;
-    default:              return kNetDown;
+    case ENOMEM:          return SocketError::noBuffers;
+    case EISCONN:         return SocketError::isConnected;
+    case ENOTCONN:        return SocketError::notConnected;
+    case ESHUTDOWN:       return SocketError::shutDown;
+    case ETIMEDOUT:       return SocketError::timedOut;
+    case ECONNREFUSED:    return SocketError::connectionRefused;
+    case EHOSTDOWN:       return SocketError::hostDown;
+    case EHOSTUNREACH:    return SocketError::hostUnreachable;
+    default:              return SocketError::networkDown;
     }
 }
 
-int nativeError()
+SocketError nativeError()
 {
-    return winsockError(errno);
+    return errorOf(errno);
 }
 
 void closeNative(Native s)
@@ -201,12 +237,12 @@ bool Socket::startup()
 #endif
 }
 
-int Socket::lastError()
+SocketError Socket::lastError()
 {
     return t_lastError;
 }
 
-void Socket::setLastError(int error)
+void Socket::setLastError(SocketError error)
 {
     t_lastError = error;
 }
@@ -232,7 +268,7 @@ Socket* Socket::open(Kind kind)
 {
     if (!startup())
     {
-        t_lastError = kNetDown;
+        t_lastError = SocketError::networkDown;
         return nullptr;
     }
     const Native s = kind == Stream ? ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)
@@ -240,7 +276,7 @@ Socket* Socket::open(Kind kind)
     if (s == kNoSocket)
     {
         t_lastError = nativeError();
-        SDL_Log("[NET] socket(%s) failed: %d", kind == Stream ? "TCP" : "UDP", t_lastError);
+        SDL_Log("[NET] socket(%s) failed: %d", kind == Stream ? "TCP" : "UDP", int(t_lastError));
         return nullptr;
     }
     if (!makeNonBlocking(s))
@@ -286,7 +322,7 @@ Socket* Socket::accept(uint32_t* address, uint16_t* port)
     makeNonBlocking(s);
     readAddress(from, address, port);
     Socket* result = new Socket(Stream, intptr_t(s));
-    /* Winsock's accepted socket takes the listening one's FIONBIO. */
+    /* An accepted socket waits, or not, as the listening one does. */
     result->nonBlocking = nonBlocking;
     return result;
 }
@@ -295,58 +331,48 @@ int Socket::connect(uint32_t address, uint16_t port)
 {
     if (m_connecting)
     {
-        t_lastError = kAlready;
+        t_lastError = SocketError::already;
         return -1;
     }
     sockaddr_in to = inetAddress(address, port);
     if (::connect(native(m_handle), reinterpret_cast<const sockaddr*>(&to), sizeof(to)) != 0)
     {
         fail();
-        if (t_lastError != kWouldBlock)
+        if (t_lastError != SocketError::wouldBlock)
             return -1;
     }
     m_connecting = true;
-    m_connectError = 0;
-    t_lastError = kWouldBlock;
+    m_connectError = SocketError::none;
+    t_lastError = SocketError::wouldBlock;
     return -1;
 }
 
-static int sendFlags(int flags)
+int Socket::send(const void* data, int size)
 {
-    return ((flags & 1) ? MSG_OOB : 0) | ((flags & 4) ? MSG_DONTROUTE : 0) | kSendFlags;
-}
-
-static int receiveFlags(int flags)
-{
-    return ((flags & 1) ? MSG_OOB : 0) | ((flags & 2) ? MSG_PEEK : 0);
-}
-
-int Socket::send(const void* data, int size, int flags)
-{
-    const int sent = int(::send(native(m_handle), static_cast<const char*>(data), size, sendFlags(flags)));
+    const int sent = int(::send(native(m_handle), static_cast<const char*>(data), size, kSendFlags));
     return sent < 0 ? fail() : sent;
 }
 
-int Socket::recv(void* data, int size, int flags)
+int Socket::recv(void* data, int size, bool peek)
 {
-    const int got = int(::recv(native(m_handle), static_cast<char*>(data), size, receiveFlags(flags)));
+    const int got = int(::recv(native(m_handle), static_cast<char*>(data), size, peek ? MSG_PEEK : 0));
     return got < 0 ? fail() : got;
 }
 
-int Socket::sendTo(const void* data, int size, int flags, uint32_t address, uint16_t port)
+int Socket::sendTo(const void* data, int size, uint32_t address, uint16_t port)
 {
     sockaddr_in to = inetAddress(address, port);
-    const int sent = int(::sendto(native(m_handle), static_cast<const char*>(data), size, sendFlags(flags),
+    const int sent = int(::sendto(native(m_handle), static_cast<const char*>(data), size, kSendFlags,
                                   reinterpret_cast<const sockaddr*>(&to), sizeof(to)));
     return sent < 0 ? fail() : sent;
 }
 
-int Socket::recvFrom(void* data, int size, int flags, uint32_t* address, uint16_t* port)
+int Socket::recvFrom(void* data, int size, uint32_t* address, uint16_t* port)
 {
     sockaddr_in from;
     std::memset(&from, 0, sizeof(from));
     AddressLength length = sizeof(from);
-    const int got = int(::recvfrom(native(m_handle), static_cast<char*>(data), size, receiveFlags(flags),
+    const int got = int(::recvfrom(native(m_handle), static_cast<char*>(data), size, 0,
                                    reinterpret_cast<sockaddr*>(&from), &length));
     if (got < 0)
         return fail();
@@ -364,10 +390,9 @@ int Socket::localName(uint32_t* address, uint16_t* port)
     return 0;
 }
 
-int Socket::shutdown(int how)
+int Socket::shutdown()
 {
-    /* SD_RECEIVE, SD_SEND and SD_BOTH are SHUT_RD, SHUT_WR and SHUT_RDWR. */
-    if (::shutdown(native(m_handle), how) != 0)
+    if (::shutdown(native(m_handle), kShutBoth) != 0)
         return fail();
     return 0;
 }
@@ -386,44 +411,14 @@ int Socket::pending()
     return int(waiting);
 }
 
-int Socket::setOption(int level, int name, const void* value, int size)
+int Socket::setBroadcast(bool on)
 {
-    int32_t number = 0;
-    std::memcpy(&number, value, size_t(size < 4 ? size : 4));
-    const Native s = native(m_handle);
-    int result = 0;
-    if (level == 0xffff)
-    {
-        switch (name)
-        {
-        case 0x0008: result = setInt(s, SOL_SOCKET, SO_KEEPALIVE, number != 0); break;
-        case 0x0020: result = setInt(s, SOL_SOCKET, SO_BROADCAST, number != 0); break;
-        case 0x1001: result = setInt(s, SOL_SOCKET, SO_SNDBUF, number); break;
-        case 0x1002: result = setInt(s, SOL_SOCKET, SO_RCVBUF, number); break;
-        case 0x0080:
-        case 0xff7f:
-        {
-            /* Winsock's linger is two shorts, the host's two ints. */
-            uint16_t pair[2] = { 0, 0 };
-            if (name == 0x0080)
-                std::memcpy(pair, value, size_t(size < 4 ? size : 4));
-            linger host;
-            host.l_onoff = pair[0];
-            host.l_linger = pair[1];
-            result = ::setsockopt(s, SOL_SOCKET, SO_LINGER, reinterpret_cast<const char*>(&host), sizeof(host));
-            break;
-        }
-        default:
-            /* SO_REUSEADDR among them: Windows takes it to mean sharing a port
-             * that is in use, which the game never wants. */
-            break;
-        }
-    }
-    else if (level == 6 && name == 1)
-    {
-        result = setInt(s, IPPROTO_TCP, TCP_NODELAY, number != 0);
-    }
-    return result != 0 ? fail() : 0;
+    return setInt(native(m_handle), SOL_SOCKET, SO_BROADCAST, on) != 0 ? fail() : 0;
+}
+
+int Socket::setNoDelay(bool on)
+{
+    return setInt(native(m_handle), IPPROTO_TCP, TCP_NODELAY, on) != 0 ? fail() : 0;
 }
 
 int Socket::poll(Socket* const* sockets, const int* want, int* have, int count, int milliseconds)
@@ -474,9 +469,9 @@ int Socket::poll(Socket* const* sockets, const int* want, int* have, int count, 
                 socklen_t length = sizeof(error);
                 ::getsockopt(native(s->m_handle), SOL_SOCKET, SO_ERROR, &error, &length);
                 s->m_connecting = false;
-                s->m_connectError = error ? winsockError(error) : 0;
+                s->m_connectError = error ? errorOf(error) : SocketError::none;
                 have[i] = want[i] & (error ? Failed : Writable);
-                SDL_Log("[NET] connection %s (%d)", error ? "refused or lost" : "made", int(s->m_connectError));
+                SDL_Log("[NET] connection %s (%d)", error ? "refused or lost" : "made", int(s->m_connectError.load()));
             }
         }
         else
@@ -552,9 +547,9 @@ int Socket::poll(Socket* const* sockets, const int* want, int* have, int count, 
                 int length = sizeof(error);
                 ::getsockopt(n, SOL_SOCKET, SO_ERROR, reinterpret_cast<char*>(&error), &length);
                 s->m_connecting = false;
-                s->m_connectError = error ? error : kNetDown;
+                s->m_connectError = error ? errorOf(error) : SocketError::networkDown;
                 have[i] = want[i] & Failed;
-                SDL_Log("[NET] connection refused or lost (%d)", int(s->m_connectError));
+                SDL_Log("[NET] connection refused or lost (%d)", int(s->m_connectError.load()));
             }
         }
         else

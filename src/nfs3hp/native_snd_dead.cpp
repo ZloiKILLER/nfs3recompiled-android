@@ -18,7 +18,7 @@ namespace snd
 namespace
 {
 
-[[noreturn]] void deadCode(reg32 address)
+[[noreturn]] void deadCode(u32 address)
 {
 #ifdef __ANDROID__
     SDL_LogCritical(SDL_LOG_CATEGORY_APPLICATION, "[SND] dead code called: sub_%x (native_snd_dead.inc)", address);
@@ -31,7 +31,7 @@ namespace
 }  // namespace
 
 #define DEAD(address) \
-    x86::reg32 dead_##address(App*, CPU&, x86::Args&) { deadCode(address); return 0; }
+    nfs::u32 dead_##address(App*, ThreadState&, nfs::Args&) { deadCode(address); return 0; }
 #include "native_snd_dead.inc"
 #undef DEAD
 

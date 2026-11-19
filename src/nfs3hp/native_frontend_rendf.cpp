@@ -9,17 +9,17 @@ namespace nfs3hp
 {
 namespace frontend
 {
-x86::reg32 rendPixels565To1555(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 rendPixels1555To565(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 rendPixelsPal8To32(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 rendPixelsPal8To16(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 rendPixelsRgb24ToArgb(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 rendPixelsSwapRedBlue(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 rendPixelsPal4To16(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 rendSetDisplayMode(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 rendFontAlloc(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 rendFontFree(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 rendFontSetOrigin(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+nfs::u32 rendPixels565To1555(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 rendPixels1555To565(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 rendPixelsPal8To32(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 rendPixelsPal8To16(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 rendPixelsRgb24ToArgb(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 rendPixelsSwapRedBlue(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 rendPixelsPal4To16(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 rendSetDisplayMode(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 rendFontAlloc(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 rendFontFree(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 rendFontSetOrigin(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
 }
 }
 
@@ -51,31 +51,31 @@ namespace
 
 using fe::args;
 using fe::Guest;
-using x86::reg32;
-using x86::sreg32;
+using nfs::u32;
+using nfs::s32;
 
 /* Guest::call as a call through guest::pointerCall: `arguments`' registers in eax, edx, ebx and ecx, `esi` in esi,
  * its stack words pushed in order, esp back after; Terminated when the game stopped in it.  `floatResult`, when given,
  * takes the float the callee gives back. */
-inline reg32 callAt(Guest& guest, reg32 function, const fe::Arguments& arguments = fe::Arguments(), reg32 esi = 0,
+inline u32 callAt(Guest& guest, u32 function, const fe::Arguments& arguments = fe::Arguments(), u32 esi = 0,
                     double* floatResult = nullptr)
 {
-    x86::CPU& cpu = guest.cpu();
-    x86::Args registers;
-    reg32* const into[4] = { &registers.eax, &registers.edx, &registers.ebx, &registers.ecx };
+    nfs::ThreadState& ts = guest.ts();
+    nfs::Args registers;
+    u32* const into[4] = { &registers.eax, &registers.edx, &registers.ebx, &registers.ecx };
     for (std::size_t i = 0; i < arguments.registerCount; ++i)
         *into[i] = arguments.registers[i];
     registers.esi = esi;
-    const reg32 esp = cpu.esp;
+    const u32 esp = ts.sp;
     for (std::size_t i = arguments.stackCount; i-- > 0;)
     {
-        cpu.esp -= 4;
-        guest.setDword(cpu.esp, arguments.stack[i]);
+        ts.sp -= 4;
+        guest.setDword(ts.sp, arguments.stack[i]);
     }
-    const std::optional<reg32> result = guest::pointerCall(guest.app(), cpu, function, registers);
+    const std::optional<u32> result = guest::pointerCall(guest.app(), ts, function, registers);
     if (!result)
         throw fe::Terminated();
-    cpu.esp = esp;
+    ts.sp = esp;
     if (floatResult)
         *floatResult = registers.floatResult;  // what the callee leaves on the x87's top, as a float result
     return *result;
@@ -88,38 +88,38 @@ constexpr std::uint8_t kKeepsEbxEcxEdx = fe::kRestoreEbx | fe::kRestoreEcx | fe:
 /* The palette of a shape going to 16 bits: 16-bit entries, a pair of pixels read
  * as a dword two bytes below the higher pixel's, its lower half then overwritten
  * with the lower pixel's. */
-constexpr reg32 kPalette16 = 0xa0ac14;
-constexpr reg32 kPalette32Pointer = 0x568390;  // the palette of a shape going to 32 bits
+constexpr u32 kPalette16 = 0xa0ac14;
+constexpr u32 kPalette32Pointer = 0x568390;  // the palette of a shape going to 32 bits
 
 /* One pixel, or two side by side in a dword: `upper` the bits above blue. */
-reg32 pixels565To1555(reg32 pixels, reg32 upper, reg32 blue)
+u32 pixels565To1555(u32 pixels, u32 upper, u32 blue)
 {
     return ((pixels & upper) >> 1) | (pixels & blue);
 }
 
-reg32 pixels1555To565(reg32 pixels, reg32 upper, reg32 blue)
+u32 pixels1555To565(u32 pixels, u32 upper, u32 blue)
 {
     return ((pixels & upper) << 1) | (pixels & blue);
 }
 
-reg32 pixelsSwapRedBlue(reg32 pixels)
+u32 pixelsSwapRedBlue(u32 pixels)
 {
     return ((pixels & 0x7c007c00) >> 10) | (pixels & 0x83e083e0) | ((pixels & 0x001f001f) << 10);
 }
 
 /* A count gone below zero, as `js` after its sub reads it. */
-bool below(reg32 count)
+bool below(u32 count)
 {
-    return sreg32(count) < 0;
+    return s32(count) < 0;
 }
 
 /* A row of 16-bit pixels through `convert`, sub_5040b8 and sub_504133: one pixel
  * first to bring the destination to four bytes, then two at a time, then what is
  * left.  It leaves eax past the source, edx past the destination, ebx below zero. */
-reg32 row16(Guest& guest, reg32 source, reg32 destination, reg32 count, reg32 upper, reg32 blue,
-            reg32 (*convert)(reg32, reg32, reg32))
+u32 row16(Guest& guest, u32 source, u32 destination, u32 count, u32 upper, u32 blue,
+            u32 (*convert)(u32, u32, u32))
 {
-    if ((destination & 2) != 0 && sreg32(count) >= 1)
+    if ((destination & 2) != 0 && s32(count) >= 1)
     {
         guest.setWord(destination, std::uint16_t(convert(guest.word(source), upper, blue)));
         source += 2;
@@ -148,24 +148,24 @@ reg32 row16(Guest& guest, reg32 source, reg32 destination, reg32 count, reg32 up
 }  // namespace
 
 /* sub_5040b8: a row of 16-bit pixels from 5:6:5 to 1:5:5:5. */
-x86::reg32 frontend::rendf::row565To1555(App* app, CPU& cpu, reg32 source, reg32 destination, reg32 count)
+nfs::u32 frontend::rendf::row565To1555(App* app, ThreadState& ts, u32 source, u32 destination, u32 count)
 {
-    Guest guest(app, cpu);
+    Guest guest(app, ts);
     return row16(guest, source, destination, count, 0xffc0, 0x1f, pixels565To1555);
 }
 
 /* sub_504133: a row of 16-bit pixels from 1:5:5:5 to 5:6:5. */
-x86::reg32 frontend::rendf::row1555To565(App* app, CPU& cpu, reg32 source, reg32 destination, reg32 count)
+nfs::u32 frontend::rendf::row1555To565(App* app, ThreadState& ts, u32 source, u32 destination, u32 count)
 {
-    Guest guest(app, cpu);
+    Guest guest(app, ts);
     return row16(guest, source, destination, count, 0x7fe0, 0x1f, pixels1555To565);
 }
 
 /* sub_5042c4: a row of 16-bit pixels with red and blue changed over, two at a time
  * and then the one left. */
-x86::reg32 frontend::rendf::rowSwapRedBlue(App* app, CPU& cpu, reg32 source, reg32 destination, reg32 count)
+nfs::u32 frontend::rendf::rowSwapRedBlue(App* app, ThreadState& ts, u32 source, u32 destination, u32 count)
 {
-    Guest guest(app, cpu);
+    Guest guest(app, ts);
     count -= 2;
     while (!below(count))
     {
@@ -187,15 +187,15 @@ x86::reg32 frontend::rendf::rowSwapRedBlue(App* app, CPU& cpu, reg32 source, reg
 
 /* sub_5041ae: a row of 8-bit pixels to 32 bits through the palette at [0x568390]:
  * one pixel at least, however small the count. */
-x86::reg32 frontend::rendf::rowPal8To32(App* app, CPU& cpu, reg32 source, reg32 destination, reg32 count)
+nfs::u32 frontend::rendf::rowPal8To32(App* app, ThreadState& ts, u32 source, u32 destination, u32 count)
 {
-    Guest guest(app, cpu);
-    const reg32 palette = guest.dword(kPalette32Pointer);
+    Guest guest(app, ts);
+    const u32 palette = guest.dword(kPalette32Pointer);
     bool more;
     do
     {
-        const reg32 index = guest.byte(source);
-        more = sreg32(count) > 1;
+        const u32 index = guest.byte(source);
+        more = s32(count) > 1;
         count -= 1;
         source += 1;
         destination += 4;
@@ -209,7 +209,7 @@ namespace
 
 /* The palette's entries for two pixels: `high`'s the upper half of a dword, `low`'s
  * the lower. */
-reg32 palettePair(const Guest& guest, reg32 high, reg32 low)
+u32 palettePair(const Guest& guest, u32 high, u32 low)
 {
     return (guest.dword(high * 2 + kPalette16 - 2) & 0xffff0000) | guest.word(low * 2 + kPalette16);
 }
@@ -220,11 +220,11 @@ reg32 palettePair(const Guest& guest, reg32 high, reg32 low)
  * is on four bytes, then one at a time.  It reads the next four bytes ahead, the
  * two lower ones before the two pixels are written and the two upper after, and
  * what it last read is what eax, ebx and edx are left with. */
-x86::reg32 frontend::rendf::rowPal8To16(App* app, CPU& cpu, reg32 source, reg32 destination, reg32 count)
+nfs::u32 frontend::rendf::rowPal8To16(App* app, ThreadState& ts, u32 source, u32 destination, u32 count)
 {
-    Guest guest(app, cpu);
-    reg32 first = 0, second = 0, third = 0, fourth = 0;
-    reg32 eax = 0;
+    Guest guest(app, ts);
+    u32 first = 0, second = 0, third = 0, fourth = 0;
+    u32 eax = 0;
     count -= 4;
     if ((destination & 2) == 0 && !below(count))
     {
@@ -234,8 +234,8 @@ x86::reg32 frontend::rendf::rowPal8To16(App* app, CPU& cpu, reg32 source, reg32 
         third = guest.byte(source + 2);
         do
         {
-            const reg32 lowPair = palettePair(guest, second, first);
-            const reg32 highPair = palettePair(guest, fourth, third);
+            const u32 lowPair = palettePair(guest, second, first);
+            const u32 highPair = palettePair(guest, fourth, third);
             source += 4;
             destination += 8;
             first = guest.byte(source);
@@ -267,10 +267,10 @@ x86::reg32 frontend::rendf::rowPal8To16(App* app, CPU& cpu, reg32 source, reg32 
  * bytes in first: not entered, the source is not looked at and pixels of 0 go out,
  * as the original's do.  edx keeps its upper half until a pair is made: it came in
  * as the destination. */
-x86::reg32 frontend::rendf::rowPal4To16(App* app, CPU& cpu, reg32 source, reg32 destination, reg32 count)
+nfs::u32 frontend::rendf::rowPal4To16(App* app, ThreadState& ts, u32 source, u32 destination, u32 count)
 {
-    Guest guest(app, cpu);
-    reg32 current = 0, next = 0, pair = destination;
+    Guest guest(app, ts);
+    u32 current = 0, next = 0, pair = destination;
     count -= 4;
     if ((destination & 2) == 0 && !below(count))
     {
@@ -279,7 +279,7 @@ x86::reg32 frontend::rendf::rowPal4To16(App* app, CPU& cpu, reg32 source, reg32 
         do
         {
             pair = palettePair(guest, current >> 4, current & 0xf);
-            const reg32 nextPair = palettePair(guest, next >> 4, next & 0xf);
+            const u32 nextPair = palettePair(guest, next >> 4, next & 0xf);
             source += 2;
             destination += 8;
             current = guest.byte(source);
@@ -314,9 +314,9 @@ namespace
 
 /* A palette entry: the three bytes after `at` turned round, alpha full whatever the
  * byte at `at` was. */
-reg32 argbAfter(const Guest& guest, reg32 at)
+u32 argbAfter(const Guest& guest, u32 at)
 {
-    const reg32 v = guest.dword(at);
+    const u32 v = guest.dword(at);
     return (v << 24) | ((v & 0xff00) << 8) | ((v >> 8) & 0xff00) | (v >> 24) | 0xff000000;
 }
 
@@ -325,20 +325,20 @@ reg32 argbAfter(const Guest& guest, reg32 at)
 /* sub_50425d: `count` palette entries of three bytes each to ARGB words: four at a
  * time, each two of them read before they are written, then one at a time.  eax is
  * left as it came, or the last entry the loops held in it. */
-x86::reg32 frontend::rendf::rowRgb24ToArgb(App* app, CPU& cpu, reg32 entries, reg32 destination, reg32 count)
+nfs::u32 frontend::rendf::rowRgb24ToArgb(App* app, ThreadState& ts, u32 entries, u32 destination, u32 count)
 {
-    Guest guest(app, cpu);
-    reg32 eax = entries;
-    reg32 at = eax - 1;
+    Guest guest(app, ts);
+    u32 eax = entries;
+    u32 at = eax - 1;
     count -= 4;
     while (!below(count))
     {
-        const reg32 entry0 = argbAfter(guest, at);
-        const reg32 entry1 = argbAfter(guest, at + 3);
+        const u32 entry0 = argbAfter(guest, at);
+        const u32 entry1 = argbAfter(guest, at + 3);
         guest.setDword(destination, entry0);
         guest.setDword(destination + 4, entry1);
         eax = argbAfter(guest, at + 6);
-        const reg32 entry3 = argbAfter(guest, at + 9);
+        const u32 entry3 = argbAfter(guest, at + 9);
         guest.setDword(destination + 8, eax);
         guest.setDword(destination + 12, entry3);
         count -= 4;
@@ -362,18 +362,18 @@ namespace
 
 /* ---- The display ---- */
 
-constexpr reg32 kSetModeFunction = 0x567dc8;  // the screen's function for a mode; sub_4f8830 sets it
-constexpr reg32 kDriverRunning = 0x564364;
-constexpr reg32 kScreenFlags = 0x564390;      // byte
-constexpr reg32 kDirectDrawScreen = 0x9f38d0; // DirectDraw's record of the screen
-constexpr reg32 kRequestedWidth = 0x9f38e4, kRequestedHeight = 0x9f38e8, kRequestedDepth = 0x9f38ec;
-constexpr reg32 kRequestedDepthByte = 0x9f3d2c;
-constexpr reg32 kInitChannel = 0x564ed4;      // the "[INIT]" log's channel
-constexpr reg32 kLogLevel = 0xf;
-constexpr reg32 kLog = 0x501050;
-constexpr reg32 kPrepareDirectDraw = 0x508170, kOpenDirectDraw = 0x508390;
-constexpr reg32 kSelectMode = 0x507f30, kApplyMode = 0x5082f0;
-constexpr reg32 kLogRequested = 0x54f4c8, kLogSelecting = 0x54f4ec, kLogSelected = 0x54f518, kLogNoMode = 0x54f3c0;
+constexpr u32 kSetModeFunction = 0x567dc8;  // the screen's function for a mode; sub_4f8830 sets it
+constexpr u32 kDriverRunning = 0x564364;
+constexpr u32 kScreenFlags = 0x564390;      // byte
+constexpr u32 kDirectDrawScreen = 0x9f38d0; // DirectDraw's record of the screen
+constexpr u32 kRequestedWidth = 0x9f38e4, kRequestedHeight = 0x9f38e8, kRequestedDepth = 0x9f38ec;
+constexpr u32 kRequestedDepthByte = 0x9f3d2c;
+constexpr u32 kInitChannel = 0x564ed4;      // the "[INIT]" log's channel
+constexpr u32 kLogLevel = 0xf;
+constexpr u32 kLog = 0x501050;
+constexpr u32 kPrepareDirectDraw = 0x508170, kOpenDirectDraw = 0x508390;
+constexpr u32 kSelectMode = 0x507f30, kApplyMode = 0x5082f0;
+constexpr u32 kLogRequested = 0x54f4c8, kLogSelecting = 0x54f4ec, kLogSelected = 0x54f518, kLogNoMode = 0x54f3c0;
 
 }  // namespace
 
@@ -383,57 +383,57 @@ constexpr reg32 kLogRequested = 0x54f4c8, kLogSelecting = 0x54f4ec, kLogSelected
  * the port's driver never gets to: 0 or -1 for a default of each number, the mode
  * looked for and, the first time none is found, looked for again with bit 0x80 of
  * the flags on.  The first register of each call is what the original has there. */
-x86::reg32 frontend::rendf::setDisplayMode(App* app, CPU& cpu, reg32 width, reg32 height, reg32 depth)
+nfs::u32 frontend::rendf::setDisplayMode(App* app, ThreadState& ts, u32 width, u32 height, u32 depth)
 {
-    Guest guest(app, cpu);
-    const fe::Frame frame(guest, cpu, 16);
-    const reg32 setMode = guest.dword(kSetModeFunction);
+    Guest guest(app, ts);
+    const fe::Frame frame(guest, ts, 16);
+    const u32 setMode = guest.dword(kSetModeFunction);
     if (setMode != 0)
     {
         return callAt(guest, setMode, args({ width, height, depth, width }));
     }
 
     // What eax holds as the mode's functions are called: the width it came with, then the log's answer.
-    reg32 carried = width;
+    u32 carried = width;
     if (width == 0)
         width = 640;
-    else if (width == reg32(-1))
+    else if (width == u32(-1))
         width = 1024;
     if (height == 0)
         height = 480;
-    else if (height == reg32(-1))
+    else if (height == u32(-1))
         height = 768;
-    if (depth == 0 || depth == reg32(-1) || depth == 15)
+    if (depth == 0 || depth == u32(-1) || depth == 15)
         depth = 16;
 
     for (;;)
     {
-        const reg32 prepared = callAt(guest, kPrepareDirectDraw, args({ carried }));
+        const u32 prepared = callAt(guest, kPrepareDirectDraw, args({ carried }));
         guest.setDword(kRequestedWidth, width);
         guest.setDword(kRequestedHeight, height);
         guest.setDword(kRequestedDepth, depth);
         guest.setByte(kRequestedDepthByte, std::uint8_t(depth));
-        fe::direct<0x501050, ea::reportedAt>(app, cpu, kInitChannel, kLogLevel, kLogRequested, guest::Words({ width, height, depth }));
-        const reg32 opened = callAt(guest, kOpenDirectDraw, args({ prepared }));
+        fe::direct<0x501050, ea::reportedAt>(app, ts, kInitChannel, kLogLevel, kLogRequested, guest::Words({ width, height, depth }));
+        const u32 opened = callAt(guest, kOpenDirectDraw, args({ prepared }));
         if (opened == 0)
         {
             guest.setDword(kDriverRunning, 0);
             return 0;
         }
 
-        const reg32 requestedDepth = guest.dword(kRequestedDepth);
-        const reg32 requestedHeight = guest.dword(kRequestedHeight);
-        const reg32 requestedWidth = guest.dword(kRequestedWidth);
-        fe::direct<0x501050, ea::reportedAt>(app, cpu, kInitChannel, kLogLevel, kLogSelecting,
+        const u32 requestedDepth = guest.dword(kRequestedDepth);
+        const u32 requestedHeight = guest.dword(kRequestedHeight);
+        const u32 requestedWidth = guest.dword(kRequestedWidth);
+        fe::direct<0x501050, ea::reportedAt>(app, ts, kInitChannel, kLogLevel, kLogSelecting,
                                              guest::Words({ requestedWidth, requestedHeight, requestedDepth }));
-        const reg32 selected = callAt(guest, kSelectMode, args({ kDirectDrawScreen }));
-        fe::direct<0x501050, ea::reportedAt>(app, cpu, kInitChannel, kLogLevel, kLogSelected, guest::Words({ selected }));
+        const u32 selected = callAt(guest, kSelectMode, args({ kDirectDrawScreen }));
+        fe::direct<0x501050, ea::reportedAt>(app, ts, kInitChannel, kLogLevel, kLogSelected, guest::Words({ selected }));
         if (selected != 0)
             return callAt(guest, kApplyMode);
 
-        const reg32 logged = *fe::direct<0x501050, ea::reportedAt>(app, cpu, kInitChannel, kLogLevel, kLogNoMode, guest::Words({}));
+        const u32 logged = *fe::direct<0x501050, ea::reportedAt>(app, ts, kInitChannel, kLogLevel, kLogNoMode, guest::Words({}));
         const std::uint8_t flags = guest.byte(kScreenFlags);
-        const reg32 eax = (logged & 0xffff00ff) | (reg32(flags) << 8);
+        const u32 eax = (logged & 0xffff00ff) | (u32(flags) << 8);
         if ((flags & 0x80) != 0)
         {
             guest.setDword(kDriverRunning, 0);
@@ -450,121 +450,121 @@ namespace
 
 /* ---- The font's allocator ---- */
 
-constexpr reg32 kErrorFile = 0x552190, kErrorFunction = 0x552194, kErrorLine = 0x552198;
-constexpr reg32 kFontFile = 0x550780;         // "font\fontpc.c"
-constexpr reg32 kFontFunction = 0x550790;     // "FONT_softfalloc"
-constexpr reg32 kFontMemoryName = 0x5507a0;   // "THRASHFONT"
-constexpr reg32 kFontAllocLine = 0x127;
-constexpr reg32 kFontHeap = 0x5643f4;
+constexpr u32 kErrorFile = 0x552190, kErrorFunction = 0x552194, kErrorLine = 0x552198;
+constexpr u32 kFontFile = 0x550780;         // "font\fontpc.c"
+constexpr u32 kFontFunction = 0x550790;     // "FONT_softfalloc"
+constexpr u32 kFontMemoryName = 0x5507a0;   // "THRASHFONT"
+constexpr u32 kFontAllocLine = 0x127;
+constexpr u32 kFontHeap = 0x5643f4;
 
 }  // namespace
 
 /* sub_518f80, the font table's +0x14: `bytes` of the font's heap, with the place the
  * game's messages name set first. */
-x86::reg32 frontend::rendf::fontAlloc(App* app, CPU& cpu, reg32 bytes)
+nfs::u32 frontend::rendf::fontAlloc(App* app, ThreadState& ts, u32 bytes)
 {
-    Guest guest(app, cpu);
-    const fe::Frame frame(guest, cpu, 12);
+    Guest guest(app, ts);
+    const fe::Frame frame(guest, ts, 12);
     guest.setDword(kErrorFile, kFontFile);
     guest.setDword(kErrorLine, kFontAllocLine);
-    const reg32 heap = guest.dword(kFontHeap);
+    const u32 heap = guest.dword(kFontHeap);
     guest.setDword(kErrorFunction, kFontFunction);
     // The game's code hands it the function's name in ecx too, as it stored it just before, which
     // reservememadr does not read.
-    return *fe::direct<0x4e1620, ea::reserved>(app, cpu, kFontMemoryName, bytes, heap);
+    return *fe::direct<0x4e1620, ea::reserved>(app, ts, kFontMemoryName, bytes, heap);
 }
 
 /* sub_518fc0, the font table's +0x18: free, a jmp to it, so what it leaves is left.
  * It runs a return slot lower on the stack than from the jmp, which it does not see. */
-x86::reg32 frontend::rendf::fontFree(App* app, CPU& cpu, reg32 block)
+nfs::u32 frontend::rendf::fontFree(App* app, ThreadState& ts, u32 block)
 {
-    return *fe::direct<0x4e1890, ea::purgeBlock>(app, cpu, block);
+    return *fe::direct<0x4e1890, ea::purgeBlock>(app, ts, block);
 }
 
 /* sub_525b80: two words of a font's record, 0 and 0 as sub_519f10 makes it. */
-x86::reg32 frontend::rendf::fontSetOrigin(App* app, CPU& cpu, reg32 font, reg32 second, reg32 first)
+nfs::u32 frontend::rendf::fontSetOrigin(App* app, ThreadState& ts, u32 font, u32 second, u32 first)
 {
-    Guest guest(app, cpu);
+    Guest guest(app, ts);
     guest.setDword(font + 0x50, first);
     guest.setDword(font + 0x4c, second);
     return font;
 }
 
-x86::reg32 frontend::rendPixels565To1555(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 frontend::rendPixels565To1555(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site{ "sub_5040b8", 0, 0, nullptr, 0, kKeepsEcxEsi };
-    const reg32 source = args.eax, destination = args.edx, count = args.ebx;
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendf::row565To1555(app, cpu, source, destination, count); });
+    const u32 source = args.eax, destination = args.edx, count = args.ebx;
+    return fe::runThunk(app, ts, args, site, [&](Guest&) { return rendf::row565To1555(app, ts, source, destination, count); });
 }
 
-x86::reg32 frontend::rendPixels1555To565(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 frontend::rendPixels1555To565(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site{ "sub_504133", 0, 0, nullptr, 0, kKeepsEcxEsi };
-    const reg32 source = args.eax, destination = args.edx, count = args.ebx;
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendf::row1555To565(app, cpu, source, destination, count); });
+    const u32 source = args.eax, destination = args.edx, count = args.ebx;
+    return fe::runThunk(app, ts, args, site, [&](Guest&) { return rendf::row1555To565(app, ts, source, destination, count); });
 }
 
-x86::reg32 frontend::rendPixelsPal8To32(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 frontend::rendPixelsPal8To32(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site{ "sub_5041ae", 0, 0, nullptr, 0, kKeepsEcxEsiEdi };
-    const reg32 source = args.eax, destination = args.edx, count = args.ebx;
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendf::rowPal8To32(app, cpu, source, destination, count); });
+    const u32 source = args.eax, destination = args.edx, count = args.ebx;
+    return fe::runThunk(app, ts, args, site, [&](Guest&) { return rendf::rowPal8To32(app, ts, source, destination, count); });
 }
 
-x86::reg32 frontend::rendPixelsPal8To16(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 frontend::rendPixelsPal8To16(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site{ "sub_5041d0", 0, 0, nullptr, 0, kKeepsEcxEsiEdi };
-    const reg32 source = args.eax, destination = args.edx, count = args.ebx;
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendf::rowPal8To16(app, cpu, source, destination, count); });
+    const u32 source = args.eax, destination = args.edx, count = args.ebx;
+    return fe::runThunk(app, ts, args, site, [&](Guest&) { return rendf::rowPal8To16(app, ts, source, destination, count); });
 }
 
-x86::reg32 frontend::rendPixelsRgb24ToArgb(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 frontend::rendPixelsRgb24ToArgb(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site{ "sub_50425d", 0, 0, nullptr, 0, kKeepsEcxEsi };
-    const reg32 entries = args.eax, destination = args.edx, count = args.ebx;
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendf::rowRgb24ToArgb(app, cpu, entries, destination, count); });
+    const u32 entries = args.eax, destination = args.edx, count = args.ebx;
+    return fe::runThunk(app, ts, args, site, [&](Guest&) { return rendf::rowRgb24ToArgb(app, ts, entries, destination, count); });
 }
 
-x86::reg32 frontend::rendPixelsSwapRedBlue(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 frontend::rendPixelsSwapRedBlue(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site{ "sub_5042c4", 0, 0, nullptr, 0, kKeepsEcxEsiEdi };
-    const reg32 source = args.eax, destination = args.edx, count = args.ebx;
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendf::rowSwapRedBlue(app, cpu, source, destination, count); });
+    const u32 source = args.eax, destination = args.edx, count = args.ebx;
+    return fe::runThunk(app, ts, args, site, [&](Guest&) { return rendf::rowSwapRedBlue(app, ts, source, destination, count); });
 }
 
-x86::reg32 frontend::rendPixelsPal4To16(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 frontend::rendPixelsPal4To16(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site{ "sub_504335", 0, 0, nullptr, 0, kKeepsEcxEsiEdi };
-    const reg32 source = args.eax, destination = args.edx, count = args.ebx;
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendf::rowPal4To16(app, cpu, source, destination, count); });
+    const u32 source = args.eax, destination = args.edx, count = args.ebx;
+    return fe::runThunk(app, ts, args, site, [&](Guest&) { return rendf::rowPal4To16(app, ts, source, destination, count); });
 }
 
-x86::reg32 frontend::rendSetDisplayMode(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 frontend::rendSetDisplayMode(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site{ "sub_5089d0", 0, 0, nullptr, 0, kKeepsEcxEsiEdi };
-    const reg32 width = args.eax, height = args.edx, depth = args.ebx;
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendf::setDisplayMode(app, cpu, width, height, depth); });
+    const u32 width = args.eax, height = args.edx, depth = args.ebx;
+    return fe::runThunk(app, ts, args, site, [&](Guest&) { return rendf::setDisplayMode(app, ts, width, height, depth); });
 }
 
-x86::reg32 frontend::rendFontAlloc(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 frontend::rendFontAlloc(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site{ "sub_518f80", 0, 0, nullptr, 0, kKeepsEbxEcxEdx };
-    const reg32 bytes = args.eax;
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendf::fontAlloc(app, cpu, bytes); });
+    const u32 bytes = args.eax;
+    return fe::runThunk(app, ts, args, site, [&](Guest&) { return rendf::fontAlloc(app, ts, bytes); });
 }
 
-x86::reg32 frontend::rendFontFree(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 frontend::rendFontFree(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site{ "sub_518fc0", 0, 0, nullptr, 0, 0 };
-    const reg32 block = args.eax;
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendf::fontFree(app, cpu, block); });
+    const u32 block = args.eax;
+    return fe::runThunk(app, ts, args, site, [&](Guest&) { return rendf::fontFree(app, ts, block); });
 }
 
-x86::reg32 frontend::rendFontSetOrigin(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 frontend::rendFontSetOrigin(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site{ "sub_525b80", 0, 0, nullptr, 0, 0 };
-    const reg32 font = args.eax, second = args.edx, first = args.ebx;
-    return fe::runThunk(app, cpu, args, site, [&](Guest&) { return rendf::fontSetOrigin(app, cpu, font, second, first); });
+    const u32 font = args.eax, second = args.edx, first = args.ebx;
+    return fe::runThunk(app, ts, args, site, [&](Guest&) { return rendf::fontSetOrigin(app, ts, font, second, first); });
 }
 
 }

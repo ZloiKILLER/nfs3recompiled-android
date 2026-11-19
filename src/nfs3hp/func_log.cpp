@@ -49,7 +49,7 @@
 #include <ucontext.h>
 #include <unistd.h>
 #include <SDL3/SDL_log.h>
-#include <fpu.h>
+#include <game_float.h>
 
 namespace nfs3hp
 {
@@ -81,7 +81,7 @@ std::atomic<uint32_t> gWords[kWords];       // word + 1, 0 for none
 std::atomic<uint32_t> gWordCounts[kWords];
 uint32_t gWordSaved[kWords];
 
-void onControl(x86::reg16 word)
+void onControl(nfs::u16 word)
 {
     const uint32_t tid = uint32_t(gettid());
     gThreadWord[tid & 63].store((uint64_t(tid) << 16) | word, std::memory_order_relaxed);
@@ -197,9 +197,9 @@ void onSample(int, siginfo_t*, void* context)
 
 uint64_t nowMs()
 {
-    timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return uint64_t(ts.tv_sec) * 1000 + ts.tv_nsec / 1000000;
+    timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return uint64_t(now.tv_sec) * 1000 + now.tv_nsec / 1000000;
 }
 
 struct Library
@@ -346,7 +346,7 @@ void startFunctionLog()
     gEnd = lib.end;
     if (pipe2(gPipe, O_NONBLOCK | O_CLOEXEC) != 0)
         return;
-    x86::FloatEnv::s_controlHook = onControl;
+    nfs::FloatEnv::s_controlHook = onControl;
 
     struct sigaction sa = {};
     sa.sa_sigaction = onSample;

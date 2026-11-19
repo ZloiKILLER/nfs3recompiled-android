@@ -3,13 +3,13 @@
 #include <lib/window.h>
 #include <SDL3/SDL.h>
 
-namespace win32
+namespace nfs
 {
 
 SDL_AtomicU32 s_threadCount = {1};
-thread_local x86::reg32 s_threadId = 1;
+thread_local nfs::u32 s_threadId = 1;
 
-Thread::Data::Data(WinApplication* app, x86::reg32 entryPoint, x86::reg32 parameter, x86::reg32 flags)
+Thread::Data::Data(App* app, nfs::u32 entryPoint, nfs::u32 parameter, nfs::u32 flags)
     :   m_app(app)
     ,   m_entryPoint(entryPoint)
     ,   m_parameter(parameter)
@@ -36,7 +36,7 @@ Thread::Thread(const Thread& other)
     SDL_AtomicIncRef(m_refCount);
 }
 
-Thread::Thread(WinApplication *app, x86::reg32 method, x86::reg32 parameter, x86::reg32 flags)
+Thread::Thread(App *app, nfs::u32 method, nfs::u32 parameter, nfs::u32 flags)
     :   m_refCount(new SDL_AtomicInt())
     ,   m_semaphore(SDL_CreateSemaphore((flags & 0x4) ? 0 : 1))
     ,   m_data(app, method, parameter, flags)
@@ -62,18 +62,18 @@ void Thread::resume()
       SDL_SignalSemaphore(m_semaphore);
 }
 
-x86::reg32 Thread::currentThreadId()
+nfs::u32 Thread::currentThreadId()
 {
     return s_threadId;
 }
  
 void Thread::terminate()
 {
-    m_cpu.terminate = true;
+    m_ts.terminate = true;
     Event::broadcastTerminate();
     SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Waiting for thread 0x%x", m_data.m_threadId);
     SDL_Event event;
-    event.type = g_userEvent2;
+    event.type = g_threadStopEvent;
     event.user.code = 0;
     event.user.data1 = reinterpret_cast<void*>(static_cast<uintptr_t>(m_data.m_threadId));
     event.user.data2 = 0;
@@ -83,12 +83,12 @@ void Thread::terminate()
     m_thread = nullptr;
 }
 
-x86::reg32 Thread::threadId() const
+nfs::u32 Thread::threadId() const
 {
     return m_data.m_threadId;
 }
 
-void Thread::sleep(x86::reg32 milliseconds)
+void Thread::sleep(nfs::u32 milliseconds)
 {
     SDL_Delay(milliseconds);
 }
@@ -103,7 +103,7 @@ int Thread::run(void* data)
         SDL_DestroySemaphore(thread->m_semaphore);
         thread->m_semaphore = nullptr;
     }
-    return thread->m_data.m_app->runThread(thread->m_cpu, thread->m_data.m_entryPoint, thread->m_data.m_parameter);
+    return thread->m_data.m_app->runThread(thread->m_ts, thread->m_data.m_entryPoint, thread->m_data.m_parameter);
 }
 
 }

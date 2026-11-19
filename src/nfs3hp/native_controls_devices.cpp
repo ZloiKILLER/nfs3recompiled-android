@@ -40,35 +40,35 @@ namespace
 
 using guest::at;
 using guest::put;
-using x86::reg32;
-using x86::reg8;
-using App = win32::WinApplication;
-using CPU = x86::CPU;
+using nfs::u32;
+using nfs::u8;
+using App = nfs::App;
+using ThreadState = nfs::ThreadState;
 
-constexpr reg32 kSetBytes = 0x34;             // 13 actions
-constexpr reg32 kSplitMode = 1;               // the mode two play on one screen in
+constexpr u32 kSetBytes = 0x34;             // 13 actions
+constexpr u32 kSplitMode = 1;               // the mode two play on one screen in
 // Controllers: 0x88 bytes each from 0x6fc970: its kind (a DirectInput
 // joystick's subtype: 2 a joystick, 4 a game pad), its name, its buttons (a
 // bit each), whether it has a second axis.
-constexpr reg32 kDeviceBytes = 0x88;
-constexpr reg32 kJoystick = 2, kGamePad = 4;
+constexpr u32 kDeviceBytes = 0x88;
+constexpr u32 kJoystick = 2, kGamePad = 4;
 // The keyboard's defaults (in the code's bytes).
-constexpr reg32 kKeyboardSingle = 0x490430, kKeyboardSplit = 0x490464;
-constexpr reg32 kCopy = 0x4ea4f0;             // memmove: from eax to edx, ebx bytes
+constexpr u32 kKeyboardSingle = 0x490430, kKeyboardSplit = 0x490464;
+constexpr u32 kCopy = 0x4ea4f0;             // memmove: from eax to edx, ebx bytes
 // What of a controller works an action: below its number's four bits.
-constexpr reg32 kFirstHigh = 0x80ff01, kFirstLow = 0x7f0001;    // the first axis's halves
-constexpr reg32 kSecondLow = 0x17f0001, kSecondHigh = 0x180ff01;  // the second's
-constexpr reg32 kButton0 = 2, kButton1 = 0x102;               // + 0x100 a button
-constexpr reg32 kButton2 = 0x202, kButton3 = 0x302;
-constexpr reg32 kKey = 0x45001204;                            // a key: 'E' (0x12), whatever the device
+constexpr u32 kFirstHigh = 0x80ff01, kFirstLow = 0x7f0001;    // the first axis's halves
+constexpr u32 kSecondLow = 0x17f0001, kSecondHigh = 0x180ff01;  // the second's
+constexpr u32 kButton0 = 2, kButton1 = 0x102;               // + 0x100 a button
+constexpr u32 kButton2 = 0x202, kButton3 = 0x302;
+constexpr u32 kKey = 0x45001204;                            // a key: 'E' (0x12), whatever the device
 // The actions' places in a set: steering, the pedals, the hand brake, the
 // gears, the view.
-constexpr reg32 kSteerRight = 0, kSteerLeft = 4, kThrottle = 8, kBrake = 0xc, kHandBrake = 0x10;
-constexpr reg32 kGearUp = 0x14, kGearDown = 0x18, kView = 0x1c;
+constexpr u32 kSteerRight = 0, kSteerLeft = 4, kThrottle = 8, kBrake = 0xc, kHandBrake = 0x10;
+constexpr u32 kGearUp = 0x14, kGearDown = 0x18, kView = 0x1c;
 // The texts the known controllers' names are looked for by.
-constexpr reg32 kSideWinderGamePadName = 0x53bbe0, kGravisGripName = 0x53bc00, kWingManForceName = 0x53bc0c;
-constexpr reg32 kCombatStickName = 0x53bc24, kSideWinderProName = 0x53bc3c, kSideWinderWheelName = 0x53bc58;
-constexpr reg32 kSteeringWheelName = 0x53bc84;
+constexpr u32 kSideWinderGamePadName = 0x53bbe0, kGravisGripName = 0x53bc00, kWingManForceName = 0x53bc0c;
+constexpr u32 kCombatStickName = 0x53bc24, kSideWinderProName = 0x53bc3c, kSideWinderWheelName = 0x53bc58;
+constexpr u32 kSteeringWheelName = 0x53bc84;
 
 /* The guest's stack as a function's code has it: `pushed` bytes of saved
  * registers below esp, then `bytes` of locals, esp left below them; esp as it
@@ -76,48 +76,48 @@ constexpr reg32 kSteeringWheelName = 0x53bc84;
 class GuestFrame
 {
 public:
-    GuestFrame(CPU& cpu, reg32 pushed, reg32 bytes) : cpu(cpu), esp(cpu.esp), base(cpu.esp - pushed)
+    GuestFrame(ThreadState& ts, u32 pushed, u32 bytes) : ts(ts), esp(ts.sp), base(ts.sp - pushed)
     {
-        cpu.esp = base - bytes;
+        ts.sp = base - bytes;
     }
-    ~GuestFrame() { cpu.esp = esp; }
-    reg32 operator-(reg32 offset) const { return base - offset; }
+    ~GuestFrame() { ts.sp = esp; }
+    u32 operator-(u32 offset) const { return base - offset; }
 
 private:
-    CPU& cpu;
-    const reg32 esp;
-    const reg32 base;
+    ThreadState& ts;
+    const u32 esp;
+    const u32 base;
 };
 
 /* The registers a function's code pushes and pops again, kept to be put back. */
 struct Kept
 {
-    reg32 ebx, ecx, edx, esi, edi, ebp;
+    u32 ebx, ecx, edx, esi, edi, ebp;
 };
 
-const DeviceRecord& device(App* app, reg32 controller)
+const DeviceRecord& device(App* app, u32 controller)
 {
     return gameSettings(app).deviceAt(controller * kDeviceBytes);
 }
 
 /* What of controller works an action: its number in the top four bits. */
-reg32 ofController(reg32 controller, reg32 code)
+u32 ofController(u32 controller, u32 code)
 {
     return (controller << 28) + code;
 }
 
 /* The game's memmove (0x4ea4f0, ea::moveMemory): `bytes` from `from` to `to`.  False when the
  * game stopped in it. */
-bool copy(App* app, CPU& cpu, reg32 from, reg32 to, reg32 bytes)
+bool copy(App* app, ThreadState& ts, u32 from, u32 to, u32 bytes)
 {
-    return guest::direct<0x4ea4f0, ea::moveMemory>(app, cpu, to, from, bytes);
+    return guest::direct<0x4ea4f0, ea::moveMemory>(app, ts, to, from, bytes);
 }
 
 }  // namespace
 
 /* 0x4904d0: the players' control sets in `mode`: the two players' on one
  * screen in mode 1, else the one player's. */
-reg32 playersSets(reg32 mode)
+u32 playersSets(u32 mode)
 {
     return mode == kSplitMode ? SETTINGS_ADDRESS(controls[1]) : SETTINGS_ADDRESS(controls[0]);
 }
@@ -128,25 +128,25 @@ namespace
 /* 0x4905b0: the control set at `set` made the players' in `mode`: in mode 1
  * the first's (`which` 0), the second's (1) or -- two sets at `set` -- both
  * (another); else the one player's.  False when the game stopped. */
-bool makePlayers(App* app, CPU& cpu, reg32 mode, reg32 set, reg32 which)
+bool makePlayers(App* app, ThreadState& ts, u32 mode, u32 set, u32 which)
 {
     if (mode != kSplitMode)
-        return copy(app, cpu, set, SETTINGS_ADDRESS(controls[0]), kSetBytes);
+        return copy(app, ts, set, SETTINGS_ADDRESS(controls[0]), kSetBytes);
     if (which == 0)
-        return copy(app, cpu, set, SETTINGS_ADDRESS(controls[1]), kSetBytes);
+        return copy(app, ts, set, SETTINGS_ADDRESS(controls[1]), kSetBytes);
     if (which == 1)
-        return copy(app, cpu, set, SETTINGS_ADDRESS(controls[2]), kSetBytes);
-    return copy(app, cpu, set, SETTINGS_ADDRESS(controls[1]), 2 * kSetBytes);
+        return copy(app, ts, set, SETTINGS_ADDRESS(controls[2]), kSetBytes);
+    return copy(app, ts, set, SETTINGS_ADDRESS(controls[1]), 2 * kSetBytes);
 }
 
 /* 0x490610: whether `controller`'s name has the text at `text` in it (the
  * game's strstr, native watcom::strstr; edx as it leaves it).  Nothing when
  * the game stopped. */
-std::optional<bool> nameHas(App* app, CPU& cpu, reg32 controller, reg32 text)
+std::optional<bool> nameHas(App* app, ThreadState& ts, u32 controller, u32 text)
 {
-    const reg32 found = guest::direct<0x4e0820, watcom::clib::strstr>(
-        app, cpu, controller * kDeviceBytes + SETTINGS_ADDRESS(devices[0].name), text);
-    if (cpu.terminate)
+    const u32 found = guest::direct<0x4e0820, watcom::clib::strstr>(
+        app, ts, controller * kDeviceBytes + SETTINGS_ADDRESS(devices[0].name), text);
+    if (ts.terminate)
         return std::nullopt;
     return found != 0;
 }
@@ -155,20 +155,20 @@ std::optional<bool> nameHas(App* app, CPU& cpu, reg32 controller, reg32 text)
  * defaults for both when `which` is 2, else the one player's for the second
  * player; else the one player's for the one player.  Both defaults are
  * copied from the code's bytes into the frame first, as the code does. */
-bool keyboardSets(App* app, CPU& cpu, reg32 mode, reg32 which)
+bool keyboardSets(App* app, ThreadState& ts, u32 mode, u32 which)
 {
-    const GuestFrame frame(cpu, 0x14, 0x9c);  // ebx, ecx, esi, edi, ebp pushed
-    const reg32 single = frame - kSetBytes, split = frame - 0x9c;
-    for (reg32 i = 0; i < kSetBytes; i += 4)
+    const GuestFrame frame(ts, 0x14, 0x9c);  // ebx, ecx, esi, edi, ebp pushed
+    const u32 single = frame - kSetBytes, split = frame - 0x9c;
+    for (u32 i = 0; i < kSetBytes; i += 4)
         put(app, single + i, at(app, kKeyboardSingle + i));
-    for (reg32 i = 0; i < 2 * kSetBytes; i += 4)
+    for (u32 i = 0; i < 2 * kSetBytes; i += 4)
         put(app, split + i, at(app, kKeyboardSplit + i));
-    const GuestFrame slot(cpu, 0, 4);
+    const GuestFrame slot(ts, 0, 4);
     if (mode != kSplitMode)
-        return makePlayers(app, cpu, mode, single, 0);
+        return makePlayers(app, ts, mode, single, 0);
     if (which == 2)
-        return makePlayers(app, cpu, mode, split, which);
-    return makePlayers(app, cpu, mode, single, mode);
+        return makePlayers(app, ts, mode, split, which);
+    return makePlayers(app, ts, mode, single, mode);
 }
 
 /* A known controller's set: the 13 actions' codes (below the device's four
@@ -177,39 +177,39 @@ bool keyboardSets(App* app, CPU& cpu, reg32 mode, reg32 which)
  * first.  The set is made on the guest's stack before the name is looked at,
  * as the code does.  Whether it was that controller; nothing when the game
  * stopped. */
-std::optional<bool> namedSet(App* app, CPU& cpu, reg32 mode, reg32 controller, const reg32 (&codes)[13], reg32 name)
+std::optional<bool> namedSet(App* app, ThreadState& ts, u32 mode, u32 controller, const u32 (&codes)[13], u32 name)
 {
-    const GuestFrame frame(cpu, 0x10, kSetBytes);  // ebx, ecx, esi, ebp pushed
-    const reg32 set = frame - kSetBytes;
-    for (reg32 i = 0; i < 13; ++i)
+    const GuestFrame frame(ts, 0x10, kSetBytes);  // ebx, ecx, esi, ebp pushed
+    const u32 set = frame - kSetBytes;
+    for (u32 i = 0; i < 13; ++i)
         put(app, set + 4 * i, codes[i] == kKey ? kKey : ofController(controller, codes[i]));
     std::optional<bool> named;
     {
-        const GuestFrame slot(cpu, 0, 4);
-        named = nameHas(app, cpu, controller, name);
+        const GuestFrame slot(ts, 0, 4);
+        named = nameHas(app, ts, controller, name);
     }
     if (!named || !*named)
         return named;
-    const GuestFrame slot(cpu, 0, 4);
-    if (!makePlayers(app, cpu, mode, set, controller != 0 ? 1 : 0))
+    const GuestFrame slot(ts, 0, 4);
+    if (!makePlayers(app, ts, mode, set, controller != 0 ? 1 : 0))
         return std::nullopt;
     return true;
 }
 
-const reg32 kSideWinderGamePad[13] = {kFirstHigh, kFirstLow, 0x2, 0x102, 0x202, 0x702, 0x602,
+const u32 kSideWinderGamePad[13] = {kFirstHigh, kFirstLow, 0x2, 0x102, 0x202, 0x702, 0x602,
                                       0x302, 0x402, kKey, 0x902, 0x802, 0x502};
-const reg32 kGravisGrip[13] = {kFirstHigh, kFirstLow, 0x2, 0x102, 0x202, 0x502, 0x402,
+const u32 kGravisGrip[13] = {kFirstHigh, kFirstLow, 0x2, 0x102, 0x202, 0x502, 0x402,
                                0x302, 0x702, kKey, 0x902, 0x802, 0x602};
 // The pedals on its third axis's halves.
-const reg32 kWingManForce[13] = {kFirstHigh, kFirstLow, 0x27f0001, 0x280ff01, 0x2, 0x102, 0x302,
+const u32 kWingManForce[13] = {kFirstHigh, kFirstLow, 0x27f0001, 0x280ff01, 0x2, 0x102, 0x302,
                                  0x202, 0x802, 0x402, 0x702, 0x602, 0x502};
 // The throttle on its second axis.
-const reg32 kCombatStick[13] = {kFirstHigh, kFirstLow, kSecondLow, 0x2, kSecondHigh, 0x602, 0x702,
+const u32 kCombatStick[13] = {kFirstHigh, kFirstLow, kSecondLow, 0x2, kSecondHigh, 0x602, 0x702,
                                 0x402, 0x102, 0x302, 0x202, 0x802, 0x502};
-const reg32 kSideWinderPro[13] = {kFirstHigh, kFirstLow, 0x702, 0x602, 0x2, 0x202, 0x502,
+const u32 kSideWinderPro[13] = {kFirstHigh, kFirstLow, 0x702, 0x602, 0x2, 0x202, 0x502,
                                   0x102, 0x802, kKey, 0x902, 0x402, 0x302};
 // The pedals on its second axis.
-const reg32 kSideWinderWheel[13] = {kFirstHigh, kFirstLow, kSecondLow, kSecondHigh, 0x2, 0x702, 0x602,
+const u32 kSideWinderWheel[13] = {kFirstHigh, kFirstLow, kSecondLow, kSecondHigh, 0x2, 0x702, 0x602,
                                     0x302, 0x102, kKey, 0x202, 0x402, 0x502};
 
 /* 0x490b30: a "CH Steering Wheel"'s: the keyboard's set, and over it
@@ -219,22 +219,22 @@ const reg32 kSideWinderWheel[13] = {kFirstHigh, kFirstLow, kSecondLow, kSecondHi
  * from the players' by the controller's number, the second player's past the
  * one player's when one plays (as the other kinds' are).  Whether it was one;
  * nothing when the game stopped. */
-std::optional<bool> steeringWheelSet(App* app, CPU& cpu, reg32 mode, reg32 controller)
+std::optional<bool> steeringWheelSet(App* app, ThreadState& ts, u32 mode, u32 controller)
 {
-    const GuestFrame frame(cpu, 0x14, 0);  // ebx, ecx, esi, edi, ebp pushed
-    const reg32 sets = playersSets(mode);
+    const GuestFrame frame(ts, 0x14, 0);  // ebx, ecx, esi, edi, ebp pushed
+    const u32 sets = playersSets(mode);
     std::optional<bool> named;
     {
-        const GuestFrame slot(cpu, 0, 4);
-        named = nameHas(app, cpu, controller, kSteeringWheelName);
+        const GuestFrame slot(ts, 0, 4);
+        named = nameHas(app, ts, controller, kSteeringWheelName);
     }
     if (!named || !*named)
         return named;
-    const reg32 set = sets + controller * kSetBytes;
-    const reg32 which = controller != 0 ? 1 : 0;
+    const u32 set = sets + controller * kSetBytes;
+    const u32 which = controller != 0 ? 1 : 0;
     {
-        const GuestFrame slot(cpu, 0, 4);
-        if (!keyboardSets(app, cpu, mode, which))
+        const GuestFrame slot(ts, 0, 4);
+        if (!keyboardSets(app, ts, mode, which))
             return std::nullopt;
     }
     if (device(app, controller).axisMask != 0)
@@ -245,12 +245,12 @@ std::optional<bool> steeringWheelSet(App* app, CPU& cpu, reg32 mode, reg32 contr
     const bool second = device(app, controller).axisMask != 0;
     put(app, set + kThrottle, ofController(controller, second ? kSecondLow : kButton2));
     put(app, set + kBrake, ofController(controller, second ? kSecondHigh : kButton3));
-    if (reg8(device(app, controller).buttonMask) & 1)
+    if (u8(device(app, controller).buttonMask) & 1)
         put(app, set + kHandBrake, ofController(controller, kButton0));
-    if (reg8(device(app, controller).buttonMask) & 2)
+    if (u8(device(app, controller).buttonMask) & 2)
         put(app, set + kView, ofController(controller, kButton1));
-    const GuestFrame slot(cpu, 0, 4);
-    if (!makePlayers(app, cpu, mode, set, which))
+    const GuestFrame slot(ts, 0, 4);
+    if (!makePlayers(app, ts, mode, set, which))
         return std::nullopt;
     return true;
 }
@@ -258,22 +258,22 @@ std::optional<bool> steeringWheelSet(App* app, CPU& cpu, reg32 mode, reg32 contr
 /* 0x490640: `controller`'s controls in `mode` if the game knows it by its
  * name, the known ones tried in the code's order: whether it did; nothing
  * when the game stopped. */
-std::optional<bool> knownSet(App* app, CPU& cpu, reg32 mode, reg32 controller)
+std::optional<bool> knownSet(App* app, ThreadState& ts, u32 mode, u32 controller)
 {
-    const GuestFrame frame(cpu, 0xc, 0);  // ebx, ecx, ebp pushed
+    const GuestFrame frame(ts, 0xc, 0);  // ebx, ecx, ebp pushed
     static const struct
     {
-        const reg32 (*codes)[13];
-        reg32 name;
+        const u32 (*codes)[13];
+        u32 name;
     } known[] = {{&kSideWinderGamePad, kSideWinderGamePadName}, {&kGravisGrip, kGravisGripName},
                  {&kWingManForce, kWingManForceName},           {&kSideWinderPro, kSideWinderProName},
                  {&kSideWinderWheel, kSideWinderWheelName},     {nullptr, kSteeringWheelName},
                  {&kCombatStick, kCombatStickName}};
     for (const auto& k : known)
     {
-        const GuestFrame slot(cpu, 0, 4);
-        const std::optional<bool> done = k.codes ? namedSet(app, cpu, mode, controller, *k.codes, k.name)
-                                                 : steeringWheelSet(app, cpu, mode, controller);
+        const GuestFrame slot(ts, 0, 4);
+        const std::optional<bool> done = k.codes ? namedSet(app, ts, mode, controller, *k.codes, k.name)
+                                                 : steeringWheelSet(app, ts, mode, controller);
         if (!done || *done)
             return done;
     }
@@ -287,10 +287,10 @@ std::optional<bool> knownSet(App* app, CPU& cpu, reg32 mode, reg32 controller)
  * it has both. */
 struct Button
 {
-    reg32 part;  // which byte of its buttons
-    reg8 mask;
-    reg32 code;
-    reg32 slot;  // the action's place in the set
+    u32 part;  // which byte of its buttons
+    u8 mask;
+    u32 code;
+    u32 slot;  // the action's place in the set
 };
 struct Kind
 {
@@ -298,8 +298,8 @@ struct Kind
     Button buttons[8];
     int count;
     int pairAfter;  // the gears' pair after this many buttons
-    reg8 pairFirst, pairSecond;
-    reg32 pairCode;   // the first's, the second's 0x100 past it
+    u8 pairFirst, pairSecond;
+    u32 pairCode;   // the first's, the second's 0x100 past it
     bool pairInHigh;  // the buttons' byte read into dh (else dl)
 };
 
@@ -355,13 +355,13 @@ const Kind kOtherKind = {true,
 
 /* The kind's controls of `controller` in `mode`.  False when the game
  * stopped. */
-bool kindSet(App* app, CPU& cpu, reg32 mode, reg32 controller, const Kind& kind)
+bool kindSet(App* app, ThreadState& ts, u32 mode, u32 controller, const Kind& kind)
 {
-    const GuestFrame frame(cpu, 0x10, 0);  // ebx, ecx, esi, ebp pushed
-    const reg32 set = playersSets(mode) + controller * kSetBytes;
+    const GuestFrame frame(ts, 0x10, 0);  // ebx, ecx, esi, ebp pushed
+    const u32 set = playersSets(mode) + controller * kSetBytes;
     {
-        const GuestFrame slot(cpu, 0, 4);
-        if (!keyboardSets(app, cpu, mode, controller != 0 ? 1 : 0))
+        const GuestFrame slot(ts, 0, 4);
+        if (!keyboardSets(app, ts, mode, controller != 0 ? 1 : 0))
             return false;
     }
     if (device(app, controller).axisMask != 0)
@@ -378,7 +378,7 @@ bool kindSet(App* app, CPU& cpu, reg32 mode, reg32 controller, const Kind& kind)
     {
         if (i == kind.pairAfter)
         {
-            const reg8 held = reg8(device(app, controller).buttonMask);
+            const u8 held = u8(device(app, controller).buttonMask);
             if ((held & kind.pairFirst) && (held & kind.pairSecond))
             {
                 put(app, set + kGearUp, ofController(controller, kind.pairCode));
@@ -386,7 +386,7 @@ bool kindSet(App* app, CPU& cpu, reg32 mode, reg32 controller, const Kind& kind)
             }
         }
         const Button& b = kind.buttons[i];
-        if (reg8(device(app, controller).buttonMask >> (8 * b.part)) & b.mask)
+        if (u8(device(app, controller).buttonMask >> (8 * b.part)) & b.mask)
             put(app, set + b.slot, ofController(controller, b.code));
     }
     return true;
@@ -401,29 +401,29 @@ bool kindSet(App* app, CPU& cpu, reg32 mode, reg32 controller, const Kind& kind)
  * a player with none, both players' in mode 1 when the first has none (and
  * then no more).  Whether it stopped at the keyboard's in mode 1 (eax then as
  * the copy left it); nothing when the game stopped. */
-std::optional<bool> startingSets(App* app, CPU& cpu, reg32 mode)
+std::optional<bool> startingSets(App* app, ThreadState& ts, u32 mode)
 {
-    const GuestFrame frame(cpu, 0x18, 0);  // ebx, ecx, edx, esi, edi, ebp pushed
-    const reg32 players = mode == kSplitMode ? 2 : 1;
-    for (reg32 player = 0; player < players; ++player)
+    const GuestFrame frame(ts, 0x18, 0);  // ebx, ecx, edx, esi, edi, ebp pushed
+    const u32 players = mode == kSplitMode ? 2 : 1;
+    for (u32 player = 0; player < players; ++player)
     {
-        const GuestFrame slot(cpu, 0, 4);
+        const GuestFrame slot(ts, 0, 4);
         if (device(app, player).kind != 0)
         {
-            const std::optional<bool> known = knownSet(app, cpu, mode, player);
+            const std::optional<bool> known = knownSet(app, ts, mode, player);
             if (!known)
                 return std::nullopt;
             if (!*known)
             {
-                const reg32 kind = device(app, player).kind;
-                if (!kindSet(app, cpu, mode, player,
+                const u32 kind = device(app, player).kind;
+                if (!kindSet(app, ts, mode, player,
                              kind == kGamePad ? kGamePadKind : kind == kJoystick ? kJoystickKind : kOtherKind))
                     return std::nullopt;
             }
         }
         else
         {
-            if (!keyboardSets(app, cpu, mode, player == 0 ? 2 : 0))
+            if (!keyboardSets(app, ts, mode, player == 0 ? 2 : 0))
                 return std::nullopt;
             if (mode == kSplitMode)
                 return true;
@@ -439,21 +439,21 @@ namespace
 }  // namespace
 
 /* 0x4904d0: playersSets for mode eax. */
-x86::reg32 controlsFor(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 controlsFor(App* app, ThreadState& ts, nfs::Args& args)
 {
     (void)app;
     args.eax = playersSets(args.eax);
-    cpu.esp += 4;
+    ts.sp += 4;
     return args.eax;
 }
 
 /* 0x4904f0: startingSets for mode eax; eax the players' count, or as the
  * keyboard's copy left it. */
-x86::reg32 defaultControls(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 defaultControls(App* app, ThreadState& ts, nfs::Args& args)
 {
     const Kept kept{args.ebx, args.ecx, args.edx, args.esi, args.edi, args.ebp};
-    const reg32 mode = args.eax;
-    const std::optional<bool> atKeyboard = startingSets(app, cpu, mode);
+    const u32 mode = args.eax;
+    const std::optional<bool> atKeyboard = startingSets(app, ts, mode);
     if (!atKeyboard)
         return args.eax;
     if (!*atKeyboard)
@@ -464,58 +464,58 @@ x86::reg32 defaultControls(App* app, CPU& cpu, x86::Args& args)
     args.esi = kept.esi;
     args.edi = kept.edi;
     args.ebp = kept.ebp;
-    cpu.esp += 4;
+    ts.sp += 4;
     return args.eax;
 }
 
 /* 0x4905b0: makePlayers for mode eax, the set at edx, which ebx; eax, edx and
  * ebx as the copy leaves them. */
-x86::reg32 setControls(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 setControls(App* app, ThreadState& ts, nfs::Args& args)
 {
     const Kept kept{args.ebx, args.ecx, args.edx, args.esi, args.edi, args.ebp};
-    if (!makePlayers(app, cpu, args.eax, args.edx, args.ebx))
+    if (!makePlayers(app, ts, args.eax, args.edx, args.ebx))
         return args.eax;
     args.ecx = kept.ecx;
     args.ebp = kept.ebp;
-    cpu.esp += 4;
+    ts.sp += 4;
     return args.eax;
 }
 
 /* 0x490610: nameHas for controller eax and the text at edx, 1 or 0. */
-x86::reg32 controllerNamed(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 controllerNamed(App* app, ThreadState& ts, nfs::Args& args)
 {
     const Kept kept{args.ebx, args.ecx, args.edx, args.esi, args.edi, args.ebp};
-    const std::optional<bool> named = nameHas(app, cpu, args.eax, args.edx);
+    const std::optional<bool> named = nameHas(app, ts, args.eax, args.edx);
     if (!named)
         return args.eax;
     args.eax = *named ? 1 : 0;
     args.ecx = kept.ecx;
     args.ebp = kept.ebp;
-    cpu.esp += 4;
+    ts.sp += 4;
     return args.eax;
 }
 
 /* 0x490640: knownSet for mode eax and controller edx, 1 or 0. */
-x86::reg32 knownControllerControls(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 knownControllerControls(App* app, ThreadState& ts, nfs::Args& args)
 {
     const Kept kept{args.ebx, args.ecx, args.edx, args.esi, args.edi, args.ebp};
-    const std::optional<bool> known = knownSet(app, cpu, args.eax, args.edx);
+    const std::optional<bool> known = knownSet(app, ts, args.eax, args.edx);
     if (!known)
         return args.eax;
     args.eax = *known ? 1 : 0;
     args.ebx = kept.ebx;
     args.ecx = kept.ecx;
     args.ebp = kept.ebp;
-    cpu.esp += 4;
+    ts.sp += 4;
     return args.eax;
 }
 
 /* 0x4906b0: a "Microsoft SideWinder game pad"'s set: steering on its first
  * axis, its buttons. */
-x86::reg32 sideWinderGamePadControls(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 sideWinderGamePadControls(App* app, ThreadState& ts, nfs::Args& args)
 {
     const Kept kept{args.ebx, args.ecx, args.edx, args.esi, args.edi, args.ebp};
-    const std::optional<bool> named = namedSet(app, cpu, args.eax, args.edx, kSideWinderGamePad, kSideWinderGamePadName);
+    const std::optional<bool> named = namedSet(app, ts, args.eax, args.edx, kSideWinderGamePad, kSideWinderGamePadName);
     if (!named)
         return args.eax;
     args.eax = *named ? 1 : 0;
@@ -523,15 +523,15 @@ x86::reg32 sideWinderGamePadControls(App* app, CPU& cpu, x86::Args& args)
     args.ecx = kept.ecx;
     args.esi = kept.esi;
     args.ebp = kept.ebp;
-    cpu.esp += 4;
+    ts.sp += 4;
     return args.eax;
 }
 
 /* 0x490770: a "Gravis GrIP"'s. */
-x86::reg32 gravisGripControls(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 gravisGripControls(App* app, ThreadState& ts, nfs::Args& args)
 {
     const Kept kept{args.ebx, args.ecx, args.edx, args.esi, args.edi, args.ebp};
-    const std::optional<bool> named = namedSet(app, cpu, args.eax, args.edx, kGravisGrip, kGravisGripName);
+    const std::optional<bool> named = namedSet(app, ts, args.eax, args.edx, kGravisGrip, kGravisGripName);
     if (!named)
         return args.eax;
     args.eax = *named ? 1 : 0;
@@ -539,15 +539,15 @@ x86::reg32 gravisGripControls(App* app, CPU& cpu, x86::Args& args)
     args.ecx = kept.ecx;
     args.esi = kept.esi;
     args.ebp = kept.ebp;
-    cpu.esp += 4;
+    ts.sp += 4;
     return args.eax;
 }
 
 /* 0x490830: a "Logitech WingMan Force"'s. */
-x86::reg32 wingManForceControls(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 wingManForceControls(App* app, ThreadState& ts, nfs::Args& args)
 {
     const Kept kept{args.ebx, args.ecx, args.edx, args.esi, args.edi, args.ebp};
-    const std::optional<bool> named = namedSet(app, cpu, args.eax, args.edx, kWingManForce, kWingManForceName);
+    const std::optional<bool> named = namedSet(app, ts, args.eax, args.edx, kWingManForce, kWingManForceName);
     if (!named)
         return args.eax;
     args.eax = *named ? 1 : 0;
@@ -555,15 +555,15 @@ x86::reg32 wingManForceControls(App* app, CPU& cpu, x86::Args& args)
     args.ecx = kept.ecx;
     args.esi = kept.esi;
     args.ebp = kept.ebp;
-    cpu.esp += 4;
+    ts.sp += 4;
     return args.eax;
 }
 
 /* 0x4908f0: a "CH F-16 Combat Stick"'s. */
-x86::reg32 combatStickControls(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 combatStickControls(App* app, ThreadState& ts, nfs::Args& args)
 {
     const Kept kept{args.ebx, args.ecx, args.edx, args.esi, args.edi, args.ebp};
-    const std::optional<bool> named = namedSet(app, cpu, args.eax, args.edx, kCombatStick, kCombatStickName);
+    const std::optional<bool> named = namedSet(app, ts, args.eax, args.edx, kCombatStick, kCombatStickName);
     if (!named)
         return args.eax;
     args.eax = *named ? 1 : 0;
@@ -571,15 +571,15 @@ x86::reg32 combatStickControls(App* app, CPU& cpu, x86::Args& args)
     args.ecx = kept.ecx;
     args.esi = kept.esi;
     args.ebp = kept.ebp;
-    cpu.esp += 4;
+    ts.sp += 4;
     return args.eax;
 }
 
 /* 0x4909b0: a "Microsoft 3D SideWinder Pro"'s. */
-x86::reg32 sideWinderProControls(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 sideWinderProControls(App* app, ThreadState& ts, nfs::Args& args)
 {
     const Kept kept{args.ebx, args.ecx, args.edx, args.esi, args.edi, args.ebp};
-    const std::optional<bool> named = namedSet(app, cpu, args.eax, args.edx, kSideWinderPro, kSideWinderProName);
+    const std::optional<bool> named = namedSet(app, ts, args.eax, args.edx, kSideWinderPro, kSideWinderProName);
     if (!named)
         return args.eax;
     args.eax = *named ? 1 : 0;
@@ -587,15 +587,15 @@ x86::reg32 sideWinderProControls(App* app, CPU& cpu, x86::Args& args)
     args.ecx = kept.ecx;
     args.esi = kept.esi;
     args.ebp = kept.ebp;
-    cpu.esp += 4;
+    ts.sp += 4;
     return args.eax;
 }
 
 /* 0x490a70: a "Microsoft SideWinder Force Feedback Wheel"'s. */
-x86::reg32 sideWinderWheelControls(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 sideWinderWheelControls(App* app, ThreadState& ts, nfs::Args& args)
 {
     const Kept kept{args.ebx, args.ecx, args.edx, args.esi, args.edi, args.ebp};
-    const std::optional<bool> named = namedSet(app, cpu, args.eax, args.edx, kSideWinderWheel, kSideWinderWheelName);
+    const std::optional<bool> named = namedSet(app, ts, args.eax, args.edx, kSideWinderWheel, kSideWinderWheelName);
     if (!named)
         return args.eax;
     args.eax = *named ? 1 : 0;
@@ -603,15 +603,15 @@ x86::reg32 sideWinderWheelControls(App* app, CPU& cpu, x86::Args& args)
     args.ecx = kept.ecx;
     args.esi = kept.esi;
     args.ebp = kept.ebp;
-    cpu.esp += 4;
+    ts.sp += 4;
     return args.eax;
 }
 
 /* 0x490b30: steeringWheelSet for mode eax and controller edx, 1 or 0. */
-x86::reg32 steeringWheelControls(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 steeringWheelControls(App* app, ThreadState& ts, nfs::Args& args)
 {
     const Kept kept{args.ebx, args.ecx, args.edx, args.esi, args.edi, args.ebp};
-    const std::optional<bool> named = steeringWheelSet(app, cpu, args.eax, args.edx);
+    const std::optional<bool> named = steeringWheelSet(app, ts, args.eax, args.edx);
     if (!named)
         return args.eax;
     args.eax = *named ? 1 : 0;
@@ -620,98 +620,98 @@ x86::reg32 steeringWheelControls(App* app, CPU& cpu, x86::Args& args)
     args.esi = kept.esi;
     args.edi = kept.edi;
     args.ebp = kept.ebp;
-    cpu.esp += 4;
+    ts.sp += 4;
     return args.eax;
 }
 
 /* 0x490c40: keyboardSets for mode eax, which edx; eax and edx as the copy
  * leaves them. */
-x86::reg32 keyboardControls(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 keyboardControls(App* app, ThreadState& ts, nfs::Args& args)
 {
     const Kept kept{args.ebx, args.ecx, args.edx, args.esi, args.edi, args.ebp};
-    if (!keyboardSets(app, cpu, args.eax, args.edx))
+    if (!keyboardSets(app, ts, args.eax, args.edx))
         return args.eax;
     args.ebx = kept.ebx;
     args.ecx = kept.ecx;
     args.esi = kept.esi;
     args.edi = kept.edi;
     args.ebp = kept.ebp;
-    cpu.esp += 4;
+    ts.sp += 4;
     return args.eax;
 }
 
 /* 0x490cb0: a game pad's controls, controller edx's in mode eax. */
-x86::reg32 gamePadControls(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 gamePadControls(App* app, ThreadState& ts, nfs::Args& args)
 {
     const Kept kept{args.ebx, args.ecx, args.edx, args.esi, args.edi, args.ebp};
-    const reg32 controller = args.edx;
-    if (!kindSet(app, cpu, args.eax, controller, kGamePadKind))
+    const u32 controller = args.edx;
+    if (!kindSet(app, ts, args.eax, controller, kGamePadKind))
         return args.eax;
     const DeviceRecord& d = device(app, controller);
     if (d.axisMask != 0)
         args.edx = ofController(controller, kGamePadKind.pedalsOnAxes ? kSecondLow : kFirstHigh);
-    const reg8 held = reg8(d.buttonMask);
-    args.edx = kGamePadKind.pairInHigh ? (args.edx & 0xffff00ff) | reg32(held) << 8 : (args.edx & 0xffffff00) | held;
+    const u8 held = u8(d.buttonMask);
+    args.edx = kGamePadKind.pairInHigh ? (args.edx & 0xffff00ff) | u32(held) << 8 : (args.edx & 0xffffff00) | held;
     if ((held & kGamePadKind.pairFirst) && (held & kGamePadKind.pairSecond))
         args.edx = ofController(controller, kGamePadKind.pairCode);
     const Button& last = kGamePadKind.buttons[kGamePadKind.count - 1];
-    args.eax = reg8(d.buttonMask >> (8 * last.part)) & last.mask ? ofController(controller, last.code)
+    args.eax = u8(d.buttonMask >> (8 * last.part)) & last.mask ? ofController(controller, last.code)
                                                                 : (controller << 4) + controller;
     args.ebx = kept.ebx;
     args.ecx = kept.ecx;
     args.esi = kept.esi;
     args.ebp = kept.ebp;
-    cpu.esp += 4;
+    ts.sp += 4;
     return args.eax;
 }
 
 /* 0x490e30: a joystick's. */
-x86::reg32 joystickControls(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 joystickControls(App* app, ThreadState& ts, nfs::Args& args)
 {
     const Kept kept{args.ebx, args.ecx, args.edx, args.esi, args.edi, args.ebp};
-    const reg32 controller = args.edx;
-    if (!kindSet(app, cpu, args.eax, controller, kJoystickKind))
+    const u32 controller = args.edx;
+    if (!kindSet(app, ts, args.eax, controller, kJoystickKind))
         return args.eax;
     const DeviceRecord& d = device(app, controller);
     if (d.axisMask != 0)
         args.edx = ofController(controller, kJoystickKind.pedalsOnAxes ? kSecondLow : kFirstHigh);
-    const reg8 held = reg8(d.buttonMask);
-    args.edx = kJoystickKind.pairInHigh ? (args.edx & 0xffff00ff) | reg32(held) << 8 : (args.edx & 0xffffff00) | held;
+    const u8 held = u8(d.buttonMask);
+    args.edx = kJoystickKind.pairInHigh ? (args.edx & 0xffff00ff) | u32(held) << 8 : (args.edx & 0xffffff00) | held;
     if ((held & kJoystickKind.pairFirst) && (held & kJoystickKind.pairSecond))
         args.edx = ofController(controller, kJoystickKind.pairCode);
     const Button& last = kJoystickKind.buttons[kJoystickKind.count - 1];
-    args.eax = reg8(d.buttonMask >> (8 * last.part)) & last.mask ? ofController(controller, last.code)
+    args.eax = u8(d.buttonMask >> (8 * last.part)) & last.mask ? ofController(controller, last.code)
                                                                 : (controller << 4) + controller;
     args.ebx = kept.ebx;
     args.ecx = kept.ecx;
     args.esi = kept.esi;
     args.ebp = kept.ebp;
-    cpu.esp += 4;
+    ts.sp += 4;
     return args.eax;
 }
 
 /* 0x490fa0: any other controller's. */
-x86::reg32 otherControllerControls(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 otherControllerControls(App* app, ThreadState& ts, nfs::Args& args)
 {
     const Kept kept{args.ebx, args.ecx, args.edx, args.esi, args.edi, args.ebp};
-    const reg32 controller = args.edx;
-    if (!kindSet(app, cpu, args.eax, controller, kOtherKind))
+    const u32 controller = args.edx;
+    if (!kindSet(app, ts, args.eax, controller, kOtherKind))
         return args.eax;
     const DeviceRecord& d = device(app, controller);
     if (d.axisMask != 0)
         args.edx = ofController(controller, kOtherKind.pedalsOnAxes ? kSecondLow : kFirstHigh);
-    const reg8 held = reg8(d.buttonMask);
-    args.edx = kOtherKind.pairInHigh ? (args.edx & 0xffff00ff) | reg32(held) << 8 : (args.edx & 0xffffff00) | held;
+    const u8 held = u8(d.buttonMask);
+    args.edx = kOtherKind.pairInHigh ? (args.edx & 0xffff00ff) | u32(held) << 8 : (args.edx & 0xffffff00) | held;
     if ((held & kOtherKind.pairFirst) && (held & kOtherKind.pairSecond))
         args.edx = ofController(controller, kOtherKind.pairCode);
     const Button& last = kOtherKind.buttons[kOtherKind.count - 1];
-    args.eax = reg8(d.buttonMask >> (8 * last.part)) & last.mask ? ofController(controller, last.code)
+    args.eax = u8(d.buttonMask >> (8 * last.part)) & last.mask ? ofController(controller, last.code)
                                                                 : (controller << 4) + controller;
     args.ebx = kept.ebx;
     args.ecx = kept.ecx;
     args.esi = kept.esi;
     args.ebp = kept.ebp;
-    cpu.esp += 4;
+    ts.sp += 4;
     return args.eax;
 }
 

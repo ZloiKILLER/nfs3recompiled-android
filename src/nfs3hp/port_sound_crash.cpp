@@ -31,7 +31,7 @@ constexpr Var<int32_t> kCrashBank{0x571148};
 // What the knock calls: the play of a slot, its stop, an effect of a bank
 // (port_sound_effects.cpp), and the camera (a crash with no effect plays only in
 // the camera view that asks for it).
-constexpr reg32 kSlotPlay = 0x417080, kSlotStop = 0x416f60, kPlayEffect = 0x4182b0, kCameraMode = 0x423b00;
+constexpr u32 kSlotPlay = 0x417080, kSlotStop = 0x416f60, kPlayEffect = 0x4182b0, kCameraMode = 0x423b00;
 
 // The slot a crash plays in, and its echo's effect.
 constexpr int32_t kCrashSlot = 0x1f, kEchoEffect = 0x23;
@@ -184,19 +184,19 @@ namespace sources
 
 /* 0x416d90's: it calls the crash's effect and the scrape's, the play and stop
  * of the slots and an effect of a bank (port_sound_effects.cpp) as C++. */
-Result knockPlayed(App* app, CPU& cpu, reg32 esp, int32_t slot, reg32 kind, reg32 material, int32_t force,
-                   int32_t distance, reg32 pan)
+Result knockPlayed(App* app, ThreadState& ts, u32 esp, int32_t slot, u32 kind, u32 material, int32_t force,
+                   int32_t distance, u32 pan)
 {
-    const reg32 frame = esp - 3 * 4;  // esi, edi and ebp pushed
-    const reg32 at = frame - 8;       // and two locals: the code's esp from here on
+    const u32 frame = esp - 3 * 4;  // esi, edi and ebp pushed
+    const u32 at = frame - 8;       // and two locals: the code's esp from here on
     if (kEffectsOn(app) == 0)
         return distance;
     // How loud the distance leaves it: nothing from 0x15f9 on, twice as quick.
     const int32_t doubled = int32_t(uint32_t(distance) * 2);
     const int32_t loud = doubled < 0x15f9 ? quotient(imul(int32_t(0x15f9u - uint32_t(doubled)), 127), 0x15f9) : 0;
     const auto slotPlay = [&](int32_t s, int32_t effect, int32_t pitch, int32_t volume) {
-        cpu.esp = at;
-        return guest::direct<kSlotPlay, slotPlayed>(app, cpu, at - 8, s, effect, volume, pitch, pan);
+        ts.sp = at;
+        return guest::direct<kSlotPlay, slotPlayed>(app, ts, at - 8, s, effect, volume, pitch, pan);
     };
     if (slot < 0)
     {
@@ -205,17 +205,17 @@ Result knockPlayed(App* app, CPU& cpu, reg32 esp, int32_t slot, reg32 kind, reg3
         if (effect == 2)
         {
             // No effect of its own: a camera that asks for one plays effect 2.
-            cpu.esp = at;
-            const reg32 camera = guest::direct<kCameraMode, carstate::modeOfCamera>(app, cpu, 0u);
-            if (cpu.terminate)
+            ts.sp = at;
+            const u32 camera = guest::direct<kCameraMode, carstate::modeOfCamera>(app, ts, 0u);
+            if (ts.terminate)
                 return {};
             if (camera != 1)
                 return int32_t(camera);
         }
         if (effect == 0x63)
         {
-            cpu.esp = at;
-            return guest::direct<kPlayEffect, bankEffect>(app, cpu, at - 8, kCrashBank(app), 1, loud, pan,
+            ts.sp = at;
+            return guest::direct<kPlayEffect, bankEffect>(app, ts, at - 8, kCrashBank(app), 1, loud, pan,
                                                           uint8_t(0x40));
         }
         if (effect == kCrashSlot)
@@ -231,8 +231,8 @@ Result knockPlayed(App* app, CPU& cpu, reg32 esp, int32_t slot, reg32 kind, reg3
     }
     if (force <= 0)
     {
-        cpu.esp = at;
-        return guest::direct<kSlotStop, slotStopped>(app, cpu, at - 4, slot);
+        ts.sp = at;
+        return guest::direct<kSlotStop, slotStopped>(app, ts, at - 4, slot);
     }
     const int32_t scrape = scrapeEffectFor(kind, material);
     int32_t pitch = slotPitch(app, slot, scrape, force);
@@ -255,35 +255,35 @@ Result knockPlayed(App* app, CPU& cpu, reg32 esp, int32_t slot, reg32 kind, reg3
  * result in eax out. */
 
 /* 0x414940: slot eax's pitch for effect edx at force ebx. */
-x86::reg32 crashPitch(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 crashPitch(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.back(cpu, args, reg32(slotPitch(app, int32_t(e.eax), int32_t(e.edx), int32_t(e.ebx))));
+    const Entry e(ts, args);
+    return e.back(ts, args, u32(slotPitch(app, int32_t(e.eax), int32_t(e.edx), int32_t(e.ebx))));
 }
 
 /* 0x4149e0: the crash effect for a hit of kind edx on material ebx at force
  * eax (0..127): 2 for none. */
-x86::reg32 crashEffect(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 crashEffect(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.back(cpu, args, reg32(crashEffectFor(app, int32_t(e.eax), e.edx, e.ebx)));
+    const Entry e(ts, args);
+    return e.back(ts, args, u32(crashEffectFor(app, int32_t(e.eax), e.edx, e.ebx)));
 }
 
 /* 0x414d70: the scrape effect for a hit of kind edx on material ebx. */
-x86::reg32 scrapeEffect(App*, CPU& cpu, x86::Args& args)
+nfs::u32 scrapeEffect(App*, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.back(cpu, args, reg32(scrapeEffectFor(e.edx, e.ebx)));
+    const Entry e(ts, args);
+    return e.back(ts, args, u32(scrapeEffectFor(e.edx, e.ebx)));
 }
 
 /* 0x416d90 (stdcall 8): a car's knock in slot eax (below 0: a crash) of kind
  * edx on material ebx at force ecx, [esp+4] its distance, [esp+8] its pan.
  * With the effects off eax is the distance, as the code leaves it. */
-x86::reg32 carKnock(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 carKnock(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args,
-             sources::knockPlayed(app, cpu, e.esp, int32_t(e.eax), e.edx, e.ebx, int32_t(e.ecx),
+    const Entry e(ts, args);
+    return e.finish(ts, args,
+             sources::knockPlayed(app, ts, e.esp, int32_t(e.eax), e.edx, e.ebx, int32_t(e.ecx),
                                   int32_t(e.arg(app, 0)), e.arg(app, 1)),
              8);
     return args.eax;

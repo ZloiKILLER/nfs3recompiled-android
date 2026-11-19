@@ -14,13 +14,13 @@ namespace carstate
 {
 
 // The game's 0x4217e0: the track's node player's camera keeps to.
-x86::reg32 nodeOfCamera(win32::WinApplication* app, x86::reg32 player);
+nfs::u32 nodeOfCamera(nfs::App* app, nfs::u32 player);
 // The game's 0x4227e0: for a view of mode 0 its player's camera's zoom's bits, where that is not 0.
-std::optional<x86::reg32> ownZoom(win32::WinApplication* app, x86::reg32 view);
+std::optional<nfs::u32> ownZoom(nfs::App* app, nfs::u32 view);
 // ownZoom as the game's code hands it on: the zoom, or 1.0.
-inline float zoomOfView(win32::WinApplication* app, x86::reg32 view)
+inline float zoomOfView(nfs::App* app, nfs::u32 view)
 {
-    const std::optional<x86::reg32> own = ownZoom(app, view);
+    const std::optional<nfs::u32> own = ownZoom(app, view);
     if (!own)
         return 1.0f;
     float zoom;
@@ -28,55 +28,55 @@ inline float zoomOfView(win32::WinApplication* app, x86::reg32 view)
     return zoom;
 }
 // The game's 0x422aa0: whether player sees from inside its car.
-bool insideView(win32::WinApplication* app, x86::reg32 player);
+bool insideView(nfs::App* app, nfs::u32 player);
 // The game's 0x422ba0: the car player's camera rides with.
-x86::reg32 carOfCamera(win32::WinApplication* app, x86::reg32 player);
+nfs::u32 carOfCamera(nfs::App* app, nfs::u32 player);
 // The game's 0x422bd0: the car player's camera looks at.
-x86::reg32 targetOfCamera(win32::WinApplication* app, x86::reg32 player);
+nfs::u32 targetOfCamera(nfs::App* app, nfs::u32 player);
 // The game's 0x423b00: the mode of player's camera.
-x86::reg32 modeOfCamera(win32::WinApplication* app, x86::reg32 player);
+nfs::u32 modeOfCamera(nfs::App* app, nfs::u32 player);
 // The game's 0x423fb0: the float with the bits `value`, scaled where the record's +4 is set.
-float scaledWhereSet(win32::WinApplication* app, x86::reg32 record, x86::reg32 value);
+float scaledWhereSet(nfs::App* app, nfs::u32 record, nfs::u32 value);
 
 /* What a view's copy leaves: the camera its place came from and that camera's mode. */
 struct ViewCopy
 {
-    x86::reg32 camera;
-    x86::reg32 mode;
+    nfs::u32 camera;
+    nfs::u32 mode;
 };
 
 // The game's 0x421450: the view kept (0x552ec4) and set the way `how` says (0 by its camera, 2 as a screen's); eax.
-std::optional<x86::reg32> cameraViewChosen(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 view, x86::reg32 how);
+std::optional<nfs::u32> cameraViewChosen(nfs::App* app, nfs::ThreadState& ts, nfs::u32 view, nfs::u32 how);
 // The game's 0x421490: player's chase camera's node ahead, picked and kept; the node.
-x86::reg32 chaseNodePicked(win32::WinApplication* app, x86::reg32 player);
+nfs::u32 chaseNodePicked(nfs::App* app, nfs::u32 player);
 // The game's 0x4215c0: player's cameras put on car; eax as the code leaves it.
-std::optional<x86::reg32> camerasAttached(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 player, x86::reg32 car);
+std::optional<nfs::u32> camerasAttached(nfs::App* app, nfs::ThreadState& ts, nfs::u32 player, nfs::u32 car);
 // The game's 0x422290: the camera made to look at its target from the place; eax.
-std::optional<x86::reg32> cameraLookedAt(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 camera, x86::reg32 place);
+std::optional<nfs::u32> cameraLookedAt(nfs::App* app, nfs::ThreadState& ts, nfs::u32 camera, nfs::u32 place);
 // The game's 0x422610: player's camera switched to the mode, blending; eax.
-std::optional<x86::reg32> cameraSwitched(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 mode, x86::reg32 player);
+std::optional<nfs::u32> cameraSwitched(nfs::App* app, nfs::ThreadState& ts, nfs::u32 mode, nfs::u32 player);
 // The game's 0x4229c0: player's view copied to `to`; the camera its place came from and its mode.
-ViewCopy viewCopied(win32::WinApplication* app, x86::reg32 player, x86::reg32 to);
+ViewCopy viewCopied(nfs::App* app, nfs::u32 player, nfs::u32 to);
 // The game's 0x422cf0: the race's cameras set up; eax.
-std::optional<x86::reg32> camerasSetUp(win32::WinApplication* app, x86::CPU& cpu);
+std::optional<nfs::u32> camerasSetUp(nfs::App* app, nfs::ThreadState& ts);
 // The game's 0x4238b0: player's camera put to the mode; eax.
-std::optional<x86::reg32> cameraModePut(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 player, x86::reg32 mode);
+std::optional<nfs::u32> cameraModePut(nfs::App* app, nfs::ThreadState& ts, nfs::u32 player, nfs::u32 mode);
 // The game's 0x423960: player's overriding camera put to the mode (0 none); eax.
-std::optional<x86::reg32> overrideModePut(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 player, x86::reg32 mode);
+std::optional<nfs::u32> overrideModePut(nfs::App* app, nfs::ThreadState& ts, nfs::u32 player, nfs::u32 mode);
 // The game's 0x423a60: the cycle of camera modes built (it leaves eax 0).
-void cycleBuilt(win32::WinApplication* app);
+void cycleBuilt(nfs::App* app);
 // The game's 0x423ab0: whether the mode is in the cycle (eax 1 or 0).
-bool modeInTheCycle(win32::WinApplication* app, x86::reg32 mode);
+bool modeInTheCycle(nfs::App* app, nfs::u32 mode);
 // The game's 0x423ae0: the mode kept as the player's last if it is in the cycle; whether it is (eax 1 or 0).
-bool modeRemembered(win32::WinApplication* app, x86::reg32 player, x86::reg32 mode);
+bool modeRemembered(nfs::App* app, nfs::u32 player, nfs::u32 mode);
 // The game's 0x423b80: player's camera brought back to what the player chose; eax.
-std::optional<x86::reg32> cameraSettled(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 player);
+std::optional<nfs::u32> cameraSettled(nfs::App* app, nfs::ThreadState& ts, nfs::u32 player);
 // The game's 0x423d90: the spot nearest player's car, or -1.
-std::optional<x86::reg32> spotNearestTo(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 player);
+std::optional<nfs::u32> spotNearestTo(nfs::App* app, nfs::ThreadState& ts, nfs::u32 player);
 // The game's 0x423fe0: whether the road's flags are not a single run of bits (eax 1 or 0).
-bool roadBitsGone(x86::reg32 flags);
+bool roadBitsGone(nfs::u32 flags);
 // The game's 0x424030: the vector damped by the weight through the car's slip; eax as the code leaves it.
-x86::reg32 vectorDamped(win32::WinApplication* app, x86::reg32 car, x86::reg32 weight, x86::reg32 vector);
+nfs::u32 vectorDamped(nfs::App* app, nfs::u32 car, nfs::u32 weight, nfs::u32 vector);
 
 }  // namespace carstate
 

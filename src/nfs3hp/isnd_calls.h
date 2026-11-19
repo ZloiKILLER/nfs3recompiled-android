@@ -14,7 +14,7 @@
  * game's functions setfunctions handed it (isnd.h, kFunction*) -- as C++
  * calls of the port's own functions: plan step 4's, for iSND.
  *
- *     guest::sound<isnd::kDirectVol, &port::eacsnd::volume>(app, cpu, buffer, volume)
+ *     guest::sound<isnd::kDirectVol, &port::eacsnd::volume>(app, ts, buffer, volume)
  *
  * The words are what the caller pushes, in its order.  In the game, when the
  * pointer leads to the port's export -- the thunk registered under its name
@@ -34,36 +34,36 @@ namespace nfs3hp
 
 /* eacsnd's exports as the game calls them (native_sound.cpp,
  * port_snd_isnd.cpp). */
-x86::reg32 iSNDdirectcaps(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 iSNDdirectstart(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 iSNDdirectstop(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 iSNDdirectrecordstart(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 iSNDdirectrecordpacket(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 iSNDdirectrecordstop(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 iSNDdirectserve(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 iSNDdirectcreate3dbuf(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 iSNDdirectremovebuf(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 iSNDdirectplay3d(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 iSNDdirectpos3d(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 iSNDdirectvol(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 iSNDdirectrate(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 iSNDdirectstopbuf(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+nfs::u32 iSNDdirectcaps(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 iSNDdirectstart(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 iSNDdirectstop(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 iSNDdirectrecordstart(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 iSNDdirectrecordpacket(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 iSNDdirectrecordstop(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 iSNDdirectserve(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 iSNDdirectcreate3dbuf(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 iSNDdirectremovebuf(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 iSNDdirectplay3d(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 iSNDdirectpos3d(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 iSNDdirectvol(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 iSNDdirectrate(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 iSNDdirectstopbuf(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
 
 /* The four of the game's functions eacsnd calls (native_game.cpp): the
  * natives where the game's code was, and each as C++ -- its words as its
  * parameters, what it leaves in eax, nullopt when the game stopped in it;
  * the registers left as the native leaves them. */
-x86::reg32 AcquireSoundDataLambda(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 StopSoundBufferLambda(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 AcquireSoundBufferPositionLambda(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 TickSoundLambda(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+nfs::u32 AcquireSoundDataLambda(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 StopSoundBufferLambda(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 AcquireSoundBufferPositionLambda(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 TickSoundLambda(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
 
-std::optional<x86::reg32> acquireSoundDataOf(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 buffer,
-                                             x86::reg32 frames);
-std::optional<x86::reg32> stopSoundBufferOf(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 buffer);
-std::optional<x86::reg32> acquireSoundBufferPositionOf(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 first,
-                                                       x86::reg32 second, x86::reg32 position);
-std::optional<x86::reg32> tickSoundOf(win32::WinApplication* app, x86::CPU& cpu);
+std::optional<nfs::u32> acquireSoundDataOf(nfs::App* app, nfs::ThreadState& ts, nfs::u32 buffer,
+                                             nfs::u32 frames);
+std::optional<nfs::u32> stopSoundBufferOf(nfs::App* app, nfs::ThreadState& ts, nfs::u32 buffer);
+std::optional<nfs::u32> acquireSoundBufferPositionOf(nfs::App* app, nfs::ThreadState& ts, nfs::u32 first,
+                                                       nfs::u32 second, nfs::u32 position);
+std::optional<nfs::u32> tickSoundOf(nfs::App* app, nfs::ThreadState& ts);
 
 namespace port
 {
@@ -71,7 +71,7 @@ namespace port
 /* The library's 100 Hz tick (port_snd_voices.cpp, port_snd.h), the game's
  * 0x500c80, and its thunk: what TickSoundLambda's pointer holds unless the
  * game set another. */
-x86::reg32 soundTick(App* app, CPU& cpu, x86::Args& args);
+nfs::u32 soundTick(App* app, ThreadState& ts, nfs::Args& args);
 
 /* eacsnd's 14 exports the game keeps pointers to, as C++
  * (native_sound.cpp: caps, start, stop, serve; port_snd_isnd.cpp: the rest):
@@ -82,31 +82,31 @@ x86::reg32 soundTick(App* app, CPU& cpu, x86::Args& args);
  * Those that call the game's functions give nullopt when the game stopped in
  * one.  pos3d, play3d and stopbuf are eacsnd's code to the register
  * (port_snd_isnd.cpp): theirs put the words below esp, where a caller pushes
- * them, run on the stack from there and read the caller's registers from cpu
+ * them, run on the stack from there and read the caller's registers from ts
  * (esi and the four eacsnd keeps), leaving them as eacsnd's code does.  A
  * way the port has not -- eacsnd with DirectSound -- asserts and gives -1, as
  * the exports do. */
 namespace eacsnd
 {
 
-reg32 caps(App* app, CPU& cpu, reg32 window);
-reg32 start(App* app, CPU& cpu, reg32 caps, reg32 window);
-reg32 stop(App* app, CPU& cpu);
+u32 caps(App* app, ThreadState& ts, u32 window);
+u32 start(App* app, ThreadState& ts, u32 caps, u32 window);
+u32 stop(App* app, ThreadState& ts);
 /* Recording: none to start, nothing to hand over or stop. */
-reg32 recordStart(App* app, CPU& cpu, reg32, reg32, reg32, reg32);
-reg32 recordPacket(App* app, CPU& cpu, reg32);
-reg32 recordStop(App* app, CPU& cpu);
-std::optional<reg32> serve(App* app, CPU& cpu);
-reg32 create3d(App* app, CPU& cpu, reg32 channels, reg32 format, reg32 rate, reg32 length, reg32 loopStart,
-               reg32 loopEnd, reg32 data);
-reg32 remove3d(App* app, CPU& cpu, reg32 slot);
+u32 recordStart(App* app, ThreadState& ts, u32, u32, u32, u32);
+u32 recordPacket(App* app, ThreadState& ts, u32);
+u32 recordStop(App* app, ThreadState& ts);
+std::optional<u32> serve(App* app, ThreadState& ts);
+u32 create3d(App* app, ThreadState& ts, u32 channels, u32 format, u32 rate, u32 length, u32 loopStart,
+               u32 loopEnd, u32 data);
+u32 remove3d(App* app, ThreadState& ts, u32 slot);
 /* `esi` the caller's: the record eacsnd's way out of a failure clears. */
-std::optional<reg32> play3d(App* app, CPU& cpu, reg32 esi, reg32 slot, reg32 buffer, reg32 looping, reg32 rate,
-                            reg32 volume, reg32 positionA, reg32 positionB);
-std::optional<reg32> position(App* app, CPU& cpu, reg32 buffer, reg32 positionA, reg32 positionB);
-reg32 volume(App* app, CPU& cpu, reg32 buffer, reg32 volume);
-reg32 rate(App* app, CPU& cpu, reg32 buffer, reg32 rate);
-std::optional<reg32> stopBuffer(App* app, CPU& cpu, reg32 buffer);
+std::optional<u32> play3d(App* app, ThreadState& ts, u32 esi, u32 slot, u32 buffer, u32 looping, u32 rate,
+                            u32 volume, u32 positionA, u32 positionB);
+std::optional<u32> position(App* app, ThreadState& ts, u32 buffer, u32 positionA, u32 positionB);
+u32 volume(App* app, ThreadState& ts, u32 buffer, u32 volume);
+u32 rate(App* app, ThreadState& ts, u32 buffer, u32 rate);
+std::optional<u32> stopBuffer(App* app, ThreadState& ts, u32 buffer);
 
 }  // namespace eacsnd
 }  // namespace port
@@ -117,7 +117,7 @@ namespace guest
 
 /* Each pointer's callee: its typed function, its words and, in the game, its
  * thunk. */
-template <x86::reg32 Slot>
+template <nfs::u32 Slot>
 struct SoundCallee;
 
 #ifdef NFS3HP_SOUND_THROUGH_SLOTS
@@ -135,7 +135,7 @@ struct SoundCallee;
     {                                                                    \
         static constexpr auto function = &typed;                         \
         static constexpr std::size_t count = words;                      \
-        static constexpr win32::ThunkPtr registered = &nfs3hp::thunk;           \
+        static constexpr nfs::ThunkPtr registered = &nfs3hp::thunk;           \
     }
 #endif
 
@@ -164,10 +164,10 @@ NFS3HP_SOUND_CALLEE(kFunctionTick, tickSoundOf, TickSoundLambda, 0);
 /* The typed function's result (its eax), unless the game stopped: esp back
  * where the caller had it. */
 template <typename R>
-inline std::optional<x86::reg32> soundResult(x86::CPU& cpu, x86::reg32 esp, const R& result)
+inline std::optional<nfs::u32> soundResult(nfs::ThreadState& ts, nfs::u32 esp, const R& result)
 {
-    x86::reg32 eax;
-    if constexpr (std::is_same_v<R, std::optional<x86::reg32>>)
+    nfs::u32 eax;
+    if constexpr (std::is_same_v<R, std::optional<nfs::u32>>)
     {
         if (!result)
             return std::nullopt;
@@ -177,16 +177,16 @@ inline std::optional<x86::reg32> soundResult(x86::CPU& cpu, x86::reg32 esp, cons
     {
         eax = result;
     }
-    if (cpu.terminate)
+    if (ts.terminate)
         return std::nullopt;
-    cpu.esp = esp;
+    ts.sp = esp;
     return eax;
 }
 
-/* The callee at Slot with `words`, from esp as cpu has it: its typed function
+/* The callee at Slot with `words`, from esp as ts has it: its typed function
  * or through the pointer (above). */
-template <x86::reg32 Slot, auto Fn, typename... W>
-inline std::optional<x86::reg32> sound(win32::WinApplication* app, x86::CPU& cpu, W... words)
+template <nfs::u32 Slot, auto Fn, typename... W>
+inline std::optional<nfs::u32> sound(nfs::App* app, nfs::ThreadState& ts, W... words)
 {
     static_assert(Fn == SoundCallee<Slot>::function, "the callee the pointer is to");
     static_assert(sizeof...(W) == SoundCallee<Slot>::count, "every word the callee takes");
@@ -195,73 +195,73 @@ inline std::optional<x86::reg32> sound(win32::WinApplication* app, x86::CPU& cpu
 #ifndef NFS3HP_SOUND_THROUGH_SLOTS
     if (app->thunkAt(at(app, Slot)) == SoundCallee<Slot>::registered)
     {
-        const x86::reg32 esp = cpu.esp;
-        return soundResult(cpu, esp, Fn(app, cpu, x86::reg32(words)...));
+        const nfs::u32 esp = ts.sp;
+        return soundResult(ts, esp, Fn(app, ts, nfs::u32(words)...));
     }
 #endif
-    x86::Args a;
-    return pointerCall(app, cpu, at(app, Slot), a, {x86::reg32(words)...});
+    nfs::Args a;
+    return pointerCall(app, ts, at(app, Slot), a, {nfs::u32(words)...});
 }
 
 /* The same from a rewrite's frame: esp first set to `esp`, where the game's
  * code has it at the call, and left so.  `eax` is what the game's code has in
  * eax there: the callee's typed function takes only its words, but through
  * the pointer (port.h's callGame) eax goes along. */
-template <x86::reg32 Slot, auto Fn, typename... W>
-inline std::optional<x86::reg32> soundFrom(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 esp, x86::reg32 eax,
+template <nfs::u32 Slot, auto Fn, typename... W>
+inline std::optional<nfs::u32> soundFrom(nfs::App* app, nfs::ThreadState& ts, nfs::u32 esp, nfs::u32 eax,
                                            W... words)
 {
     static_assert(Fn == SoundCallee<Slot>::function, "the callee the pointer is to");
     static_assert(sizeof...(W) == SoundCallee<Slot>::count, "every word the callee takes");
-    cpu.esp = esp;
+    ts.sp = esp;
 #ifndef NFS3HP_SOUND_THROUGH_SLOTS
     if (app->thunkAt(at(app, Slot)) == SoundCallee<Slot>::registered)
-        return soundResult(cpu, esp, Fn(app, cpu, x86::reg32(words)...));
+        return soundResult(ts, esp, Fn(app, ts, nfs::u32(words)...));
 #endif
-    x86::Args a;
+    nfs::Args a;
     a.eax = eax;
-    return pointerCall(app, cpu, at(app, Slot), a, {x86::reg32(words)...});
+    return pointerCall(app, ts, at(app, Slot), a, {nfs::u32(words)...});
 }
 
 /* soundFrom for eacsnd's play3d, whose way out of a failure clears the record
  * at the caller's esi: `esi` what the game's code has in esi at the call, for
  * the typed function (through the pointer its seven words go). */
-inline std::optional<x86::reg32> soundPlay3d(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 esp, x86::reg32 eax,
-                                             x86::reg32 esi, x86::reg32 slot, x86::reg32 buffer, x86::reg32 looping,
-                                             x86::reg32 rate, x86::reg32 volume, x86::reg32 positionA,
-                                             x86::reg32 positionB)
+inline std::optional<nfs::u32> soundPlay3d(nfs::App* app, nfs::ThreadState& ts, nfs::u32 esp, nfs::u32 eax,
+                                             nfs::u32 esi, nfs::u32 slot, nfs::u32 buffer, nfs::u32 looping,
+                                             nfs::u32 rate, nfs::u32 volume, nfs::u32 positionA,
+                                             nfs::u32 positionB)
 {
-    cpu.esp = esp;
+    ts.sp = esp;
 #ifndef NFS3HP_SOUND_THROUGH_SLOTS
     if (app->thunkAt(at(app, isnd::kDirectPlay3d)) == SoundCallee<isnd::kDirectPlay3d>::registered)
-        return soundResult(cpu, esp,
-                           port::eacsnd::play3d(app, cpu, esi, slot, buffer, looping, rate, volume, positionA, positionB));
+        return soundResult(ts, esp,
+                           port::eacsnd::play3d(app, ts, esi, slot, buffer, looping, rate, volume, positionA, positionB));
 #else
     NFS2_USE(esi);
 #endif
-    x86::Args a;
+    nfs::Args a;
     a.eax = eax;
-    return pointerCall(app, cpu, at(app, isnd::kDirectPlay3d), a,
+    return pointerCall(app, ts, at(app, isnd::kDirectPlay3d), a,
                        {slot, buffer, looping, rate, volume, positionA, positionB});
 }
 
 template <std::size_t... I>
-inline std::optional<x86::reg32> soundPushedThrough(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 target,
+inline std::optional<nfs::u32> soundPushedThrough(nfs::App* app, nfs::ThreadState& ts, nfs::u32 target,
                                                     std::index_sequence<I...>)
 {
-    x86::Args a;
-    const x86::reg32 esp = cpu.esp;
-    const auto result = pointerCall(app, cpu, target, a, {at(app, esp + 4 * x86::reg32(I))...});
+    nfs::Args a;
+    const nfs::u32 esp = ts.sp;
+    const auto result = pointerCall(app, ts, target, a, {at(app, esp + 4 * nfs::u32(I))...});
     if (result)
-        cpu.esp = esp + 4 * x86::reg32(sizeof...(I));
+        ts.sp = esp + 4 * nfs::u32(sizeof...(I));
     return result;
 }
 
 #ifndef NFS3HP_SOUND_THROUGH_SLOTS
 template <auto Fn, std::size_t... I>
-inline auto soundPushedTyped(win32::WinApplication* app, x86::CPU& cpu, std::index_sequence<I...>)
+inline auto soundPushedTyped(nfs::App* app, nfs::ThreadState& ts, std::index_sequence<I...>)
 {
-    return Fn(app, cpu, at(app, cpu.esp + 4 * x86::reg32(I))...);
+    return Fn(app, ts, at(app, ts.sp + 4 * nfs::u32(I))...);
 }
 #endif
 
@@ -271,19 +271,19 @@ inline auto soundPushedTyped(win32::WinApplication* app, x86::CPU& cpu, std::ind
  * it either), and the callee at Slot called -- its typed function with the
  * words where they lie, or through the pointer.  esp as the stdcall's ret
  * leaves it, past the words, unless the game stopped (false). */
-template <x86::reg32 Slot, auto Fn>
-inline bool soundPushed(win32::WinApplication* app, x86::CPU& cpu)
+template <nfs::u32 Slot, auto Fn>
+inline bool soundPushed(nfs::App* app, nfs::ThreadState& ts)
 {
     static_assert(Fn == SoundCallee<Slot>::function, "the callee the pointer is to");
 #ifndef NFS3HP_SOUND_THROUGH_SLOTS
     if (app->thunkAt(at(app, Slot)) == SoundCallee<Slot>::registered)
     {
         constexpr std::size_t kCount = SoundCallee<Slot>::count;
-        const x86::reg32 esp = cpu.esp + 4 * x86::reg32(kCount);
-        return bool(soundResult(cpu, esp, soundPushedTyped<Fn>(app, cpu, std::make_index_sequence<kCount>())));
+        const nfs::u32 esp = ts.sp + 4 * nfs::u32(kCount);
+        return bool(soundResult(ts, esp, soundPushedTyped<Fn>(app, ts, std::make_index_sequence<kCount>())));
     }
 #endif
-    return bool(soundPushedThrough(app, cpu, at(app, Slot), std::make_index_sequence<SoundCallee<Slot>::count>()));
+    return bool(soundPushedThrough(app, ts, at(app, Slot), std::make_index_sequence<SoundCallee<Slot>::count>()));
 }
 
 }  // namespace guest

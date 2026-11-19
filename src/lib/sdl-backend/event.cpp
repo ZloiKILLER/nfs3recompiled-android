@@ -3,13 +3,13 @@
 #include <SDL3/SDL.h>
 #include <algorithm>
 
-namespace win32
+namespace nfs
 {
 
 static SDL_Mutex* s_mutex = nullptr;
 static SDL_Condition* s_condition = nullptr;
 
-static const x86::sreg32 WAIT_TIMEOUT = 0x102;
+static const nfs::s32 WAIT_TIMEOUT = 0x102;
 
 static unsigned s_eventIndex = 0;
 
@@ -67,7 +67,7 @@ void Event::set()
     SDL_UnlockMutex(s_mutex);
 }
 
-x86::reg32 Event::pulse()
+nfs::u32 Event::pulse()
 {
     SDL_LockMutex(s_mutex);
     //SDL_Log("Event pulse: %s<%u>", m_name.c_str(), m_id);
@@ -81,11 +81,11 @@ x86::reg32 Event::pulse()
     return 1;
 }
 
-x86::reg32 Event::wait(x86::CPU& cpu, Event** begin, Event** end, bool waitAll, x86::sreg32 timeout)
+nfs::u32 Event::wait(nfs::ThreadState& ts, Event** begin, Event** end, bool waitAll, nfs::s32 timeout)
 {
     NFS2_ASSERT(!waitAll);
     SDL_LockMutex(s_mutex);
-    x86::reg32 result = WAIT_TIMEOUT;
+    nfs::u32 result = WAIT_TIMEOUT;
     for (Event** e = begin; e < end; ++e)
     {
         //SDL_Log("Event wait[%u]: %s<%u>", static_cast<unsigned>(e - begin), (*e)->m_name.c_str(), (*e)->m_id);
@@ -99,7 +99,7 @@ x86::reg32 Event::wait(x86::CPU& cpu, Event** begin, Event** end, bool waitAll, 
             {
                 //SDL_Log("Event wait finished[%u]: %s<%u>", static_cast<unsigned>(e - begin), (*e)->m_name.c_str(), (*e)->m_id);
                 if (result == WAIT_TIMEOUT)
-                    result = static_cast<x86::reg32>(e - begin);
+                    result = static_cast<nfs::u32>(e - begin);
                 if (!(*e)->m_manualReset)
                     (*e)->m_isSet = false;
             }
@@ -109,9 +109,9 @@ x86::reg32 Event::wait(x86::CPU& cpu, Event** begin, Event** end, bool waitAll, 
         {
             break;
         }
-        if (cpu.terminate)
+        if (ts.terminate)
         {
-            result = x86::reg32(-1);
+            result = nfs::u32(-1);
             break;
         }
         bool event = SDL_WaitConditionTimeout(s_condition, s_mutex, timeout);

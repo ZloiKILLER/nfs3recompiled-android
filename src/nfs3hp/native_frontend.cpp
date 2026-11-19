@@ -17,19 +17,19 @@ namespace
 {
 
 // The menu engine's functions, by address.
-constexpr x86::reg32 kFindItem = 0x442a40;
-constexpr x86::reg32 kText = 0x4d1850;
-constexpr x86::reg32 kTextWidth = 0x452020;
-constexpr x86::reg32 kMessageBox = 0x444be0;
-constexpr x86::reg32 kOpenDialog = 0x444c20;
-constexpr x86::reg32 kOpenQuestion = 0x4446d0;
-constexpr x86::reg32 kDialogEditText = 0x444c10;
-constexpr x86::reg32 kDialogFocus = 0x4446c0;
-constexpr x86::reg32 kTruncate = 0x4dfd56;     // frndint towards zero
+constexpr nfs::u32 kFindItem = 0x442a40;
+constexpr nfs::u32 kText = 0x4d1850;
+constexpr nfs::u32 kTextWidth = 0x452020;
+constexpr nfs::u32 kMessageBox = 0x444be0;
+constexpr nfs::u32 kOpenDialog = 0x444c20;
+constexpr nfs::u32 kOpenQuestion = 0x4446d0;
+constexpr nfs::u32 kDialogEditText = 0x444c10;
+constexpr nfs::u32 kDialogFocus = 0x4446c0;
+constexpr nfs::u32 kTruncate = 0x4dfd56;     // frndint towards zero
 
 }
 
-void Guest::copyString(x86::reg32 to, x86::reg32 from)
+void Guest::copyString(nfs::u32 to, nfs::u32 from)
 {
     for (;;)
     {
@@ -40,7 +40,7 @@ void Guest::copyString(x86::reg32 to, x86::reg32 from)
     }
 }
 
-std::uint32_t Guest::length(x86::reg32 string) const
+std::uint32_t Guest::length(nfs::u32 string) const
 {
     std::uint32_t n = 0;
     while (byte(string + n) != 0)
@@ -48,7 +48,7 @@ std::uint32_t Guest::length(x86::reg32 string) const
     return n;
 }
 
-bool Guest::holds(x86::reg32 address, const char* text) const
+bool Guest::holds(nfs::u32 address, const char* text) const
 {
     for (;; ++address, ++text)
     {
@@ -59,25 +59,25 @@ bool Guest::holds(x86::reg32 address, const char* text) const
     }
 }
 
-x86::reg32 Guest::call(x86::reg32 function, const Arguments& arguments)
+nfs::u32 Guest::call(nfs::u32 function, const Arguments& arguments)
 {
-    x86::Args args;
+    nfs::Args args;
     args.ebp = guest::heldEbp();
-    x86::reg32* const registers[4] = { &args.eax, &args.edx, &args.ebx, &args.ecx };
+    nfs::u32* const registers[4] = { &args.eax, &args.edx, &args.ebx, &args.ecx };
     for (std::size_t i = 0; i < arguments.registerCount; ++i)
         *registers[i] = arguments.registers[i];
-    const x86::reg32 esp = m_cpu.esp;
+    const nfs::u32 esp = m_ts.sp;
     for (std::size_t i = arguments.stackCount; i-- > 0;)
     {
-        m_cpu.esp -= 4;
-        setDword(m_cpu.esp, arguments.stack[i]);
+        m_ts.sp -= 4;
+        setDword(m_ts.sp, arguments.stack[i]);
     }
     // The return address's slot, left unwritten as the game's code leaves it.
-    m_cpu.esp -= 4;
-    const x86::reg32 eax = m_app->callAddress(function, m_cpu, args);
-    if (m_cpu.terminate)
+    m_ts.sp -= 4;
+    const nfs::u32 eax = m_app->callAddress(function, m_ts, args);
+    if (m_ts.terminate)
         throw Terminated();
-    m_cpu.esp = esp;
+    m_ts.sp = esp;
     return eax;
 }
 
@@ -94,70 +94,70 @@ void Item::setHidden(bool hidden)
     m_guest->setByte(m_address + item::kFlags, std::uint8_t(hidden ? flags | item::kHidden : flags & ~item::kHidden));
 }
 
-Item findItem(Guest& guest, x86::reg32 menu, const GuestString& codelink)
+Item findItem(Guest& guest, nfs::u32 menu, const GuestString& codelink)
 {
     return Item(guest, guest.call(kFindItem, args({ menu, codelink.address })));
 }
 
 /* The helpers below call their typed cores as C++ (fe::direct). */
-x86::reg32 text(Guest& guest, std::uint32_t id)
+nfs::u32 text(Guest& guest, std::uint32_t id)
 {
-    x86::CPU& cpu = guest.cpu();
+    nfs::ThreadState& ts = guest.ts();
     // edx only reaches a name past the language's lines, which the menus never ask for.
-    return x86::reg32(*direct<kText, port::text::lineText>(guest.app(), cpu, cpu.esp - 4, std::int32_t(id), 0u));
+    return nfs::u32(*direct<kText, port::text::lineText>(guest.app(), ts, ts.sp - 4, std::int32_t(id), 0u));
 }
 
-std::int32_t textWidth(Guest& guest, x86::reg32 text, std::uint32_t font)
+std::int32_t textWidth(Guest& guest, nfs::u32 text, std::uint32_t font)
 {
-    x86::CPU& cpu = guest.cpu();
-    return std::int32_t(*direct<kTextWidth, port::text::menuTextWidth>(guest.app(), cpu, cpu.esp - 4, text, font));
+    nfs::ThreadState& ts = guest.ts();
+    return std::int32_t(*direct<kTextWidth, port::text::menuTextWidth>(guest.app(), ts, ts.sp - 4, text, font));
 }
 
 void messageBox(Guest& guest, std::uint32_t textId)
 {
-    direct<kMessageBox, frontend::dialogs::messageById>(guest.app(), guest.cpu(), textId);
+    direct<kMessageBox, frontend::dialogs::messageById>(guest.app(), guest.ts(), textId);
 }
 
 void openDialog(Guest& guest, const Dialog& dialog)
 {
     direct<kOpenDialog, frontend::dialogs::openEdit>(
-        guest.app(), guest.cpu(), dialog.lineCount, dialog.lines, dialog.buttonCount, dialog.buttons, dialog.focus,
+        guest.app(), guest.ts(), dialog.lineCount, dialog.lines, dialog.buttonCount, dialog.buttons, dialog.focus,
         dialog.edit, dialog.editLength, dialog.editMode, dialog.callback);
 }
 
 void openQuestion(Guest& guest, const Question& question)
 {
     direct<kOpenQuestion, frontend::dialogs::openQuestion>(
-        guest.app(), guest.cpu(), question.lineCount, question.lines, question.buttonCount, question.buttons,
+        guest.app(), guest.ts(), question.lineCount, question.lines, question.buttonCount, question.buttons,
         question.buttonHelp, question.focus, question.column, question.callback);
 }
 
-x86::reg32 dialogEditText(Guest& guest)
+nfs::u32 dialogEditText(Guest& guest)
 {
-    const x86::reg32 typed = direct<kDialogEditText, frontend::dialogs::editText>(guest.app(), guest.cpu());
+    const nfs::u32 typed = direct<kDialogEditText, frontend::dialogs::editText>(guest.app(), guest.ts());
     return typed;
 }
 
 std::uint32_t dialogFocus(Guest& guest)
 {
-    const x86::reg32 focus = direct<kDialogFocus, frontend::dialogs::focusedButton>(guest.app(), guest.cpu());
+    const nfs::u32 focus = direct<kDialogFocus, frontend::dialogs::focusedButton>(guest.app(), guest.ts());
     return focus;
 }
 
-bool FloatMath::above(const x86::Float& a, const x86::Float& b)
+bool FloatMath::above(const nfs::Float& a, const nfs::Float& b)
 {
     return a > b;  // c0 and c3 clear: neither below, equal nor unordered
 }
 
-bool FloatMath::below(const x86::Float& a, const x86::Float& b)
+bool FloatMath::below(const nfs::Float& a, const nfs::Float& b)
 {
     return fp::compare(a, b) & 0x100;  // c0: below, or unordered
 }
 
-std::int32_t FloatMath::truncated(const x86::Float& value)
+std::int32_t FloatMath::truncated(const nfs::Float& value)
 {
-    const double chopped = direct<kTruncate, watcom::clib::chop>(m_guest.app(), m_guest.cpu(), double(value));
-    return fp::toInteger<x86::sreg32>(chopped);  // fistp
+    const double chopped = direct<kTruncate, watcom::clib::chop>(m_guest.app(), m_guest.ts(), double(value));
+    return fp::toInteger<nfs::s32>(chopped);  // fistp
 }
 
 void checkStrings(Guest& guest, Site& site)

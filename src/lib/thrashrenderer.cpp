@@ -13,7 +13,7 @@
 #include <mutex>
 #include <string>
 
-namespace win32
+namespace nfs
 {
 
 static const char g_preamble[] = NFS_GLSL_PREAMBLE;
@@ -141,7 +141,7 @@ static const char g_fragmentShader[] =
 "\n#endif\n"
 "}";
 
-static const x86::reg32 s_maxVertices = ThrashRenderer::s_maxVertices;
+static const nfs::u32 s_maxVertices = ThrashRenderer::s_maxVertices;
 
 DrawCounters ThrashRenderer::s_counters;
 ThrashRenderer::Watcher* ThrashRenderer::s_watcher = nullptr;
@@ -378,9 +378,9 @@ void ThrashRenderer::compileShaders(int depthBits, const char* renderer)
     glUseProgram(0);
 }
 
-void ThrashRenderer::clear(x86::reg32 color)
+void ThrashRenderer::clear(nfs::u32 color)
 {
-    const x86::reg32 clipMinX = m_clipMinX, clipMinY = m_clipMinY, clipMaxX = m_clipMaxX, clipMaxY = m_clipMaxY;
+    const nfs::u32 clipMinX = m_clipMinX, clipMinY = m_clipMinY, clipMaxX = m_clipMaxX, clipMaxY = m_clipMaxY;
     if (s_watcher)
         s_watcher->cleared(color, clipMinX, clipMinY, clipMaxX, clipMaxY);
     glthread::post(m_renderer, [this, color, clipMinX, clipMinY, clipMaxX, clipMaxY]() {
@@ -390,8 +390,8 @@ void ThrashRenderer::clear(x86::reg32 color)
 
 /* Only the clip window is cleared, as on the Voodoo: the rear-view mirror is
  * drawn by clearing its rectangle and drawing the view behind into it. */
-void ThrashRenderer::clearFrame(x86::reg32 color, x86::reg32 clipMinX, x86::reg32 clipMinY,
-                                x86::reg32 clipMaxX, x86::reg32 clipMaxY)
+void ThrashRenderer::clearFrame(nfs::u32 color, nfs::u32 clipMinX, nfs::u32 clipMinY,
+                                nfs::u32 clipMaxX, nfs::u32 clipMaxY)
 {
     glDepthMask(true);
     glBindFramebuffer(GL_FRAMEBUFFER, m_framebuffer);
@@ -413,7 +413,7 @@ void ThrashRenderer::clearFrame(x86::reg32 color, x86::reg32 clipMinX, x86::reg3
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
-void ThrashRenderer::render(x86::reg32 buffer)
+void ThrashRenderer::render(nfs::u32 buffer)
 {
     if (s_watcher)
         s_watcher->rendered(buffer);
@@ -517,7 +517,7 @@ void ThrashRenderer::drawPending(const ThrashDraw& draw)
     glUniform3i(m_locations.chromaKeyColor, GLint(draw.chromaKeyColor >> 16 & 0xff),
                 GLint(draw.chromaKeyColor >> 8 & 0xff), GLint(draw.chromaKeyColor & 0xff));
 
-    x86::reg32 first = 0;
+    nfs::u32 first = 0;
     int fogTable = -1;
     const Batch* previous = nullptr;
     bool scissor = false;
@@ -620,53 +620,53 @@ void ThrashRenderer::swap()
     m_vertexCount = 0;
 }
 
-void ThrashRenderer::snapshot(std::vector<x86::reg32>& out) const
+void ThrashRenderer::snapshot(std::vector<nfs::u32>& out) const
 {
-    auto word = [&out](x86::reg32 w) { out.push_back(w); };
+    auto word = [&out](nfs::u32 w) { out.push_back(w); };
     auto real = [&out](float f) {
-        x86::reg32 bits;
+        nfs::u32 bits;
         std::memcpy(&bits, &f, sizeof bits);
         out.push_back(bits);
     };
     word(m_vertexCount);
-    for (x86::reg32 i = 0; i < m_vertexCount; ++i)
+    for (nfs::u32 i = 0; i < m_vertexCount; ++i)
     {
-        x86::reg32 words[sizeof(ThrashVertex) / 4];
+        nfs::u32 words[sizeof(ThrashVertex) / 4];
         std::memcpy(words, &m_vertices[i], sizeof words);
         out.insert(out.end(), words, words + sizeof words / 4);
     }
-    word(x86::reg32(m_batches.size()));
+    word(nfs::u32(m_batches.size()));
     for (const Batch& b : m_batches)
     {
-        for (const x86::reg32 w : {b.end, b.texture, b.levels, x86::reg32(b.format), x86::reg32(b.wrapS),
-                                   x86::reg32(b.wrapT), x86::reg32(b.zTest), x86::reg32(b.zTestAlways),
-                                   x86::reg32(b.zBuffer), x86::reg32(b.alphaBlend), x86::reg32(b.cull),
-                                   x86::reg32(b.chromaKey), b.cullMode, b.clipMinX, b.clipMinY, b.clipMaxX,
-                                   b.clipMaxY, x86::reg32(b.fogTable)})
+        for (const nfs::u32 w : {b.end, b.texture, b.levels, nfs::u32(b.format), nfs::u32(b.wrapS),
+                                   nfs::u32(b.wrapT), nfs::u32(b.zTest), nfs::u32(b.zTestAlways),
+                                   nfs::u32(b.zBuffer), nfs::u32(b.alphaBlend), nfs::u32(b.cull),
+                                   nfs::u32(b.chromaKey), b.cullMode, b.clipMinX, b.clipMinY, b.clipMaxX,
+                                   b.clipMaxY, nfs::u32(b.fogTable)})
             word(w);
         real(b.gamma);
     }
-    std::vector<std::pair<x86::reg32, Texture>> textures(m_textures.begin(), m_textures.end());
+    std::vector<std::pair<nfs::u32, Texture>> textures(m_textures.begin(), m_textures.end());
     std::sort(textures.begin(), textures.end(),
-              [](const std::pair<x86::reg32, Texture>& a, const std::pair<x86::reg32, Texture>& b) {
+              [](const std::pair<nfs::u32, Texture>& a, const std::pair<nfs::u32, Texture>& b) {
                   return a.first < b.first;
               });
-    word(x86::reg32(textures.size()));
+    word(nfs::u32(textures.size()));
     for (const auto& texture : textures)
-        for (const x86::reg32 w : {texture.first, texture.second.index, texture.second.size, texture.second.levels,
-                                   texture.second.useStamp, x86::reg32(texture.second.format)})
+        for (const nfs::u32 w : {texture.first, texture.second.index, texture.second.size, texture.second.levels,
+                                   texture.second.useStamp, nfs::u32(texture.second.format)})
             word(w);
-    for (const x86::reg32 w : {m_nextTexture, m_texture, m_textureLevels, x86::reg32(m_textureFormat),
-                               m_renderStamp, x86::reg32(m_fogTables.size()), x86::reg32(m_fogTableIndex),
-                               x86::reg32(m_fogTableValid), m_fogMode, x86::reg32(m_zBuffer), x86::reg32(m_zTest),
-                               x86::reg32(m_depthAlways), x86::reg32(m_alphaBlend), x86::reg32(m_cull),
-                               x86::reg32(m_chromaKey), x86::reg32(m_wrapS), x86::reg32(m_wrapT), m_cullMode,
+    for (const nfs::u32 w : {m_nextTexture, m_texture, m_textureLevels, nfs::u32(m_textureFormat),
+                               m_renderStamp, nfs::u32(m_fogTables.size()), nfs::u32(m_fogTableIndex),
+                               nfs::u32(m_fogTableValid), m_fogMode, nfs::u32(m_zBuffer), nfs::u32(m_zTest),
+                               nfs::u32(m_depthAlways), nfs::u32(m_alphaBlend), nfs::u32(m_cull),
+                               nfs::u32(m_chromaKey), nfs::u32(m_wrapS), nfs::u32(m_wrapT), m_cullMode,
                                m_chromaKeyColor, m_clipMinX, m_clipMinY, m_clipMaxX, m_clipMaxY})
         word(w);
     for (const auto& table : m_fogTables)
         for (const float f : table)
             real(f);
-    for (const x86::reg8 b : m_fogTableRaw)
+    for (const nfs::u8 b : m_fogTableRaw)
         word(b);
     for (const float f : {m_fogColor[0], m_fogColor[1], m_fogColor[2], m_alphaTestRef, m_colorFactor,
                           m_alphaFactor, m_gamma})
@@ -714,7 +714,7 @@ void ThrashRenderer::setDither(bool)
 {
 }
 
-void ThrashRenderer::setCullMode(x86::reg32 mode)
+void ThrashRenderer::setCullMode(nfs::u32 mode)
 {
     const bool enable = mode != 0;
     if (enable != m_cull || mode != m_cullMode)
@@ -745,12 +745,12 @@ void ThrashRenderer::setTexClampMode(bool wrapS, bool wrapT)
     }
 }
 
-void ThrashRenderer::setChromakeyValue(x86::reg32 color)
+void ThrashRenderer::setChromakeyValue(nfs::u32 color)
 {
     m_chromaKeyColor = color;
 }
 
-void ThrashRenderer::setClipWindow(x86::reg32 minX, x86::reg32 minY, x86::reg32 maxX, x86::reg32 maxY)
+void ThrashRenderer::setClipWindow(nfs::u32 minX, nfs::u32 minY, nfs::u32 maxX, nfs::u32 maxY)
 {
     if (minX != m_clipMinX || minY != m_clipMinY || maxX != m_clipMaxX || maxY != m_clipMaxY)
     {
@@ -783,12 +783,12 @@ void ThrashRenderer::setAlphaFactor(float alphaFactor)
 
 // Read as each triangle is taken: the mode a triangle is fogged by is the one
 // it was drawn in.
-void ThrashRenderer::setFogMode(x86::reg32 mode)
+void ThrashRenderer::setFogMode(nfs::u32 mode)
 {
     m_fogMode = mode;
 }
 
-void ThrashRenderer::setFogColor(x86::reg32 color)
+void ThrashRenderer::setFogColor(nfs::u32 color)
 {
     const float r = float((color >> 16) & 0xff) / 255.f;
     const float g = float((color >> 8) & 0xff) / 255.f;
@@ -804,7 +804,7 @@ void ThrashRenderer::setFogColor(x86::reg32 color)
 
 // A repeat of the table in force changes nothing: the game sets the same one
 // for every view of a race, and a flush each time cost a draw call each.
-void ThrashRenderer::setFogTable(const x86::reg8* table)
+void ThrashRenderer::setFogTable(const nfs::u8* table)
 {
     if (m_fogTableValid && std::memcmp(table, m_fogTableRaw, sizeof m_fogTableRaw) == 0)
         return;
@@ -819,7 +819,7 @@ void ThrashRenderer::setFogTable(const x86::reg8* table)
     m_fogTableIndex = int(m_fogTables.size()) - 1;
 }
 
-void ThrashRenderer::setAlphaTestRef(x86::reg32 value)
+void ThrashRenderer::setAlphaTestRef(nfs::u32 value)
 {
     const float ref = float(value & 0xff) / 255.f;
     if (ref != m_alphaTestRef)
@@ -831,7 +831,7 @@ void ThrashRenderer::setAlphaTestRef(x86::reg32 value)
 
 /* The texture downloaded to this address, or the one-texel one downloaded to 0
  * when the window opened, for an address nothing was downloaded to. */
-void ThrashRenderer::setTexture(x86::reg32, x86::reg32 address)
+void ThrashRenderer::setTexture(nfs::u32, nfs::u32 address)
 {
     auto found = m_textures.find(address);
     if (found == m_textures.end())
@@ -853,19 +853,19 @@ void ThrashRenderer::setTexture(x86::reg32, x86::reg32 address)
  * swizzle), 8888 as bytes swizzled from B, G, R, A, and only 1555 turned
  * round a bit into OpenGL's 5551.  The GL thread gives the texture storage of
  * that size, levels and format, or keeps what it had when they are the same. */
-void ThrashRenderer::setTextureData(x86::reg32, x86::reg32 address, const void* data, x86::reg32 largeMipmap,
-                                    x86::reg32 smallMipmap, TextureFormat format)
+void ThrashRenderer::setTextureData(nfs::u32, nfs::u32 address, const void* data, nfs::u32 largeMipmap,
+                                    nfs::u32 smallMipmap, TextureFormat format)
 {
     // A LOD under Glide's 0 (the port's 512, port_thrash.h) a side of 256 doubled.
-    const auto sideOf = [](x86::reg32 lod) {
-        return x86::sreg32(lod) < 0 ? x86::reg32(256) << (0 - lod) : x86::reg32(256) >> lod;
+    const auto sideOf = [](nfs::u32 lod) {
+        return nfs::s32(lod) < 0 ? nfs::u32(256) << (0 - lod) : nfs::u32(256) >> lod;
     };
-    const x86::reg32 size = sideOf(largeMipmap);
-    const x86::reg32 smallest = sideOf(smallMipmap);
-    const x86::reg32 texelBytes = format == TF_ARGB_8888 ? 4 : 2;
-    x86::reg32 levels = 0;
+    const nfs::u32 size = sideOf(largeMipmap);
+    const nfs::u32 smallest = sideOf(smallMipmap);
+    const nfs::u32 texelBytes = format == TF_ARGB_8888 ? 4 : 2;
+    nfs::u32 levels = 0;
     std::size_t texels = 0;
-    for (x86::reg32 at = size; at >= smallest && at; at >>= 1, ++levels)
+    for (nfs::u32 at = size; at >= smallest && at; at >>= 1, ++levels)
         texels += std::size_t(at) * at;
     if (!levels)
         return;
@@ -893,20 +893,20 @@ void ThrashRenderer::setTextureData(x86::reg32, x86::reg32 address, const void* 
         m_textureFormat = kind;
     }
 
-    std::vector<x86::reg8> copied(static_cast<const x86::reg8*>(data),
-                                  static_cast<const x86::reg8*>(data) + texels * texelBytes);
+    std::vector<nfs::u8> copied(static_cast<const nfs::u8*>(data),
+                                  static_cast<const nfs::u8*>(data) + texels * texelBytes);
     if (format == TF_ARGB_1555)
     {
         // A1 R5 G5 B5 to R5 G5 B5 A1: the alpha bit from the top to the bottom.
         for (std::size_t i = 0; i < texels; ++i)
         {
-            const x86::reg16 p = x86::reg16(copied[i * 2] | copied[i * 2 + 1] << 8);
-            const x86::reg16 q = x86::reg16(p << 1 | p >> 15);
-            copied[i * 2] = x86::reg8(q);
-            copied[i * 2 + 1] = x86::reg8(q >> 8);
+            const nfs::u16 p = nfs::u16(copied[i * 2] | copied[i * 2 + 1] << 8);
+            const nfs::u16 q = nfs::u16(p << 1 | p >> 15);
+            copied[i * 2] = nfs::u8(q);
+            copied[i * 2 + 1] = nfs::u8(q >> 8);
         }
     }
-    const x86::reg32 index = texture.index;
+    const nfs::u32 index = texture.index;
     if (s_watcher)
         s_watcher->uploaded(index, size, levels, format, fresh, copied);
     glthread::post(m_renderer, [this, index, size, levels, format, fresh, copied = std::move(copied)]() mutable {
@@ -919,11 +919,11 @@ void ThrashRenderer::setTextureData(x86::reg32, x86::reg32 address, const void* 
     });
 }
 
-void ThrashRenderer::upload(x86::reg32 index, x86::reg32 size, x86::reg32 levels, TextureFormat format,
-                            std::vector<x86::reg8>& texels)
+void ThrashRenderer::upload(nfs::u32 index, nfs::u32 size, nfs::u32 levels, TextureFormat format,
+                            std::vector<nfs::u8>& texels)
 {
     GLenum internal = GL_RGBA8, layout = GL_RGBA, type = GL_UNSIGNED_BYTE;
-    x86::reg32 texelBytes = 2;
+    nfs::u32 texelBytes = 2;
     switch (format)
     {
     case TF_RGB_565:
@@ -971,8 +971,8 @@ void ThrashRenderer::upload(x86::reg32 index, x86::reg32 size, x86::reg32 levels
         glBindTexture(GL_TEXTURE_2D, name);
     }
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    const x86::reg8* level = texels.data();
-    for (x86::reg32 at = size, lod = 0; lod < levels; ++lod, at >>= 1)
+    const nfs::u8* level = texels.data();
+    for (nfs::u32 at = size, lod = 0; lod < levels; ++lod, at >>= 1)
     {
         glTexSubImage2D(GL_TEXTURE_2D, GLint(lod), 0, 0, GLsizei(at), GLsizei(at), layout, type, level);
         level += std::size_t(at) * at * texelBytes;
@@ -985,7 +985,7 @@ void ThrashRenderer::upload(x86::reg32 index, x86::reg32 size, x86::reg32 levels
 void ThrashRenderer::resetTextures()
 {
     renderPending();
-    std::vector<x86::reg32> released;
+    std::vector<nfs::u32> released;
     for (auto it = m_textures.begin(); it != m_textures.end();)
     {
         if (it->first == 0)
@@ -999,7 +999,7 @@ void ThrashRenderer::resetTextures()
     if (s_watcher)
         s_watcher->released(released);
     glthread::post(m_renderer, [this, released]() {
-        for (const x86::reg32 index : released)
+        for (const nfs::u32 index : released)
             if (index < m_glTextures.size() && m_glTextures[index])
             {
                 glDeleteTextures(1, &m_glTextures[index]);
@@ -1038,8 +1038,8 @@ static void rebase(float coord[3], const float oow[3])
 void ThrashRenderer::finishTriangle(ThrashVertex* out)
 {
     const bool fogged = (m_fogMode & 0x3) == 0x2;
-    const x86::reg8 combine[4] = { x86::reg8(m_colorFactor != 0.f), x86::reg8(m_alphaFactor != 0.f), 0,
-                                   x86::reg8(fogged) };
+    const nfs::u8 combine[4] = { nfs::u8(m_colorFactor != 0.f), nfs::u8(m_alphaFactor != 0.f), 0,
+                                   nfs::u8(fogged) };
     if ((m_wrapS || m_wrapT) && rebaseOn())
     {
         const float oow[3] = { out[0].oow, out[1].oow, out[2].oow };

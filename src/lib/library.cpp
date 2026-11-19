@@ -1,14 +1,14 @@
 #include <lib/library.h>
 #include <algorithm>
 
-namespace win32
+namespace nfs
 {
 
 static Library* s_libraries = 0;
 
-x86::reg32 Library::getSymbolIndex()
+nfs::u32 Library::getSymbolIndex()
 {
-    static x86::reg32 s_symbolIndex = 0x400500;
+    static nfs::u32 s_symbolIndex = 0x400500;
     return s_symbolIndex++;
 }
 
@@ -25,7 +25,7 @@ Library::~Library()
     s_libraries = m_next;
 }
 
-void Library::registerSymbols(WinApplication *app)
+void Library::registerSymbols(App *app)
 {
     for (std::map<std::string, Symbol>::iterator it = m_methods.begin();
          it != m_methods.end();

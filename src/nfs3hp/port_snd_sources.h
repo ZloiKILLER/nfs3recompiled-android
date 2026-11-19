@@ -38,21 +38,21 @@ int32_t sirenActive(App* app, int32_t siren);
 
 /* Siren `siren` started if it is not on (steady, or warbling between its two
  * tones for random whiles); the siren's number as eax when it was on. */
-Result sirenSwitchedOn(App* app, CPU& cpu, reg32 esp, int32_t siren, bool steady);
+Result sirenSwitchedOn(App* app, ThreadState& ts, u32 esp, int32_t siren, bool steady);
 
 /* Siren `siren` ticked: its tones turned when their ticks are up, its volume,
  * pitch (16.10) and pan set. */
-Result sirenTicked(App* app, CPU& cpu, reg32 esp, int32_t siren, int32_t volume, int32_t pitch, reg32 pan);
+Result sirenTicked(App* app, ThreadState& ts, u32 esp, int32_t siren, int32_t volume, int32_t pitch, u32 pan);
 
 /* Siren `siren` off, faded out, its state as it starts. */
-Result sirenSwitchedOff(App* app, CPU& cpu, reg32 esp, int32_t siren);
+Result sirenSwitchedOff(App* app, ThreadState& ts, u32 esp, int32_t siren);
 
 /* A car's knock in slot `slot` (below 0: a crash) of kind `kind` on material
  * `material` at force `force`, `distance` and `pan` away: the crash's effect
  * picked and played in slot 0x1f, or the scrape played in the slot as loud and
  * high as the force says, or the slot stopped. */
-Result knockPlayed(App* app, CPU& cpu, reg32 esp, int32_t slot, reg32 kind, reg32 material, int32_t force,
-                   int32_t distance, reg32 pan);
+Result knockPlayed(App* app, ThreadState& ts, u32 esp, int32_t slot, u32 kind, u32 material, int32_t force,
+                   int32_t distance, u32 pan);
 
 }  // namespace sources
 }  // namespace port

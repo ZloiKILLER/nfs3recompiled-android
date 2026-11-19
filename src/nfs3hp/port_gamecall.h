@@ -13,27 +13,27 @@ namespace nfs3hp
 namespace port
 {
 
-inline bool gameCall(App* app, CPU& cpu, reg32 esp, reg32 target, Args a, std::initializer_list<reg32> stack,
-                     reg32& result)
+inline bool gameCall(App* app, ThreadState& ts, u32 esp, u32 target, Args a, std::initializer_list<u32> stack,
+                     u32& result)
 {
-    cpu.esp = esp;
-    x86::Args registers;
+    ts.sp = esp;
+    nfs::Args registers;
     registers.eax = a.eax;
     registers.edx = a.edx;
     registers.ebx = a.ebx;
     registers.ecx = a.ecx;
-    const std::optional<reg32> eax = guest::pointerCall(app, cpu, target, registers, stack);
+    const std::optional<u32> eax = guest::pointerCall(app, ts, target, registers, stack);
     if (!eax)
         return false;
     result = *eax;
     return true;
 }
 
-inline bool gameCall(App* app, CPU& cpu, reg32 esp, reg32 target, Args a = {},
-                     std::initializer_list<reg32> stack = {})
+inline bool gameCall(App* app, ThreadState& ts, u32 esp, u32 target, Args a = {},
+                     std::initializer_list<u32> stack = {})
 {
-    reg32 ignored;
-    return gameCall(app, cpu, esp, target, a, stack, ignored);
+    u32 ignored;
+    return gameCall(app, ts, esp, target, a, stack, ignored);
 }
 
 }  // namespace port

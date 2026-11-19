@@ -1,19 +1,19 @@
 #ifndef LIB_THREAD_H_
 #define LIB_THREAD_H_
 
-#include <lib/winapp.h>
+#include <lib/app.h>
 #include <SDL3/SDL.h>
 
 struct SDL_Thread;
 
-namespace win32
+namespace nfs
 {
 
 class Thread : public GenericResource
 {
 public:
     Thread();
-    Thread(WinApplication* app, x86::reg32 method, x86::reg32 parameter, x86::reg32 flags);
+    Thread(App* app, nfs::u32 method, nfs::u32 parameter, nfs::u32 flags);
     ~Thread();
 
     Thread* duplicate()
@@ -23,9 +23,9 @@ public:
 
     void resume();
     void terminate();
-    x86::reg32 threadId() const;
-    static void sleep(x86::reg32 milliseconds);
-    static x86::reg32 currentThreadId();
+    nfs::u32 threadId() const;
+    static void sleep(nfs::u32 milliseconds);
+    static nfs::u32 currentThreadId();
 
 private:
     Thread(const Thread& other);
@@ -34,19 +34,19 @@ private:
 private:
     struct Data
     {
-        Data(WinApplication* app, x86::reg32 entryPoint, x86::reg32 parameter, x86::reg32 flags);
-        WinApplication* m_app;
-        x86::reg32      m_entryPoint;
-        x86::reg32      m_parameter;
-        x86::reg32      m_flags;
-        x86::reg32      m_threadId;
+        Data(App* app, nfs::u32 entryPoint, nfs::u32 parameter, nfs::u32 flags);
+        App* m_app;
+        nfs::u32      m_entryPoint;
+        nfs::u32      m_parameter;
+        nfs::u32      m_flags;
+        nfs::u32      m_threadId;
     };
 
     SDL_AtomicInt*  m_refCount;
     SDL_Semaphore*  m_semaphore;
     Data            m_data;
     SDL_Thread*     m_thread;
-    x86::CPU        m_cpu;
+    nfs::ThreadState        m_ts;
 };
 
 }

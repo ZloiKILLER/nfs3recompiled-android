@@ -6,7 +6,7 @@
 #include <vector>
 
 /* The port's versions of the game's menu files, handed to the game in place of
- * the imported ones (win32::File::setReadSubstitute); the imported data stays
+ * the imported ones (nfs::File::setReadSubstitute); the imported data stays
  * as it was.
  *
  * MENUS/MAINSPLT.MNU, the main menu for two players on one machine, as the
@@ -487,7 +487,7 @@ std::string menuData(const std::string& path)
 
 void installMenuData()
 {
-    win32::File::setReadSubstitute(menuData);
+    nfs::File::setReadSubstitute(menuData);
 }
 
 }

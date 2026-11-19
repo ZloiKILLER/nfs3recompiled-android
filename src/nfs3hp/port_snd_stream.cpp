@@ -1,6 +1,5 @@
 #include "port_snd_stream.h"
 #include "port_snd_stream_calls.h"
-#include "host_threads.h"
 #include "native_ea_threads.h"
 #include "native_watcom.h"
 
@@ -44,23 +43,23 @@ namespace port
 namespace stream
 {
 
-void safepoint(App* app, CPU& cpu)
+void safepoint(App* app, ThreadState& ts)
 {
     if (app->contextWanted())
-        app->yieldContext(cpu);
+        app->yieldContext(ts);
 }
 
-void giveWay(App* app, CPU& cpu)
+void giveWay(App* app, ThreadState& ts)
 {
-    app->unlockContext(cpu);
-    win32::Thread::sleep(0);
-    app->lockContext(cpu);
+    app->unlockContext(ts);
+    nfs::Thread::sleep(0);
+    app->lockContext(ts);
 }
 
 // What comes further on in this file.
-Result purgeStreamer(App* app, CPU& cpu, reg32 esp);
-Result dropQueued(App* app, CPU& cpu, reg32 esp);
-Result startStreamVoice(App* app, CPU& cpu, reg32 esp, reg32 ebp);
+Result purgeStreamer(App* app, ThreadState& ts, u32 esp);
+Result dropQueued(App* app, ThreadState& ts, u32 esp);
+Result startStreamVoice(App* app, ThreadState& ts, u32 esp, u32 ebp);
 
 namespace
 {
@@ -69,7 +68,7 @@ namespace
 // A system task: the function, its period and next tick, whether it runs.
 struct Task
 {
-    reg32 function;
+    u32 function;
     int32_t period;
     int32_t next;
     uint32_t running;
@@ -79,7 +78,7 @@ struct Task
 // one queued; its length, and its data (the frames first).
 struct Queued
 {
-    reg32 next;
+    u32 next;
     uint32_t size;
     uint32_t frames;
     uint8_t data[1];
@@ -89,20 +88,20 @@ struct Queued
 // The system tasks.
 constexpr Records<Task> kTasks{0x9ef7e8};
 constexpr int32_t kTaskCount = 0x10;
-constexpr Var<reg32> kTaskDepth{0x564670};  // the tasks' nesting
-constexpr Var<reg32> kTaskTick{0x564674};   // the tick the tasks last ran at
-constexpr Var<reg32> kTaskTiming{0x56466c}, kTaskTime{0x564668};
+constexpr Var<u32> kTaskDepth{0x564670};  // the tasks' nesting
+constexpr Var<u32> kTaskTick{0x564674};   // the tick the tasks last ran at
+constexpr Var<u32> kTaskTiming{0x56466c}, kTaskTime{0x564668};
 constexpr Var<int32_t> kClock{0x79c1a0};    // the tasks' clock
-constexpr Var<reg32> kSoundRunning{0x5643d8};  // the sound thread runs
+constexpr Var<u32> kSoundRunning{0x5643d8};  // the sound thread runs
 
 // The streamer's.
-constexpr Var<reg32> kCdStreamOf{0x56467c};  // the CD stream it plays
-constexpr Var<reg32> kQueueHead{0x564680}, kQueueTail{0x564684}, kPlaying{0x564688};
+constexpr Var<u32> kCdStreamOf{0x56467c};  // the CD stream it plays
+constexpr Var<u32> kQueueHead{0x564680}, kQueueTail{0x564684}, kPlaying{0x564688};
 constexpr Var<int32_t> kStreamHandle{0x564690};
-constexpr Var<reg32> kChunksPlayed{0x564694};
+constexpr Var<u32> kChunksPlayed{0x564694};
 constexpr Var<int32_t> kChunksQueued{0x564698};
-constexpr Var<reg32> kBytesQueued{0x56469c};
-constexpr reg32 kStreamPatch = 0x5646a0;  // the stream's patch, up to 0x5c bytes
+constexpr Var<u32> kBytesQueued{0x56469c};
+constexpr u32 kStreamPatch = 0x5646a0;  // the stream's patch, up to 0x5c bytes
 constexpr Var<uint8_t> kPatchSet{0x5646fc}, kStreamState{0x5646fd}, kNoEnd{0x5646fe}, kVoiceChunks{0x5646ff};
 constexpr Var<uint8_t> kFirstHeader{0x564700};
 constexpr Var<int8_t> kStreamVoice{0x564701};
@@ -116,26 +115,26 @@ constexpr Var<int32_t> kHeadersSeen{0x564710}, kHeadersWanted{0x564714}, kBytesW
 constexpr Table<int32_t> kLoops{0x56471c};
 constexpr Var<int32_t> kTopupWanted{0x56476c}, kTopupBy{0x564770};
 constexpr Table<uint8_t> kOldFormat{0x564774}, kNewFormat{0x564780};
-constexpr reg32 kStreamName = 0x56478c;        // the file's name, up to 0x80 bytes
+constexpr u32 kStreamName = 0x56478c;        // the file's name, up to 0x80 bytes
 constexpr Var<uint8_t> kStreamNameEnd{0x56480b};
-constexpr Var<reg32> kEndsSeen{0x564678};
-constexpr Var<reg32> kTopupHook{0x56480c};     // Pathfinder's, when it streams
-constexpr Var<reg32> kNextChunk{0x5678b4};     // what the mixer calls for the next chunk
-constexpr Var<reg32> kStreamerRestore{0xa09b30};
-constexpr reg32 kStreamService = 0x4e85a8;
+constexpr Var<u32> kEndsSeen{0x564678};
+constexpr Var<u32> kTopupHook{0x56480c};     // Pathfinder's, when it streams
+constexpr Var<u32> kNextChunk{0x5678b4};     // what the mixer calls for the next chunk
+constexpr Var<u32> kStreamerRestore{0xa09b30};
+constexpr u32 kStreamService = 0x4e85a8;
 
 // The top-up's coordination (iocoord.c).
-constexpr Var<reg32> kTopupFunction{0x9f6a50};
-constexpr Var<reg32> kTopupEvent{0x567864}, kToppedUp{0x56785c};
-constexpr Var<reg32> kLoadLock{0x564480};
+constexpr Var<u32> kTopupFunction{0x9f6a50};
+constexpr Var<u32> kTopupEvent{0x567864}, kToppedUp{0x56785c};
+constexpr Var<u32> kLoadLock{0x564480};
 
 // The game's functions the streams call.
-constexpr reg32 kMainThread = 0x4df930, kCreateEvent = 0x4dfb00, kSetEvent = 0x4dfb20, kWaitEvent = 0x4dfb70;
-constexpr reg32 kSleep = 0x4df8e0, kStrncpy = 0x4e0e30, kStrncmp = 0x4eb390;
+constexpr u32 kMainThread = 0x4df930, kCreateEvent = 0x4dfb00, kSetEvent = 0x4dfb20, kWaitEvent = 0x4dfb70;
+constexpr u32 kSleep = 0x4df8e0, kStrncpy = 0x4e0e30, kStrncmp = 0x4eb390;
 
 // The sources of the errors, and their functions.
-constexpr reg32 kStreamFile = 0x54ac34, kTaskFile = 0x54abf8;
-constexpr Table<reg32> kWhere{0x552190};
+constexpr u32 kStreamFile = 0x54ac34, kTaskFile = 0x54abf8;
+constexpr Table<u32> kWhere{0x552190};
 
 /* Integer division as the code has it: a quotient towards 0 (and, as on the
  * phone's arm64, 0 for a divisor of 0). */
@@ -143,30 +142,30 @@ int32_t quotientOf(int32_t a, int32_t b) { return b == 0 ? 0 : idiv(a, b); }
 
 /* The time the tasks' timing goes by: what the game's code has on a machine with
  * no timestamp counter, what is in eax. */
-reg32 timestamp(reg32 fallback) { return fallback; }
+u32 timestamp(u32 fallback) { return fallback; }
 
 }  // namespace
 
 /* 0x4dfb20's call with eax as the game's code has it (port_snd_stream.h). */
-std::optional<reg32> eventPostedWith(App* app, CPU& cpu, reg32 posted, reg32 event)
+std::optional<u32> eventPostedWith(App* app, ThreadState& ts, u32 posted, u32 event)
 {
     NFS2_USE(posted);
-    return ea::eventPosted(app, cpu, event);
+    return ea::eventPosted(app, ts, event);
 }
 
 /* 0x4e7520 (addsystemtask): function `function` run every `period` ticks, the
  * first `delay` ticks from now; in the first free slot past as many as the
  * tasks are nested.  The tick it runs first. */
-Result scheduleTask(App* app, CPU& cpu, reg32 esp, reg32 function, int32_t period, reg32 delay)
+Result scheduleTask(App* app, ThreadState& ts, u32 esp, u32 function, int32_t period, u32 delay)
 {
-    const reg32 frame = esp - 4 * 4 - 4;
-    reg32 skip = kTaskDepth(app);
-    store<reg32>(app, frame, delay);
+    const u32 frame = esp - 4 * 4 - 4;
+    u32 skip = kTaskDepth(app);
+    store<u32>(app, frame, delay);
     kTaskDepth.set(app, skip + 1);
     int32_t slot = -1;
     for (int32_t i = 0; i < kTaskCount; ++i)
     {
-        const reg32 f = kTasks(app, i).function;
+        const u32 f = kTasks(app, i).function;
         if (f == function)
             slot = i;
         else if (f == 0 && slot == -1)
@@ -179,7 +178,7 @@ Result scheduleTask(App* app, CPU& cpu, reg32 esp, reg32 function, int32_t perio
     }
     if (slot == -1)
     {
-        const Result r = fail(app, cpu, frame, Where{kTaskFile, 0x54ac08}, 0x60, {0x54ac18}, function);
+        const Result r = fail(app, ts, frame, Where{kTaskFile, 0x54ac08}, 0x60, {0x54ac18}, function);
         if (!r)
             return {};
         kTaskDepth.set(app, kTaskDepth(app) - 1);
@@ -188,7 +187,7 @@ Result scheduleTask(App* app, CPU& cpu, reg32 esp, reg32 function, int32_t perio
     Task& task = kTasks(app, slot);
     task.function = function;
     task.period = period;
-    const reg32 first = reg32(kClock(app)) + delay;
+    const u32 first = u32(kClock(app)) + delay;
     task.running = 0;
     task.next = int32_t(first);
     kTaskDepth.set(app, kTaskDepth(app) - 1);
@@ -196,9 +195,9 @@ Result scheduleTask(App* app, CPU& cpu, reg32 esp, reg32 function, int32_t perio
 }
 
 /* 0x4e75e0: `function` no longer a task.  Its slot's offset, 0x100 for none. */
-reg32 unscheduleTask(App* app, reg32 function)
+u32 unscheduleTask(App* app, u32 function)
 {
-    reg32 offset = 0;
+    u32 offset = 0;
     int32_t index = 0;
     while (function != kTasks(app, index).function)
     {
@@ -217,40 +216,40 @@ reg32 unscheduleTask(App* app, reg32 function)
  * or-ed.  A task (a Watcom function, through its pointer) is handed eax, edx,
  * ebx and ecx as the code has them; the code's own esi, edi and ebp (the
  * result, the argument, the start) no task reads. */
-Result runDueTasks(App* app, CPU& cpu, reg32 esp, reg32 argument)
+Result runDueTasks(App* app, ThreadState& ts, u32 esp, u32 argument)
 {
-    const reg32 frame = esp - 6 * 4;
-    reg32 result = 0;
+    const u32 frame = esp - 6 * 4;
+    u32 result = 0;
     const bool timing = kTaskTiming(app) != 0;
-    const reg32 started = timing ? timestamp(argument) : 0;
+    const u32 started = timing ? timestamp(argument) : 0;
     // The code's safepoint before the tick's test (0x4e7648), on every call.
-    safepoint(app, cpu);
+    safepoint(app, ts);
     // eax as the loop leaves it: the clock, 0 after a task ran.
-    reg32 left = reg32(kClock(app));
-    if (kTaskTick(app) != reg32(kClock(app)))
+    u32 left = u32(kClock(app));
+    if (kTaskTick(app) != u32(kClock(app)))
     {
-        kTaskTick.set(app, reg32(kClock(app)));
+        kTaskTick.set(app, u32(kClock(app)));
         for (int32_t i = 0; i < kTaskCount; ++i)
         {
             // The loop's safepoint, as the code's: the frame wait polls the
             // clock through here, and the timer's thread advances it only
             // with the guest's context handed over.
-            safepoint(app, cpu);
+            safepoint(app, ts);
             Task& task = kTasks(app, i);
-            const reg32 function = task.function;
+            const u32 function = task.function;
             if (function == 0)
                 continue;
-            left = reg32(kClock(app));
+            left = u32(kClock(app));
             if (kClock(app) < task.next || task.running != 0)
                 continue;
             left = 0;
             task.running = 1;
-            reg32 gave;
-            if (!pointerGame(app, cpu, frame, function,
-                          {argument, reg32(kClock(app)) - reg32(task.next), function, reg32(i) * 0x10}, {}, gave))
+            u32 gave;
+            if (!pointerGame(app, ts, frame, function,
+                          {argument, u32(kClock(app)) - u32(task.next), function, u32(i) * 0x10}, {}, gave))
                 return {};
             result |= gave;
-            kTasks(app, i).next = int32_t(reg32(kClock(app)) + reg32(kTasks(app, i).period));
+            kTasks(app, i).next = int32_t(u32(kClock(app)) + u32(kTasks(app, i).period));
             kTasks(app, i).running = 0;
         }
     }
@@ -261,19 +260,19 @@ Result runDueTasks(App* app, CPU& cpu, reg32 esp, reg32 argument)
 
 /* 0x4e7720: the tasks run until `ticks` of the timer have passed or one gave
  * something back -- what it gave.  A busy wait the timer's thread ends. */
-Result runTasksFor(App* app, CPU& cpu, reg32 esp, reg32 ticks)
+Result runTasksFor(App* app, ThreadState& ts, u32 esp, u32 ticks)
 {
-    const reg32 frame = esp - 2 * 4;
-    const int32_t until = int32_t(ticks + reg32(kTimer(app)));
-    reg32 result = 0;
+    const u32 frame = esp - 2 * 4;
+    const int32_t until = int32_t(ticks + u32(kTimer(app)));
+    u32 result = 0;
     while (kTimer(app) < until && result == 0)
     {
-        safepoint(app, cpu);
-        giveWay(app, cpu);
-        const Result r = runDueTasks(app, cpu, frame - 4, 0);
+        safepoint(app, ts);
+        giveWay(app, ts);
+        const Result r = runDueTasks(app, ts, frame - 4, 0);
         if (!r)
             return {};
-        result = reg32(*r);
+        result = u32(*r);
     }
     return int32_t(result);
 }
@@ -282,16 +281,16 @@ Result runTasksFor(App* app, CPU& cpu, reg32 esp, reg32 ticks)
  * load's lock but on the main thread -- or, with no top-up, the wait ended at
  * once.  `edx` and `ecx` are the caller's, which the code hands the top-up
  * function as they came (it keeps them). */
-Result topUp(App* app, CPU& cpu, reg32 esp, reg32 argument, reg32 edx, reg32 ecx)
+Result topUp(App* app, ThreadState& ts, u32 esp, u32 argument, u32 edx, u32 ecx)
 {
-    const reg32 frame = esp - 5 * 4;
-    reg32 eax;
-    if (!took(directFrom<kMainThread, ea::isThreadNow>(app, cpu, frame, 0u), eax))
+    const u32 frame = esp - 5 * 4;
+    u32 eax;
+    if (!took(directFrom<kMainThread, ea::isThreadNow>(app, ts, frame, 0u), eax))
         return {};
     const bool other = eax == 0;
     if (kTopupEvent(app) == 0)
     {
-        if (!took(directFrom<kCreateEvent, ea::newAutoEvent>(app, cpu, frame), eax))
+        if (!took(directFrom<kCreateEvent, ea::newAutoEvent>(app, ts, frame), eax))
             return {};
         kTopupEvent.set(app, eax);
     }
@@ -300,45 +299,45 @@ Result topUp(App* app, CPU& cpu, reg32 esp, reg32 argument, reg32 edx, reg32 ecx
         // The load's lock taken with the lock pushed from edi.
         if (other)
         {
-            const Result entered = enterSection(app, cpu, esp - 6 * 4, kLoadLock(app));
+            const Result entered = enterSection(app, ts, esp - 6 * 4, kLoadLock(app));
             if (!entered)
                 return {};
-            eax = reg32(*entered);
+            eax = u32(*entered);
         }
         kToppedUp.set(app, 0);
         // Through the pointer: the argument in eax and ebx.
-        if (!pointerGame(app, cpu, frame, kTopupFunction(app), {argument, edx, argument, ecx}, {}, eax))
+        if (!pointerGame(app, ts, frame, kTopupFunction(app), {argument, edx, argument, ecx}, {}, eax))
             return {};
         if (other)
         {
-            const Result r = leaveSection(app, cpu, frame, kLoadLock(app));
+            const Result r = leaveSection(app, ts, frame, kLoadLock(app));
             if (!r)
                 return {};
-            eax = reg32(*r);
+            eax = u32(*r);
         }
         return int32_t(eax);
     }
     kToppedUp.set(app, 1);
-    if (!took(directFrom<kSetEvent, eventPostedWith>(app, cpu, frame, 0u, kTopupEvent(app)), eax))
+    if (!took(directFrom<kSetEvent, eventPostedWith>(app, ts, frame, 0u, kTopupEvent(app)), eax))
         return {};
     return int32_t(eax);
 }
 
 /* 0x4ff780: the top-up done, its waiters let go.  `eax` is what the code has
  * there, which it gives back unless it sets the event. */
-Result topUpDone(App* app, CPU& cpu, reg32 esp, reg32 eax)
+Result topUpDone(App* app, ThreadState& ts, u32 esp, u32 eax)
 {
-    const reg32 frame = esp - 2 * 4;
+    const u32 frame = esp - 2 * 4;
     if (kTopupEvent(app) != 0)
     {
         kToppedUp.set(app, 1);
-        if (!took(directFrom<kSetEvent, eventPostedWith>(app, cpu, frame, 0u, kTopupEvent(app)), eax))
+        if (!took(directFrom<kSetEvent, eventPostedWith>(app, ts, frame, 0u, kTopupEvent(app)), eax))
             return {};
     }
     return int32_t(eax);
 }
 
-Result topUpFinished(App* app, CPU& cpu, reg32 esp, reg32 how);
+Result topUpFinished(App* app, ThreadState& ts, u32 esp, u32 how);
 
 /* Port: how long the main thread waits for a top-up at most, in real time.
  * The game's own check ends one within a second of its clock; one that waits
@@ -385,86 +384,86 @@ void logTopupWaitCut(App* app)
  * top-up is done (or there is no event): its wait on the main thread, entered
  * by a jump with edx and ebp pushed (`esp` is the code's after them).  eax
  * as it leaves.  Port: no longer than kTopupWaitMostMs. */
-Result waitOnMainThread(App* app, CPU& cpu, reg32 esp)
+Result waitOnMainThread(App* app, ThreadState& ts, u32 esp)
 {
-    reg32 eax;
-    if (!took(cpu, directFrom<kSurface, ea::surfaceIsLocked>(app, cpu, esp) ? 1u : 0u, eax))
+    u32 eax;
+    if (!took(ts, directFrom<kSurface, ea::surfaceIsLocked>(app, ts, esp) ? 1u : 0u, eax))
         return {};
     // The error with esi, ecx and ebx pushed (and popped after it).
     if (eax != 0)
     {
-        const Result r = fail(app, cpu, esp - 12, Where{0x54e0c4, 0x54e0d4}, 0x5e, {0x54e0e4}, eax);
+        const Result r = fail(app, ts, esp - 12, Where{0x54e0c4, 0x54e0d4}, 0x5e, {0x54e0e4}, eax);
         if (!r)
             return {};
-        eax = reg32(*r);
+        eax = u32(*r);
     }
     const auto since = std::chrono::steady_clock::now();
     for (;;)
     {
-        safepoint(app, cpu);
+        safepoint(app, ts);
         if (kTopupEvent(app) == 0)
             break;
         // The code holds the flag in ebp, and hands it the tasks as their argument (0).
-        const reg32 toppedUp = kToppedUp(app);
+        const u32 toppedUp = kToppedUp(app);
         if (toppedUp != 0)
             break;
         if (std::chrono::steady_clock::now() - since > std::chrono::milliseconds(kTopupWaitMostMs))
         {
             logTopupWaitCut(app);
-            const Result r = topUpFinished(app, cpu, esp - 4, 0);
+            const Result r = topUpFinished(app, ts, esp - 4, 0);
             if (!r)
                 return {};
-            eax = reg32(*r);
+            eax = u32(*r);
             break;
         }
-        if (!took(directFrom<kSleep, ea::sleepFor>(app, cpu, esp, 1u), eax))
+        if (!took(directFrom<kSleep, ea::sleepFor>(app, ts, esp, 1u), eax))
             return {};
-        const Result r = runDueTasks(app, cpu, esp - 4, toppedUp);
+        const Result r = runDueTasks(app, ts, esp - 4, toppedUp);
         if (!r)
             return {};
-        eax = reg32(*r);
+        eax = u32(*r);
     }
     return int32_t(eax);
 }
 
 /* 0x4ff76e: waittopupstream's wait on another thread: the event waited for
  * (`esp` the code's after the pushes). */
-Result waitOnEvent(App* app, CPU& cpu, reg32 esp, reg32 event)
+Result waitOnEvent(App* app, ThreadState& ts, u32 esp, u32 event)
 {
-    reg32 eax;
-    if (!took(directFrom<kWaitEvent, ea::eventWaited>(app, cpu, esp, event), eax))
+    u32 eax;
+    if (!took(directFrom<kWaitEvent, ea::eventWaited>(app, ts, esp, event), eax))
         return {};
     return int32_t(eax);
 }
 
 /* 0x4ff7f0 (waittopupstream): the top-up waited for -- on the main thread by
  * the tasks, on another by its event (none, no wait). */
-Result waitForTopup(App* app, CPU& cpu, reg32 esp)
+Result waitForTopup(App* app, ThreadState& ts, u32 esp)
 {
-    const reg32 frame = esp - 2 * 4;  // edx and ebp pushed
-    reg32 eax;
-    if (!took(directFrom<kMainThread, ea::isThreadNow>(app, cpu, frame, 0u), eax))
+    const u32 frame = esp - 2 * 4;  // edx and ebp pushed
+    u32 eax;
+    if (!took(directFrom<kMainThread, ea::isThreadNow>(app, ts, frame, 0u), eax))
         return {};
     // The waits are the code's jumps: on with the stack as it is.
     if (eax != 0)
-        return waitOnMainThread(app, cpu, frame);
-    const reg32 event = kTopupEvent(app);
+        return waitOnMainThread(app, ts, frame);
+    const u32 event = kTopupEvent(app);
     if (event != 0)
-        return waitOnEvent(app, cpu, frame, event);
+        return waitOnEvent(app, ts, frame, event);
     return int32_t(eax);
 }
 
-Result topUpAsked(App* app, CPU& cpu, reg32 esp, reg32 argument)
+Result topUpAsked(App* app, ThreadState& ts, u32 esp, u32 argument)
 {
-    return topUp(app, cpu, esp, argument, 0, 0);
+    return topUp(app, ts, esp, argument, 0, 0);
 }
 
-Result topUpWaited(App* app, CPU& cpu, reg32 esp)
+Result topUpWaited(App* app, ThreadState& ts, u32 esp)
 {
-    return waitForTopup(app, cpu, esp);
+    return waitForTopup(app, ts, esp);
 }
 
-reg32 loadBlockSizeIs(App*)
+u32 loadBlockSizeIs(App*)
 {
     return 0x3e8;
 }
@@ -475,22 +474,22 @@ int32_t platformHolds(int32_t) { return 0; }
 /* 0x5016c0 (iSNDclearchunk): `frames` frames of silence at `buffer` in voice
  * `voice`'s format: XA's 8-byte header and 15 bytes a 28 frames, or PCM's
  * zeros.  eax as the code leaves it. */
-Result clearChunk(App* app, CPU& cpu, reg32 esp, reg32 buffer, int32_t frames, int32_t voice)
+Result clearChunk(App* app, ThreadState& ts, u32 esp, u32 buffer, int32_t frames, int32_t voice)
 {
     const PlatformVoice& p = kPlatform(app, voice);
-    const reg32 compression = p.compression;
-    reg32 eax = (buffer & 0xffff00ff) | compression << 8;
+    const u32 compression = p.compression;
+    u32 eax = (buffer & 0xffff00ff) | compression << 8;
     if (compression == 7)
     {
-        const int32_t blocks = quotientOf(int32_t(reg32(frames) + 0x1b), 0x1c);
-        for (reg32 i = 0; i < 8; i += 2)
+        const int32_t blocks = quotientOf(int32_t(u32(frames) + 0x1b), 0x1c);
+        for (u32 i = 0; i < 8; i += 2)
             store<uint16_t>(app, buffer + i, 0);
         int32_t bytes = imul(blocks, 15);
         if (p.channels == 2)
-            bytes = int32_t(reg32(bytes) + reg32(bytes));
+            bytes = int32_t(u32(bytes) + u32(bytes));
         eax = 0;
         for (int32_t i = 0; i < bytes; ++i)
-            app->getMemory<uint8_t>(buffer + 8 + reg32(i)) = 0, eax = reg32(i + 1);
+            app->getMemory<uint8_t>(buffer + 8 + u32(i)) = 0, eax = u32(i + 1);
         return int32_t(eax);
     }
     if (compression == 9)
@@ -498,25 +497,25 @@ Result clearChunk(App* app, CPU& cpu, reg32 esp, reg32 buffer, int32_t frames, i
     if (compression == 0)
     {
         if (p.channels == 2)
-            frames = int32_t(reg32(frames) + reg32(frames));
-        const reg32 bits = p.bits;
+            frames = int32_t(u32(frames) + u32(frames));
+        const u32 bits = p.bits;
         eax = (buffer & 0xffff00ff) | bits << 8;
         if (bits == 0x10)
         {
             eax = 0;
             for (int32_t i = 0; i < frames; ++i)
-                store<uint16_t>(app, buffer + 2 * reg32(i), 0), eax = reg32(i + 1);
+                store<uint16_t>(app, buffer + 2 * u32(i), 0), eax = u32(i + 1);
         }
         else if (bits == 8 && frames > 0)
         {
             for (int32_t i = 0; i < frames; ++i)
-                app->getMemory<uint8_t>(buffer + reg32(i)) = 0;
-            eax = buffer + reg32(frames);
+                app->getMemory<uint8_t>(buffer + u32(i)) = 0;
+            eax = buffer + u32(frames);
         }
         return int32_t(eax);
     }
     // Error with eax as the code has it.
-    return fail(app, cpu, esp - 2 * 4, Where{0x54e5e8, 0x54e5f8}, 0x4a, {0x54e608}, eax);
+    return fail(app, ts, esp - 2 * 4, Where{0x54e5e8, 0x54e5f8}, 0x4a, {0x54e608}, eax);
 }
 
 
@@ -527,37 +526,37 @@ namespace
 constexpr int32_t kNotStarted = -14;  // before SNDinit
 constexpr int32_t kNoRoom = -13, kNotPlaying = -16, kInterrupted = -18, kBadChunk = -15;
 
-Queued& queued(App* app, reg32 chunk) { return record<Queued>(app, chunk); }
+Queued& queued(App* app, u32 chunk) { return record<Queued>(app, chunk); }
 
-reg32 cdStreamAt(App* app) { return kCdStreamOf(app); }
+u32 cdStreamAt(App* app) { return kCdStreamOf(app); }
 
 }  // namespace
 
 /* 0x4e7470 (SNDstreamautovol): the stream's voice to volume `volume` over
  * `ticks`. */
-Result fadeStream(App* app, CPU& cpu, reg32 esp, int32_t ticks, int32_t volume)
+Result fadeStream(App* app, ThreadState& ts, u32 esp, int32_t ticks, int32_t volume)
 {
-    const reg32 frame = esp - 2 * 4;
+    const u32 frame = esp - 2 * 4;
     if (kInited(app) == 0)
         return kNotStarted;
     if (volume > 0x7f || volume < 0)
     {
-        if (!fail(app, cpu, esp - 3 * 4, Where{0x54ab74, 0x54ab84}, 0x7c, {0x54ab98, reg32(volume)}, reg32(ticks)))
+        if (!fail(app, ts, esp - 3 * 4, Where{0x54ab74, 0x54ab84}, 0x7c, {0x54ab98, u32(volume)}, u32(ticks)))
             return {};
         return -8;
     }
     kStreamVolume.set(app, uint8_t(volume));
-    if (!fadeSound(app, cpu, frame - 4, reg32(kStreamHandle(app)), ticks, volume))
+    if (!fadeSound(app, ts, frame - 4, u32(kStreamHandle(app)), ticks, volume))
         return {};
     return 0;
 }
 
 /* 0x4e74f0: the stream's volume: its voice's, or what it was set to. */
-Result streamVolume(App* app, CPU& cpu, reg32 esp)
+Result streamVolume(App* app, ThreadState& ts, u32 esp)
 {
     if (kInited(app) == 0)
         return kNotStarted;
-    const Result volume = playingLevel(app, cpu, esp - 1 * 4 - 4, reg32(kStreamHandle(app)));
+    const Result volume = playingLevel(app, ts, esp - 1 * 4 - 4, u32(kStreamHandle(app)));
     if (!volume)
         return {};
     return *volume < 0 ? int32_t(int8_t(kStreamVolume(app))) : *volume;
@@ -565,9 +564,9 @@ Result streamVolume(App* app, CPU& cpu, reg32 esp)
 
 /* 0x4e8944: the streamer reset: nothing queued, no voice, the mixer's refill
  * its, and its service among the tasks. */
-Result resetStreamerState(App* app, CPU& cpu, reg32 esp)
+Result resetStreamerState(App* app, ThreadState& ts, u32 esp)
 {
-    const reg32 frame = esp - 3 * 4;
+    const u32 frame = esp - 3 * 4;
     kNextChunk.set(app, 0x4e8328);
     kStreamerRestore.set(app, 0x4e784c);
     kHeadersSeen.set(app, 0);
@@ -585,7 +584,7 @@ Result resetStreamerState(App* app, CPU& cpu, reg32 esp)
     kChunkState.set(app, 0);
     if (kServiceAdded(app) == 0)
     {
-        if (!scheduleTask(app, cpu, frame - 4, kStreamService, 0, 1))
+        if (!scheduleTask(app, ts, frame - 4, kStreamService, 0, 1))
             return {};
         kServiceAdded.set(app, 1);
     }
@@ -594,31 +593,31 @@ Result resetStreamerState(App* app, CPU& cpu, reg32 esp)
 
 /* 0x4e7750 (SNDstreamsetup): the streamer set up on CD stream `stream`, the
  * play's options at `options`. */
-Result setUpStreamer(App* app, CPU& cpu, reg32 esp, reg32 stream, reg32 options)
+Result setUpStreamer(App* app, ThreadState& ts, u32 esp, u32 stream, u32 options)
 {
-    const reg32 frame = esp - 3 * 4;
+    const u32 frame = esp - 3 * 4;
     if (kInited(app) == 0)
         return kNotStarted;
     if (kStreamerRestore(app) != 0)
     {
-        if (!fail(app, cpu, frame, Where{kStreamFile, 0x54ac44}, 0xb1, {0x54ac54}, stream))
+        if (!fail(app, ts, frame, Where{kStreamFile, 0x54ac44}, 0xb1, {0x54ac54}, stream))
             return {};
         return kNotPlaying;
     }
-    const Result entered = enterAudio(app, cpu, frame - 4);
+    const Result entered = enterAudio(app, ts, frame - 4);
     if (!entered)
         return {};
     const int32_t result = platformHolds(*entered);
     if (result < 0)
     {
-        if (!leaveAudio(app, cpu, frame - 4, reg32(result)))
+        if (!leaveAudio(app, ts, frame - 4, u32(result)))
             return {};
         return result;
     }
-    const reg32 inner = esp - 4 * 4;
+    const u32 inner = esp - 4 * 4;
     app->getMemory<uint8_t>(kStreamName) = 0;
     kFirstHeader.set(app, 1);
-    Var<reg32>{0x56468c}.set(app, 0);
+    Var<u32>{0x56468c}.set(app, 0);
     kStreamVolume.set(app, app->getMemory<uint8_t>(options + 8));
     kStreamPan.set(app, app->getMemory<uint8_t>(options + 7));
     kStreamBend.set(app, app->getMemory<uint8_t>(options + 9));
@@ -630,21 +629,21 @@ Result setUpStreamer(App* app, CPU& cpu, reg32 esp, reg32 stream, reg32 options)
     kHeadersWanted.set(app, 0xf);
     kSkipHeaders.set(app, -1);
     kFormatKnown.set(app, 0);
-    const Result reset = resetStreamerState(app, cpu, inner - 4);
-    if (!reset || !leaveAudio(app, cpu, inner - 4, reg32(*reset)))
+    const Result reset = resetStreamerState(app, ts, inner - 4);
+    if (!reset || !leaveAudio(app, ts, inner - 4, u32(*reset)))
         return {};
     return result;
 }
 
 /* 0x4e784c (SNDstreamrestore): the streamer done with: its stream purged,
  * its service gone. */
-Result restoreStreamer(App* app, CPU& cpu, reg32 esp)
+Result restoreStreamer(App* app, ThreadState& ts, u32 esp)
 {
-    const reg32 frame = esp - 1 * 4;
+    const u32 frame = esp - 1 * 4;
     kTopupFunction.set(app, 0);
     if (kInited(app) == 0 || kStreamerRestore(app) == 0)
         return kNotStarted;
-    if (!purgeStreamer(app, cpu, frame - 4))
+    if (!purgeStreamer(app, ts, frame - 4))
         return {};
     if (kServiceAdded(app) != 0)
     {
@@ -658,67 +657,67 @@ Result restoreStreamer(App* app, CPU& cpu, reg32 esp)
 /* 0x4e78a0 (SNDstreamqueue): file `name` queued to play, from `offset`: the
  * first starts the stream; another is read on as the stream needs it, but for
  * at most 19 files at once.  0, -13 for no room, -14 before the setup. */
-Result queueStreamFile(App* app, CPU& cpu, reg32 esp, reg32 name, reg32 offset)
+Result queueStreamFile(App* app, ThreadState& ts, u32 esp, u32 name, u32 offset)
 {
-    const reg32 frame = esp - 3 * 4;
+    const u32 frame = esp - 3 * 4;
     if (kInited(app) == 0)
         return kNotStarted;
     if (kStreamerRestore(app) == 0)
     {
-        if (!fail(app, cpu, frame, Where{kStreamFile, 0x54aca4}, 0x1c5, {0x54acb4}, name))
+        if (!fail(app, ts, frame, Where{kStreamFile, 0x54aca4}, 0x1c5, {0x54acb4}, name))
             return {};
         return kNotStarted;
     }
-    reg32 eax = name;
+    u32 eax = name;
     if (kStreamState(app) == 0)
     {
         if (offset != 0)
         {
-            if (!purgeNamed(app, cpu, frame - 4, cdStreamAt(app), name, Command::Restart, true)
-                || !queueArgument(app, cpu, frame - 4, cdStreamAt(app), offset, Command::ReadOn, false, true))
+            if (!purgeNamed(app, ts, frame - 4, cdStreamAt(app), name, Command::Restart, true)
+                || !queueArgument(app, ts, frame - 4, cdStreamAt(app), offset, Command::ReadOn, false, true))
                 return {};
         }
-        else if (!purgeNamed(app, cpu, frame - 4, cdStreamAt(app), name, Command::Continue, true))
+        else if (!purgeNamed(app, ts, frame - 4, cdStreamAt(app), name, Command::Continue, true))
             return {};
-        Result r = enterAudio(app, cpu, frame - 4);
-        if (!r || !(r = resetStreamerState(app, cpu, frame - 4)))
+        Result r = enterAudio(app, ts, frame - 4);
+        if (!r || !(r = resetStreamerState(app, ts, frame - 4)))
             return {};
         kStreamState.set(app, 1);
-        if (!leaveAudio(app, cpu, frame - 4, reg32(*r)))
+        if (!leaveAudio(app, ts, frame - 4, u32(*r)))
             return {};
     }
     else
     {
-        Result r = enterAudio(app, cpu, frame - 4);
+        Result r = enterAudio(app, ts, frame - 4);
         if (!r)
             return {};
         const bool full = int32_t(kFilesQueued(app)) + int32_t(kFilesStarted(app)) >= 0x13;
-        if (!(r = leaveAudio(app, cpu, frame - 4, reg32(*r))))
+        if (!(r = leaveAudio(app, ts, frame - 4, u32(*r))))
             return {};
         if (full)
             return kNoRoom;
-        if (!(r = commandBlocksAvailable(app, cpu, frame - 4, offset == 0 ? 1 : 2)))
+        if (!(r = commandBlocksAvailable(app, ts, frame - 4, offset == 0 ? 1 : 2)))
             return {};
         if (*r == 0)
             return kNoRoom;
         if (offset == 0)
         {
-            if (!queueNamed(app, cpu, frame - 4, cdStreamAt(app), name, Command::OpenNext, false, true))
+            if (!queueNamed(app, ts, frame - 4, cdStreamAt(app), name, Command::OpenNext, false, true))
                 return {};
         }
         else
         {
-            if (!took(cpu, directFrom<kStrncmp, watcom::clib::strncmp>(app, cpu, frame, kStreamName, name, 0x80u), eax))
+            if (!took(ts, directFrom<kStrncmp, watcom::clib::strncmp>(app, ts, frame, kStreamName, name, 0x80u), eax))
                 return {};
             if (eax != 0
-                && !queueNamed(app, cpu, frame - 4, cdStreamAt(app), name, Command::QueueFile, false, true))
+                && !queueNamed(app, ts, frame - 4, cdStreamAt(app), name, Command::QueueFile, false, true))
                 return {};
-            if (!queueArgument(app, cpu, frame - 4, cdStreamAt(app), offset, Command::ReadOn, false, true))
+            if (!queueArgument(app, ts, frame - 4, cdStreamAt(app), offset, Command::ReadOn, false, true))
                 return {};
         }
     }
     kFilesQueued.set(app, int8_t(kFilesQueued(app) + 1));
-    if (!took(cpu, directFrom<kStrncpy, watcom::clib::strncpy>(app, cpu, frame, kStreamName, name, 0x80u), eax))
+    if (!took(ts, directFrom<kStrncpy, watcom::clib::strncpy>(app, ts, frame, kStreamName, name, 0x80u), eax))
         return {};
     kStreamNameEnd.set(app, 0);
     return 0;
@@ -727,14 +726,14 @@ Result queueStreamFile(App* app, CPU& cpu, reg32 esp, reg32 name, reg32 offset)
 /* 0x4e7a14 (SNDstreaminterrupt): the stream cut to file `name` at `offset`:
  * what the reader holds past the voice's chunks dropped.  0; -18 while
  * already interrupted, -16 when not playing. */
-Result interruptStream(App* app, CPU& cpu, reg32 esp, reg32 name, reg32 offset)
+Result interruptStream(App* app, ThreadState& ts, u32 esp, u32 name, u32 offset)
 {
-    const reg32 frame = esp - 3 * 4;
+    const u32 frame = esp - 3 * 4;
     if (kInited(app) == 0)
         return kNotStarted;
     if (kStreamerRestore(app) == 0)
     {
-        if (!fail(app, cpu, frame, Where{kStreamFile, 0x54ace0}, 0x21b, {0x54acf4}, name))
+        if (!fail(app, ts, frame, Where{kStreamFile, 0x54ace0}, 0x21b, {0x54acf4}, name))
             return {};
         return kNotStarted;
     }
@@ -742,30 +741,30 @@ Result interruptStream(App* app, CPU& cpu, reg32 esp, reg32 name, reg32 offset)
         return kInterrupted;
     if (kStreamState(app) != 2)
         return kNotPlaying;
-    if (!purgeNamed(app, cpu, frame - 4, cdStreamAt(app), name, Command::Switch, true)
-        || !queueArgument(app, cpu, frame - 4, cdStreamAt(app), offset, Command::ReadOn, false, true))
+    if (!purgeNamed(app, ts, frame - 4, cdStreamAt(app), name, Command::Switch, true)
+        || !queueArgument(app, ts, frame - 4, cdStreamAt(app), offset, Command::ReadOn, false, true))
         return {};
-    Result r = enterAudio(app, cpu, frame - 4);
+    Result r = enterAudio(app, ts, frame - 4);
     if (!r)
         return {};
-    reg32 c = kQueueHead(app);
-    for (reg32 i = 0; int32_t(i) < int32_t(reg32(kVoiceChunks(app)) * 3) && c != kQueueTail(app); ++i)
+    u32 c = kQueueHead(app);
+    for (u32 i = 0; int32_t(i) < int32_t(u32(kVoiceChunks(app)) * 3) && c != kQueueTail(app); ++i)
         c = queued(app, c).next;
     kQueueTail.set(app, c);
     c = queued(app, c).next;
     while (c != 0)
     {
-        const reg32 chunk = c;
+        const u32 chunk = c;
         c = queued(app, c).next;
-        if (!(r = giveBackChunk(app, cpu, frame - 4, cdStreamAt(app), chunk)))
+        if (!(r = giveBackChunk(app, ts, frame - 4, cdStreamAt(app), chunk)))
             return {};
         kChunksQueued.set(app, kChunksQueued(app) - 1);
     }
-    if (!leaveAudio(app, cpu, frame - 4, reg32(*r)))
+    if (!leaveAudio(app, ts, frame - 4, u32(*r)))
         return {};
     kStreamState.set(app, 4);
-    directFrom<kStrncpy, watcom::clib::strncpy>(app, cpu, frame, kStreamName, name, 0x80u);
-    if (cpu.terminate)
+    directFrom<kStrncpy, watcom::clib::strncpy>(app, ts, frame, kStreamName, name, 0x80u);
+    if (ts.terminate)
         return {};
     kStreamNameEnd.set(app, 0);
     return 0;
@@ -773,36 +772,36 @@ Result interruptStream(App* app, CPU& cpu, reg32 esp, reg32 name, reg32 offset)
 
 /* 0x4e7b28 (SNDstreampurge): the stream stopped -- its voice, waited for --
  * and everything it held dropped. */
-Result purgeStreamer(App* app, CPU& cpu, reg32 esp)
+Result purgeStreamer(App* app, ThreadState& ts, u32 esp)
 {
-    const reg32 frame = esp - 3 * 4;
+    const u32 frame = esp - 3 * 4;
     if (kInited(app) == 0)
         return kNotStarted;
     if (kStreamerRestore(app) == 0)
     {
-        if (!fail(app, cpu, esp - 5 * 4, Where{kStreamFile, 0x54ad24}, 0x2b3, {0x54ad34}, 0))
+        if (!fail(app, ts, esp - 5 * 4, Where{kStreamFile, 0x54ad24}, 0x2b3, {0x54ad34}, 0))
             return {};
         return kNotStarted;
     }
-    if (!stopSound(app, cpu, frame - 4, reg32(kStreamHandle(app))))
+    if (!stopSound(app, ts, frame - 4, u32(kStreamHandle(app))))
         return {};
-    const reg32 deadline = kTicks(app) + 0xc8;
+    const u32 deadline = kTicks(app) + 0xc8;
     for (;;)
     {
-        const Result stopped = soundStatus(app, cpu, frame - 4, reg32(kStreamHandle(app)));
+        const Result stopped = soundStatus(app, ts, frame - 4, u32(kStreamHandle(app)));
         if (!stopped)
             return {};
         if (*stopped != 0)
             break;
-        safepoint(app, cpu);
+        safepoint(app, ts);
         if (deadline < kTicks(app)
-            && !fail(app, cpu, frame, Where{kStreamFile, 0x54ad24}, 0x2c6, {0x54ad60}, reg32(*stopped)))
+            && !fail(app, ts, frame, Where{kStreamFile, 0x54ad24}, 0x2c6, {0x54ad60}, u32(*stopped)))
             return {};
-        if (!runDueTasks(app, cpu, frame - 4, 0))
+        if (!runDueTasks(app, ts, frame - 4, 0))
             return {};
     }
-    Result r = enterAudio(app, cpu, frame - 4);
-    if (!r || !(r = dropQueued(app, cpu, frame - 4)))
+    Result r = enterAudio(app, ts, frame - 4);
+    if (!r || !(r = dropQueued(app, ts, frame - 4)))
         return {};
     kSkipHeaders.set(app, -1);
     kFormatKnown.set(app, 0);
@@ -812,31 +811,31 @@ Result purgeStreamer(App* app, CPU& cpu, reg32 esp)
     app->getMemory<uint8_t>(kStreamName) = 0;
     kPatchSet.set(app, 0);
     kTopupFunction.set(app, 0);
-    reg32 eax = 0;
+    u32 eax = 0;
     if (kServiceAdded(app) != 0)
     {
         eax = unscheduleTask(app, kStreamService);
         kServiceAdded.set(app, 0);
     }
-    if (!leaveAudio(app, cpu, frame - 4, eax))
+    if (!leaveAudio(app, ts, frame - 4, eax))
         return {};
     return 0;
 }
 
 /* 0x4e7c58 (SNDstreamchunksleft): the chunks queued to play. */
-Result chunksLeft(App* app, CPU& cpu, reg32 esp)
+Result chunksLeft(App* app, ThreadState& ts, u32 esp)
 {
-    const reg32 frame = esp - 1 * 4;
+    const u32 frame = esp - 1 * 4;
     int32_t result = kNotStarted;
     if (kInited(app) == 0)
         return result;
     if (kStreamerRestore(app) == 0)
     {
-        if (!fail(app, cpu, esp - 4 * 4, Where{kStreamFile, 0x54ada4}, 0x34b, {0x54adb8}, 0))
+        if (!fail(app, ts, esp - 4 * 4, Where{kStreamFile, 0x54ada4}, 0x34b, {0x54adb8}, 0))
             return {};
         return result;
     }
-    Result r = enterAudio(app, cpu, frame - 4);
+    Result r = enterAudio(app, ts, frame - 4);
     if (!r)
         return {};
     if (kStreamState(app) != 0)
@@ -845,25 +844,25 @@ Result chunksLeft(App* app, CPU& cpu, reg32 esp)
         if (kChunkState(app) == 2)
             --result;
     }
-    if (!leaveAudio(app, cpu, frame - 4, reg32(*r)))
+    if (!leaveAudio(app, ts, frame - 4, u32(*r)))
         return {};
     return result;
 }
 
 /* 0x4e7ce0 (SNDstreambuftime): the stream's buffered time in ms: its chunks
  * left times 1000 over the voice's chunks a second. */
-Result bufferedTime(App* app, CPU& cpu, reg32 esp)
+Result bufferedTime(App* app, ThreadState& ts, u32 esp)
 {
     if (kInited(app) == 0)
         return kNotStarted;
     if (kStreamerRestore(app) == 0)
     {
-        if (!fail(app, cpu, esp - 2 * 4, Where{kStreamFile, 0x54adec}, 0x3c2, {0x54ae00}, 0))
+        if (!fail(app, ts, esp - 2 * 4, Where{kStreamFile, 0x54adec}, 0x3c2, {0x54ae00}, 0))
             return {};
         return kNotStarted;
     }
-    reg32 base = esp - 3 * 4;
-    Result r = enterAudio(app, cpu, base - 4);
+    u32 base = esp - 3 * 4;
+    Result r = enterAudio(app, ts, base - 4);
     if (!r)
         return {};
     int32_t result = kNotStarted;
@@ -871,30 +870,30 @@ Result bufferedTime(App* app, CPU& cpu, reg32 esp)
     {
         base = esp - 4 * 4;
         if (kVoiceChunks(app) == 0
-            && !fail(app, cpu, esp - 6 * 4, Where{kStreamFile, 0x54adec}, 0x3d3, {0x54ae30}, 0))
+            && !fail(app, ts, esp - 6 * 4, Where{kStreamFile, 0x54adec}, 0x3d3, {0x54ae30}, 0))
             return {};
-        const Result left = chunksLeft(app, cpu, base - 4);
+        const Result left = chunksLeft(app, ts, base - 4);
         if (!left)
             return {};
         result = quotientOf(imul(*left, 1000), int32_t(kVoiceChunks(app)));
         r = left;
     }
-    if (!leaveAudio(app, cpu, base - 4, reg32(*r)))
+    if (!leaveAudio(app, ts, base - 4, u32(*r)))
         return {};
     return result;
 }
 
 /* 0x4e7dd0: the top-up wanted no more: done (its waiters let go), and
  * Pathfinder's hook told with `how`. */
-Result topUpFinished(App* app, CPU& cpu, reg32 esp, reg32 how)
+Result topUpFinished(App* app, ThreadState& ts, u32 esp, u32 how)
 {
-    const reg32 frame = esp - 1 * 4;
+    const u32 frame = esp - 1 * 4;
     kTopupWanted.set(app, 0);
-    Result r = topUpDone(app, cpu, frame - 4, how);
+    Result r = topUpDone(app, ts, frame - 4, how);
     if (!r)
         return {};
-    reg32 eax = reg32(*r);
-    if (kTopupHook(app) != 0 && !pointerGame(app, cpu, frame, kTopupHook(app), {0, 0}, {}, eax))
+    u32 eax = u32(*r);
+    if (kTopupHook(app) != 0 && !pointerGame(app, ts, frame, kTopupHook(app), {0, 0}, {}, eax))
         return {};
     return int32_t(eax);
 }
@@ -902,12 +901,12 @@ Result topUpFinished(App* app, CPU& cpu, reg32 esp, reg32 how)
 /* 0x4e7df4 (iSNDstreamchecktopup): whether the top-up asked for is done --
  * the stream holds the time asked, its reader waits, or it has nothing more
  * to read -- or timed out.  With none asked for, `eax` as it came. */
-Result checkTopUp(App* app, CPU& cpu, reg32 esp, reg32 eax)
+Result checkTopUp(App* app, ThreadState& ts, u32 esp, u32 eax)
 {
-    const reg32 frame = esp - 1 * 4;
+    const u32 frame = esp - 1 * 4;
     if (kTopupWanted(app) == 0)
         return int32_t(eax);
-    const Result time = bufferedTime(app, cpu, frame - 4);
+    const Result time = bufferedTime(app, ts, frame - 4);
     if (!time)
         return {};
     int32_t how = -1;
@@ -922,16 +921,16 @@ Result checkTopUp(App* app, CPU& cpu, reg32 esp, reg32 eax)
     }
     else if (readerIsIdle(app) && kTopupHook(app) == 0)
         how = 1;
-    if (how != -1 && !topUpFinished(app, cpu, frame - 4, reg32(how)))
+    if (how != -1 && !topUpFinished(app, ts, frame - 4, u32(how)))
         return {};
     // The timer read into eax, what the function gives back unless timed out.
     const int32_t timer = kTimer(app);
     if (timer > kTopupBy(app))
     {
-        const Result r = fail(app, cpu, esp - 2 * 4, Where{kStreamFile, 0x54ae8c}, 0x412, {0x54aea4}, 0x412);
+        const Result r = fail(app, ts, esp - 2 * 4, Where{kStreamFile, 0x54ae8c}, 0x412, {0x54aea4}, 0x412);
         if (!r)
             return {};
-        return topUpFinished(app, cpu, frame - 4, 0);
+        return topUpFinished(app, ts, frame - 4, 0);
     }
     return timer;
 }
@@ -939,64 +938,64 @@ Result checkTopUp(App* app, CPU& cpu, reg32 esp, reg32 eax)
 /* 0x4e7e98 (iSNDstreamsetbuftime): a top-up to `wanted` ms asked for
  * (Pathfinder's hook adding its own), within as many seconds as the sound
  * thread runs.  Before SNDinit `wanted` back, as it came in eax. */
-Result askTopUp(App* app, CPU& cpu, reg32 esp, int32_t wanted)
+Result askTopUp(App* app, ThreadState& ts, u32 esp, int32_t wanted)
 {
-    const reg32 frame = esp - 3 * 4;
+    const u32 frame = esp - 3 * 4;
     if (kInited(app) == 0)
         return wanted;
     if (wanted <= 0)
-        return fail(app, cpu, esp - 5 * 4, Where{kStreamFile, 0x54aedc}, 0x426, {0x54aef4}, reg32(wanted));
+        return fail(app, ts, esp - 5 * 4, Where{kStreamFile, 0x54aedc}, 0x426, {0x54aef4}, u32(wanted));
     if (kTopupHook(app) != 0)
     {
-        reg32 added;
-        if (!pointerGame(app, cpu, frame, kTopupHook(app), {reg32(wanted), reg32(wanted)}, {}, added))
+        u32 added;
+        if (!pointerGame(app, ts, frame, kTopupHook(app), {u32(wanted), u32(wanted)}, {}, added))
             return {};
-        wanted = int32_t(reg32(wanted) + added);
+        wanted = int32_t(u32(wanted) + added);
     }
-    kTopupBy.set(app, int32_t(reg32(kTimer(app)) + kSoundRunning(app) * 60));
+    kTopupBy.set(app, int32_t(u32(kTimer(app)) + kSoundRunning(app) * 60));
     kTopupWanted.set(app, wanted);
-    reg32 eax;
-    if (!took(cpu, directFrom<kSurface, ea::surfaceIsLocked>(app, cpu, frame) ? 1u : 0u, eax))
+    u32 eax;
+    if (!took(ts, directFrom<kSurface, ea::surfaceIsLocked>(app, ts, frame) ? 1u : 0u, eax))
         return {};
     if (eax == 0)
     {
-        const Result r = checkTopUp(app, cpu, frame - 4, eax);
+        const Result r = checkTopUp(app, ts, frame - 4, eax);
         if (!r)
             return {};
-        eax = reg32(*r);
+        eax = u32(*r);
     }
     return int32_t(eax);
 }
 
 /* 0x4e7ff8: the chunks queued and playing given back to the reader. */
-Result dropQueued(App* app, CPU& cpu, reg32 esp)
+Result dropQueued(App* app, ThreadState& ts, u32 esp)
 {
-    const reg32 frame = esp - 2 * 4;
-    Result r = enterAudio(app, cpu, frame - 4);
+    const u32 frame = esp - 2 * 4;
+    Result r = enterAudio(app, ts, frame - 4);
     if (!r)
         return {};
     if (kQueueHead(app) != 0)
     {
         while (kQueueHead(app) != kQueueTail(app))
         {
-            const reg32 chunk = kQueueHead(app);
+            const u32 chunk = kQueueHead(app);
             kQueueHead.set(app, queued(app, chunk).next);
-            if (!(r = giveBackChunk(app, cpu, frame - 4, cdStreamAt(app), chunk)))
+            if (!(r = giveBackChunk(app, ts, frame - 4, cdStreamAt(app), chunk)))
                 return {};
         }
-        if (!(r = giveBackChunk(app, cpu, frame - 4, cdStreamAt(app), kQueueHead(app))))
+        if (!(r = giveBackChunk(app, ts, frame - 4, cdStreamAt(app), kQueueHead(app))))
             return {};
-        if (kPlaying(app) != 0 && !(r = giveBackChunk(app, cpu, frame - 4, cdStreamAt(app), kPlaying(app))))
+        if (kPlaying(app) != 0 && !(r = giveBackChunk(app, ts, frame - 4, cdStreamAt(app), kPlaying(app))))
             return {};
     }
     kQueueHead.set(app, 0);
     kQueueTail.set(app, 0);
     kPlaying.set(app, 0);
-    return leaveAudio(app, cpu, frame - 4, reg32(*r));
+    return leaveAudio(app, ts, frame - 4, u32(*r));
 }
 
 /* 0x4e8078: a data chunk ('SCDl') queued to play.  3. */
-int32_t queueData(App* app, reg32 chunk)
+int32_t queueData(App* app, u32 chunk)
 {
     Queued& c = queued(app, chunk);
     kChunksQueued.set(app, kChunksQueued(app) + 1);
@@ -1019,17 +1018,17 @@ int32_t queueData(App* app, reg32 chunk)
 /* 0x4e80cc (iSNDparseheader): a header chunk ('SCHl'): its patch copied to
  * the stream's and resolved -- a later file's started again when its format
  * differs.  1. */
-Result takeHeader(App* app, CPU& cpu, reg32 esp, reg32 chunk)
+Result takeHeader(App* app, ThreadState& ts, u32 esp, u32 chunk)
 {
-    const reg32 frame = esp - 6 * 4 - 0x10;
+    const u32 frame = esp - 6 * 4 - 0x10;
     if (kSkipHeaders(app) > 0)
         kSkipHeaders.set(app, int8_t(kSkipHeaders(app) - 1));
-    const reg32 size = queued(app, chunk).size - 8;
-    const reg32 header = chunk + 8;
-    store<reg32>(app, frame + 0xc, header);
-    reg32 eax = chunk;
+    const u32 size = queued(app, chunk).size - 8;
+    const u32 header = chunk + 8;
+    store<u32>(app, frame + 0xc, header);
+    u32 eax = chunk;
     if ((int32_t(size) <= 0 || int32_t(size) > 0x5c)
-        && !fail(app, cpu, frame, Where{kStreamFile, 0x54af34}, 0x4aa, {0x54af44, 0x5c, size}, eax))
+        && !fail(app, ts, frame, Where{kStreamFile, 0x54af34}, 0x4aa, {0x54af44, 0x5c, size}, eax))
         return {};
     if (kFirstHeader(app) != 0)
     {
@@ -1037,10 +1036,10 @@ Result takeHeader(App* app, CPU& cpu, reg32 esp, reg32 chunk)
         kFilesQueued.set(app, int8_t(kFilesQueued(app) - 1));
         for (int32_t i = 0; i < 12; ++i)
             kOldFormat.set(app, i, kNewFormat(app, i));
-        const Result info = sampleInfo(app, cpu, frame - 4, header, 0x564780);
+        const Result info = sampleInfo(app, ts, frame - 4, header, 0x564780);
         if (!info)
             return {};
-        eax = reg32(*info);
+        eax = u32(*info);
         if (kFormatKnown(app) != 0)
         {
             bool differs = false;
@@ -1051,12 +1050,12 @@ Result takeHeader(App* app, CPU& cpu, reg32 esp, reg32 chunk)
                 if (kStreamState(app) != 2 && kStreamState(app) != 3)
                 {
                     // ebp: the chunk, where the code keeps it.
-                    const Result started = startStreamVoice(app, cpu, frame - 4, chunk);
+                    const Result started = startStreamVoice(app, ts, frame - 4, chunk);
                     if (!started)
                         return {};
-                    eax = reg32(*started);
+                    eax = u32(*started);
                     if (int32_t(eax) < 0
-                        && !fail(app, cpu, frame, Where{kStreamFile, 0x54af34}, 0x4c7, {0x54afbc}, eax))
+                        && !fail(app, ts, frame, Where{kStreamFile, 0x54af34}, 0x4c7, {0x54afbc}, eax))
                         return {};
                 }
                 kStreamState.set(app, 3);
@@ -1064,118 +1063,118 @@ Result takeHeader(App* app, CPU& cpu, reg32 esp, reg32 chunk)
         }
         kFormatKnown.set(app, 1);
     }
-    for (reg32 i = 0; i < size; ++i)
+    for (u32 i = 0; i < size; ++i)
         app->getMemory<uint8_t>(kStreamPatch + i) = app->getMemory<uint8_t>(header + i);
-    store<reg32>(app, frame, 0xffffffff);
-    if (!resolvePatch(app, cpu, frame - 4, kStreamPatch, 0))
+    store<u32>(app, frame, 0xffffffff);
+    if (!resolvePatch(app, ts, frame - 4, kStreamPatch, 0))
         return {};
     kPatchSet.set(app, 1);
-    if (!giveBackChunk(app, cpu, frame - 4, cdStreamAt(app), chunk))
+    if (!giveBackChunk(app, ts, frame - 4, cdStreamAt(app), chunk))
         return {};
     return 1;
 }
 
 /* 0x4e8258: a loop chunk ('SCCl'): its count into the loops' ring.  2. */
-Result queueLoop(App* app, CPU& cpu, reg32 esp, reg32 chunk)
+Result queueLoop(App* app, ThreadState& ts, u32 esp, u32 chunk)
 {
-    const reg32 frame = esp - 2 * 4;
+    const u32 frame = esp - 2 * 4;
     if (kLoopNow(app) != kLoopLast(app) || kLoops(app, kLoopNow(app)) > 0)
         kLoopLast.set(app, int8_t(kLoopLast(app) + 1));
     if (kLoopLast(app) >= 0x14)
         kLoopLast.set(app, 0);
     kLoops.set(app, kLoopLast(app), int32_t(queued(app, chunk).frames));
-    if (!giveBackChunk(app, cpu, frame - 4, cdStreamAt(app), chunk))
+    if (!giveBackChunk(app, ts, frame - 4, cdStreamAt(app), chunk))
         return {};
     return 2;
 }
 
 /* 0x4e82c4: a seek chunk ('SCLl'): the reader sent back to its offset.  4. */
-Result takeSeek(App* app, CPU& cpu, reg32 esp, reg32 chunk)
+Result takeSeek(App* app, ThreadState& ts, u32 esp, u32 chunk)
 {
-    const reg32 frame = esp - 2 * 4;
-    if (!queueArgument(app, cpu, frame - 4, cdStreamAt(app), queued(app, chunk).frames, Command::Seek, true, true)
-        || !giveBackChunk(app, cpu, frame - 4, cdStreamAt(app), chunk))
+    const u32 frame = esp - 2 * 4;
+    if (!queueArgument(app, ts, frame - 4, cdStreamAt(app), queued(app, chunk).frames, Command::Seek, true, true)
+        || !giveBackChunk(app, ts, frame - 4, cdStreamAt(app), chunk))
         return {};
     return 4;
 }
 
 /* 0x4e82ec: an end chunk ('SCEl'): counted, the queue's last marked the end
  * unless the stream goes on.  5. */
-Result takeEnd(App* app, CPU& cpu, reg32 esp, reg32 chunk)
+Result takeEnd(App* app, ThreadState& ts, u32 esp, u32 chunk)
 {
-    const reg32 frame = esp - 2 * 4;
+    const u32 frame = esp - 2 * 4;
     kEndsSeen.set(app, kEndsSeen(app) + 1);
     if (kNoEnd(app) == 0)
         queued(app, kQueueTail(app)).next = 0xffffffff;
-    if (!giveBackChunk(app, cpu, frame - 4, cdStreamAt(app), chunk))
+    if (!giveBackChunk(app, ts, frame - 4, cdStreamAt(app), chunk))
         return {};
     return 5;
 }
 
 /* 0x4e7f30: a chunk the reader read handed on by its id: data, a header, a
  * loop, a seek, an end; another given back.  -15 for it, -14 before SNDinit. */
-Result handOnChunk(App* app, CPU& cpu, reg32 esp, reg32 chunk)
+Result handOnChunk(App* app, ThreadState& ts, u32 esp, u32 chunk)
 {
     if (kInited(app) == 0)
         return kNotStarted;
-    const reg32 frame = esp - 3 * 4;
-    const Result entered = enterAudio(app, cpu, frame - 4);
+    const u32 frame = esp - 3 * 4;
+    const Result entered = enterAudio(app, ts, frame - 4);
     if (!entered)
         return {};
     int32_t result = kBadChunk;
-    reg32 eax = reg32(*entered);
-    const reg32 id = record<ChunkHeader>(app, chunk).id;
+    u32 eax = u32(*entered);
+    const u32 id = record<ChunkHeader>(app, chunk).id;
     if (id == 0x6c444353)
     {
         result = queueData(app, chunk);
-        eax = reg32(result);
+        eax = u32(result);
     }
     else if (id == 0x6c484353 || id == 0x6c434353 || id == 0x6c4c4353 || id == 0x6c454353)
     {
-        const Result h = id == 0x6c484353   ? takeHeader(app, cpu, frame - 4, chunk)
-                         : id == 0x6c434353 ? queueLoop(app, cpu, frame - 4, chunk)
-                         : id == 0x6c4c4353 ? takeSeek(app, cpu, frame - 4, chunk)
-                                            : takeEnd(app, cpu, frame - 4, chunk);
+        const Result h = id == 0x6c484353   ? takeHeader(app, ts, frame - 4, chunk)
+                         : id == 0x6c434353 ? queueLoop(app, ts, frame - 4, chunk)
+                         : id == 0x6c4c4353 ? takeSeek(app, ts, frame - 4, chunk)
+                                            : takeEnd(app, ts, frame - 4, chunk);
         if (!h)
             return {};
         result = *h;
-        eax = reg32(result);
+        eax = u32(result);
     }
     else
     {
-        const Result g = giveBackChunk(app, cpu, frame - 4, cdStreamAt(app), chunk);
+        const Result g = giveBackChunk(app, ts, frame - 4, cdStreamAt(app), chunk);
         if (!g)
             return {};
-        eax = reg32(*g);
+        eax = u32(*g);
     }
-    if (!leaveAudio(app, cpu, frame - 4, eax))
+    if (!leaveAudio(app, ts, frame - 4, eax))
         return {};
     return result;
 }
 
 /* 0x4e8320: the end chunks the streamer has seen. */
-reg32 endsSeen(App* app) { return kEndsSeen(app); }
+u32 endsSeen(App* app) { return kEndsSeen(app); }
 
 /* 0x4e8328: the mixer's refill: the next chunk to play into [data] and its
  * frames into [frames] -- the one playing given back first, the loops counted
  * down; a chunk's first pass silenced.  1 once the chunk plays, 0 before; at
  * the stream's end none. */
-Result refillChunk(App* app, CPU& cpu, reg32 esp, reg32 data, reg32 frames)
+Result refillChunk(App* app, ThreadState& ts, u32 esp, u32 data, u32 frames)
 {
-    const reg32 frame = esp - 5 * 4;
+    const u32 frame = esp - 5 * 4;
     int32_t result = 0;
     // The chunk taken off the queue: the one playing given back, the counts
     // moved on, the loops' ring stepped when this loop ran out.
-    const auto take = [&](reg32 chunk) {
+    const auto take = [&](u32 chunk) {
         kQueueHead.set(app, queued(app, chunk).next);
-        const reg32 bytes = queued(app, chunk).size;
-        if (kPlaying(app) != 0 && !giveBackChunk(app, cpu, frame - 4, cdStreamAt(app), kPlaying(app)))
+        const u32 bytes = queued(app, chunk).size;
+        if (kPlaying(app) != 0 && !giveBackChunk(app, ts, frame - 4, cdStreamAt(app), kPlaying(app)))
             return false;
         kPlaying.set(app, chunk);
         kChunksQueued.set(app, kChunksQueued(app) - 1);
         kBytesQueued.set(app, kBytesQueued(app) - bytes);
         kChunksPlayed.set(app, kChunksPlayed(app) + 1);
-        kLoops.set(app, kLoopNow(app), int32_t(reg32(kLoops(app, kLoopNow(app))) - 1));
+        kLoops.set(app, kLoopNow(app), int32_t(u32(kLoops(app, kLoopNow(app))) - 1));
         if (kLoops(app, kLoopNow(app)) <= 0)
         {
             kFilesStarted.set(app, int8_t(kFilesStarted(app) - 1));
@@ -1197,26 +1196,26 @@ Result refillChunk(App* app, CPU& cpu, reg32 esp, reg32 data, reg32 frames)
     }
     if (kQueueHead(app) != kQueueTail(app))
     {
-        const reg32 chunk = kQueueHead(app);
-        store<reg32>(app, data, chunk + 0xc);
-        store<reg32>(app, frames, queued(app, chunk).frames);
+        const u32 chunk = kQueueHead(app);
+        store<u32>(app, data, chunk + 0xc);
+        store<u32>(app, frames, queued(app, chunk).frames);
         if (!take(chunk))
             return {};
         return result;
     }
     if (queued(app, kQueueHead(app)).next == 0xffffffff)
     {
-        if (!giveBackChunk(app, cpu, frame - 4, cdStreamAt(app), kQueueHead(app)))
+        if (!giveBackChunk(app, ts, frame - 4, cdStreamAt(app), kQueueHead(app)))
             return {};
-        store<reg32>(app, data, 0);
-        store<reg32>(app, frames, 0);
+        store<u32>(app, data, 0);
+        store<u32>(app, frames, 0);
         return result;
     }
-    store<reg32>(app, data, kQueueHead(app) + 0xc);
-    store<reg32>(app, frames, queued(app, kQueueHead(app)).frames);
+    store<u32>(app, data, kQueueHead(app) + 0xc);
+    store<u32>(app, frames, queued(app, kQueueHead(app)).frames);
     if (kChunkState(app) == 1)
     {
-        if (!clearChunk(app, cpu, frame - 4, load<reg32>(app, data), int32_t(load<reg32>(app, frames)),
+        if (!clearChunk(app, ts, frame - 4, load<u32>(app, data), int32_t(load<u32>(app, frames)),
                         kStreamVoice(app)))
             return {};
         kChunkState.set(app, 2);
@@ -1233,16 +1232,16 @@ Result refillChunk(App* app, CPU& cpu, reg32 esp, reg32 data, reg32 frames)
  * chunks; the top-up the loads wait for set.  The handle; -1 while the last
  * still plays.  `ebp` is the caller's, which the code does not touch and the
  * patch's play reads unset (playPatchFrom). */
-Result startStreamVoice(App* app, CPU& cpu, reg32 esp, reg32 ebp)
+Result startStreamVoice(App* app, ThreadState& ts, u32 esp, u32 ebp)
 {
-    const reg32 frame = esp - 1 * 4 - 0x10;
-    const Result stopped = soundStatus(app, cpu, frame - 4, reg32(kStreamHandle(app)));
+    const u32 frame = esp - 1 * 4 - 0x10;
+    const Result stopped = soundStatus(app, ts, frame - 4, u32(kStreamHandle(app)));
     if (!stopped)
         return {};
     if (*stopped == 0)
         return -1;
     if (kPatchSet(app) == 0
-        && !fail(app, cpu, frame - 0x10, Where{kStreamFile, 0x54b040}, 0x714, {0x54b050}, reg32(*stopped)))
+        && !fail(app, ts, frame - 0x10, Where{kStreamFile, 0x54b040}, 0x714, {0x54b050}, u32(*stopped)))
         return {};
     PlayOptions& options = record<PlayOptions>(app, frame);
     playDefaults(options);
@@ -1250,7 +1249,7 @@ Result startStreamVoice(App* app, CPU& cpu, reg32 esp, reg32 ebp)
     options.pan = int8_t(kStreamPan(app));
     options.bend = int8_t(kStreamBend(app));
     options.effectLevel = int8_t(kStreamEffect(app));
-    const Result handle = playPatchFrom(app, cpu, frame - 0xc - 4, kStreamPatch, options, ebp);
+    const Result handle = playPatchFrom(app, ts, frame - 0xc - 4, kStreamPatch, options, ebp);
     if (!handle)
         return {};
     kStreamHandle.set(app, *handle);
@@ -1258,11 +1257,11 @@ Result startStreamVoice(App* app, CPU& cpu, reg32 esp, reg32 ebp)
     {
         kStartTries.set(app, uint16_t(kStartTries(app) + 1));
         if (kStartTries(app) > 0x2710
-            && !fail(app, cpu, frame - 0xc, Where{kStreamFile, 0x54b040}, 0x737, {0x54b074}, reg32(*handle)))
+            && !fail(app, ts, frame - 0xc, Where{kStreamFile, 0x54b040}, 0x737, {0x54b074}, u32(*handle)))
             return {};
         return kStreamHandle(app);
     }
-    kStreamVoice.set(app, int8_t(voiceOfHandle(app, reg32(kStreamHandle(app)))));
+    kStreamVoice.set(app, int8_t(voiceOfHandle(app, u32(kStreamHandle(app)))));
     kVoiceChunks.set(app, kVoices(app, kStreamVoice(app)).timbre6c);
     kStreamState.set(app, 2);
     kPatchSet.set(app, 0);
@@ -1273,19 +1272,19 @@ Result startStreamVoice(App* app, CPU& cpu, reg32 esp, reg32 ebp)
 
 /* 0x4e8b60 (SNDstreamvol): the stream's volume to `volume`.  `ebp` the
  * caller's, which the code does not touch, for SNDvol (setVolumeFrom). */
-Result setStreamVolume(App* app, CPU& cpu, reg32 esp, int32_t volume, reg32 ebp)
+Result setStreamVolume(App* app, ThreadState& ts, u32 esp, int32_t volume, u32 ebp)
 {
-    const reg32 frame = esp - 2 * 4;
+    const u32 frame = esp - 2 * 4;
     if (kInited(app) == 0)
         return kNotStarted;
     if (volume > 0x7f || volume < 0)
     {
-        if (!fail(app, cpu, esp - 3 * 4, Where{0x54b0c0, 0x54b0cc}, 0x74, {0x54b0dc, reg32(volume)}, reg32(volume)))
+        if (!fail(app, ts, esp - 3 * 4, Where{0x54b0c0, 0x54b0cc}, 0x74, {0x54b0dc, u32(volume)}, u32(volume)))
             return {};
         return -8;
     }
     kStreamVolume.set(app, uint8_t(volume));
-    if (!setVolumeFrom(app, cpu, frame - 4, reg32(kStreamHandle(app)), volume, ebp))
+    if (!setVolumeFrom(app, ts, frame - 4, u32(kStreamHandle(app)), volume, ebp))
         return {};
     return 0;
 }
@@ -1298,22 +1297,22 @@ namespace
  * negative). */
 struct Chunk
 {
-    reg32 chunk;
+    u32 chunk;
     int32_t parsed;
     bool error;
 };
 
-bool readChunk(App* app, CPU& cpu, reg32 frame, Chunk& c)
+bool readChunk(App* app, ThreadState& ts, u32 frame, Chunk& c)
 {
-    const Result r = nextChunkToPlay(app, cpu, frame - 4, cdStreamAt(app));
+    const Result r = nextChunkToPlay(app, ts, frame - 4, cdStreamAt(app));
     if (!r)
         return false;
-    c.chunk = reg32(*r);
+    c.chunk = u32(*r);
     c.parsed = -1;
     c.error = false;
     if (int32_t(c.chunk) > 0 || int32_t(c.chunk) <= -10)
     {
-        const Result p = handOnChunk(app, cpu, frame - 4, c.chunk);
+        const Result p = handOnChunk(app, ts, frame - 4, c.chunk);
         if (!p)
             return false;
         c.parsed = *p;
@@ -1344,20 +1343,20 @@ bool readerReady(App* app)
  * stopped when the chunks run out), interrupted (the queue dropped and the
  * new file's chunks parsed).  `ebp` is what the task finds there (the system
  * tasks' caller's), which the code does not touch, for the voice's start. */
-Result serviceStreamer(App* app, CPU& cpu, reg32 esp, reg32 ebp)
+Result serviceStreamer(App* app, ThreadState& ts, u32 esp, u32 ebp)
 {
-    reg32 eax;
-    if (!took(cpu, directFrom<kSurface, ea::surfaceIsLocked>(app, cpu, esp) ? 1u : 0u, eax))
+    u32 eax;
+    if (!took(ts, directFrom<kSurface, ea::surfaceIsLocked>(app, ts, esp) ? 1u : 0u, eax))
         return {};
     if (eax != 0)
         return 0;
-    const reg32 frame = esp - 3 * 4;
-    const Result entered = enterAudio(app, cpu, frame - 4);
+    const u32 frame = esp - 3 * 4;
+    const Result entered = enterAudio(app, ts, frame - 4);
     if (!entered)
         return {};
     // Done: the lock left.
     const auto done = [&]() -> Result {
-        if (!leaveAudio(app, cpu, frame - 4, eax))
+        if (!leaveAudio(app, ts, frame - 4, eax))
             return {};
         return 0;
     };
@@ -1366,20 +1365,20 @@ Result serviceStreamer(App* app, CPU& cpu, reg32 esp, reg32 ebp)
     {
         for (;;)
         {
-            safepoint(app, cpu);
+            safepoint(app, ts);
             if (kFirstHeader(app) == 0 && kHeadersSeen(app) >= kHeadersWanted(app))
                 return done();
             if (!readerReady(app))
                 return done();
             Chunk c;
-            if (!readChunk(app, cpu, frame, c))
+            if (!readChunk(app, ts, frame, c))
                 return {};
             eax = c.chunk;
             if (int32_t(c.chunk) <= 0 && int32_t(c.chunk) > -10 && c.chunk != 0)
             {
                 if (kHeadersSeen(app) == 0 || kFirstHeader(app) == 0)
                     return done();
-                if (!startStreamVoice(app, cpu, frame - 4, ebp))
+                if (!startStreamVoice(app, ts, frame - 4, ebp))
                     return {};
                 return done();
             }
@@ -1387,11 +1386,11 @@ Result serviceStreamer(App* app, CPU& cpu, reg32 esp, reg32 ebp)
             {
                 if (c.error)
                 {
-                    const Result r = fail(app, cpu, frame, Where{kStreamFile, 0x54b000}, 0x61c, {0x54b014},
-                                          reg32(c.parsed));
+                    const Result r = fail(app, ts, frame, Where{kStreamFile, 0x54b000}, 0x61c, {0x54b014},
+                                          u32(c.parsed));
                     if (!r)
                         return {};
-                    eax = reg32(*r);
+                    eax = u32(*r);
                 }
                 else if (c.parsed == 3)
                     kHeadersSeen.set(app, kHeadersSeen(app) + 1);
@@ -1412,7 +1411,7 @@ Result serviceStreamer(App* app, CPU& cpu, reg32 esp, reg32 ebp)
                 if (!readerIsIdle(app))
                     return done();
             }
-            if (!startStreamVoice(app, cpu, frame - 4, ebp))
+            if (!startStreamVoice(app, ts, frame - 4, ebp))
                 return {};
             return done();
         }
@@ -1421,42 +1420,42 @@ Result serviceStreamer(App* app, CPU& cpu, reg32 esp, reg32 ebp)
     {
         for (;;)
         {
-            safepoint(app, cpu);
+            safepoint(app, ts);
             if (!readerReady(app))
                 return done();
             Chunk c;
-            if (!readChunk(app, cpu, frame, c))
+            if (!readChunk(app, ts, frame, c))
                 return {};
             if (c.parsed == 1 || !(int32_t(c.chunk) > 0 || int32_t(c.chunk) <= -10))
                 break;
         }
-        if (!checkTopUp(app, cpu, frame - 4, eax))
+        if (!checkTopUp(app, ts, frame - 4, eax))
             return {};
         return done();
     }
     if (state == 3)
     {
-        const Result left = chunksLeft(app, cpu, frame - 4);
+        const Result left = chunksLeft(app, ts, frame - 4);
         if (!left)
             return {};
         if (*left > 0)
             return done();
-        if (!stopSound(app, cpu, frame - 4, reg32(kStreamHandle(app))))
+        if (!stopSound(app, ts, frame - 4, u32(kStreamHandle(app))))
             return {};
-        const Result stopped = soundStatus(app, cpu, frame - 4, reg32(kStreamHandle(app)));
+        const Result stopped = soundStatus(app, ts, frame - 4, u32(kStreamHandle(app)));
         if (!stopped)
             return {};
         if (*stopped == 0)
             return done();
         kFilesStarted.set(app, int8_t(kFilesStarted(app) - 1));
-        if (!dropQueued(app, cpu, frame - 4) || !resetStreamerState(app, cpu, frame - 4))
+        if (!dropQueued(app, ts, frame - 4) || !resetStreamerState(app, ts, frame - 4))
             return {};
         kStreamState.set(app, 1);
         return done();
     }
     if (state == 4)
     {
-        if (!checkTopUp(app, cpu, frame - 4, eax))
+        if (!checkTopUp(app, ts, frame - 4, eax))
             return {};
         if (int32_t(bytesBuffered(app, cdStreamAt(app))) <= 0x1388)
             return done();
@@ -1464,12 +1463,12 @@ Result serviceStreamer(App* app, CPU& cpu, reg32 esp, reg32 ebp)
         {
             while (kQueueHead(app) != kQueueTail(app))
             {
-                const reg32 chunk = kQueueHead(app);
+                const u32 chunk = kQueueHead(app);
                 kQueueHead.set(app, queued(app, chunk).next);
-                if (chunk != kPlaying(app) && !giveBackChunk(app, cpu, frame - 4, cdStreamAt(app), chunk))
+                if (chunk != kPlaying(app) && !giveBackChunk(app, ts, frame - 4, cdStreamAt(app), chunk))
                     return {};
             }
-            if (!giveBackChunk(app, cpu, frame - 4, cdStreamAt(app), kQueueHead(app)))
+            if (!giveBackChunk(app, ts, frame - 4, cdStreamAt(app), kQueueHead(app)))
                 return {};
         }
         kQueueHead.set(app, 0);
@@ -1486,13 +1485,13 @@ Result serviceStreamer(App* app, CPU& cpu, reg32 esp, reg32 ebp)
         kChunkState.set(app, 0);
         for (;;)
         {
-            safepoint(app, cpu);
-            const Result chunk = nextChunkToPlay(app, cpu, frame - 4, cdStreamAt(app));
+            safepoint(app, ts);
+            const Result chunk = nextChunkToPlay(app, ts, frame - 4, cdStreamAt(app));
             if (!chunk)
                 return {};
             if (*chunk > 0 || *chunk <= -10)
             {
-                if (!handOnChunk(app, cpu, frame - 4, reg32(*chunk)))
+                if (!handOnChunk(app, ts, frame - 4, u32(*chunk)))
                     return {};
                 continue;
             }
@@ -1508,53 +1507,53 @@ Result serviceStreamer(App* app, CPU& cpu, reg32 esp, reg32 ebp)
 
 /* The game's entries. */
 
-x86::reg32 addSystemTask(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 addSystemTask(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, stream::scheduleTask(app, cpu, e.esp, e.eax, int32_t(e.edx), e.ebx));
+    const Entry e(ts, args);
+    return e.finish(ts, args, stream::scheduleTask(app, ts, e.esp, e.eax, int32_t(e.edx), e.ebx));
 }
 
-x86::reg32 removeSystemTask(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 removeSystemTask(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.back(cpu, args, stream::unscheduleTask(app, e.eax));
+    const Entry e(ts, args);
+    return e.back(ts, args, stream::unscheduleTask(app, e.eax));
 }
 
-x86::reg32 runSystemTasks(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 runSystemTasks(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, stream::runDueTasks(app, cpu, e.esp, e.eax));
+    const Entry e(ts, args);
+    return e.finish(ts, args, stream::runDueTasks(app, ts, e.esp, e.eax));
 }
 
-x86::reg32 waitSystemTasks(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 waitSystemTasks(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, stream::runTasksFor(app, cpu, e.esp, e.eax));
+    const Entry e(ts, args);
+    return e.finish(ts, args, stream::runTasksFor(app, ts, e.esp, e.eax));
 }
 
-x86::reg32 setTopupFunction(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 setTopupFunction(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
+    const Entry e(ts, args);
     stream::kTopupFunction.set(app, e.eax);
-    return e.back(cpu, args, e.eax);
+    return e.back(ts, args, e.eax);
 }
 
-x86::reg32 topUpStream(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 topUpStream(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, stream::topUp(app, cpu, e.esp, e.eax, e.edx, e.ecx));
+    const Entry e(ts, args);
+    return e.finish(ts, args, stream::topUp(app, ts, e.esp, e.eax, e.edx, e.ecx));
 }
 
-x86::reg32 topupDone(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 topupDone(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, stream::topUpDone(app, cpu, e.esp, e.eax));
+    const Entry e(ts, args);
+    return e.finish(ts, args, stream::topUpDone(app, ts, e.esp, e.eax));
 }
 
-x86::reg32 toppedUp(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 toppedUp(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.back(cpu, args, stream::kToppedUp(app));
+    const Entry e(ts, args);
+    return e.back(ts, args, stream::kToppedUp(app));
 }
 
 /* The fragments of waittopupstream entered by a jump with edx and ebp pushed
@@ -1566,242 +1565,242 @@ namespace
 // The two they pop: ebp, then edx.
 struct Popped
 {
-    reg32 ebp, edx;
+    u32 ebp, edx;
 };
-Popped poppedTwo(App* app, const Entry& e) { return {app->getMemory<reg32>(e.esp), app->getMemory<reg32>(e.esp + 4)}; }
+Popped poppedTwo(App* app, const Entry& e) { return {app->getMemory<u32>(e.esp), app->getMemory<u32>(e.esp + 4)}; }
 
 }  // namespace
 
-x86::reg32 waitTopupMain(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 waitTopupMain(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    const Result r = stream::waitOnMainThread(app, cpu, e.esp);
+    const Entry e(ts, args);
+    const Result r = stream::waitOnMainThread(app, ts, e.esp);
     if (!r)
         return args.eax;
     const Popped p = poppedTwo(app, e);
-    e.back(cpu, args, reg32(*r), 8);
+    e.back(ts, args, u32(*r), 8);
     args.ebp = p.ebp;
     args.edx = p.edx;
     return args.eax;
 }
 
-x86::reg32 waitTopupEvent(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 waitTopupEvent(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    const Result r = stream::waitOnEvent(app, cpu, e.esp, e.edx);
+    const Entry e(ts, args);
+    const Result r = stream::waitOnEvent(app, ts, e.esp, e.edx);
     if (!r)
         return args.eax;
     const Popped p = poppedTwo(app, e);
-    e.back(cpu, args, reg32(*r), 8);
+    e.back(ts, args, u32(*r), 8);
     args.ebp = p.ebp;
     args.edx = p.edx;
     return args.eax;
 }
 
-x86::reg32 waitTopupDone(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 waitTopupDone(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
+    const Entry e(ts, args);
     const Popped p = poppedTwo(app, e);
-    e.back(cpu, args, e.eax, 8);
+    e.back(ts, args, e.eax, 8);
     args.ebp = p.ebp;
     args.edx = p.edx;
     return args.eax;
 }
 
-x86::reg32 waitTopupStream(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 waitTopupStream(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, stream::waitForTopup(app, cpu, e.esp));
+    const Entry e(ts, args);
+    return e.finish(ts, args, stream::waitForTopup(app, ts, e.esp));
 }
 
-x86::reg32 topUpBeforeLoad(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 topUpBeforeLoad(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
+    const Entry e(ts, args);
     if (stream::kTopupFunction(app) == 0 || stream::kSoundRunning(app) == 0)
-        return e.back(cpu, args, e.eax);
-    if (!stream::topUp(app, cpu, e.esp - 4, e.eax, e.edx, e.ecx))
+        return e.back(ts, args, e.eax);
+    if (!stream::topUp(app, ts, e.esp - 4, e.eax, e.edx, e.ecx))
         return args.eax;
-    return e.finish(cpu, args, stream::waitForTopup(app, cpu, e.esp));
+    return e.finish(ts, args, stream::waitForTopup(app, ts, e.esp));
 }
 
-x86::reg32 topupReturn(App*, CPU& cpu, x86::Args& args)
+nfs::u32 topupReturn(App*, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.back(cpu, args, e.eax);
+    const Entry e(ts, args);
+    return e.back(ts, args, e.eax);
 }
 
-x86::reg32 loadBlockSize(App*, CPU& cpu, x86::Args& args)
+nfs::u32 loadBlockSize(App*, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.back(cpu, args, 0x3e8);
+    const Entry e(ts, args);
+    return e.back(ts, args, 0x3e8);
 }
 
-x86::reg32 loadFlags(App*, CPU& cpu, x86::Args& args)
+nfs::u32 loadFlags(App*, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.back(cpu, args, 0);
+    const Entry e(ts, args);
+    return e.back(ts, args, 0);
 }
 
-x86::reg32 platformChunks(App*, CPU& cpu, x86::Args& args)
+nfs::u32 platformChunks(App*, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.back(cpu, args, reg32(stream::platformHolds(int32_t(e.eax))));
+    const Entry e(ts, args);
+    return e.back(ts, args, u32(stream::platformHolds(int32_t(e.eax))));
 }
 
-x86::reg32 iSNDclearchunk(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 iSNDclearchunk(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, stream::clearChunk(app, cpu, e.esp, e.eax, int32_t(e.edx), int32_t(e.ebx)));
+    const Entry e(ts, args);
+    return e.finish(ts, args, stream::clearChunk(app, ts, e.esp, e.eax, int32_t(e.edx), int32_t(e.ebx)));
 }
 
-x86::reg32 SNDstreamautovol(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 SNDstreamautovol(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, stream::fadeStream(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx)));
+    const Entry e(ts, args);
+    return e.finish(ts, args, stream::fadeStream(app, ts, e.esp, int32_t(e.eax), int32_t(e.edx)));
 }
 
-x86::reg32 SNDstreamgetvol(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 SNDstreamgetvol(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, stream::streamVolume(app, cpu, e.esp));
+    const Entry e(ts, args);
+    return e.finish(ts, args, stream::streamVolume(app, ts, e.esp));
 }
 
-x86::reg32 SNDstreamsetup(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 SNDstreamsetup(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, stream::setUpStreamer(app, cpu, e.esp, e.eax, e.edx));
+    const Entry e(ts, args);
+    return e.finish(ts, args, stream::setUpStreamer(app, ts, e.esp, e.eax, e.edx));
 }
 
-x86::reg32 SNDstreamrestore(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 SNDstreamrestore(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, stream::restoreStreamer(app, cpu, e.esp));
+    const Entry e(ts, args);
+    return e.finish(ts, args, stream::restoreStreamer(app, ts, e.esp));
 }
 
-x86::reg32 SNDstreamqueue(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 SNDstreamqueue(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, stream::queueStreamFile(app, cpu, e.esp, e.eax, e.edx));
+    const Entry e(ts, args);
+    return e.finish(ts, args, stream::queueStreamFile(app, ts, e.esp, e.eax, e.edx));
 }
 
-x86::reg32 SNDstreaminterrupt(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 SNDstreaminterrupt(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, stream::interruptStream(app, cpu, e.esp, e.eax, e.edx));
+    const Entry e(ts, args);
+    return e.finish(ts, args, stream::interruptStream(app, ts, e.esp, e.eax, e.edx));
 }
 
-x86::reg32 SNDstreampurge(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 SNDstreampurge(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, stream::purgeStreamer(app, cpu, e.esp));
+    const Entry e(ts, args);
+    return e.finish(ts, args, stream::purgeStreamer(app, ts, e.esp));
 }
 
-x86::reg32 SNDstreamchunksleft(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 SNDstreamchunksleft(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, stream::chunksLeft(app, cpu, e.esp));
+    const Entry e(ts, args);
+    return e.finish(ts, args, stream::chunksLeft(app, ts, e.esp));
 }
 
-x86::reg32 SNDstreambuftime(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 SNDstreambuftime(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, stream::bufferedTime(app, cpu, e.esp));
+    const Entry e(ts, args);
+    return e.finish(ts, args, stream::bufferedTime(app, ts, e.esp));
 }
 
-x86::reg32 streamToppedUp(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 streamToppedUp(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, stream::topUpFinished(app, cpu, e.esp, e.eax));
+    const Entry e(ts, args);
+    return e.finish(ts, args, stream::topUpFinished(app, ts, e.esp, e.eax));
 }
 
-x86::reg32 iSNDstreamchecktopup(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 iSNDstreamchecktopup(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, stream::checkTopUp(app, cpu, e.esp, e.eax));
+    const Entry e(ts, args);
+    return e.finish(ts, args, stream::checkTopUp(app, ts, e.esp, e.eax));
 }
 
-x86::reg32 iSNDstreamsetbuftime(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 iSNDstreamsetbuftime(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, stream::askTopUp(app, cpu, e.esp, int32_t(e.eax)));
+    const Entry e(ts, args);
+    return e.finish(ts, args, stream::askTopUp(app, ts, e.esp, int32_t(e.eax)));
 }
 
-x86::reg32 parseStreamChunk(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 parseStreamChunk(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, stream::handOnChunk(app, cpu, e.esp, e.eax));
+    const Entry e(ts, args);
+    return e.finish(ts, args, stream::handOnChunk(app, ts, e.esp, e.eax));
 }
 
-x86::reg32 dropQueuedChunks(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 dropQueuedChunks(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, stream::dropQueued(app, cpu, e.esp));
+    const Entry e(ts, args);
+    return e.finish(ts, args, stream::dropQueued(app, ts, e.esp));
 }
 
-x86::reg32 queueDataChunk(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 queueDataChunk(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.back(cpu, args, reg32(stream::queueData(app, e.eax)));
+    const Entry e(ts, args);
+    return e.back(ts, args, u32(stream::queueData(app, e.eax)));
 }
 
-x86::reg32 iSNDparseheader(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 iSNDparseheader(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, stream::takeHeader(app, cpu, e.esp, e.eax));
+    const Entry e(ts, args);
+    return e.finish(ts, args, stream::takeHeader(app, ts, e.esp, e.eax));
 }
 
-x86::reg32 queueLoopChunk(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 queueLoopChunk(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, stream::queueLoop(app, cpu, e.esp, e.eax));
+    const Entry e(ts, args);
+    return e.finish(ts, args, stream::queueLoop(app, ts, e.esp, e.eax));
 }
 
-x86::reg32 streamSeekChunk(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 streamSeekChunk(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, stream::takeSeek(app, cpu, e.esp, e.eax));
+    const Entry e(ts, args);
+    return e.finish(ts, args, stream::takeSeek(app, ts, e.esp, e.eax));
 }
 
-x86::reg32 streamEndChunk(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 streamEndChunk(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, stream::takeEnd(app, cpu, e.esp, e.eax));
+    const Entry e(ts, args);
+    return e.finish(ts, args, stream::takeEnd(app, ts, e.esp, e.eax));
 }
 
-x86::reg32 streamEndsSeen(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 streamEndsSeen(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.back(cpu, args, stream::endsSeen(app));
+    const Entry e(ts, args);
+    return e.back(ts, args, stream::endsSeen(app));
 }
 
-x86::reg32 nextStreamChunk(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 nextStreamChunk(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, stream::refillChunk(app, cpu, e.esp, e.eax, e.edx));
+    const Entry e(ts, args);
+    return e.finish(ts, args, stream::refillChunk(app, ts, e.esp, e.eax, e.edx));
 }
 
-x86::reg32 iSNDstreamservice(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 iSNDstreamservice(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, stream::serviceStreamer(app, cpu, e.esp, e.ebp));
+    const Entry e(ts, args);
+    return e.finish(ts, args, stream::serviceStreamer(app, ts, e.esp, e.ebp));
 }
 
-x86::reg32 resetStreamer(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 resetStreamer(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, stream::resetStreamerState(app, cpu, e.esp));
+    const Entry e(ts, args);
+    return e.finish(ts, args, stream::resetStreamerState(app, ts, e.esp));
 }
 
-x86::reg32 iSNDstreamstart(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 iSNDstreamstart(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, stream::startStreamVoice(app, cpu, e.esp, e.ebp));
+    const Entry e(ts, args);
+    return e.finish(ts, args, stream::startStreamVoice(app, ts, e.esp, e.ebp));
 }
 
-x86::reg32 SNDstreamvol(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 SNDstreamvol(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, stream::setStreamVolume(app, cpu, e.esp, int32_t(e.eax), e.ebp));
+    const Entry e(ts, args);
+    return e.finish(ts, args, stream::setStreamVolume(app, ts, e.esp, int32_t(e.eax), e.ebp));
 }
 
 }  // namespace port

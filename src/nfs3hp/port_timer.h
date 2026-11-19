@@ -12,15 +12,15 @@ namespace port
 {
 
 // The game's 0x48eff0: the timer started at `rate` ticks a second (1 to 10000, else 100); eax as the way out leaves it.
-std::optional<x86::reg32> timerStarted(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 rate);
+std::optional<nfs::u32> timerStarted(nfs::App* app, nfs::ThreadState& ts, nfs::u32 rate);
 // The game's 0x48ef50: the timer stopped; eax as the code leaves it (`unchanged`, its eax, when it ran none).
-std::optional<x86::reg32> timerStopped(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 unchanged);
+std::optional<nfs::u32> timerStopped(nfs::App* app, nfs::ThreadState& ts, nfs::u32 unchanged);
 // The game's 0x48ee30: `function` registered to run with every tick; the place the search ended at.
-x86::reg32 timerCallbackAdded(win32::WinApplication* app, x86::reg32 function);
+nfs::u32 timerCallbackAdded(nfs::App* app, nfs::u32 function);
 // The game's 0x48ee90: `function` no longer registered; the place the search ended at.
-x86::reg32 timerCallbackRemoved(win32::WinApplication* app, x86::reg32 function);
+nfs::u32 timerCallbackRemoved(nfs::App* app, nfs::u32 function);
 // The game's 0x48ed00: the callbacks cleared; eax as the code leaves it.
-x86::reg32 timerCallbacksCleared(win32::WinApplication* app);
+nfs::u32 timerCallbacksCleared(nfs::App* app);
 
 }  // namespace port
 }  // namespace nfs3hp

@@ -1,50 +1,50 @@
 #include "voodoo2a.h"
-#include <x86.h>
-#include <winapi/wrapper.h>
+#include <game_types.h>
+#include <lib/app.h>
 
 namespace nfs3hp
 {
-x86::reg32 THRASH_about(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 THRASH_clearwindow(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 THRASH_clip(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 THRASH_drawline(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 THRASH_drawlinemesh(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 THRASH_drawlinestrip(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 THRASH_drawpoint(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 THRASH_drawpointmesh(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 THRASH_drawpointstrip(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 THRASH_drawquad(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 THRASH_drawquadmesh(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 THRASH_drawtri(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 THRASH_drawtrifan(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 THRASH_drawtrimesh(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 THRASH_drawtristrip(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 THRASH_flushwindow(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 THRASH_idle(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 THRASH_init(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 THRASH_is(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 THRASH_lockwindow(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 THRASH_pageflip(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 THRASH_readrect(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 THRASH_restore(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 THRASH_selectdisplay(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 THRASH_setstate(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 THRASH_settexture(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 THRASH_setvideomode(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 THRASH_sync(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 THRASH_talloc(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 THRASH_treset(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 THRASH_tupdate(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 THRASH_unlockwindow(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 THRASH_window(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
-x86::reg32 THRASH_writerect(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args);
+nfs::u32 THRASH_about(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 THRASH_clearwindow(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 THRASH_clip(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 THRASH_drawline(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 THRASH_drawlinemesh(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 THRASH_drawlinestrip(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 THRASH_drawpoint(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 THRASH_drawpointmesh(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 THRASH_drawpointstrip(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 THRASH_drawquad(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 THRASH_drawquadmesh(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 THRASH_drawtri(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 THRASH_drawtrifan(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 THRASH_drawtrimesh(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 THRASH_drawtristrip(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 THRASH_flushwindow(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 THRASH_idle(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 THRASH_init(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 THRASH_is(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 THRASH_lockwindow(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 THRASH_pageflip(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 THRASH_readrect(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 THRASH_restore(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 THRASH_selectdisplay(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 THRASH_setstate(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 THRASH_settexture(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 THRASH_setvideomode(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 THRASH_sync(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 THRASH_talloc(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 THRASH_treset(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 THRASH_tupdate(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 THRASH_unlockwindow(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 THRASH_window(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
+nfs::u32 THRASH_writerect(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
 }
 
 namespace voodoo2a
 {
 
-win32::Library s_library = win32::Library("voodoo2a.dll");
-win32::Library* s_registry = &(s_library
+nfs::Library s_library = nfs::Library("voodoo2a.dll");
+nfs::Library* s_registry = &(s_library
         .registerSymbol("_THRASH_about@0", &nfs3hp::THRASH_about)
         .registerSymbol("_THRASH_clearwindow@0", &nfs3hp::THRASH_clearwindow)
         .registerSymbol("_THRASH_clip@16", &nfs3hp::THRASH_clip)

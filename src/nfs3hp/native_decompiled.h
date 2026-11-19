@@ -10,7 +10,7 @@ namespace decompiled
 {
 
 // The game's 0x49d640: the sun's lighting back to the game's defaults.
-void sunLightingReset(win32::WinApplication* app);
+void sunLightingReset(nfs::App* app);
 
 }  // namespace decompiled
 }  // namespace nfs3hp

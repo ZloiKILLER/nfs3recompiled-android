@@ -65,9 +65,9 @@ MadPlayer& player()
     return *p;
 }
 
-u8* memoryOf(win32::WinApplication* app)
+u8* memoryOf(nfs::App* app)
 {
-    return reinterpret_cast<u8*>(&app->getMemory<x86::reg8>(0));
+    return reinterpret_cast<u8*>(&app->getMemory<nfs::u8>(0));
 }
 
 u32 r32(const u8* m, u32 at)
@@ -129,12 +129,12 @@ constexpr u32 kDisplayMode = 0x8ca2d4;  // 2: the software path, the one the pla
 constexpr u32 kDisplayX = 0x8ca2e0, kDisplayY = 0x8ca2dc, kDisplayW = 0x8ca2d0, kDisplayH = 0x8ca2c4;
 constexpr u32 kDisplayQuality = 0x8ca2cc;  // 0: 1x; 1-3: 2x
 
-bool showFrame(win32::WinApplication* app, u32 frame)
+bool showFrame(nfs::App* app, u32 frame)
 {
     const u8* m = memoryOf(app);
     if (s32(m, kDisplayMode) != 2)
         return false;
-    win32::Renderer* renderer = win32::Renderer::active();
+    nfs::Renderer* renderer = nfs::Renderer::active();
     if (!renderer)
         return false;
     const i32 x = s32(m, kDisplayX), y = s32(m, kDisplayY);
@@ -143,7 +143,7 @@ bool showFrame(win32::WinApplication* app, u32 frame)
     if (w < 2 || h < 1 || w > 1024 || h > 1024 || quality < 0 || quality > 3)
         return false;
     const i32 scale = quality == 0 ? 1 : 2;
-    renderer->presentMovieFrame(fullColour(m + frame, w & ~1, h), x86::reg32(w & ~1), x86::reg32(h), x & ~1, y,
+    renderer->presentMovieFrame(fullColour(m + frame, w & ~1, h), nfs::u32(w & ~1), nfs::u32(h), x & ~1, y,
                                 (w & ~1) * scale, h * scale);
     return true;
 }
@@ -153,7 +153,7 @@ bool showFrame(win32::WinApplication* app, u32 frame)
 /* SNDplaysetdef (0x4e9b20, port_snd_voices.cpp's thunk) as showmad calls
  * it: the play's defaults into the block at `at` (never 0 here, so never its
  * error). */
-void playDefaultsAt(win32::WinApplication* app, x86::reg32 at)
+void playDefaultsAt(nfs::App* app, nfs::u32 at)
 {
     port::playDefaults(port::record<port::PlayOptions>(app, at));
 }
@@ -171,11 +171,11 @@ namespace
 /* EA's memory, streams and sound, the clock, the keyboard and the display, as
  * showmad calls them: the game's functions' typed cores, called as C++ with
  * what each takes, the frames they make on the guest's stack below the
- * player's own (as the original's calls, decomp/mad/tests/diff_player.py). */
+ * player's own, as the original's calls made them. */
 struct Game
 {
-    win32::WinApplication* app;
-    x86::CPU& cpu;
+    nfs::App* app;
+    nfs::ThreadState& ts;
     u8* m;
     u32 scratch;  // guest memory of the native player's own frame
     bool dead = false;
@@ -192,14 +192,14 @@ struct Game
     /* A function of the game's with a typed core, called as C++ (guest::direct) with what it takes,
      * every register kept around it (guest::direct keeps them); its result as the game's eax, 0 once
      * the game stopped. */
-    static u32 valueOf(x86::reg32 v) { return v; }
+    static u32 valueOf(nfs::u32 v) { return v; }
     template <typename T>
     static u32 valueOf(const std::optional<T>& v)
     {
         return v ? u32(*v) : 0;
     }
 
-    template <x86::reg32 Address, auto Core, typename... Args>
+    template <nfs::u32 Address, auto Core, typename... Args>
     u32 direct(Args... args)
     {
         if (dead)
@@ -207,16 +207,16 @@ struct Game
         u32 result = 0;
         try
         {
-            if constexpr (std::is_void_v<decltype(guest::direct<Address, Core>(app, cpu, args...))>)
-                guest::direct<Address, Core>(app, cpu, args...);
+            if constexpr (std::is_void_v<decltype(guest::direct<Address, Core>(app, ts, args...))>)
+                guest::direct<Address, Core>(app, ts, args...);
             else
-                result = valueOf(guest::direct<Address, Core>(app, cpu, args...));
+                result = valueOf(guest::direct<Address, Core>(app, ts, args...));
         }
         catch (const fe::Terminated&)
         {
             dead = true;
         }
-        if (cpu.terminate)
+        if (ts.terminate)
             dead = true;
         return result;
     }
@@ -226,7 +226,7 @@ struct Game
     void letOthersRun()
     {
         if (app->contextWanted())
-            app->yieldContext(cpu);
+            app->yieldContext(ts);
     }
 
     /* A tap on the screen ends the movie, as a key would. */
@@ -336,7 +336,7 @@ void* hostSoundCreate(void* u, void* channel, void* params, int32_t streams, int
     Game& G = game(u);
     std::memcpy(G.m + G.scratch + Game::kParams, params, 0x20);
     // stdcall: the memory and its size pushed.
-    return G.h(G.direct<0x4f3a60, port::stream::createQueued>(G.cpu.esp - 4 - 2 * 4, G.g(channel),
+    return G.h(G.direct<0x4f3a60, port::stream::createQueued>(G.ts.sp - 4 - 2 * 4, G.g(channel),
                                                                   G.scratch + Game::kParams, u32(streams), u32(count),
                                                                   G.g(memory), size));
 }
@@ -344,14 +344,14 @@ void* hostSoundCreate(void* u, void* channel, void* params, int32_t streams, int
 int32_t hostSoundStart(void* u, void* sound, void* file)
 {
     Game& G = game(u);
-    return i32(G.direct<0x4f3a80, port::stream::requestData>(G.cpu.esp - 4, G.g(sound), 0u, G.g(file)));
+    return i32(G.direct<0x4f3a80, port::stream::requestData>(G.ts.sp - 4, G.g(sound), 0u, G.g(file)));
 }
 
 void hostSoundStatus(void* u, int32_t handle, int32_t status[4])
 {
     Game& G = game(u);
     G.letOthersRun();
-    G.direct<0x4f2f50, port::stream::requestStatusOf>(G.cpu.esp - 4, u32(handle), G.scratch + Game::kStatus);
+    G.direct<0x4f2f50, port::stream::requestStatusOf>(G.ts.sp - 4, u32(handle), G.scratch + Game::kStatus);
     std::memcpy(status, G.m + G.scratch + Game::kStatus, 16);
     if (G.dead || G.skipping())
         status[0] = 3;
@@ -360,7 +360,7 @@ void hostSoundStatus(void* u, int32_t handle, int32_t status[4])
 void hostSoundDestroy(void* u, void* sound)
 {
     Game& G = game(u);
-    G.direct<0x4f43c0, port::stream::destroyStreamOf>(G.cpu.esp - 4, i32(G.g(sound)));
+    G.direct<0x4f43c0, port::stream::destroyStreamOf>(G.ts.sp - 4, i32(G.g(sound)));
 }
 
 /* After a tap or once the game is closing, time runs out at once: the
@@ -378,7 +378,7 @@ uint32_t hostTicks(void* u)
 void hostPump(void* u)
 {
     Game& G = game(u);
-    G.direct<0x4e7630, port::stream::runDueTasks>(G.cpu.esp - 4, 0u);
+    G.direct<0x4e7630, port::stream::runDueTasks>(G.ts.sp - 4, 0u);
 }
 
 int32_t hostDisplayMode(void* u)
@@ -390,7 +390,7 @@ int32_t hostDisplayMode(void* u)
 int32_t hostKeyPressed(void* u)
 {
     Game& G = game(u);
-    const i32 pressed = i32(G.direct<0x451960, port::text::menuKeyOf>(G.cpu.esp - 4, 1u));
+    const i32 pressed = i32(G.direct<0x451960, port::text::menuKeyOf>(G.ts.sp - 4, 1u));
     return G.dead || G.skipping() ? 1 : pressed;
 }
 
@@ -425,17 +425,17 @@ void hostFatal(void* u, const char* message)
 
 /* sub_495bc0, showmad: the file's name in eax, the flag that drops MADe frames
  * at edx, ebx unused, the quality in ecx, "software" on the stack; ret 4. */
-void madPlay(win32::WinApplication* app, x86::CPU& cpu, const x86::Args& args)
+void madPlay(nfs::App* app, nfs::ThreadState& ts, const nfs::Args& args)
 {
     // The registers it found are left as they are (args).
     const u32 eax = args.eax, ebx = args.ebx, ecx = args.ecx, edx = args.edx;
-    const u32 esp = cpu.esp;
+    const u32 esp = ts.sp;
     u8* m = memoryOf(app);
     const u32 software = r32(m, esp + 4);
     // A frame of its own below the return address, for the guest memory the
     // player hands to the game: the game's calls go below it.
-    cpu.esp = (cpu.esp - Game::kScratchSize) & ~0xfu;
-    Game G{app, cpu, m, cpu.esp};
+    ts.sp = (ts.sp - Game::kScratchSize) & ~0xfu;
+    Game G{app, ts, m, ts.sp};
 
     MadPlayerHost host;
     std::memset(&host, 0, sizeof host);
@@ -480,9 +480,9 @@ void madPlay(win32::WinApplication* app, x86::CPU& cpu, const x86::Args& args)
             p.s.frames_shown, p.s.frames_dropped, p.s.dropped_catching_up, p.s.extra_skipped);
     p.host = nullptr;
     const bool dead = G.dead;
-    cpu.esp = esp + 8;
+    ts.sp = esp + 8;
     if (dead)
-        cpu.terminate = true;
+        ts.terminate = true;
 }
 
 namespace
@@ -498,18 +498,18 @@ namespace movie
 {
 
 /* sub_495bc0: the movie marked playing for as long as it plays, for a tap to end it. */
-x86::reg32 play(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 play(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     MovieSession session;
-    madPlay(app, cpu, args);
+    madPlay(app, ts, args);
     return args.eax;
 }
 
 /* sub_4df2b0: the frame at eax on the screen, if the renderer can take it. */
-x86::reg32 showFrameAt(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args)
+nfs::u32 showFrameAt(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     showFrame(app, args.eax);
-    cpu.esp += 4;
+    ts.sp += 4;
     return args.eax;
 }
 

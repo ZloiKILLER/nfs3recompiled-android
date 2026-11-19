@@ -74,16 +74,16 @@ static_assert(sizeof(PatchSettings) == 0xc, "a patch's settings");
  * stream's serial and the stream's index. */
 struct Request
 {
-    reg32 chunks;
-    reg32 handle;
+    u32 chunks;
+    u32 handle;
     int32_t submitted;        // the first packet's submission, -1 until then
     int32_t lastSubmitted;    // and the last one's
-    reg32 dataRate;           // bytes a second, times 256
-    reg32 played;             // frames
-    reg32 frames;
-    reg32 inPlayer;           // frames submitted
+    u32 dataRate;           // bytes a second, times 256
+    u32 played;             // frames
+    u32 frames;
+    u32 inPlayer;           // frames submitted
     int32_t packets;
-    reg32 loop;
+    u32 loop;
     int16_t waits;            // the time it waits for before it parses on
     uint16_t other2a;
 };
@@ -92,8 +92,8 @@ static_assert(sizeof(Request) == 0x2c, "a request");
 /* One of the 16 streams at 0x9f254c. */
 struct Stream
 {
-    reg32 requests;           // the stream's requests
-    reg32 queue;              // and its chunks' reader
+    u32 requests;           // the stream's requests
+    u32 queue;              // and its chunks' reader
     int32_t voice;            // the voice the packet player plays on, -1 none
     int32_t player;           // the packet player
     int32_t serial;           // the requests', 0x100 a request
@@ -116,7 +116,7 @@ struct Packet
 {
     int32_t serial;
     int32_t frames;
-    reg32 data;
+    u32 data;
 };
 
 /* A packet as a caller offers it to SNDPKTPLAY_submit. */
@@ -125,7 +125,7 @@ struct Offered
     int32_t other0;
     int32_t frames;
     int32_t other8;
-    reg32 data;
+    u32 data;
 };
 
 /* One of the 16 packet players at 0xa0b044; its ring of packets follows. */
@@ -139,9 +139,9 @@ struct PacketPlayer
     uint16_t count;           // the packets in the ring
     int32_t submitted;        // frames
     int32_t inHardware;       // those the mixer holds
-    reg32 memory;
-    reg32 freed;              // the packets' free callback
-    reg32 framesCallback;
+    u32 memory;
+    u32 freed;              // the packets' free callback
+    u32 framesCallback;
     StreamHeader header;
     // The ring: Packet [size] from here.
 };
@@ -151,21 +151,21 @@ static_assert(sizeof(PacketPlayer) == 0x28, "a packet player");
 struct RequestStatus
 {
     int32_t state;            // 3 gone, 2 playing, 1 waiting, 0 not started
-    reg32 played;             // ms
-    reg32 left;
-    reg32 buffered;
+    u32 played;             // ms
+    u32 left;
+    u32 buffered;
 };
 
 #pragma pack(pop)
 
-constexpr Table<reg32> kStreams{0x9f254c};         // the 16 streams
+constexpr Table<u32> kStreams{0x9f254c};         // the 16 streams
 constexpr Table<int8_t> kPlayerStream{0x9f258c};   // each packet player's stream
-constexpr Table<reg32> kPlayers{0xa0b044};         // the 16 packet players
-constexpr Var<reg32> kStreamerRestore{0xa09b30};   // the restore SNDrestore calls
-constexpr reg32 kRequestSize = sizeof(Request);
-constexpr reg32 kRingOffset = sizeof(PacketPlayer);
+constexpr Table<u32> kPlayers{0xa0b044};         // the 16 packet players
+constexpr Var<u32> kStreamerRestore{0xa09b30};   // the restore SNDrestore calls
+constexpr u32 kRequestSize = sizeof(Request);
+constexpr u32 kRingOffset = sizeof(PacketPlayer);
 // What a packet player takes besides its packets: its head and one packet more.
-constexpr reg32 kPlayerOverhead = sizeof(PacketPlayer) + sizeof(Packet);
+constexpr u32 kPlayerOverhead = sizeof(PacketPlayer) + sizeof(Packet);
 
 // Where the errors come from: the source's name and the function's.
 constexpr Where kStatusError{0x54cc50, 0x54cc60}, kParseHeaderError{0x54ccb4, 0x54ccc0};
@@ -177,65 +177,65 @@ constexpr Where kStopError{0x54fdc0, 0x54ffac}, kHeaderError{0x54fff4, 0x550004}
 constexpr Where kRateError{0x55006c, 0x55007c};
 
 // The streams' own functions, as the system tasks and the packet player know them.
-constexpr reg32 kStreamTask = 0x4f3ebc, kStreamRestore = 0x4f3a90;
-constexpr reg32 kFramesCallback = 0x4f3b60, kFreedCallback = 0x4f3b44;
+constexpr u32 kStreamTask = 0x4f3ebc, kStreamRestore = 0x4f3a90;
+constexpr u32 kFramesCallback = 0x4f3b60, kFreedCallback = 0x4f3b44;
 
 // What they call of the game's: the movie file's chunk reader, a surface's lock.
-constexpr reg32 kFreeChunk = 0x4d03c0, kNextChunk = 0x4d0300, kQueueBytes = 0x4d0460, kQueueState = 0x4d0490;
-constexpr reg32 kQueueRequest = 0x4cfef0, kQueueRequestWhole = 0x4cffb0, kQueueMake = 0x4cfa80;
-constexpr reg32 kQueueGone = 0x4cfd30, kQueueEmptied = 0x4d0220, kQueueBlock = 0x4d0500;
-constexpr reg32 kQueueChunksAtOnce = 0x4cfdd0;
+constexpr u32 kFreeChunk = 0x4d03c0, kNextChunk = 0x4d0300, kQueueBytes = 0x4d0460, kQueueState = 0x4d0490;
+constexpr u32 kQueueRequest = 0x4cfef0, kQueueRequestWhole = 0x4cffb0, kQueueMake = 0x4cfa80;
+constexpr u32 kQueueGone = 0x4cfd30, kQueueEmptied = 0x4d0220, kQueueBlock = 0x4d0500;
+constexpr u32 kQueueChunksAtOnce = 0x4cfdd0;
 
 // The chunks' ids ('SCdl' and the others).
-constexpr reg32 kIdData = 0x6c444353, kIdHeader = 0x6c484353, kIdEnd = 0x6c454353, kIdLoop = 0x6c434353;
+constexpr u32 kIdData = 0x6c444353, kIdHeader = 0x6c484353, kIdEnd = 0x6c454353, kIdLoop = 0x6c434353;
 
 constexpr int32_t kFull = -13;
-constexpr reg32 kMaxQueuedBytes = 0x3d0900;
+constexpr u32 kMaxQueuedBytes = 0x3d0900;
 
 /* A loop's safepoint, as the game's code has one at each loop's head: the
  * guest's context handed over when another thread waits for it. */
-void safepoint(App* app, CPU& cpu)
+void safepoint(App* app, ThreadState& ts)
 {
     if (app->contextWanted())
-        app->yieldContext(cpu);
+        app->yieldContext(ts);
 }
 
-Stream& stream(App* app, reg32 s) { return record<Stream>(app, s); }
-Request& request(App* app, reg32 r) { return record<Request>(app, r); }
-PacketPlayer& packetPlayer(App* app, reg32 p) { return record<PacketPlayer>(app, p); }
+Stream& stream(App* app, u32 s) { return record<Stream>(app, s); }
+Request& request(App* app, u32 r) { return record<Request>(app, r); }
+PacketPlayer& packetPlayer(App* app, u32 p) { return record<PacketPlayer>(app, p); }
 
 /* A ring's packet. */
-Packet& ringPacket(App* app, reg32 p, int32_t i)
+Packet& ringPacket(App* app, u32 p, int32_t i)
 {
-    return record<Packet>(app, p + kRingOffset + reg32(i) * sizeof(Packet));
+    return record<Packet>(app, p + kRingOffset + u32(i) * sizeof(Packet));
 }
 
 /* The packet player of index `index`. */
-reg32 playerOf(App* app, int32_t index) { return kPlayers(app, index); }
+u32 playerOf(App* app, int32_t index) { return kPlayers(app, index); }
 
 /* The request a stream plays. */
-reg32 playingRequest(const Stream& s) { return s.requests + reg32(int32_t(s.playing)) * kRequestSize; }
+u32 playingRequest(const Stream& s) { return s.requests + u32(int32_t(s.playing)) * kRequestSize; }
 
 /* The call of a callback (through its pointer) with eax only, the other
  * registers as they are. */
-bool callBack(App* app, CPU& cpu, reg32 esp, reg32 target, reg32 eax)
+bool callBack(App* app, ThreadState& ts, u32 esp, u32 target, u32 eax)
 {
-    cpu.esp = esp;
-    return guest::pointerCall(app, cpu, target, {eax}).has_value();
+    ts.sp = esp;
+    return guest::pointerCall(app, ts, target, {eax}).has_value();
 }
 
 /* A typed core of the movie file's chunk reader (native_frontend_wina.cpp)
  * called as C++ in place of the game's call of `Address`, esp first where the
  * game's code has it: its eax, nothing when the game stopped in it (its calls
  * into the game throw fe::Terminated), every register but eax kept. */
-template <reg32 Address, auto Core, typename... A>
-std::optional<reg32> wina(App* app, CPU& cpu, reg32 esp, A... a)
+template <u32 Address, auto Core, typename... A>
+std::optional<u32> wina(App* app, ThreadState& ts, u32 esp, A... a)
 {
-    cpu.esp = esp;
+    ts.sp = esp;
     try
     {
-        const reg32 r = guest::direct<Address, Core>(app, cpu, a...);
-        if (cpu.terminate)
+        const u32 r = guest::direct<Address, Core>(app, ts, a...);
+        if (ts.terminate)
             return std::nullopt;
         return r;
     }
@@ -247,14 +247,14 @@ std::optional<reg32> wina(App* app, CPU& cpu, reg32 esp, A... a)
 
 /* 0x4d0300 (the queue's next chunk), as the streams' task calls it: the queue
  * in eax and, in edx, the loop's test -- which the reader does not take. */
-std::optional<reg32> nextQueueChunk(App* app, CPU& cpu, reg32 esp, reg32 queue, reg32 edx)
+std::optional<u32> nextQueueChunk(App* app, ThreadState& ts, u32 esp, u32 queue, u32 edx)
 {
-    cpu.esp = esp;
+    ts.sp = esp;
     try
     {
         static_cast<void>(edx);
-        const reg32 r = guest::direct<kNextChunk, frontend::wina::streamNextChunk>(app, cpu, queue);
-        if (cpu.terminate)
+        const u32 r = guest::direct<kNextChunk, frontend::wina::streamNextChunk>(app, ts, queue);
+        if (ts.terminate)
             return std::nullopt;
         return r;
     }
@@ -265,13 +265,13 @@ std::optional<reg32> nextQueueChunk(App* app, CPU& cpu, reg32 esp, reg32 queue, 
 }
 
 /* A quotient the x86 does not raise for: as the arm64 does the code's `div` by 0. */
-reg32 divided(reg32 n, reg32 by) { return by == 0 ? 0 : n / by; }
+u32 divided(u32 n, u32 by) { return by == 0 ? 0 : n / by; }
 
 /* 0x503760's (__U8D): the 64 bits high:low over `by` as its shifts divide
  * them -- 32 bits of quotient, the high part's overflow lost. */
-reg32 divide64(reg32 low, reg32 high, reg32 by)
+u32 divide64(u32 low, u32 high, u32 by)
 {
-    reg32 quotient = 0;
+    u32 quotient = 0;
     for (int i = 0; i < 32; ++i)
     {
         high = high + high + (low >> 31);
@@ -288,10 +288,10 @@ reg32 divide64(reg32 low, reg32 high, reg32 by)
 
 /* The milliseconds of `frames` frames at `rate` a second, through the 64-bit
  * product and division the code calls. */
-reg32 milliseconds(reg32 frames, reg32 rate)
+u32 milliseconds(u32 frames, u32 rate)
 {
     const uint64_t product = uint64_t(frames) * 1000;
-    return divide64(reg32(product), reg32(product >> 32), rate);
+    return divide64(u32(product), u32(product >> 32), rate);
 }
 
 /* 0x523d90's (iSNDplatformpacketsize): the port's platform keeps no memory
@@ -299,7 +299,7 @@ reg32 milliseconds(reg32 frames, reg32 rate)
 int32_t platformPacketBytes() { return 0; }
 
 /* 0x4f3aa4's: stream `index` (0 to 15), 0 for none. */
-reg32 streamOf(App* app, int32_t index) { return index >= 0 && index < 0x10 ? kStreams(app, index) : 0; }
+u32 streamOf(App* app, int32_t index) { return index >= 0 && index < 0x10 ? kStreams(app, index) : 0; }
 
 /* 0x4f3fd0's: the streams there are. */
 int32_t streamsMade(App* app)
@@ -312,17 +312,17 @@ int32_t streamsMade(App* app)
 }
 
 /* 0x510a10's: the request of handle `handle`, 0 for none. */
-reg32 requestOfHandle(App* app, reg32 handle)
+u32 requestOfHandle(App* app, u32 handle)
 {
     if (int32_t(handle) < 0)
         return 0;
-    const reg32 s = streamOf(app, int32_t(handle & 0xff));
+    const u32 s = streamOf(app, int32_t(handle & 0xff));
     if (s == 0)
         return 0;
     const Stream& st = stream(app, s);
     for (int32_t i = 0; i < st.holds; ++i)
     {
-        const reg32 r = st.requests + reg32(i) * kRequestSize;
+        const u32 r = st.requests + u32(i) * kRequestSize;
         if (request(app, r).handle == handle)
             return r;
     }
@@ -330,35 +330,35 @@ reg32 requestOfHandle(App* app, reg32 handle)
 }
 
 /* 0x511210's: the memory a packet player of `packets` packets takes. */
-reg32 playerBytes(reg32 packets)
+u32 playerBytes(u32 packets)
 {
-    return packets * sizeof(Packet) + kPlayerOverhead + reg32(platformPacketBytes());
+    return packets * sizeof(Packet) + kPlayerOverhead + u32(platformPacketBytes());
 }
 
 /* 0x4f3a10's: the memory a stream of `requests` requests with a packet player
  * of `packets` packets takes. */
-reg32 streamBytes(reg32 requests, reg32 packets)
+u32 streamBytes(u32 requests, u32 packets)
 {
     return playerBytes(packets) + requests * kRequestSize + sizeof(Stream);
 }
 
 /* 0x4f3ab8's: request `handle` taken out of its stream, the rest moved up
  * (the playing one with them).  The stream. */
-reg32 takeOutRequest(App* app, reg32 handle)
+u32 takeOutRequest(App* app, u32 handle)
 {
-    const reg32 s = kStreams(app, int32_t(handle & 0xff));
+    const u32 s = kStreams(app, int32_t(handle & 0xff));
     Stream& st = stream(app, s);
-    reg32 kept = 0, to = 0, from = 0;
+    u32 kept = 0, to = 0, from = 0;
     for (int32_t i = 0; i < st.holds; ++i, from += kRequestSize)
     {
-        const reg32 r = st.requests + from;
+        const u32 r = st.requests + from;
         if (request(app, r).handle == handle)
             continue;
         if (st.playing == i)
             st.playing = int8_t(kept);
-        const reg32 d = st.requests + to;
-        for (reg32 k = 0; k < kRequestSize; k += 4)
-            app->getMemory<reg32>(d + k) = app->getMemory<reg32>(r + k);
+        const u32 d = st.requests + to;
+        for (u32 k = 0; k < kRequestSize; k += 4)
+            app->getMemory<u32>(d + k) = app->getMemory<u32>(r + k);
         ++kept;
         to += kRequestSize;
     }
@@ -385,11 +385,11 @@ void defaultSettings(PatchSettings& s)
  * 256 -- its rate times channels times its representation's bytes a frame.
  * An unknown representation is an error, and the code goes on with the
  * bytes in edx, as the caller left it (`left`). */
-Result dataRate(App* app, CPU& cpu, reg32 esp, const StreamHeader& h, reg32 left)
+Result dataRate(App* app, ThreadState& ts, u32 esp, const StreamHeader& h, u32 left)
 {
-    const reg32 frames = reg32(h.rate) * (h.format & 3);
-    const reg32 representation = h.format & 0xfffc;
-    reg32 bytes = left;
+    const u32 frames = u32(h.rate) * (h.format & 3);
+    const u32 representation = h.format & 0xfffc;
+    u32 bytes = left;
     if (representation == 0xc)
         bytes = 0x88;
     else if (representation == 0x10)
@@ -398,7 +398,7 @@ Result dataRate(App* app, CPU& cpu, reg32 esp, const StreamHeader& h, reg32 left
         bytes = 0x100;
     else if (representation == 0)
         bytes = 0x200;
-    else if (!fail(app, cpu, esp - 5 * 4, kRateError, 0x1c, {0x550098, reg32(h.format >> 2)}))
+    else if (!fail(app, ts, esp - 5 * 4, kRateError, 0x1c, {0x550098, u32(h.format >> 2)}))
         return {};
     return imul(int32_t(frames), int32_t(bytes)) >> 8;
 }
@@ -407,20 +407,20 @@ Result dataRate(App* app, CPU& cpu, reg32 esp, const StreamHeader& h, reg32 left
  * its tags give them -- the rate (0x5622 unless said), the channels, the
  * representation (from the bits a sample, or the compression), the frames
  * into `framesAt`.  0. */
-Result patchToHeader(App* app, CPU& cpu, reg32 esp, reg32 patch, StreamHeader& header, PatchSettings& settings,
-                     reg32 framesAt)
+Result patchToHeader(App* app, ThreadState& ts, u32 esp, u32 patch, StreamHeader& header, PatchSettings& settings,
+                     u32 framesAt)
 {
-    const reg32 f = esp - 3 * 4 - 0x1c;
+    const u32 f = esp - 3 * 4 - 0x1c;
     defaultSettings(settings);
-    reg32 bits = 0x10, compression = 0;
+    u32 bits = 0x10, compression = 0;
     Tag tag{patch + ((app->getMemory<uint8_t>(patch + 3) & 2) ? 8 : 4), 0, 0, 0};
     // The rate, and one channel.
     header.rate = 0x5622;
     header.format = uint16_t((header.format & 0xfffc) | 1);
-    store<reg32>(app, framesAt, 0);
+    store<u32>(app, framesAt, 0);
     while (readTag(app, tag))
     {
-        const reg32 number = tag.number;
+        const u32 number = tag.number;
         switch (tag.tag)
         {
         case 0x81:
@@ -439,7 +439,7 @@ Result patchToHeader(App* app, CPU& cpu, reg32 esp, reg32 patch, StreamHeader& h
             header.rate = uint16_t(number);
             break;
         case 0x85:
-            store<reg32>(app, framesAt, number);
+            store<u32>(app, framesAt, number);
             break;
         case 0x13:
             settings.send = int8_t(number);
@@ -469,14 +469,14 @@ Result patchToHeader(App* app, CPU& cpu, reg32 esp, reg32 patch, StreamHeader& h
             represent(0xc);
         else if (compression == 9)
             represent(0x10);
-        else if (!fail(app, cpu, f, kHeaderError, 0x64, {0x550014}, 0x54fff4))
+        else if (!fail(app, ts, f, kHeaderError, 0x64, {0x550014}, 0x54fff4))
             return {};
     }
     else if (bits == 0x10)
         represent(0);
     else if (bits == 8)
         represent(8);
-    else if (!fail(app, cpu, f, kHeaderError, 0x77, {0x550040}))
+    else if (!fail(app, ts, f, kHeaderError, 0x77, {0x550040}))
         return {};
     return 0;
 }
@@ -484,7 +484,7 @@ Result patchToHeader(App* app, CPU& cpu, reg32 esp, reg32 patch, StreamHeader& h
 /* 0x511228's (SNDPKTPLAY_create): a packet player in the `size` bytes at
  * `memory`, its packets' free callback and its frames callback.  Its index;
  * -10 before SNDinit, -9 with 16, -6 for the platform's memory. */
-int32_t createPlayer(App* app, reg32 memory, reg32 size, reg32 freed, reg32 frames)
+int32_t createPlayer(App* app, u32 memory, u32 size, u32 freed, u32 frames)
 {
     if (kInited(app) == 0)
         return kNotStarted;
@@ -500,8 +500,8 @@ int32_t createPlayer(App* app, reg32 memory, reg32 size, reg32 freed, reg32 fram
         }
     if (platformPacketBytes() < 0)
         return -6;
-    const reg32 p = memory + reg32(platformPacketBytes());
-    const reg32 left = size - reg32(platformPacketBytes());
+    const u32 p = memory + u32(platformPacketBytes());
+    const u32 left = size - u32(platformPacketBytes());
     kPlayers.set(app, index, p);
     PacketPlayer& pp = packetPlayer(app, p);
     pp.size = int16_t((left - kPlayerOverhead) / sizeof(Packet));
@@ -517,28 +517,28 @@ int32_t createPlayer(App* app, reg32 memory, reg32 size, reg32 freed, reg32 fram
  * options (`optionsAt`) have it, and the platform's packet play started for
  * it, its sound the header at `headerAt`.  The voice's handle; -10 before
  * SNDinit, -9 for no voice, the platform's error. */
-Result startPlayer(App* app, CPU& cpu, reg32 esp, int32_t index, reg32 headerAt, reg32 settingsAt, reg32 optionsAt)
+Result startPlayer(App* app, ThreadState& ts, u32 esp, int32_t index, u32 headerAt, u32 settingsAt, u32 optionsAt)
 {
-    const reg32 f = esp - 3 * 4 - 0x10;
+    const u32 f = esp - 3 * 4 - 0x10;
     if (kInited(app) == 0)
         return kNotStarted;
-    if (!checkPlayOptions(app, cpu, f - 4, optionsAt))
+    if (!checkPlayOptions(app, ts, f - 4, optionsAt))
         return {};
-    const reg32 p = playerOf(app, index);
-    if (!enterAudio(app, cpu, f - 4))
+    const u32 p = playerOf(app, index);
+    if (!enterAudio(app, ts, f - 4))
         return {};
     const PatchSettings& settings = record<PatchSettings>(app, settingsAt);
     const PlayOptions& options = record<PlayOptions>(app, optionsAt);
-    reg32 handle = load<reg32>(app, f);
+    u32 handle = load<u32>(app, f);
     const Result allocated =
-        allocVoices(app, cpu, f - 4, settings.voiceMask, 1, uint8_t(settings.priority), handle);
+        allocVoices(app, ts, f - 4, settings.voiceMask, 1, uint8_t(settings.priority), handle);
     store(app, f, handle);
     if (!allocated)
         return {};
     const int32_t v = *allocated;
     if (v < 0)
     {
-        if (!leaveAudio(app, cpu, f - 4))
+        if (!leaveAudio(app, ts, f - 4))
             return {};
         return kNoVoices;
     }
@@ -559,7 +559,7 @@ Result startPlayer(App* app, CPU& cpu, reg32 esp, int32_t index, reg32 headerAt,
     w.envelopeStep = 0;
     w.envelopeTicks = 0x7fffffff;
     w.envelope = 0x7f0000;
-    w.volume = int32_t(reg32(int32_t(options.volume)) << 16);
+    w.volume = int32_t(u32(int32_t(options.volume)) << 16);
     w.level = settings.level;
     w.patchPan = settings.pan;
     w.segments = 1;
@@ -578,17 +578,17 @@ Result startPlayer(App* app, CPU& cpu, reg32 esp, int32_t index, reg32 headerAt,
     refreshVolume(app, v);
     const int32_t send = idiv(imul(w.send, imul(w.timbreSend, kBusLevel(app))), 0x3f01);
     // The voice's pan as a signed byte, as the code takes it (sar 24).
-    const Result played = playPackets(app, cpu, f - 4 - 4 * 4, v, int8_t(w.pan), w.mixLevel, w.playedPitch, send,
+    const Result played = playPackets(app, ts, f - 4 - 4 * 4, v, int8_t(w.pan), w.mixLevel, w.playedPitch, send,
                                       settings.playPriority, headerAt);
     if (!played)
         return {};
     if (*played < 0)
     {
-        if (!freeVoice(app, cpu, f - 4, v) || !leaveAudio(app, cpu, f - 4))
+        if (!freeVoice(app, ts, f - 4, v) || !leaveAudio(app, ts, f - 4))
             return {};
         return *played;
     }
-    if (!leaveAudio(app, cpu, f - 4))
+    if (!leaveAudio(app, ts, f - 4))
         return {};
     return pp.voice;
 }
@@ -596,20 +596,20 @@ Result startPlayer(App* app, CPU& cpu, reg32 esp, int32_t index, reg32 headerAt,
 /* 0x5114d4's (SNDPKTPLAY_submit): the packet at `offeredAt` (its frames and
  * its data) into packet player `index`'s ring.  Its serial; -10 before
  * SNDinit, -13 when the ring is full. */
-Result submitPacket(App* app, CPU& cpu, reg32 esp, int32_t index, reg32 offeredAt)
+Result submitPacket(App* app, ThreadState& ts, u32 esp, int32_t index, u32 offeredAt)
 {
-    const reg32 f = esp - 3 * 4;
+    const u32 f = esp - 3 * 4;
     if (kInited(app) == 0)
         return kNotStarted;
-    const reg32 p = playerOf(app, index);
+    const u32 p = playerOf(app, index);
     PacketPlayer& pp = packetPlayer(app, p);
-    if (pp.voice < 0 && !fail(app, cpu, esp - 5 * 4, kSubmitError, 0xc1, {0x54fde4}))
+    if (pp.voice < 0 && !fail(app, ts, esp - 5 * 4, kSubmitError, 0xc1, {0x54fde4}))
         return {};
-    if (!enterAudio(app, cpu, f - 4))
+    if (!enterAudio(app, ts, f - 4))
         return {};
     if (int32_t(int16_t(pp.count)) >= int32_t(pp.size) - 1)
     {
-        if (!leaveAudio(app, cpu, f - 4))
+        if (!leaveAudio(app, ts, f - 4))
             return {};
         return kFull;
     }
@@ -625,46 +625,46 @@ Result submitPacket(App* app, CPU& cpu, reg32 esp, int32_t index, reg32 offeredA
     pp.submitted += offered.frames;
     const int32_t serial = pp.serial;
     pp.serial = serial + 1;
-    if (!leaveAudio(app, cpu, f - 4))
+    if (!leaveAudio(app, ts, f - 4))
         return {};
     return serial;
 }
 
 /* 0x5115b8's (SNDPKTPLAY_submitspace): the packets packet player `index` has
  * room for; -10 before SNDinit. */
-Result submitSpace(App* app, CPU& cpu, reg32 esp, int32_t index)
+Result submitSpace(App* app, ThreadState& ts, u32 esp, int32_t index)
 {
     if (kInited(app) == 0)
         return kNotStarted;
     const PacketPlayer& pp = packetPlayer(app, playerOf(app, index));
-    if (pp.voice < 0 && !fail(app, cpu, esp - 5 * 4, kSpaceError, 0xf3, {0x54fe38}))
+    if (pp.voice < 0 && !fail(app, ts, esp - 5 * 4, kSpaceError, 0xf3, {0x54fe38}))
         return {};
     return int32_t(pp.size) - int32_t(int16_t(pp.count)) - 1;
 }
 
 /* 0x51162c's: the frames packet player `index` has outstanding, submitted
  * and in the hardware. */
-Result framesOutstandingOf(App* app, CPU& cpu, reg32 esp, int32_t index)
+Result framesOutstandingOf(App* app, ThreadState& ts, u32 esp, int32_t index)
 {
     const PacketPlayer& pp = packetPlayer(app, playerOf(app, index));
-    if (pp.voice < 0 && !fail(app, cpu, esp - 4 * 4, kOutstandingError, 0x104, {0x54fe9c}))
+    if (pp.voice < 0 && !fail(app, ts, esp - 4 * 4, kOutstandingError, 0x104, {0x54fe9c}))
         return {};
     return pp.submitted + pp.inHardware;
 }
 
 /* 0x511680's (SNDPKTPLAY_framesoutstanding): the same, in the library's lock;
  * -10 before SNDinit. */
-Result framesOutstandingLocked(App* app, CPU& cpu, reg32 esp, int32_t index)
+Result framesOutstandingLocked(App* app, ThreadState& ts, u32 esp, int32_t index)
 {
-    const reg32 f = esp - 4;
+    const u32 f = esp - 4;
     if (kInited(app) == 0)
         return kNotStarted;
-    if (!enterAudio(app, cpu, f - 4))
+    if (!enterAudio(app, ts, f - 4))
         return {};
-    const Result frames = framesOutstandingOf(app, cpu, f - 4, index);
+    const Result frames = framesOutstandingOf(app, ts, f - 4, index);
     if (!frames)
         return {};
-    if (!leaveAudio(app, cpu, f - 4, reg32(*frames)))
+    if (!leaveAudio(app, ts, f - 4, u32(*frames)))
         return {};
     return *frames;
 }
@@ -672,16 +672,16 @@ Result framesOutstandingLocked(App* app, CPU& cpu, reg32 esp, int32_t index)
 /* 0x511718's (SNDPKTPLAY_purge): the packets of packet player `index` with
  * serials `first` to `last` taken out of its ring (their free callback
  * called), the rest kept in order.  0; -10 before SNDinit. */
-Result purgePackets(App* app, CPU& cpu, reg32 esp, int32_t index, int32_t first, int32_t last)
+Result purgePackets(App* app, ThreadState& ts, u32 esp, int32_t index, int32_t first, int32_t last)
 {
-    const reg32 f = esp - 2 * 4 - 0x10 - 8;
+    const u32 f = esp - 2 * 4 - 0x10 - 8;
     if (kInited(app) == 0)
         return kNotStarted;
-    const reg32 p = playerOf(app, index);
+    const u32 p = playerOf(app, index);
     PacketPlayer& pp = packetPlayer(app, p);
-    if (pp.voice < 0 && !fail(app, cpu, f, kPurgeError, 0x13d, {0x54ff70}))
+    if (pp.voice < 0 && !fail(app, ts, f, kPurgeError, 0x13d, {0x54ff70}))
         return {};
-    if (!enterAudio(app, cpu, f - 4))
+    if (!enterAudio(app, ts, f - 4))
         return {};
     int32_t to = int16_t(pp.head), from = int16_t(pp.head);
     const int32_t count = int16_t(pp.count);
@@ -699,13 +699,13 @@ Result purgePackets(App* app, CPU& cpu, reg32 esp, int32_t index, int32_t first,
         {
             pp.count = uint16_t(pp.count - 1);
             pp.submitted -= packet.frames;
-            if (pp.freed != 0 && !pointerGame(app, cpu, f, pp.freed, {packet.data, p, reg32(to), reg32(from)}))
+            if (pp.freed != 0 && !pointerGame(app, ts, f, pp.freed, {packet.data, p, u32(to), u32(from)}))
                 return {};
         }
         if (++from >= pp.size)
             from = 0;
     }
-    if (!leaveAudio(app, cpu, f - 4))
+    if (!leaveAudio(app, ts, f - 4))
         return {};
     return 0;
 }
@@ -713,27 +713,27 @@ Result purgePackets(App* app, CPU& cpu, reg32 esp, int32_t index, int32_t first,
 /* 0x51181c's (SNDPKTPLAY_stop): packet player `index`'s voice stopped, its
  * packets purged, the one the mixer has given back too.  0; -10 before
  * SNDinit. */
-Result stopPlayer(App* app, CPU& cpu, reg32 esp, int32_t index)
+Result stopPlayer(App* app, ThreadState& ts, u32 esp, int32_t index)
 {
     if (kInited(app) == 0)
         return kNotStarted;
-    const reg32 f = esp - 5 * 4;
-    const reg32 p = playerOf(app, index);
+    const u32 f = esp - 5 * 4;
+    const u32 p = playerOf(app, index);
     PacketPlayer& pp = packetPlayer(app, p);
-    if (pp.voice < 0 && !fail(app, cpu, f - 4, kStopError, 0x178, {0x54ffbc}))
+    if (pp.voice < 0 && !fail(app, ts, f - 4, kStopError, 0x178, {0x54ffbc}))
         return {};
-    if (!enterAudio(app, cpu, f - 4) || !stopSound(app, cpu, f - 4, reg32(pp.voice)))
+    if (!enterAudio(app, ts, f - 4) || !stopSound(app, ts, f - 4, u32(pp.voice)))
         return {};
-    if (!purgePackets(app, cpu, f - 4, index, 0, 0x7fffffff))
+    if (!purgePackets(app, ts, f - 4, index, 0, 0x7fffffff))
         return {};
     if (pp.freed != 0 && pp.playing >= 0)
     {
-        const reg32 data = ringPacket(app, p, pp.playing).data;
-        if (!callBack(app, cpu, f, pp.freed, data))
+        const u32 data = ringPacket(app, p, pp.playing).data;
+        if (!callBack(app, ts, f, pp.freed, data))
             return {};
     }
     pp.voice = -1;
-    if (!leaveAudio(app, cpu, f - 4))
+    if (!leaveAudio(app, ts, f - 4))
         return {};
     return 0;
 }
@@ -751,16 +751,16 @@ int32_t destroyPlayer(App* app, int32_t index)
 /* 0x5118fc's: the mixer's next packet of packet player `index`: the one it
  * had given back, the next taken -- its frames into `framesAt`.  Its data, 0
  * for none.  `p`, the player, is what the code leaves in edx. */
-Result takeNextPacket(App* app, CPU& cpu, reg32 esp, int32_t index, reg32 framesAt, reg32& p)
+Result takeNextPacket(App* app, ThreadState& ts, u32 esp, int32_t index, u32 framesAt, u32& p)
 {
-    const reg32 f = esp - 2 * 4;
+    const u32 f = esp - 2 * 4;
     p = playerOf(app, index);
     PacketPlayer& pp = packetPlayer(app, p);
     if (pp.playing >= 0)
     {
-        const reg32 data = ringPacket(app, p, pp.playing).data;
+        const u32 data = ringPacket(app, p, pp.playing).data;
         pp.playing = -1;
-        if (pp.freed != 0 && !callBack(app, cpu, f, pp.freed, data))
+        if (pp.freed != 0 && !callBack(app, ts, f, pp.freed, data))
             return {};
     }
     if (pp.count == 0)
@@ -781,15 +781,15 @@ Result takeNextPacket(App* app, CPU& cpu, reg32 esp, int32_t index, reg32 frames
  * hardware, its frames callback told (the player's index in eax, the frames
  * in edx).  eax as the callback leaves it, the caller's own (`eax`) without
  * one. */
-Result packetFramesHeard(App* app, CPU& cpu, reg32 esp, int32_t index, reg32 frames, reg32 eax)
+Result packetFramesHeard(App* app, ThreadState& ts, u32 esp, int32_t index, u32 frames, u32 eax)
 {
-    const reg32 c = playerOf(app, index);
+    const u32 c = playerOf(app, index);
     PacketPlayer& pp = packetPlayer(app, c);
     pp.inHardware -= int32_t(frames);
     if (pp.framesCallback != 0)
     {
-        cpu.esp = esp - 4;
-        const std::optional<reg32> r = guest::pointerCall(app, cpu, pp.framesCallback, {reg32(index), frames});
+        ts.sp = esp - 4;
+        const std::optional<u32> r = guest::pointerCall(app, ts, pp.framesCallback, {u32(index), frames});
         if (!r)
             return {};
         eax = *r;
@@ -799,12 +799,12 @@ Result packetFramesHeard(App* app, CPU& cpu, reg32 esp, int32_t index, reg32 fra
 
 /* 0x4f3b44's: the packet player's free callback: the chunk of the packet's
  * data `data` given back to its stream's queue.  The queue's answer. */
-Result giveBackPacket(App* app, CPU& cpu, reg32 esp, reg32 data)
+Result giveBackPacket(App* app, ThreadState& ts, u32 esp, u32 data)
 {
-    const reg32 chunk = data - 0xc;
-    const reg32 s = kStreams(app, int32_t(app->getMemory<reg32>(chunk) & 0xff));
-    const std::optional<reg32> result =
-        wina<kFreeChunk, frontend::wina::streamFreeChunk>(app, cpu, esp - 4, stream(app, s).queue, chunk);
+    const u32 chunk = data - 0xc;
+    const u32 s = kStreams(app, int32_t(app->getMemory<u32>(chunk) & 0xff));
+    const std::optional<u32> result =
+        wina<kFreeChunk, frontend::wina::streamFreeChunk>(app, ts, esp - 4, stream(app, s).queue, chunk);
     if (!result)
         return {};
     return int32_t(*result);
@@ -815,13 +815,13 @@ Result giveBackPacket(App* app, CPU& cpu, reg32 esp, reg32 data)
  * through taken out.  eax as the code leaves it (the request, or its stream
  * once one was taken out); `lastPlayed` is edx, the frames the last request
  * has played. */
-reg32 countPlayedFrames(App* app, int32_t index, reg32 frames, reg32& lastPlayed)
+u32 countPlayedFrames(App* app, int32_t index, u32 frames, u32& lastPlayed)
 {
-    const reg32 s = kStreams(app, int32_t(kPlayerStream(app, index)));
-    reg32 over = 0, eax;
+    const u32 s = kStreams(app, int32_t(kPlayerStream(app, index)));
+    u32 over = 0, eax;
     for (;;)
     {
-        const reg32 r = stream(app, s).requests;
+        const u32 r = stream(app, s).requests;
         Request& q = request(app, r);
         eax = r;
         if (frames > q.inPlayer)
@@ -844,14 +844,14 @@ reg32 countPlayedFrames(App* app, int32_t index, reg32 frames, reg32& lastPlayed
 
 /* 0x511ca0's: stream `index`'s queue's chunks to ask for at once: `count`.
  * 0; -10 before SNDinit, -8 for no stream. */
-Result chunksAtOnce(App* app, CPU& cpu, reg32 esp, reg32 index, reg32 count)
+Result chunksAtOnce(App* app, ThreadState& ts, u32 esp, u32 index, u32 count)
 {
     if (kInited(app) == 0)
         return kNotStarted;
-    const reg32 s = streamOf(app, int32_t(index));
+    const u32 s = streamOf(app, int32_t(index));
     if (s == 0)
         return kNoSound;
-    if (!wina<kQueueChunksAtOnce, frontend::wina::streamSetLowWater>(app, cpu, esp, stream(app, s).queue, count))
+    if (!wina<kQueueChunksAtOnce, frontend::wina::streamSetLowWater>(app, ts, esp, stream(app, s).queue, count))
         return {};
     return 0;
 }
@@ -860,21 +860,21 @@ Result chunksAtOnce(App* app, CPU& cpu, reg32 esp, reg32 index, reg32 count)
  * patch made the request's header and data rate; a first header starts the
  * packet player, another of a different format waits for it to stop (2).
  * 0. */
-Result parseHeader(App* app, CPU& cpu, reg32 esp, reg32 s, reg32 chunk)
+Result parseHeader(App* app, ThreadState& ts, u32 esp, u32 s, u32 chunk)
 {
-    const reg32 f = esp - 5 * 4 - 0xc;
+    const u32 f = esp - 5 * 4 - 0xc;
     Stream& st = stream(app, s);
-    const reg32 requestAt = playingRequest(st);
+    const u32 requestAt = playingRequest(st);
     Request& r = request(app, requestAt);
-    if (!patchToHeader(app, cpu, f - 4, chunk + 8, st.parsedHeader, st.parsedSettings, f + 4))
+    if (!patchToHeader(app, ts, f - 4, chunk + 8, st.parsedHeader, st.parsedSettings, f + 4))
         return {};
-    r.frames = load<reg32>(app, f + 4);
-    if (!wina<kFreeChunk, frontend::wina::streamFreeChunk>(app, cpu, f, st.queue, chunk))
+    r.frames = load<u32>(app, f + 4);
+    if (!wina<kFreeChunk, frontend::wina::streamFreeChunk>(app, ts, f, st.queue, chunk))
         return {};
-    const Result rate = dataRate(app, cpu, f - 4, st.parsedHeader, requestAt);
+    const Result rate = dataRate(app, ts, f - 4, st.parsedHeader, requestAt);
     if (!rate)
         return {};
-    r.dataRate = reg32(*rate);
+    r.dataRate = u32(*rate);
     if (std::memcmp(&st.playingHeader, &st.parsedHeader, sizeof(StreamHeader)) != 0
         || std::memcmp(&st.playingSettings, &st.parsedSettings, sizeof(PatchSettings)) != 0)
     {
@@ -888,11 +888,11 @@ Result parseHeader(App* app, CPU& cpu, reg32 esp, reg32 s, reg32 chunk)
     }
     if (st.state != 1)
     {
-        const Result v = startPlayer(app, cpu, f - 4, st.player, s + 0x1c, s + 0x24, s + 0x3c);
+        const Result v = startPlayer(app, ts, f - 4, st.player, s + 0x1c, s + 0x24, s + 0x3c);
         if (!v)
             return {};
         st.voice = *v;
-        if (st.voice < 0 && !fail(app, cpu, f, kParseHeaderError, 0x115, {0x54ccd8}))
+        if (st.voice < 0 && !fail(app, ts, f, kParseHeaderError, 0x115, {0x54ccd8}))
             return {};
         st.state = 1;
     }
@@ -901,36 +901,36 @@ Result parseHeader(App* app, CPU& cpu, reg32 esp, reg32 s, reg32 chunk)
 
 /* 0x4f3cc8's (iSNDstreamparseloop): stream `s`'s loop chunk `chunk`: its
  * count the request's loop.  1. */
-Result parseLoop(App* app, CPU& cpu, reg32 esp, reg32 s, reg32 chunk)
+Result parseLoop(App* app, ThreadState& ts, u32 esp, u32 s, u32 chunk)
 {
     const Stream& st = stream(app, s);
-    if (!wina<kFreeChunk, frontend::wina::streamFreeChunk>(app, cpu, esp - 2 * 4, st.queue, chunk))
+    if (!wina<kFreeChunk, frontend::wina::streamFreeChunk>(app, ts, esp - 2 * 4, st.queue, chunk))
         return {};
     // The chunk is read after it was given back, as the code does.
-    request(app, playingRequest(st)).loop = app->getMemory<reg32>(chunk + 8);
+    request(app, playingRequest(st)).loop = app->getMemory<u32>(chunk + 8);
     return 1;
 }
 
 /* 0x4f3d00's (iSNDstreamparsedata): stream `s`'s data chunk `chunk`
  * submitted to its packet player as a packet -- the chunk marked with the
  * request's handle, its frames counted.  1. */
-Result parseData(App* app, CPU& cpu, reg32 esp, reg32 s, reg32 chunk)
+Result parseData(App* app, ThreadState& ts, u32 esp, u32 s, u32 chunk)
 {
-    const reg32 f = esp - 3 * 4 - 0x10;
+    const u32 f = esp - 3 * 4 - 0x10;
     const Stream& st = stream(app, s);
     Request& r = request(app, playingRequest(st));
     Offered& offered = record<Offered>(app, f);
-    offered.frames = int32_t(app->getMemory<reg32>(chunk + 8));
+    offered.frames = int32_t(app->getMemory<u32>(chunk + 8));
     offered.data = chunk + 0xc;
-    app->getMemory<reg32>(chunk) = r.handle;
-    r.inPlayer += reg32(offered.frames);
+    app->getMemory<u32>(chunk) = r.handle;
+    r.inPlayer += u32(offered.frames);
     r.packets += 1;
-    const Result submitted = submitPacket(app, cpu, f - 4, st.player, f);
+    const Result submitted = submitPacket(app, ts, f - 4, st.player, f);
     if (!submitted)
         return {};
     r.lastSubmitted = *submitted;
     if (r.lastSubmitted < 0
-        && !fail(app, cpu, f, kParseDataError, 0x158, {0x54cd28, reg32(r.lastSubmitted)}, 0x54cd14))
+        && !fail(app, ts, f, kParseDataError, 0x158, {0x54cd28, u32(r.lastSubmitted)}, 0x54cd14))
         return {};
     if (r.submitted < 0)
         r.submitted = r.lastSubmitted;
@@ -939,10 +939,10 @@ Result parseData(App* app, CPU& cpu, reg32 esp, reg32 s, reg32 chunk)
 
 /* 0x4f3dac's (iSNDstreamparseend): stream `s`'s end chunk `chunk`: the next
  * request plays.  1. */
-Result parseEnd(App* app, CPU& cpu, reg32 esp, reg32 s, reg32 chunk)
+Result parseEnd(App* app, ThreadState& ts, u32 esp, u32 s, u32 chunk)
 {
     Stream& st = stream(app, s);
-    if (!wina<kFreeChunk, frontend::wina::streamFreeChunk>(app, cpu, esp - 4, st.queue, chunk))
+    if (!wina<kFreeChunk, frontend::wina::streamFreeChunk>(app, ts, esp - 4, st.queue, chunk))
         return {};
     st.playing = int8_t(st.playing + 1);
     return 1;
@@ -950,21 +950,21 @@ Result parseEnd(App* app, CPU& cpu, reg32 esp, reg32 s, reg32 chunk)
 
 /* 0x4f3dc4's: stream `s`'s chunk handed on by its id; another given back.
  * What the handler gave (1 for another). */
-Result parseChunk(App* app, CPU& cpu, reg32 esp, reg32 s, reg32 chunk)
+Result parseChunk(App* app, ThreadState& ts, u32 esp, u32 s, u32 chunk)
 {
-    const reg32 f = esp - 2 * 4;
-    switch (app->getMemory<reg32>(chunk))
+    const u32 f = esp - 2 * 4;
+    switch (app->getMemory<u32>(chunk))
     {
     case kIdData:
-        return parseData(app, cpu, f - 4, s, chunk);
+        return parseData(app, ts, f - 4, s, chunk);
     case kIdHeader:
-        return parseHeader(app, cpu, f - 4, s, chunk);
+        return parseHeader(app, ts, f - 4, s, chunk);
     case kIdEnd:
-        return parseEnd(app, cpu, f - 4, s, chunk);
+        return parseEnd(app, ts, f - 4, s, chunk);
     case kIdLoop:
-        return parseLoop(app, cpu, f - 4, s, chunk);
+        return parseLoop(app, ts, f - 4, s, chunk);
     default:
-        if (!wina<kFreeChunk, frontend::wina::streamFreeChunk>(app, cpu, f, stream(app, s).queue, chunk))
+        if (!wina<kFreeChunk, frontend::wina::streamFreeChunk>(app, ts, f, stream(app, s).queue, chunk))
             return {};
         return 1;
     }
@@ -973,27 +973,27 @@ Result parseChunk(App* app, CPU& cpu, reg32 esp, reg32 s, reg32 chunk)
 /* 0x4f3e1c's: whether stream `s` waits before it parses on: for the time its
  * request waits for, while the queue holds less -- unless the queue is done
  * (2).  1 to wait. */
-Result waitsForQueue(App* app, CPU& cpu, reg32 esp, reg32 s)
+Result waitsForQueue(App* app, ThreadState& ts, u32 esp, u32 s)
 {
-    const reg32 f = esp - 3 * 4;
+    const u32 f = esp - 3 * 4;
     const Stream& st = stream(app, s);
     Request& r = request(app, playingRequest(st));
     if (r.dataRate == 0 || r.waits == 0)
         return 0;
     if (r.waits < 0)
         return 1;
-    const std::optional<reg32> queued = wina<kQueueBytes, frontend::wina::channelBytes>(app, cpu, f, st.queue);
+    const std::optional<u32> queued = wina<kQueueBytes, frontend::wina::channelBytes>(app, ts, f, st.queue);
     if (!queued)
         return {};
-    reg32 bytes = *queued;
+    u32 bytes = *queued;
     if (bytes > kMaxQueuedBytes)
         bytes = kMaxQueuedBytes;
-    if (divided(bytes * 1000, r.dataRate) >= reg32(int32_t(r.waits)))
+    if (divided(bytes * 1000, r.dataRate) >= u32(int32_t(r.waits)))
     {
         r.waits = 0;
         return 0;
     }
-    const std::optional<reg32> state = wina<kQueueState, frontend::wina::channelState>(app, cpu, f, st.queue);
+    const std::optional<u32> state = wina<kQueueState, frontend::wina::channelState>(app, ts, f, st.queue);
     if (!state)
         return {};
     if ((*state & 0xff) != 2)
@@ -1006,40 +1006,40 @@ Result waitsForQueue(App* app, CPU& cpu, reg32 esp, reg32 s)
  * header's player started once the old one has played out, then (unless it
  * waits) its queue's chunks parsed -- 10 at most, or as many as the player
  * has room for.  0; nothing while a surface is locked. */
-Result streamSystemTask(App* app, CPU& cpu, reg32 esp)
+Result streamSystemTask(App* app, ThreadState& ts, u32 esp)
 {
-    const bool locked = stream::directFrom<kSurfaceLocked, ea::surfaceIsLocked>(app, cpu, esp);
-    if (cpu.terminate)
+    const bool locked = stream::directFrom<kSurfaceLocked, ea::surfaceIsLocked>(app, ts, esp);
+    if (ts.terminate)
         return {};
     if (locked)
         return 0;
-    const reg32 f = esp - 4 * 4;
+    const u32 f = esp - 4 * 4;
     for (int32_t i = 0; i < 0x10; ++i)
     {
-        safepoint(app, cpu);
-        const reg32 s = kStreams(app, i);
+        safepoint(app, ts);
+        const u32 s = kStreams(app, i);
         if (s == 0 || stream(app, s).holds == 0)
             continue;
         Stream& st = stream(app, s);
         if (st.state == 2)
         {
-            const Result left = framesOutstandingLocked(app, cpu, f - 4, st.player);
+            const Result left = framesOutstandingLocked(app, ts, f - 4, st.player);
             if (!left)
                 return {};
             if (*left > 0)
                 continue;
             st.playingHeader = st.parsedHeader;
-            if (!stopPlayer(app, cpu, f - 4, st.player))
+            if (!stopPlayer(app, ts, f - 4, st.player))
                 return {};
-            const Result v = startPlayer(app, cpu, f - 4, st.player, s + 0x1c, s + 0x24, s + 0x3c);
+            const Result v = startPlayer(app, ts, f - 4, st.player, s + 0x1c, s + 0x24, s + 0x3c);
             if (!v)
                 return {};
             st.voice = *v;
-            if (st.voice < 0 && !fail(app, cpu, f, kTaskError, 0x235, {0x54cd74}))
+            if (st.voice < 0 && !fail(app, ts, f, kTaskError, 0x235, {0x54cd74}))
                 return {};
             st.state = 1;
         }
-        const Result waits = waitsForQueue(app, cpu, f - 4, s);
+        const Result waits = waitsForQueue(app, ts, f - 4, s);
         if (!waits)
             return {};
         if (*waits != 0)
@@ -1047,38 +1047,38 @@ Result streamSystemTask(App* app, CPU& cpu, reg32 esp)
         int32_t chunks = 10;
         if (st.state == 1)
         {
-            const Result room = submitSpace(app, cpu, f - 4, st.player);
+            const Result room = submitSpace(app, ts, f - 4, st.player);
             if (!room)
                 return {};
             chunks = *room;
             if (chunks == 0)
                 continue;
         }
-        if (!enterAudio(app, cpu, f - 4))
+        if (!enterAudio(app, ts, f - 4))
             return {};
         // The code's loop keeps its test in edx, which the queue is handed as
         // well: the last chunk's answer (0 the first time round, and while
         // the queue gives none).
-        reg32 handled = 0;
+        u32 handled = 0;
         for (;;)
         {
-            safepoint(app, cpu);
+            safepoint(app, ts);
             --chunks;
-            const std::optional<reg32> next = nextQueueChunk(app, cpu, f, st.queue, handled);
+            const std::optional<u32> next = nextQueueChunk(app, ts, f, st.queue, handled);
             if (!next)
                 return {};
-            const reg32 chunk = *next;
+            const u32 chunk = *next;
             if (chunk != 0)
             {
-                const Result r = parseChunk(app, cpu, f - 4, s, chunk);
+                const Result r = parseChunk(app, ts, f - 4, s, chunk);
                 if (!r)
                     return {};
-                handled = reg32(*r);
+                handled = u32(*r);
             }
             if (handled == 0 || chunks <= 0)
                 break;
         }
-        if (!leaveAudio(app, cpu, f - 4))
+        if (!leaveAudio(app, ts, f - 4))
             return {};
     }
     return 0;
@@ -1087,18 +1087,18 @@ Result streamSystemTask(App* app, CPU& cpu, reg32 esp)
 /* 0x4f4440's (SNDSTRM_purge): stream `index`'s player stopped, its queue
  * emptied when made here, its requests and headers cleared.  0; -10 before
  * SNDinit, -8 for no stream. */
-Result purgeStream(App* app, CPU& cpu, reg32 esp, int32_t index)
+Result purgeStream(App* app, ThreadState& ts, u32 esp, int32_t index)
 {
     if (kInited(app) == 0)
         return kNotStarted;
-    const reg32 s = streamOf(app, index);
+    const u32 s = streamOf(app, index);
     if (s == 0)
         return kNoSound;
     Stream& st = stream(app, s);
-    if (st.voice >= 0 && !stopPlayer(app, cpu, esp - 2 * 4, st.player))
+    if (st.voice >= 0 && !stopPlayer(app, ts, esp - 2 * 4, st.player))
         return {};
     st.voice = -1;
-    if (st.queueGiven == 0 && !wina<kQueueEmptied, frontend::wina::streamFlush>(app, cpu, esp - 4, st.queue))
+    if (st.queueGiven == 0 && !wina<kQueueEmptied, frontend::wina::streamFlush>(app, ts, esp - 4, st.queue))
         return {};
     st.holds = 0;
     st.playing = 0;
@@ -1113,15 +1113,15 @@ Result purgeStream(App* app, CPU& cpu, reg32 esp, int32_t index)
 /* 0x4f43c0's (SNDSTRM_destroy): stream `index` purged and gone -- its packet
  * player, its queue when made here; the last takes the streams' task.  0;
  * -10 before SNDinit, -8 for no stream. */
-Result destroyStream(App* app, CPU& cpu, reg32 esp, int32_t index)
+Result destroyStream(App* app, ThreadState& ts, u32 esp, int32_t index)
 {
     if (kInited(app) == 0)
         return kNotStarted;
-    const reg32 s = streamOf(app, index);
+    const u32 s = streamOf(app, index);
     if (s == 0)
         return kNoSound;
-    const reg32 f = esp - 3 * 4;
-    if (!purgeStream(app, cpu, f - 4, index))
+    const u32 f = esp - 3 * 4;
+    if (!purgeStream(app, ts, f - 4, index))
         return {};
     if (streamsMade(app) == 1)
     {
@@ -1130,17 +1130,17 @@ Result destroyStream(App* app, CPU& cpu, reg32 esp, int32_t index)
     }
     const Stream& st = stream(app, s);
     destroyPlayer(app, st.player);
-    if (st.queueGiven == 0 && !wina<kQueueGone, frontend::wina::streamClose>(app, cpu, f, st.queue))
+    if (st.queueGiven == 0 && !wina<kQueueGone, frontend::wina::streamClose>(app, ts, f, st.queue))
         return {};
     kStreams.set(app, index, 0);
     return 0;
 }
 
 /* 0x4f3a90's: every stream destroyed (the streams' restore).  0. */
-Result destroyEveryStream(App* app, CPU& cpu, reg32 esp)
+Result destroyEveryStream(App* app, ThreadState& ts, u32 esp)
 {
     for (int32_t i = 0; i < 0x10; ++i)
-        if (!destroyStream(app, cpu, esp - 2 * 4, i))
+        if (!destroyStream(app, ts, esp - 2 * 4, i))
             return {};
     return 0;
 }
@@ -1150,16 +1150,16 @@ Result destroyEveryStream(App* app, CPU& cpu, reg32 esp)
  * the play's `options`; its queue `queue` when `given`, else one made in the
  * memory left.  The first stream adds the streams' task.  Its index; -10
  * before SNDinit, -9 with 16 streams. */
-Result createStream(App* app, CPU& cpu, reg32 esp, reg32 options, reg32 requests, reg32 packets, reg32 memory,
-                    reg32 size, reg32 queue, reg32 given)
+Result createStream(App* app, ThreadState& ts, u32 esp, u32 options, u32 requests, u32 packets, u32 memory,
+                    u32 size, u32 queue, u32 given)
 {
-    const reg32 f = esp - 3 * 4 - 0x10;
+    const u32 f = esp - 3 * 4 - 0x10;
     if (kInited(app) == 0)
         return kNotStarted;
     if ((int32_t(requests) <= 0 || int32_t(requests) >= 0x80)
-        && !fail(app, cpu, f, kCreateError, 0x280, {0x54cdc0, requests}, 0x54cdac))
+        && !fail(app, ts, f, kCreateError, 0x280, {0x54cdc0, requests}, 0x54cdac))
         return {};
-    if (memory == 0 && !fail(app, cpu, f, kCreateError, 0x285, {0x54ce10}, 0x54cdac))
+    if (memory == 0 && !fail(app, ts, f, kCreateError, 0x285, {0x54ce10}, 0x54cdac))
         return {};
     int32_t slot = 0;
     if (kStreams(app, 0) != 0)
@@ -1171,14 +1171,14 @@ Result createStream(App* app, CPU& cpu, reg32 esp, reg32 options, reg32 requests
             if (kStreams(app, slot) == 0)
                 break;
         }
-    const reg32 s = memory;
+    const u32 s = memory;
     Stream& st = stream(app, s);
-    reg32 free = memory + sizeof(Stream);
+    u32 free = memory + sizeof(Stream);
     size -= sizeof(Stream);
     st.requests = free;
     free += requests * kRequestSize;
     size -= requests * kRequestSize;
-    const reg32 playerAt = free;
+    const u32 playerAt = free;
     free += playerBytes(packets);
     size -= playerBytes(packets);
     st.player = createPlayer(app, playerAt, playerBytes(packets), kFreedCallback, kFramesCallback);
@@ -1187,32 +1187,32 @@ Result createStream(App* app, CPU& cpu, reg32 esp, reg32 options, reg32 requests
     kPlayerStream.set(app, st.player, int8_t(slot));
     if (given != 0)
     {
-        if (int32_t(size) < 0 && !fail(app, cpu, f, kCreateError, 0x2b5, {0x54ce34}, 0x54ccb4))
+        if (int32_t(size) < 0 && !fail(app, ts, f, kCreateError, 0x2b5, {0x54ce34}, 0x54ccb4))
             return {};
         st.queue = queue;
         st.queueGiven = 1;
     }
     else
     {
-        if (int32_t(size) < 0x6000 && !fail(app, cpu, f, kCreateError, 0x2c2, {0x54ce34}, 0x2c2))
+        if (int32_t(size) < 0x6000 && !fail(app, ts, f, kCreateError, 0x2c2, {0x54ce34}, 0x2c2))
             return {};
         // stdcall: the memory's size pushed.
-        const std::optional<reg32> queueMade =
-            wina<kQueueMake, frontend::wina::streamCreate>(app, cpu, f - 4, requests + 1, 1u, 1u, free, size);
+        const std::optional<u32> queueMade =
+            wina<kQueueMake, frontend::wina::streamCreate>(app, ts, f - 4, requests + 1, 1u, 1u, free, size);
         if (!queueMade)
             return {};
-        const reg32 made = *queueMade;
+        const u32 made = *queueMade;
         st.queue = made;
         st.queueGiven = 0;
         // The block's size: the call has nothing in eax but the queue's, which a
         // reader that has no size to give leaves there.
-        const std::optional<reg32> ring = wina<kQueueBlock, frontend::wina::channelRingSize>(app, cpu, f, made);
+        const std::optional<u32> ring = wina<kQueueBlock, frontend::wina::channelRingSize>(app, ts, f, made);
         if (!ring)
             return {};
-        const reg32 block = *ring;
+        const u32 block = *ring;
         // The queue is to ask for a third of a block's chunks at once -- of the
         // stream the code names by the queue's address, which is none.
-        if (!chunksAtOnce(app, cpu, f - 4, st.queue, reg32(idiv(int32_t(block), 3))))
+        if (!chunksAtOnce(app, ts, f - 4, st.queue, u32(idiv(int32_t(block), 3))))
             return {};
     }
     st.serial = 0;
@@ -1221,12 +1221,12 @@ Result createStream(App* app, CPU& cpu, reg32 esp, reg32 options, reg32 requests
     st.options = record<PlayOptions>(app, options);
     if (streamsMade(app) == 0)
     {
-        if (!stream::scheduleTask(app, cpu, f - 4, kStreamTask, 0, 1))
+        if (!stream::scheduleTask(app, ts, f - 4, kStreamTask, 0, 1))
             return {};
         kStreamerRestore.set(app, kStreamRestore);
     }
     kStreams.set(app, slot, s);
-    if (!purgeStream(app, cpu, f - 4, slot))
+    if (!purgeStream(app, ts, f - 4, slot))
         return {};
     return slot;
 }
@@ -1235,29 +1235,29 @@ Result createStream(App* app, CPU& cpu, reg32 esp, reg32 options, reg32 requests
  * `time`: of `bytes` bytes at `data` -- `how` 0 read from the queue, 1 read
  * from it whole, 2 the chunks given (`data`).  Its handle; -10 before SNDinit,
  * -8 for no stream, -13 when it is full, -1 for no chunks. */
-Result requestStream(App* app, CPU& cpu, reg32 esp, reg32 index, reg32 time, reg32 bytes, reg32 data, reg32 how)
+Result requestStream(App* app, ThreadState& ts, u32 esp, u32 index, u32 time, u32 bytes, u32 data, u32 how)
 {
-    const reg32 f = esp - 3 * 4 - 8;
+    const u32 f = esp - 3 * 4 - 8;
     if (kInited(app) == 0)
         return kNotStarted;
-    const reg32 s = streamOf(app, int32_t(index));
+    const u32 s = streamOf(app, int32_t(index));
     if (s == 0)
         return kNoSound;
-    if (!enterAudio(app, cpu, f - 4))
+    if (!enterAudio(app, ts, f - 4))
         return {};
     Stream& st = stream(app, s);
     if (st.holds >= st.takes)
     {
-        if (!leaveAudio(app, cpu, f - 4))
+        if (!leaveAudio(app, ts, f - 4))
             return {};
         return kFull;
     }
-    Request& r = request(app, st.requests + reg32(int32_t(st.holds)) * kRequestSize);
+    Request& r = request(app, st.requests + u32(int32_t(st.holds)) * kRequestSize);
     if (how == 0 || how == 1)
     {
-        const std::optional<reg32> chunks =
-            how == 0 ? wina<kQueueRequest, frontend::wina::streamOpenFile>(app, cpu, f, st.queue, bytes, data, kIdEnd)
-                     : wina<kQueueRequestWhole, frontend::wina::streamOpenMemory>(app, cpu, f, st.queue, bytes, 0u,
+        const std::optional<u32> chunks =
+            how == 0 ? wina<kQueueRequest, frontend::wina::streamOpenFile>(app, ts, f, st.queue, bytes, data, kIdEnd)
+                     : wina<kQueueRequestWhole, frontend::wina::streamOpenMemory>(app, ts, f, st.queue, bytes, 0u,
                                                                                   kIdEnd);
         if (!chunks)
             return {};
@@ -1267,14 +1267,14 @@ Result requestStream(App* app, CPU& cpu, reg32 esp, reg32 index, reg32 time, reg
         r.chunks = data;
     if (r.chunks == 0)
     {
-        if (!leaveAudio(app, cpu, f - 4))
+        if (!leaveAudio(app, ts, f - 4))
             return {};
         return -1;
     }
-    st.serial = int32_t(reg32(st.serial) + 0x100);
+    st.serial = int32_t(u32(st.serial) + 0x100);
     if (st.serial < 0)
         st.serial = 0;
-    r.handle = reg32(st.serial) | index;
+    r.handle = u32(st.serial) | index;
     r.waits = int16_t(time);
     st.holds = int8_t(st.holds + 1);
     r.dataRate = 0;
@@ -1285,7 +1285,7 @@ Result requestStream(App* app, CPU& cpu, reg32 esp, reg32 index, reg32 time, reg
     r.packets = 0;
     r.loop = 0;
     // Its frames (and what the header gives) are the header's to set.
-    if (!leaveAudio(app, cpu, f - 4))
+    if (!leaveAudio(app, ts, f - 4))
         return {};
     return int32_t(r.handle);
 }
@@ -1294,26 +1294,26 @@ Result requestStream(App* app, CPU& cpu, reg32 esp, reg32 index, reg32 time, reg
  * four words at `out` -- 3 gone, 2 playing, 1 waiting, 0 not started -- with
  * the ms it has played and has left and those buffered.  0; -10 before
  * SNDinit, -8 for no stream. */
-Result requestStatus(App* app, CPU& cpu, reg32 esp, reg32 handle, reg32 out)
+Result requestStatus(App* app, ThreadState& ts, u32 esp, u32 handle, u32 out)
 {
-    const reg32 f = esp - 3 * 4 - 0x10;
+    const u32 f = esp - 3 * 4 - 0x10;
     RequestStatus& status = record<RequestStatus>(app, out);
     status = RequestStatus{};
     if (kInited(app) == 0)
         return kNotStarted;
     if (int32_t(handle) < 0)
         return kNoSound;
-    const reg32 s = streamOf(app, int32_t(handle & 0xff));
+    const u32 s = streamOf(app, int32_t(handle & 0xff));
     if (s == 0)
         return kNoSound;
-    if (!enterAudio(app, cpu, f - 8))
+    if (!enterAudio(app, ts, f - 8))
         return {};
     const auto done = [&]() -> Result {
-        if (!leaveAudio(app, cpu, f - 8))
+        if (!leaveAudio(app, ts, f - 8))
             return {};
         return 0;
     };
-    const reg32 r = requestOfHandle(app, handle);
+    const u32 r = requestOfHandle(app, handle);
     if (r == 0)
     {
         status.state = 3;
@@ -1326,7 +1326,7 @@ Result requestStatus(App* app, CPU& cpu, reg32 esp, reg32 handle, reg32 out)
         return done();
     }
     const Stream& st = stream(app, s);
-    reg32 rate;
+    u32 rate;
     if (r == st.requests)
     {
         status.state = 2;
@@ -1339,7 +1339,7 @@ Result requestStatus(App* app, CPU& cpu, reg32 esp, reg32 handle, reg32 out)
     }
     status.played = milliseconds(q.played, rate);
     status.left = milliseconds(q.frames - q.played, rate);
-    if (q.inPlayer > kMaxQueuedBytes && !fail(app, cpu, f - 8, kStatusError, 0x9b, {0x54cc78}))
+    if (q.inPlayer > kMaxQueuedBytes && !fail(app, ts, f - 8, kStatusError, 0x9b, {0x54cc78}))
         return {};
     status.buffered = divided(q.inPlayer * 1000, rate);
     return done();
@@ -1351,44 +1351,44 @@ namespace stream
 {
 
 /* 0x5118fc and 0x511998 as the mixer calls them (port_snd_stream_calls.h). */
-Result packetTaken(App* app, CPU& cpu, reg32 esp, int32_t index, reg32 framesAt)
+Result packetTaken(App* app, ThreadState& ts, u32 esp, int32_t index, u32 framesAt)
 {
-    reg32 player;
-    return takeNextPacket(app, cpu, esp, index, framesAt, player);
+    u32 player;
+    return takeNextPacket(app, ts, esp, index, framesAt, player);
 }
 
-Result packetFramesPlayedOf(App* app, CPU& cpu, reg32 esp, int32_t index, reg32 frames)
+Result packetFramesPlayedOf(App* app, ThreadState& ts, u32 esp, int32_t index, u32 frames)
 {
-    return packetFramesHeard(app, cpu, esp, index, frames, reg32(index));
+    return packetFramesHeard(app, ts, esp, index, frames, u32(index));
 }
 
 /* 0x4f3a10, 0x4f3a60, 0x4f3a80, 0x4f2f50 and 0x4f43c0 as the movie player
  * calls them (port_snd_stream_calls.h): their thunks' cores. */
-reg32 streamMemoryOf(App* app, reg32 requests, reg32 packets)
+u32 streamMemoryOf(App* app, u32 requests, u32 packets)
 {
     static_cast<void>(app);
     return streamBytes(requests, packets);
 }
 
-Result createQueued(App* app, CPU& cpu, reg32 esp, reg32 queue, reg32 options, reg32 requests, reg32 packets,
-                    reg32 memory, reg32 size)
+Result createQueued(App* app, ThreadState& ts, u32 esp, u32 queue, u32 options, u32 requests, u32 packets,
+                    u32 memory, u32 size)
 {
-    return createStream(app, cpu, esp - 4 - 3 * 4 - 4, options, requests, packets, memory, size, queue, 1);
+    return createStream(app, ts, esp - 4 - 3 * 4 - 4, options, requests, packets, memory, size, queue, 1);
 }
 
-Result requestData(App* app, CPU& cpu, reg32 esp, reg32 index, reg32 time, reg32 chunks)
+Result requestData(App* app, ThreadState& ts, u32 esp, u32 index, u32 time, u32 chunks)
 {
-    return requestStream(app, cpu, esp - 4 - 4 - 4, index, time, 0, chunks, 2);
+    return requestStream(app, ts, esp - 4 - 4 - 4, index, time, 0, chunks, 2);
 }
 
-Result requestStatusOf(App* app, CPU& cpu, reg32 esp, reg32 handle, reg32 out)
+Result requestStatusOf(App* app, ThreadState& ts, u32 esp, u32 handle, u32 out)
 {
-    return requestStatus(app, cpu, esp, handle, out);
+    return requestStatus(app, ts, esp, handle, out);
 }
 
-Result destroyStreamOf(App* app, CPU& cpu, reg32 esp, int32_t index)
+Result destroyStreamOf(App* app, ThreadState& ts, u32 esp, int32_t index)
 {
-    return destroyStream(app, cpu, esp, index);
+    return destroyStream(app, ts, esp, index);
 }
 
 }  // namespace stream
@@ -1399,315 +1399,315 @@ Result destroyStreamOf(App* app, CPU& cpu, reg32 esp, int32_t index)
 /* 0x503670 (__U8M): eax times edx, unsigned, into the 8 bytes at esi; eax the
  * place.  esi is left at the code's copy on its frame, as its movsd leaves
  * it. */
-x86::reg32 mul64(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 mul64(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
+    const Entry e(ts, args);
     const uint64_t product = uint64_t(e.eax) * e.edx;
-    store(app, e.esi, reg32(product));
-    store(app, e.esi + 4, reg32(product >> 32));
-    e.back(cpu, args, e.esi);
+    store(app, e.esi, u32(product));
+    store(app, e.esi + 4, u32(product >> 32));
+    e.back(ts, args, e.esi);
     args.esi = e.frame(4, 0xc) + 8;
     return args.eax;
 }
 
 /* 0x503760 (__U8D, stdcall 12): the 64 bits [esp+8]:[esp+4] over [esp+0xc]. */
-x86::reg32 div64(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 div64(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.back(cpu, args, divide64(e.arg(app, 0), e.arg(app, 1), e.arg(app, 2)), 0xc);
+    const Entry e(ts, args);
+    return e.back(ts, args, divide64(e.arg(app, 0), e.arg(app, 1), e.arg(app, 2)), 0xc);
 }
 
-x86::reg32 platformPacketSize(App*, CPU& cpu, x86::Args& args)
+nfs::u32 platformPacketSize(App*, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.back(cpu, args, reg32(platformPacketBytes()));
+    const Entry e(ts, args);
+    return e.back(ts, args, u32(platformPacketBytes()));
 }
 
-x86::reg32 findStream(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 findStream(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.back(cpu, args, streamOf(app, int32_t(e.eax)));
+    const Entry e(ts, args);
+    return e.back(ts, args, streamOf(app, int32_t(e.eax)));
 }
 
 /* 0x4f3ab5: iSNDstreamsystemtask's way out while a surface is locked, a jump
  * into findStream's end. */
-x86::reg32 streamTaskSkipped(App*, CPU& cpu, x86::Args& args)
+nfs::u32 streamTaskSkipped(App*, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.back(cpu, args, 0);
+    const Entry e(ts, args);
+    return e.back(ts, args, 0);
 }
 
 /* 0x4f3b31: removeRequest's way out, which framesPlayed jumps to: ecx and ebx
  * popped. */
-x86::reg32 framesPlayedDone(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 framesPlayedDone(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const reg32 esp = cpu.esp;
-    args.ecx = app->getMemory<reg32>(esp);
-    args.ebx = app->getMemory<reg32>(esp + 4);
-    cpu.esp = esp + 12;
+    const u32 esp = ts.sp;
+    args.ecx = app->getMemory<u32>(esp);
+    args.ebx = app->getMemory<u32>(esp + 4);
+    ts.sp = esp + 12;
     return args.eax;
 }
 
-x86::reg32 streamCount(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 streamCount(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.back(cpu, args, reg32(streamsMade(app)));
+    const Entry e(ts, args);
+    return e.back(ts, args, u32(streamsMade(app)));
 }
 
-x86::reg32 findRequest(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 findRequest(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.back(cpu, args, requestOfHandle(app, e.eax));
+    const Entry e(ts, args);
+    return e.back(ts, args, requestOfHandle(app, e.eax));
 }
 
 /* The request's state into the four words at edx. */
-x86::reg32 SNDSTRM_requeststatus(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 SNDSTRM_requeststatus(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, requestStatus(app, cpu, e.esp, e.eax, e.edx));
+    const Entry e(ts, args);
+    return e.finish(ts, args, requestStatus(app, ts, e.esp, e.eax, e.edx));
 }
 
 /* edx left as the requests' part. */
-x86::reg32 streamMemory(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 streamMemory(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    e.back(cpu, args, streamBytes(e.eax, e.edx));
+    const Entry e(ts, args);
+    e.back(ts, args, streamBytes(e.eax, e.edx));
     args.edx = e.eax * kRequestSize + sizeof(Stream);
     return args.eax;
 }
 
-x86::reg32 playerMemory(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 playerMemory(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.back(cpu, args, playerBytes(e.eax));
+    const Entry e(ts, args);
+    return e.back(ts, args, playerBytes(e.eax));
 }
 
 /* iSNDstreamcreate with the queue eax given: its arguments edx, ebx, ecx and
  * [esp+4]; the memory's size [esp+8].  stdcall 8. */
-x86::reg32 SNDSTRM_createqueued(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 SNDSTRM_createqueued(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args,
-             createStream(app, cpu, e.esp - 4 - 3 * 4 - 4, e.edx, e.ebx, e.ecx, e.arg(app, 0), e.arg(app, 1), e.eax, 1),
+    const Entry e(ts, args);
+    return e.finish(ts, args,
+             createStream(app, ts, e.esp - 4 - 3 * 4 - 4, e.edx, e.ebx, e.ecx, e.arg(app, 0), e.arg(app, 1), e.eax, 1),
              8);
     return args.eax;
 }
 
 /* A request of the chunks ebx given whole, for time edx on stream eax. */
-x86::reg32 SNDSTRM_requestdata(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 SNDSTRM_requestdata(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, requestStream(app, cpu, e.esp - 4 - 4 - 4, e.eax, e.edx, 0, e.ebx, 2));
+    const Entry e(ts, args);
+    return e.finish(ts, args, requestStream(app, ts, e.esp - 4 - 4 - 4, e.eax, e.edx, 0, e.ebx, 2));
 }
 
-x86::reg32 SNDSTRM_restore(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 SNDSTRM_restore(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, destroyEveryStream(app, cpu, e.esp));
+    const Entry e(ts, args);
+    return e.finish(ts, args, destroyEveryStream(app, ts, e.esp));
 }
 
-x86::reg32 removeRequest(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 removeRequest(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.back(cpu, args, takeOutRequest(app, e.eax));
+    const Entry e(ts, args);
+    return e.back(ts, args, takeOutRequest(app, e.eax));
 }
 
-x86::reg32 packetFreed(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 packetFreed(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, giveBackPacket(app, cpu, e.esp, e.eax));
+    const Entry e(ts, args);
+    return e.finish(ts, args, giveBackPacket(app, ts, e.esp, e.eax));
 }
 
 /* edx as the code leaves it: the frames the last request has played. */
-x86::reg32 framesPlayed(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 framesPlayed(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    reg32 played;
-    const reg32 eax = countPlayedFrames(app, int32_t(e.eax), e.edx, played);
-    e.back(cpu, args, eax);
+    const Entry e(ts, args);
+    u32 played;
+    const u32 eax = countPlayedFrames(app, int32_t(e.eax), e.edx, played);
+    e.back(ts, args, eax);
     args.edx = played;
     return args.eax;
 }
 
-x86::reg32 iSNDstreamparseheader(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 iSNDstreamparseheader(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, parseHeader(app, cpu, e.esp, e.eax, e.edx));
+    const Entry e(ts, args);
+    return e.finish(ts, args, parseHeader(app, ts, e.esp, e.eax, e.edx));
 }
 
-x86::reg32 iSNDstreamparseloop(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 iSNDstreamparseloop(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, parseLoop(app, cpu, e.esp, e.eax, e.edx));
+    const Entry e(ts, args);
+    return e.finish(ts, args, parseLoop(app, ts, e.esp, e.eax, e.edx));
 }
 
-x86::reg32 iSNDstreamparsedata(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 iSNDstreamparsedata(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, parseData(app, cpu, e.esp, e.eax, e.edx));
+    const Entry e(ts, args);
+    return e.finish(ts, args, parseData(app, ts, e.esp, e.eax, e.edx));
 }
 
-x86::reg32 iSNDstreamparseend(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 iSNDstreamparseend(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, parseEnd(app, cpu, e.esp, e.eax, e.edx));
+    const Entry e(ts, args);
+    return e.finish(ts, args, parseEnd(app, ts, e.esp, e.eax, e.edx));
 }
 
-x86::reg32 iSNDstreamparsechunk(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 iSNDstreamparsechunk(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, parseChunk(app, cpu, e.esp, e.eax, e.edx));
+    const Entry e(ts, args);
+    return e.finish(ts, args, parseChunk(app, ts, e.esp, e.eax, e.edx));
 }
 
-x86::reg32 streamWaits(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 streamWaits(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, waitsForQueue(app, cpu, e.esp, e.eax));
+    const Entry e(ts, args);
+    return e.finish(ts, args, waitsForQueue(app, ts, e.esp, e.eax));
 }
 
-x86::reg32 iSNDstreamsystemtask(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 iSNDstreamsystemtask(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, streamSystemTask(app, cpu, e.esp));
+    const Entry e(ts, args);
+    return e.finish(ts, args, streamSystemTask(app, ts, e.esp));
 }
 
 /* stdcall 12: edx requests, ebx packets, ecx the memory; its size, the queue
  * and whether it is given on the stack. */
-x86::reg32 iSNDstreamcreate(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 iSNDstreamcreate(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args,
-             createStream(app, cpu, e.esp, e.eax, e.edx, e.ebx, e.ecx, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2)),
+    const Entry e(ts, args);
+    return e.finish(ts, args,
+             createStream(app, ts, e.esp, e.eax, e.edx, e.ebx, e.ecx, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2)),
              0xc);
     return args.eax;
 }
 
 /* stdcall 4: the time edx, the bytes ebx, the data ecx; how on the stack. */
-x86::reg32 iSNDstreamrequest(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 iSNDstreamrequest(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, requestStream(app, cpu, e.esp, e.eax, e.edx, e.ebx, e.ecx, e.arg(app, 0)), 4);
+    const Entry e(ts, args);
+    return e.finish(ts, args, requestStream(app, ts, e.esp, e.eax, e.edx, e.ebx, e.ecx, e.arg(app, 0)), 4);
 }
 
-x86::reg32 SNDSTRM_destroy(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 SNDSTRM_destroy(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, destroyStream(app, cpu, e.esp, int32_t(e.eax)));
+    const Entry e(ts, args);
+    return e.finish(ts, args, destroyStream(app, ts, e.esp, int32_t(e.eax)));
 }
 
-x86::reg32 SNDSTRM_purge(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 SNDSTRM_purge(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, purgeStream(app, cpu, e.esp, int32_t(e.eax)));
+    const Entry e(ts, args);
+    return e.finish(ts, args, purgeStream(app, ts, e.esp, int32_t(e.eax)));
 }
 
 /* The packet player in the memory eax of edx bytes; its free callback ebx and
  * frames callback ecx. */
-x86::reg32 SNDPKTPLAY_create(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 SNDPKTPLAY_create(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.back(cpu, args, reg32(createPlayer(app, e.eax, e.edx, e.ebx, e.ecx)));
+    const Entry e(ts, args);
+    return e.back(ts, args, u32(createPlayer(app, e.eax, e.edx, e.ebx, e.ecx)));
 }
 
 /* The header edx, the patch's settings ebx, the play's options ecx. */
-x86::reg32 SNDPKTPLAY_start(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 SNDPKTPLAY_start(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, startPlayer(app, cpu, e.esp, int32_t(e.eax), e.edx, e.ebx, e.ecx));
+    const Entry e(ts, args);
+    return e.finish(ts, args, startPlayer(app, ts, e.esp, int32_t(e.eax), e.edx, e.ebx, e.ecx));
 }
 
 /* The packet edx (its frames +4, its data +0xc). */
-x86::reg32 SNDPKTPLAY_submit(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 SNDPKTPLAY_submit(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, submitPacket(app, cpu, e.esp, int32_t(e.eax), e.edx));
+    const Entry e(ts, args);
+    return e.finish(ts, args, submitPacket(app, ts, e.esp, int32_t(e.eax), e.edx));
 }
 
-x86::reg32 SNDPKTPLAY_submitspace(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 SNDPKTPLAY_submitspace(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, submitSpace(app, cpu, e.esp, int32_t(e.eax)));
+    const Entry e(ts, args);
+    return e.finish(ts, args, submitSpace(app, ts, e.esp, int32_t(e.eax)));
 }
 
-x86::reg32 framesOutstanding(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 framesOutstanding(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, framesOutstandingOf(app, cpu, e.esp, int32_t(e.eax)));
+    const Entry e(ts, args);
+    return e.finish(ts, args, framesOutstandingOf(app, ts, e.esp, int32_t(e.eax)));
 }
 
-x86::reg32 SNDPKTPLAY_framesoutstanding(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 SNDPKTPLAY_framesoutstanding(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, framesOutstandingLocked(app, cpu, e.esp, int32_t(e.eax)));
+    const Entry e(ts, args);
+    return e.finish(ts, args, framesOutstandingLocked(app, ts, e.esp, int32_t(e.eax)));
 }
 
 /* The serials edx to ebx. */
-x86::reg32 SNDPKTPLAY_purge(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 SNDPKTPLAY_purge(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, purgePackets(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx), int32_t(e.ebx)));
+    const Entry e(ts, args);
+    return e.finish(ts, args, purgePackets(app, ts, e.esp, int32_t(e.eax), int32_t(e.edx), int32_t(e.ebx)));
 }
 
-x86::reg32 SNDPKTPLAY_stop(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 SNDPKTPLAY_stop(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, stopPlayer(app, cpu, e.esp, int32_t(e.eax)));
+    const Entry e(ts, args);
+    return e.finish(ts, args, stopPlayer(app, ts, e.esp, int32_t(e.eax)));
 }
 
-x86::reg32 SNDPKTPLAY_destroy(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 SNDPKTPLAY_destroy(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.back(cpu, args, reg32(destroyPlayer(app, int32_t(e.eax))));
+    const Entry e(ts, args);
+    return e.back(ts, args, u32(destroyPlayer(app, int32_t(e.eax))));
 }
 
 /* The frames go into [edx]; edx is left at the player. */
-x86::reg32 nextPacket(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 nextPacket(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    reg32 player;
-    const Result data = takeNextPacket(app, cpu, e.esp, int32_t(e.eax), e.edx, player);
+    const Entry e(ts, args);
+    u32 player;
+    const Result data = takeNextPacket(app, ts, e.esp, int32_t(e.eax), e.edx, player);
     if (!data)
         return args.eax;
-    e.back(cpu, args, reg32(*data));
+    e.back(ts, args, u32(*data));
     args.edx = player;
     return args.eax;
 }
 
-x86::reg32 packetFramesPlayed(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 packetFramesPlayed(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, packetFramesHeard(app, cpu, e.esp, int32_t(e.eax), e.edx, e.eax));
+    const Entry e(ts, args);
+    return e.finish(ts, args, packetFramesHeard(app, ts, e.esp, int32_t(e.eax), e.edx, e.eax));
 }
 
-x86::reg32 patchDefaults(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 patchDefaults(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
+    const Entry e(ts, args);
     defaultSettings(record<PatchSettings>(app, e.eax));
-    return e.back(cpu, args, 0);
+    return e.back(ts, args, 0);
 }
 
 /* The patch eax made the header edx, with its settings ebx and its frames
  * into [ecx]. */
-x86::reg32 iSNDpatchtohdr(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 iSNDpatchtohdr(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args,
-             patchToHeader(app, cpu, e.esp, e.eax, record<StreamHeader>(app, e.edx),
+    const Entry e(ts, args);
+    return e.finish(ts, args,
+             patchToHeader(app, ts, e.esp, e.eax, record<StreamHeader>(app, e.edx),
                            record<PatchSettings>(app, e.ebx), e.ecx));
     return args.eax;
 }
 
-x86::reg32 iSNDplatformcalcdatarate(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 iSNDplatformcalcdatarate(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, dataRate(app, cpu, e.esp, record<StreamHeader>(app, e.eax), e.edx));
+    const Entry e(ts, args);
+    return e.finish(ts, args, dataRate(app, ts, e.esp, record<StreamHeader>(app, e.eax), e.edx));
 }
 
 /* The count edx for the queue of stream eax. */
-x86::reg32 streamChunksAtOnce(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 streamChunksAtOnce(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, chunksAtOnce(app, cpu, e.esp, e.eax, e.edx));
+    const Entry e(ts, args);
+    return e.finish(ts, args, chunksAtOnce(app, ts, e.esp, e.eax, e.edx));
 }
 
 }  // namespace port

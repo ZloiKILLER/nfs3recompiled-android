@@ -32,7 +32,7 @@ import java.util.zip.ZipInputStream;
 /**
  * Copies the game's data into the app's private external storage
  * (getExternalFilesDir(null), which is what SDL_GetAndroidExternalStoragePath()
- * returns and what nfs3hp_main.cpp points win32::File's data/CD directories at).
+ * returns and what nfs3hp_main.cpp points nfs::File's data/CD directories at).
  *
  * Two independent things need to land there before the game can start, and
  * this class checks/copies each separately:
@@ -41,16 +41,11 @@ import java.util.zip.ZipInputStream;
  *    430 MB): picked once via the Storage Access Framework and copied from
  *    whatever DocumentsProvider backs the chosen folder.
  *
- *  - Four small files bundled as APK assets: nfs3.exe, eacsnd.dll,
- *    voodoo2a.dll, softtria.dll (the original 1998 binaries this project's
- *    disassembly was generated from -- NOT the user's own nfs3.exe, which is
- *    typically a newer repack the recompiled logic does not expect) plus a
- *    fallback install.win (see tools/make_install_win.py), used only when
- *    the imported data does not supply its own file.  The game's
- *    own integrity check stat()s/open()s these by name next to the data
- *    directory even though their *code* never runs on Android; without them
- *    it reports "files are corrupted" exactly as it did before install.win
- *    was reconstructed for the M0 desktop bring-up.
+ *  - install.win, bundled as an APK asset (see tools/make_install_win.py)
+ *    and used only when the imported data does not supply its own file: the
+ *    game reads it before anything else and reports "files are corrupted"
+ *    without it.  The original's executable and DLLs are not needed: the
+ *    port is their code, and the game never opens them as files.
  */
 final class DataImporter
 {
@@ -73,10 +68,8 @@ final class DataImporter
         "gamedata/tracks/trk000/sky.fsh",
     };
 
-    private static final String[] BUNDLED_ASSET_FILES = {
-        "nfs3.exe", "eacsnd.dll", "voodoo2a.dll", "softtria.dll", "install.win",
-    };
     private static final String INSTALL_WIN = "install.win";
+    private static final String[] BUNDLED_ASSET_FILES = { INSTALL_WIN };
     private static final String[] USER_DATA_ENTRIES = { "fedata", "gamedata", "drivers", INSTALL_WIN };
     private static final String ASSET_DIR = "gamefiles";
     /** Retail render resources bundled to complete otherwise partial imports. */
@@ -136,29 +129,16 @@ final class DataImporter
         return true;
     }
 
-    /** Copies the ~2 MB of bundled original binaries + install.win.  Fast enough
-     * to run unconditionally on the UI thread at every launch (it no-ops once
-     * the files exist -- see areBundledFilesPresent()). */
+    /** Copies the bundled install.win.  Fast enough to run unconditionally on
+     * the UI thread at every launch (it no-ops once the file exists -- see
+     * areBundledFilesPresent()). */
     static void copyBundledAssets(Context context, File root) throws IOException
     {
         if (areBundledFilesPresent(root))
             return;
 
         removeCompletionMarker(root, BUNDLED_ASSETS_COMPLETE);
-        for (String name : BUNDLED_ASSET_FILES)
-        {
-            if (INSTALL_WIN.equals(name))
-            {
-                copyMissingInstallWin(context, root);
-                continue;
-            }
-            File dst = new File(root, name);
-            File part = new File(root, name + ".part");
-            try (InputStream in = context.getAssets().open(ASSET_DIR + "/" + name))
-            {
-                copyFileAtomically(in, part, dst, null);
-            }
-        }
+        copyMissingInstallWin(context, root);
         writeCompletionMarker(root, BUNDLED_ASSETS_COMPLETE);
     }
 

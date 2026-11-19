@@ -55,7 +55,7 @@ struct Event
 
 #pragma pack(pop)
 
-constexpr reg32 kNodeSize = 0x1c;
+constexpr u32 kNodeSize = 0x1c;
 constexpr Event kNoEvent{-1, 0};
 
 constexpr Var<uint16_t> kBufTime{0x5645c0};        // the buffered time it asks for
@@ -63,15 +63,15 @@ constexpr Var<uint16_t> kWaitTime{0x5645c2};       // and the time it waits for
 constexpr Var<int16_t> kNode{0x5645c4};            // the node playing
 constexpr Var<int8_t> kController{0x5645c6};
 constexpr Var<int32_t> kEnds{0x5645c8};            // the streamer's ends to wait for
-constexpr Var<reg32> kRows{0x5645cc}, kOffsets{0x5645d0};
-constexpr reg32 kNameAt = 0x5645d4;                // the file's name
+constexpr Var<u32> kRows{0x5645cc}, kOffsets{0x5645d0};
+constexpr u32 kNameAt = 0x5645d4;                // the file's name
 constexpr Var<Event> kCurrent{0x564654}, kNext{0x564658};
-constexpr Var<reg32> kMap{0x56465c}, kNodes{0x564660}, kPathStream{0x564664};
-constexpr Var<reg32> kPathRestore{0xa09b2c};
-constexpr Var<reg32> kTopupHook{0x56480c};
+constexpr Var<u32> kMap{0x56465c}, kNodes{0x564660}, kPathStream{0x564664};
+constexpr Var<u32> kPathRestore{0xa09b2c};
+constexpr Var<u32> kTopupHook{0x56480c};
 
 // Its errors' source, and the functions' names.
-constexpr reg32 kPathFile = 0x54a8b8;
+constexpr u32 kPathFile = 0x54a8b8;
 constexpr Where kInitError{kPathFile, 0x54a8c8}, kStartError{kPathFile, 0x54a98c};
 constexpr Where kControlError{kPathFile, 0x54a9d4}, kEventError{kPathFile, 0x54aa48};
 constexpr Where kInterruptError{kPathFile, 0x54aaa8};
@@ -80,32 +80,32 @@ constexpr Where kInterruptError{kPathFile, 0x54aaa8};
 // (endsSeen, bufferedTime, queueStreamFile, interruptStream, setUpStreamer,
 // restoreStreamer, scheduleTask, unscheduleTask) is a rewrite too, called as
 // C++.
-constexpr reg32 kPathTask = 0x4e6d68, kPathHook = 0x4e6d94, kPathRestoreFunction = 0x4e7388;
+constexpr u32 kPathTask = 0x4e6d68, kPathHook = 0x4e6d94, kPathRestoreFunction = 0x4e7388;
 
 // Its answers: before SNDinit or SNDpathinit; set up already; the map's magic
 // and version; the streamer would not.
 constexpr int32_t kNoPathfinder = -14, kSetUp = -1, kNoMap = -7, kBadVersion = -11, kStreamerRefused = -18;
-constexpr reg32 kMagic = 0x78444650;  // 'PFDx'
+constexpr u32 kMagic = 0x78444650;  // 'PFDx'
 
-uint8_t byteAt(App* app, reg32 at) { return app->getMemory<uint8_t>(at); }
+uint8_t byteAt(App* app, u32 at) { return app->getMemory<uint8_t>(at); }
 
 /* The node `node`'s offset in the file (big-endian in the map). */
-reg32 nodeOffset(App* app, reg32 node)
+u32 nodeOffset(App* app, u32 node)
 {
-    const reg32 v = app->getMemory<reg32>(kOffsets(app) + 4 * node);
+    const u32 v = app->getMemory<u32>(kOffsets(app) + 4 * node);
     return v >> 24 | (v >> 8 & 0xff00) | (v << 8 & 0xff0000) | v << 24;
 }
 
-reg32 nodeAt(App* app, reg32 node) { return kNodes(app) + node * kNodeSize; }
+u32 nodeAt(App* app, u32 node) { return kNodes(app) + node * kNodeSize; }
 
 /* The node playing. */
-reg32 playing(App* app) { return reg32(int32_t(kNode(app))); }
+u32 playing(App* app) { return u32(int32_t(kNode(app))); }
 
 /* The node event `event` leads to from the node playing. */
-reg32 nodeAfter(App* app, reg32 event)
+u32 nodeAfter(App* app, u32 event)
 {
-    const reg32 row = record<Node>(app, nodeAt(app, playing(app))).row;
-    return byteAt(app, kRows(app) + reg32(imul(int32_t(byteAt(app, kMap(app) + 7)), int32_t(row))) + event);
+    const u32 row = record<Node>(app, nodeAt(app, playing(app))).row;
+    return byteAt(app, kRows(app) + u32(imul(int32_t(byteAt(app, kMap(app) + 7)), int32_t(row))) + event);
 }
 
 /* No event, none after it. */
@@ -119,20 +119,20 @@ void clearEvents(App* app)
  * falls in -- and its stretch queued; the task gone once a node without
  * branches plays with no event.  The node's offset among the nodes (or
  * removeSystemTask's). */
-Result stepOn(App* app, CPU& cpu, reg32 esp)
+Result stepOn(App* app, ThreadState& ts, u32 esp)
 {
-    const reg32 f = esp - 3 * 4;
+    const u32 f = esp - 3 * 4;
     if (kCurrent(app).event >= 0)
     {
-        kNode.set(app, int16_t(nodeAfter(app, reg32(int32_t(kCurrent(app).event)))));
+        kNode.set(app, int16_t(nodeAfter(app, u32(int32_t(kCurrent(app).event)))));
         kCurrent.set(app, kNext(app));
         kNext.set(app, kNoEvent);
     }
     else
     {
-        const reg32 node = nodeAt(app, playing(app));
+        const u32 node = nodeAt(app, playing(app));
         const int32_t controller = kController(app);
-        for (reg32 i = 0; i < record<Node>(app, node).branches; ++i)
+        for (u32 i = 0; i < record<Node>(app, node).branches; ++i)
         {
             const Branch& branch = record<Branch>(app, node + sizeof(Node) + sizeof(Branch) * i);
             if (controller >= branch.low && controller <= branch.high)
@@ -143,9 +143,9 @@ Result stepOn(App* app, CPU& cpu, reg32 esp)
         }
     }
     kEnds.set(app, kEnds(app) + 1);
-    if (!queueStreamFile(app, cpu, f - 4, kNameAt, nodeOffset(app, playing(app))))
+    if (!queueStreamFile(app, ts, f - 4, kNameAt, nodeOffset(app, playing(app))))
         return {};
-    reg32 result = playing(app) * kNodeSize;
+    u32 result = playing(app) * kNodeSize;
     if (record<Node>(app, kNodes(app) + result).branches == 0 && kCurrent(app).event < 0)
     {
         result = unscheduleTask(app, kPathTask);
@@ -156,23 +156,23 @@ Result stepOn(App* app, CPU& cpu, reg32 esp)
 
 /* 0x4e6d68's: Pathfinder's system task: once the streamer has seen the ends
  * waited for and holds less than the time wanted, the next node.  0. */
-Result runPathTask(App* app, CPU& cpu, reg32 esp)
+Result runPathTask(App* app, ThreadState& ts, u32 esp)
 {
-    const reg32 ends = endsSeen(app);
+    const u32 ends = endsSeen(app);
     if (int32_t(ends) < kEnds(app))
         return 0;
-    const reg32 wanted = kWaitTime(app);
-    const Result buffered = bufferedTime(app, cpu, esp - 4);
+    const u32 wanted = kWaitTime(app);
+    const Result buffered = bufferedTime(app, ts, esp - 4);
     if (!buffered)
         return {};
-    if (*buffered < int32_t(wanted) && !stepOn(app, cpu, esp - 4))
+    if (*buffered < int32_t(wanted) && !stepOn(app, ts, esp - 4))
         return {};
     return 0;
 }
 
 /* 0x4e6d94's: Pathfinder's top-up hook: the time to wait for is the time
  * asked for plus `extra` (that alone for none).  The time asked for. */
-reg32 topUpHook(App* app, reg32 extra)
+u32 topUpHook(App* app, u32 extra)
 {
     kWaitTime.set(app, uint16_t(extra == 0 ? kBufTime(app) : extra + kBufTime(app)));
     return kBufTime(app);
@@ -182,31 +182,31 @@ reg32 topUpHook(App* app, reg32 extra)
 
 /* 0x4e6dc8's (SNDpathinit): Pathfinder set up on map `map`.  0; -14 before
  * SNDinit, -1 when set up already, -7 for no map, -11 for its version. */
-Result pathInit(App* app, CPU& cpu, reg32 esp, reg32 map)
+Result pathInit(App* app, ThreadState& ts, u32 esp, u32 map)
 {
     if (kInited(app) == 0)
         return kNoPathfinder;
     if (kMap(app) != 0)
     {
-        if (!fail(app, cpu, esp - 5 * 4, kInitError, 0xed, {0x54a8d4}))
+        if (!fail(app, ts, esp - 5 * 4, kInitError, 0xed, {0x54a8d4}))
             return {};
         return kSetUp;
     }
     kMap.set(app, map);
-    if (app->getMemory<reg32>(map) != kMagic)
+    if (app->getMemory<u32>(map) != kMagic)
     {
-        if (!fail(app, cpu, esp - 6 * 4, kInitError, 0xf9, {0x54a91c}))
+        if (!fail(app, ts, esp - 6 * 4, kInitError, 0xf9, {0x54a91c}))
             return {};
         return kNoMap;
     }
     if (byteAt(app, map + 4) != 0)
     {
-        if (!fail(app, cpu, esp - 5 * 4, kInitError, 0x103, {0x54a950}))
+        if (!fail(app, ts, esp - 5 * 4, kInitError, 0x103, {0x54a950}))
             return {};
         return kBadVersion;
     }
     kNodes.set(app, map + 0xc);
-    const reg32 rows = map + 0xc + byteAt(app, map + 6) * kNodeSize;
+    const u32 rows = map + 0xc + byteAt(app, map + 6) * kNodeSize;
     kRows.set(app, rows);
     kPathRestore.set(app, kPathRestoreFunction);
     kOffsets.set(app, rows + byteAt(app, map + 0xb) * byteAt(app, map + 7));
@@ -217,14 +217,14 @@ Result pathInit(App* app, CPU& cpu, reg32 esp, reg32 map)
  * from the file named `name`, its first node's stretch queued, `time` buffered
  * ahead; Pathfinder's task and hook set.  0, -14 before SNDinit or
  * SNDpathinit. */
-Result startPathStream(App* app, CPU& cpu, reg32 esp, reg32 stream, reg32 name, reg32 time)
+Result startPathStream(App* app, ThreadState& ts, u32 esp, u32 stream, u32 name, u32 time)
 {
-    const reg32 f = esp - 3 * 4 - 0x10;
+    const u32 f = esp - 3 * 4 - 0x10;
     if (kInited(app) == 0)
         return kNoPathfinder;
     if (kPathRestore(app) == 0)
     {
-        if (!fail(app, cpu, f, kStartError, 0x1a5, {0x54a9a0}))
+        if (!fail(app, ts, f, kStartError, 0x1a5, {0x54a9a0}))
             return {};
         return kNoPathfinder;
     }
@@ -235,7 +235,7 @@ Result startPathStream(App* app, CPU& cpu, reg32 esp, reg32 stream, reg32 name, 
     kController.set(app, 0);
     kNode.set(app, int16_t(byteAt(app, kMap(app) + 5)));
     kEnds.set(app, int32_t(endsSeen(app)));
-    for (reg32 i = 0;; ++i)
+    for (u32 i = 0;; ++i)
     {
         const uint8_t c = byteAt(app, name + i);
         app->getMemory<uint8_t>(kNameAt + i) = c;
@@ -245,9 +245,9 @@ Result startPathStream(App* app, CPU& cpu, reg32 esp, reg32 stream, reg32 name, 
     kEnds.set(app, kEnds(app) + 1);
     // The play's options made on the stack, for the stream's setup.
     playDefaults(record<PlayOptions>(app, f));
-    if (!setUpStreamer(app, cpu, f - 8, kPathStream(app), f)
-        || !queueStreamFile(app, cpu, f - 8, name, nodeOffset(app, playing(app)))
-        || !scheduleTask(app, cpu, f - 8, kPathTask, 0, 1))
+    if (!setUpStreamer(app, ts, f - 8, kPathStream(app), f)
+        || !queueStreamFile(app, ts, f - 8, name, nodeOffset(app, playing(app)))
+        || !scheduleTask(app, ts, f - 8, kPathTask, 0, 1))
         return {};
     kTopupHook.set(app, kPathHook);
     return 0;
@@ -255,19 +255,19 @@ Result startPathStream(App* app, CPU& cpu, reg32 esp, reg32 stream, reg32 name, 
 
 /* 0x4e705c's (SNDpathcontrol): the controller to `value` (0 to 127).  0; -14
  * before SNDinit or SNDpathinit, -8 out of range. */
-Result pathControl(App* app, CPU& cpu, reg32 esp, int32_t value)
+Result pathControl(App* app, ThreadState& ts, u32 esp, int32_t value)
 {
     if (kInited(app) == 0)
         return kNoPathfinder;
     if (kPathRestore(app) == 0)
     {
-        if (!fail(app, cpu, esp - 2 * 4, kControlError, 0x23a, {0x54a9e4}))
+        if (!fail(app, ts, esp - 2 * 4, kControlError, 0x23a, {0x54a9e4}))
             return {};
         return kNoPathfinder;
     }
     if (value < 0 || value > 0x7f)
     {
-        if (!fail(app, cpu, esp - 5 * 4, kControlError, 0x243, {0x54aa14}))
+        if (!fail(app, ts, esp - 5 * 4, kControlError, 0x243, {0x54aa14}))
             return {};
         return kNoSound;
     }
@@ -278,19 +278,19 @@ Result pathControl(App* app, CPU& cpu, reg32 esp, int32_t value)
 /* 0x4e70fc's (SNDpathevent): event `event` of kind `kind`: kind 1 at once
  * (the one after it dropped), another after an event of kind 1, else in its
  * place.  0; -14 before SNDinit or SNDpathinit, -8 for no such event. */
-Result pathEvent(App* app, CPU& cpu, reg32 esp, int32_t event, int32_t kind)
+Result pathEvent(App* app, ThreadState& ts, u32 esp, int32_t event, int32_t kind)
 {
     if (kInited(app) == 0)
         return kNoPathfinder;
     if (kPathRestore(app) == 0)
     {
-        if (!fail(app, cpu, esp - 3 * 4, kEventError, 0x2d0, {0x54aa58}))
+        if (!fail(app, ts, esp - 3 * 4, kEventError, 0x2d0, {0x54aa58}))
             return {};
         return kNoPathfinder;
     }
     if (event < 0 || event >= int32_t(byteAt(app, kMap(app) + 7)))
     {
-        if (!fail(app, cpu, esp - 5 * 4, kEventError, 0x2d9, {0x54aa84}))
+        if (!fail(app, ts, esp - 5 * 4, kEventError, 0x2d9, {0x54aa84}))
             return {};
         return kNoSound;
     }
@@ -310,51 +310,51 @@ Result pathEvent(App* app, CPU& cpu, reg32 esp, int32_t event, int32_t kind)
 /* 0x4e7208's (SNDpatheventinterrupt): the stream cut over at once to the
  * node event `event` leads to.  0; -14 before SNDinit or SNDpathinit, -8 for
  * no such event, -18 when the streamer would not. */
-Result pathEventInterrupt(App* app, CPU& cpu, reg32 esp, int32_t event)
+Result pathEventInterrupt(App* app, ThreadState& ts, u32 esp, int32_t event)
 {
-    const reg32 f = esp - 4 * 4;
+    const u32 f = esp - 4 * 4;
     if (kInited(app) == 0)
         return kNoPathfinder;
     if (kPathRestore(app) == 0)
     {
-        if (!fail(app, cpu, f, kInterruptError, 0x303, {0x54aac0}))
+        if (!fail(app, ts, f, kInterruptError, 0x303, {0x54aac0}))
             return {};
         return kNoPathfinder;
     }
     if (event < 0 || event >= int32_t(byteAt(app, kMap(app) + 7)))
     {
-        if (!fail(app, cpu, esp - 6 * 4, kInterruptError, 0x30c, {0x54aaf8}))
+        if (!fail(app, ts, esp - 6 * 4, kInterruptError, 0x30c, {0x54aaf8}))
             return {};
         return kNoSound;
     }
-    if (!enterAudio(app, cpu, f - 4))
+    if (!enterAudio(app, ts, f - 4))
         return {};
-    const reg32 node = nodeAfter(app, reg32(event));
-    const Result refused = interruptStream(app, cpu, f - 4, kNameAt, nodeOffset(app, node));
+    const u32 node = nodeAfter(app, u32(event));
+    const Result refused = interruptStream(app, ts, f - 4, kNameAt, nodeOffset(app, node));
     if (!refused)
         return {};
     if (*refused != 0)
     {
-        if (!leaveAudio(app, cpu, f - 4))
+        if (!leaveAudio(app, ts, f - 4))
             return {};
         return kStreamerRefused;
     }
     kEnds.set(app, int32_t(endsSeen(app)));
     kNode.set(app, int16_t(node));
     clearEvents(app);
-    if (!leaveAudio(app, cpu, f - 4))
+    if (!leaveAudio(app, ts, f - 4))
         return {};
     return 0;
 }
 
 /* 0x4e7388's (SNDpathrestore): Pathfinder done with: the streamer restored,
  * its task and hook gone.  0, -14 when not set up. */
-Result pathRestore(App* app, CPU& cpu, reg32 esp)
+Result pathRestore(App* app, ThreadState& ts, u32 esp)
 {
     if (kInited(app) == 0 || kPathRestore(app) == 0)
         return kNoPathfinder;
-    const reg32 f = esp - 4;
-    if (!restoreStreamer(app, cpu, f - 4))
+    const u32 f = esp - 4;
+    if (!restoreStreamer(app, ts, f - 4))
         return {};
     unscheduleTask(app, kPathTask);
     kMap.set(app, 0);
@@ -368,40 +368,40 @@ Result pathRestore(App* app, CPU& cpu, reg32 esp)
 /* The game's entries: each its thunk -- the game's registers and stack in,
  * the result in eax out -- around what it does. */
 
-x86::reg32 pathStep(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 pathStep(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, stream::stepOn(app, cpu, e.esp));
+    const Entry e(ts, args);
+    return e.finish(ts, args, stream::stepOn(app, ts, e.esp));
 }
 
-x86::reg32 pathTask(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 pathTask(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, stream::runPathTask(app, cpu, e.esp));
+    const Entry e(ts, args);
+    return e.finish(ts, args, stream::runPathTask(app, ts, e.esp));
 }
 
-x86::reg32 pathHook(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 pathHook(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.back(cpu, args, stream::topUpHook(app, e.eax));
+    const Entry e(ts, args);
+    return e.back(ts, args, stream::topUpHook(app, e.eax));
 }
 
-x86::reg32 SNDpathinit(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 SNDpathinit(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, stream::pathInit(app, cpu, e.esp, e.eax));
+    const Entry e(ts, args);
+    return e.finish(ts, args, stream::pathInit(app, ts, e.esp, e.eax));
 }
 
 /* The stream eax from the file edx, time ebx buffered ahead.  ebx and edx are
  * left as the last calls leave them once it is done: the queue's 1 in ebx,
  * the system task's thunk's 0 in edx (its code's own edx it does not keep). */
-x86::reg32 SNDpathstartstream(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 SNDpathstartstream(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    const Result r = stream::startPathStream(app, cpu, e.esp, e.eax, e.edx, e.ebx);
+    const Entry e(ts, args);
+    const Result r = stream::startPathStream(app, ts, e.esp, e.eax, e.edx, e.ebx);
     if (!r)
         return args.eax;
-    e.back(cpu, args, reg32(*r));
+    e.back(ts, args, u32(*r));
     if (*r == 0)
     {
         args.ebx = 1;
@@ -410,36 +410,36 @@ x86::reg32 SNDpathstartstream(App* app, CPU& cpu, x86::Args& args)
     return args.eax;
 }
 
-x86::reg32 SNDpathcontrol(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 SNDpathcontrol(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, stream::pathControl(app, cpu, e.esp, int32_t(e.eax)));
+    const Entry e(ts, args);
+    return e.finish(ts, args, stream::pathControl(app, ts, e.esp, int32_t(e.eax)));
 }
 
 /* Past an error for Pathfinder not set up, edx is left the error's line. */
-x86::reg32 SNDpathevent(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 SNDpathevent(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
+    const Entry e(ts, args);
     const bool notSetUp = kInited(app) != 0 && stream::kPathRestore(app) == 0;
-    const Result r = stream::pathEvent(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx));
+    const Result r = stream::pathEvent(app, ts, e.esp, int32_t(e.eax), int32_t(e.edx));
     if (!r)
         return args.eax;
-    e.back(cpu, args, reg32(*r));
+    e.back(ts, args, u32(*r));
     if (notSetUp)
         args.edx = 0x2d0;
     return args.eax;
 }
 
-x86::reg32 SNDpatheventinterrupt(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 SNDpatheventinterrupt(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, stream::pathEventInterrupt(app, cpu, e.esp, int32_t(e.eax)));
+    const Entry e(ts, args);
+    return e.finish(ts, args, stream::pathEventInterrupt(app, ts, e.esp, int32_t(e.eax)));
 }
 
-x86::reg32 SNDpathrestore(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 SNDpathrestore(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, stream::pathRestore(app, cpu, e.esp));
+    const Entry e(ts, args);
+    return e.finish(ts, args, stream::pathRestore(app, ts, e.esp));
 }
 
 }  // namespace port

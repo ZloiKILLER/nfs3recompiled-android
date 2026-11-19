@@ -2,7 +2,7 @@
 #include <nfs3hp.h>
 
 #include <lib/renderer.h>
-#include <lib/winapp.h>
+#include <lib/app.h>
 #include <SDL3/SDL.h>
 
 #include <algorithm>
@@ -33,9 +33,9 @@ namespace nfs3hp
 namespace
 {
 
-using App = win32::WinApplication;
-using CPU = x86::CPU;
-using x86::reg32;
+using App = nfs::App;
+using ThreadState = nfs::ThreadState;
+using nfs::u32;
 
 /* Percentages, as in the launcher's preferences; in step with ScreenAdjustment.java.
  * Each slider's step in menu_data.cpp lands on 100. */
@@ -51,16 +51,16 @@ constexpr Range kRanges[kAdjustments] = {
     { "DISPLAY_CONTRAST", 50, 200 },
 };
 
-constexpr reg32 kSliderValue = 0x54;  // float, 0 to 1
-constexpr reg32 kButton = 5;
+constexpr u32 kSliderValue = 0x54;  // float, 0 to 1
+constexpr u32 kButton = 5;
 
-reg32 s_sliders[kAdjustments];   // of the screen open, 0 where there is none
+u32 s_sliders[kAdjustments];   // of the screen open, 0 where there is none
 int s_percent[kAdjustments];     // as the sliders show them
 int s_kept[kAdjustments];        // as the screen found them
 
 void currentPercents(int (&percent)[kAdjustments])
 {
-    const win32::DisplayAdjustment now = win32::displayAdjustment();
+    const nfs::DisplayAdjustment now = nfs::displayAdjustment();
     percent[0] = int(std::lround(now.gamma * 100.f));
     percent[1] = int(std::lround(now.brightness * 200.f)) + 100;
     percent[2] = int(std::lround(now.contrast * 100.f));
@@ -69,35 +69,35 @@ void currentPercents(int (&percent)[kAdjustments])
 /* What the launcher's ScreenAdjustment hands the shader for these percentages. */
 void applyPercents(const int (&percent)[kAdjustments])
 {
-    win32::setDisplayAdjustment({ percent[0] / 100.f, (percent[1] - 100) / 200.f, percent[2] / 100.f });
+    nfs::setDisplayAdjustment({ percent[0] / 100.f, (percent[1] - 100) / 200.f, percent[2] / 100.f });
 }
 
-bool holds(App* app, reg32 string, const char* text)
+bool holds(App* app, u32 string, const char* text)
 {
     return string != 0 && std::strcmp(&app->getMemory<char>(string), text) == 0;
 }
 
-reg32 itemAt(App* app, reg32 menu, std::int32_t index)
+u32 itemAt(App* app, u32 menu, std::int32_t index)
 {
     const std::int32_t first = app->getMemory<std::int16_t>(menu + fe::menu::kFirstItem);
-    return fe::item::kTable + fe::item::kSize * reg32(first + index);
+    return fe::item::kTable + fe::item::kSize * u32(first + index);
 }
 
 /* The screen's item with this codelink, 0 without one.  Read directly and not
  * through the game's lookup, so nothing here touches the guest's registers. */
-reg32 findSlider(App* app, reg32 menu, const char* codelink)
+u32 findSlider(App* app, u32 menu, const char* codelink)
 {
     for (std::int32_t i = 0;; ++i)
     {
-        const reg32 item = itemAt(app, menu, i);
-        if (app->getMemory<reg32>(item + fe::item::kType) == 0)
+        const u32 item = itemAt(app, menu, i);
+        if (app->getMemory<u32>(item + fe::item::kType) == 0)
             return 0;
-        if (holds(app, app->getMemory<reg32>(item + fe::item::kCodelink), codelink))
+        if (holds(app, app->getMemory<u32>(item + fe::item::kCodelink), codelink))
             return item;
     }
 }
 
-void opened(App* app, reg32 menu)
+void opened(App* app, u32 menu)
 {
     currentPercents(s_kept);
     for (int i = 0; i < kAdjustments; ++i)
@@ -152,14 +152,14 @@ void remember(const int (&percent)[kAdjustments])
 
 /* The button the screen is left by is the selected item, as for the game's own
  * handlers of Cancel. */
-bool leftByCancel(App* app, reg32 menu, const char* cancel)
+bool leftByCancel(App* app, u32 menu, const char* cancel)
 {
-    const reg32 item = itemAt(app, menu, app->getMemory<std::int16_t>(menu + fe::menu::kSelected));
-    return app->getMemory<reg32>(item + fe::item::kType) == kButton
-        && holds(app, app->getMemory<reg32>(item + fe::item::kCodelink), cancel);
+    const u32 item = itemAt(app, menu, app->getMemory<std::int16_t>(menu + fe::menu::kSelected));
+    return app->getMemory<u32>(item + fe::item::kType) == kButton
+        && holds(app, app->getMemory<u32>(item + fe::item::kCodelink), cancel);
 }
 
-void closed(App* app, reg32 menu, const char* cancel)
+void closed(App* app, u32 menu, const char* cancel)
 {
     if (s_sliders[0] == 0 && s_sliders[1] == 0 && s_sliders[2] == 0)
         return;
@@ -170,25 +170,25 @@ void closed(App* app, reg32 menu, const char* cancel)
     std::fill(std::begin(s_sliders), std::end(s_sliders), 0);
 }
 
-x86::reg32 advancedEnter(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 advancedEnter(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const reg32 menu = args.eax;
-    frontend::advancedOnEnter(app, cpu, args);
+    const u32 menu = args.eax;
+    frontend::advancedOnEnter(app, ts, args);
     opened(app, menu);
     return args.eax;
 }
 
-x86::reg32 advancedFrame(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 advancedFrame(App* app, ThreadState& ts, nfs::Args& args)
 {
-    frontend::advancedOnFrame(app, cpu, args);
+    frontend::advancedOnFrame(app, ts, args);
     followSliders(app);
     return args.eax;
 }
 
-x86::reg32 advancedExit(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 advancedExit(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const reg32 menu = args.eax;
-    frontend::advancedOnExit(app, cpu, args);
+    const u32 menu = args.eax;
+    frontend::advancedOnExit(app, ts, args);
     closed(app, menu, "CANCEL_ADVGRAPHICS_OPTIONS");
     return args.eax;
 }

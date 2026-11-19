@@ -1,15 +1,14 @@
 #ifndef LIB_RENDERER_H_
 #define LIB_RENDERER_H_
 
-#include <lib/winapp.h>
-#include <winapi/types.h>
+#include <lib/app.h>
 #include <lib/memmap.h>
 #include <vector>
 
 struct SDL_Renderer;
 struct SDL_Texture;
 
-namespace win32
+namespace nfs
 {
 
 class Window;
@@ -31,19 +30,19 @@ class Renderer: public GenericResource
 
     friend class ThrashRenderer;
 public:
-    Renderer(WinApplication* application, Window* window);
+    Renderer(App* application, Window* window);
     ~Renderer();
 
-    x86::reg32 lock(x86::reg32 index);
-    void unlock(x86::reg32 index);
+    nfs::u32 lock(nfs::u32 index);
+    void unlock(nfs::u32 index);
 
     void swap();
-    void setVideoMode(x86::reg32 w, x86::reg32 h, x86::reg32 bpp);
-    void updatePalette(x86::reg32 colorCount, const x86::reg32* colors);
-    x86::reg32 getVideoMemorySize() const { return m_videoMemory->getBlockSize(); }
+    void setVideoMode(nfs::u32 w, nfs::u32 h, nfs::u32 bpp);
+    void updatePalette(nfs::u32 colorCount, const nfs::u32* colors);
+    nfs::u32 getVideoMemorySize() const { return m_videoMemory->getBlockSize(); }
 
-    x86::reg32 getWidth() const     { return m_width; }
-    x86::reg32 getHeight() const    { return m_height; }
+    nfs::u32 getWidth() const     { return m_width; }
+    nfs::u32 getHeight() const    { return m_height; }
 
     /* The on-screen rectangle the game's framebuffer is letterboxed into --
      * recomputed by present() only when the window's pixel size actually
@@ -71,7 +70,7 @@ public:
      * game's picture (scaled by the GPU, filtered), the rest of it black.
      * The MAD player's software output skips the 16-bit surface for this
      * (native_movie.cpp). */
-    void presentMovieFrame(std::vector<x86::reg8> rgba, x86::reg32 w, x86::reg32 h,
+    void presentMovieFrame(std::vector<nfs::u8> rgba, nfs::u32 w, nfs::u32 h,
                            int x, int y, int dw, int dh);
 
     /* The renderer that last showed the game's DirectDraw picture: the one a
@@ -86,7 +85,7 @@ public:
 private: // friend class ThrashRenderer
     void present();
     /* present()'s GL work: the letterboxed blit of the frame and the swap. */
-    void presentFrame(x86::reg32 width, x86::reg32 height);
+    void presentFrame(nfs::u32 width, nfs::u32 height);
     /* Sets vsync and works out the frame period from NFS_FPS_CAP, once.  Every
      * path that presents goes through here rather than calling
      * SDL_GL_SetSwapInterval itself. */
@@ -102,11 +101,11 @@ private:
      * old path used glBegin/glVertex3f and the fixed-function matrix stack,
      * none of which exists in GLES. */
     void initBlit();
-    x86::reg32 getFrontBuffer() const;
-    x86::reg32 getBackBuffer() const;
+    nfs::u32 getFrontBuffer() const;
+    nfs::u32 getBackBuffer() const;
 
 private:
-    WinApplication* m_application;
+    App* m_application;
     Window*         m_window;
     void*           m_renderer;
     unsigned int    m_texture;
@@ -119,10 +118,10 @@ private:
     unsigned int    m_blitVertexArray;
     unsigned int    m_blitVertexBuffer;
     MemMap*         m_videoMemory;
-    x86::reg32      m_currentBuffer;
-    x86::reg32      m_width;
-    x86::reg32      m_height;
-    x86::reg32      m_depth;
+    nfs::u32      m_currentBuffer;
+    nfs::u32      m_width;
+    nfs::u32      m_height;
+    nfs::u32      m_depth;
     /* 0 until ensureFramePacing() has set vsync; 1 after. */
     int             m_swapInterval;
     /* The frame period NFS_FPS_CAP asks for, in nanoseconds, 0 for none; and
@@ -137,7 +136,7 @@ private:
     /* Destination of the conversion to RGBA of a DirectDraw frame, sized in
      * setVideoMode().  The GL side's own: the conversion runs there, on the
      * copy of the guest's frame update() hands it. */
-    x86::reg8*      m_convertBuffer;
+    nfs::u8*      m_convertBuffer;
     /* The 16-bit guest frame as an RGB565 texture, and the framebuffers that
      * copy it into m_texture on the GPU (update()). */
     unsigned int    m_frame565;
@@ -145,9 +144,9 @@ private:
     unsigned int    m_frameDraw;
     /* A movie frame, and its size (presentMovieFrame). */
     unsigned int    m_movieTexture = 0;
-    x86::reg32      m_movieWidth = 0;
-    x86::reg32      m_movieHeight = 0;
-    x86::reg32      m_colorPalette[256];
+    nfs::u32      m_movieWidth = 0;
+    nfs::u32      m_movieHeight = 0;
+    nfs::u32      m_colorPalette[256];
     /* Letterbox viewport, recomputed in present() only when the window's
      * pixel size changes -- see getViewportRect(). m_lastWindowW/H start at
      * -1 so the first present() always computes it. */

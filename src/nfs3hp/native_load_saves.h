@@ -5,7 +5,7 @@
 
 /* native_load_saves.cpp's typed functions that other files call as C++ (guest::direct), and how
  * the game's code calls each by address.  Each may call the
- * game's other functions by address on `cpu`, and is false or nullopt when the game stopped in
+ * game's other functions by address on `ts`, and is false or nullopt when the game stopped in
  * one. */
 namespace nfs3hp
 {
@@ -18,69 +18,69 @@ namespace load
  * pointer written through, or the shift of the size's big-endian read. */
 struct BigEntry
 {
-    x86::reg32 name;  // the entry's name's address, 0 for none
-    x86::reg32 entry;
-    x86::reg32 last;
+    nfs::u32 name;  // the entry's name's address, 0 for none
+    nfs::u32 entry;
+    nfs::u32 last;
 };
 
 // The game's 0x472940: 1 if the file named `name` was written before the one named `other`, else 0.
-std::optional<x86::reg32> writtenBefore(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 name,
-                                        x86::reg32 other);
+std::optional<nfs::u32> writtenBefore(nfs::App* app, nfs::ThreadState& ts, nfs::u32 name,
+                                        nfs::u32 other);
 // The game's 0x4ea040, EA's findbigentry: the entry of the BIG archive named `name`, or with no
 // name the index'th; its offset to [offsetTo] and its size to [sizeTo].
-std::optional<BigEntry> findEntry(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 archive, x86::reg32 name,
-                                  x86::reg32 index, x86::reg32 offsetTo, x86::reg32 sizeTo);
+std::optional<BigEntry> findEntry(nfs::App* app, nfs::ThreadState& ts, nfs::u32 archive, nfs::u32 name,
+                                  nfs::u32 index, nfs::u32 offsetTo, nfs::u32 sizeTo);
 // The game's 0x4ea290, EA's locatebigentry: findEntry's, and an Error for an entry not found.
-std::optional<BigEntry> locateEntry(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 archive,
-                                    x86::reg32 name, x86::reg32 index, x86::reg32 offsetTo, x86::reg32 sizeTo);
+std::optional<BigEntry> locateEntry(nfs::App* app, nfs::ThreadState& ts, nfs::u32 archive,
+                                    nfs::u32 name, nfs::u32 index, nfs::u32 offsetTo, nfs::u32 sizeTo);
 // locateEntry's name's address (0 for none): what its code leaves in eax, and in ecx.
-inline std::optional<x86::reg32> locatedEntry(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 archive,
-                                              x86::reg32 name, x86::reg32 index, x86::reg32 offsetTo,
-                                              x86::reg32 sizeTo)
+inline std::optional<nfs::u32> locatedEntry(nfs::App* app, nfs::ThreadState& ts, nfs::u32 archive,
+                                              nfs::u32 name, nfs::u32 index, nfs::u32 offsetTo,
+                                              nfs::u32 sizeTo)
 {
-    const std::optional<BigEntry> found = locateEntry(app, cpu, archive, name, index, offsetTo, sizeTo);
+    const std::optional<BigEntry> found = locateEntry(app, ts, archive, name, index, offsetTo, sizeTo);
     if (!found)
         return std::nullopt;
     return found->name;
 }
 // The game's 0x4eebb0: savefileadr with its Errors off; how many bytes it wrote.
-std::optional<x86::reg32> saveBlockQuietly(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 name,
-                                           x86::reg32 bytes, x86::reg32 count);
+std::optional<nfs::u32> saveBlockQuietly(nfs::App* app, nfs::ThreadState& ts, nfs::u32 name,
+                                           nfs::u32 bytes, nfs::u32 count);
 // The game's 0x4f2380: the sine of the angle (a turn 65536), 16.16.
-x86::reg32 sineOf(win32::WinApplication* app, x86::reg32 angle);
+nfs::u32 sineOf(nfs::App* app, nfs::u32 angle);
 // The game's 0x4f23f0: the cosine of the angle, as sineOf.
-x86::reg32 cosineOf(win32::WinApplication* app, x86::reg32 angle);
+nfs::u32 cosineOf(nfs::App* app, nfs::u32 angle);
 
 // The game's 0x44f510: the records' table loaded if it is not; false when the game stopped.
-bool recordsTableLoaded(win32::WinApplication* app, x86::CPU& cpu);
+bool recordsTableLoaded(nfs::App* app, nfs::ThreadState& ts);
 // The game's 0x44f5f0: the records' table saved and freed; what the code leaves in eax.
-std::optional<x86::reg32> recordsTableSaved(win32::WinApplication* app, x86::CPU& cpu);
+std::optional<nfs::u32> recordsTableSaved(nfs::App* app, nfs::ThreadState& ts);
 // The same where the caller has `eax` in the register the code's result is left in when it saves nothing.
-std::optional<x86::reg32> recordsTableSavedWith(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 eax);
+std::optional<nfs::u32> recordsTableSavedWith(nfs::App* app, nfs::ThreadState& ts, nfs::u32 eax);
 // The game's 0x446990: the kept replay named `name` made the race's; 1 if it was.
-std::optional<x86::reg32> keptReplayLoaded(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 name);
+std::optional<nfs::u32> keptReplayLoaded(nfs::App* app, nfs::ThreadState& ts, nfs::u32 name);
 // The game's 0x446060: the replay named `name`'s information read into the screen's lines.
-std::optional<x86::reg32> replayInfoShown(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 name);
+std::optional<nfs::u32> replayInfoShown(nfs::App* app, nfs::ThreadState& ts, nfs::u32 name);
 // The game's 0x4475a0: the replay files of the extension at `extension` listed into the menu's record `list`.
-std::optional<x86::reg32> replaysListed(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 list,
-                                        x86::reg32 extension);
+std::optional<nfs::u32> replaysListed(nfs::App* app, nfs::ThreadState& ts, nfs::u32 list,
+                                        nfs::u32 extension);
 // The game's 0x472820: config.dat saved; what the code leaves in eax.
-std::optional<x86::reg32> configSaved(win32::WinApplication* app, x86::CPU& cpu);
-std::optional<x86::reg32> configSavedWith(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 eax);
+std::optional<nfs::u32> configSaved(nfs::App* app, nfs::ThreadState& ts);
+std::optional<nfs::u32> configSavedWith(nfs::App* app, nfs::ThreadState& ts, nfs::u32 eax);
 // The game's 0x472980: config.dat loaded; false when the game stopped.
-bool configLoaded(win32::WinApplication* app, x86::CPU& cpu);
+bool configLoaded(nfs::App* app, nfs::ThreadState& ts);
 // The game's 0x4bd1e0: the race's replay saved; what the code leaves in eax.
-std::optional<x86::reg32> replaySaved(win32::WinApplication* app, x86::CPU& cpu);
-std::optional<x86::reg32> replaySavedWith(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 eax);
+std::optional<nfs::u32> replaySaved(nfs::App* app, nfs::ThreadState& ts);
+std::optional<nfs::u32> replaySavedWith(nfs::App* app, nfs::ThreadState& ts, nfs::u32 eax);
 // The game's 0x4bd2e0: the race's replay read; its answer.
-std::optional<x86::reg32> replayRead(win32::WinApplication* app, x86::CPU& cpu);
+std::optional<nfs::u32> replayRead(nfs::App* app, nfs::ThreadState& ts);
 // The game's 0x472300: the race's camera views made from the ones chosen; the last.
-x86::reg32 cameraViewsSet(win32::WinApplication* app);
+nfs::u32 cameraViewsSet(nfs::App* app);
 // The game's 0x4e9f00, EA's typeofbigfile: the kind of the BIG archive at `archive`.
-std::optional<x86::reg32> bigFileKindOf(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 archive);
+std::optional<nfs::u32> bigFileKindOf(nfs::App* app, nfs::ThreadState& ts, nfs::u32 archive);
 // The game's 0x4eeae0, EA's savefileadr: `count` bytes at `bytes` written to the file named `name`; how many.
-std::optional<x86::reg32> blockSaved(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 name, x86::reg32 bytes,
-                                     x86::reg32 count);
+std::optional<nfs::u32> blockSaved(nfs::App* app, nfs::ThreadState& ts, nfs::u32 name, nfs::u32 bytes,
+                                     nfs::u32 count);
 
 }  // namespace load
 }  // namespace nfs3hp

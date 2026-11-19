@@ -1,7 +1,7 @@
 #ifndef NFS3HP_GAME_SETTINGS_H
 #define NFS3HP_GAME_SETTINGS_H
 
-#include <lib/winapp.h>
+#include <lib/app.h>
 #include <cstddef>
 #include <cstdint>
 
@@ -33,65 +33,65 @@ struct HudRect
     union
     {
         float top;
-        x86::reg32 topBits;
+        nfs::u32 topBits;
     };
     union
     {
         float left;
-        x86::reg32 leftBits;
+        nfs::u32 leftBits;
     };
     union
     {
         float bottom;
-        x86::reg32 bottomBits;
+        nfs::u32 bottomBits;
     };
     union
     {
         float right;
-        x86::reg32 rightBits;
+        nfs::u32 rightBits;
     };
 };
 
 /* The HUD of a seat in a form (racer or cop). */
 struct HudRecord
 {
-    x86::reg32 shown;  // the HUD is on at all
-    x86::reg32 opponentName;  // the name over the car ahead
-    x86::reg32 opponentList;  // the list of the race's cars
-    x86::reg32 rearView;  // the mirror in the band
+    nfs::u32 shown;  // the HUD is on at all
+    nfs::u32 opponentName;  // the name over the car ahead
+    nfs::u32 opponentList;  // the list of the race's cars
+    nfs::u32 rearView;  // the mirror in the band
     union
     {
         float mapScale;  // the track map's zoom, 1.0 to 4.0
-        x86::reg32 mapScaleBits;
+        nfs::u32 mapScaleBits;
     };
-    x86::reg32 splitTimeForm;  // 0 none, else its form from 1; the lap clock's kind
-    x86::reg32 speedometerForm;  // 4 and 2 digital, 3 and 1 the dial; 1 mph (English's default), 3 km/h
-    x86::reg32 tachometerForm;  // 1 digital, else the dial
-    x86::reg32 mapStyle;  // 0 no map, else its form from 1
+    nfs::u32 splitTimeForm;  // 0 none, else its form from 1; the lap clock's kind
+    nfs::u32 speedometerForm;  // 4 and 2 digital, 3 and 1 the dial; 1 mph (English's default), 3 km/h
+    nfs::u32 tachometerForm;  // 1 digital, else the dial
+    nfs::u32 mapStyle;  // 0 no map, else its form from 1
     HudRect rects[0x18];  // the elements' places; 9 the mirror, 0x11 and 0x16 the map, 23 by language
 };
 
 /* A game controller as config.dat remembers it. */
 struct DeviceRecord
 {
-    x86::reg32 kind;  // the first byte: 1/2/4 a DirectInput subtype (2 a wheel or joystick, 4 a game pad), 8 force feedback; 0 none
+    nfs::u32 kind;  // the first byte: 1/2/4 a DirectInput subtype (2 a wheel or joystick, 4 a game pad), 8 force feedback; 0 none
     char name[0x34];
-    x86::reg32 buttonMask;  // a bit for each button
-    x86::reg32 povMask;
-    x86::reg32 axisMask;  // a bit for each of the eight axes
-    x86::reg32 gain;  // force feedback, 0 to 100 (default 75)
-    x86::reg32 axisRange[8][2];  // each axis's two ends, 0 to 100
+    nfs::u32 buttonMask;  // a bit for each button
+    nfs::u32 povMask;
+    nfs::u32 axisMask;  // a bit for each of the eight axes
+    nfs::u32 gain;  // force feedback, 0 to 100 (default 75)
+    nfs::u32 axisRange[8][2];  // each axis's two ends, 0 to 100
 };
 
 /* What a player chose on this machine; a RaceEntry is made of it. */
 struct PlayerSettings
 {
-    x86::reg32 car;  // the car's number
+    nfs::u32 car;  // the car's number
     char carId[0x10];  // the car's id, as a string
-    x86::reg32 carClass;  // the class of the car (0x4396b0)
-    x86::reg32 transmission;  // 1 automatic, 0 manual
-    x86::reg32 unknown1c;  // written by the defaults only
-    x86::reg32 digital[3];  // whether steering, throttle and brake are bound to keys (sub_43c040)
+    nfs::u32 carClass;  // the class of the car (0x4396b0)
+    nfs::u32 transmission;  // 1 automatic, 0 manual
+    nfs::u32 unknown1c;  // written by the defaults only
+    nfs::u32 digital[3];  // whether steering, throttle and brake are bound to keys (sub_43c040)
     std::uint8_t unknown2c[0x14];
     char name[0xb];
     std::uint8_t colour[4];  // the car's colour bytes
@@ -103,18 +103,18 @@ struct PlayerSettings
 struct RaceEntry
 {
     std::uint8_t unknown00[0x10];
-    x86::reg32 place;  // its place on the grid
-    x86::reg32 car;  // the car's number (the model)
-    x86::reg32 kind;  // bits: 1 a person, 2 an opponent, 4 traffic, 8 a cop
-    x86::reg32 transmission;  // 1 automatic, 0 manual; a person's starts as 1
+    nfs::u32 place;  // its place on the grid
+    nfs::u32 car;  // the car's number (the model)
+    nfs::u32 kind;  // bits: 1 a person, 2 an opponent, 4 traffic, 8 a cop
+    nfs::u32 transmission;  // 1 automatic, 0 manual; a person's starts as 1
     std::uint8_t colour[4];
-    x86::reg32 digital[3];  // PlayerSettings::digital; network message 9 writes them too
-    x86::reg32 driver;  // the opponent or cop driver picked
+    nfs::u32 digital[3];  // PlayerSettings::digital; network message 9 writes them too
+    nfs::u32 driver;  // the opponent or cop driver picked
     char name[0xb];
     std::uint8_t unknown3f[1];
     float tuning[7];
-    x86::reg32 extras[3];  // from the car, three dwords
-    x86::reg32 flag68;  // 0x4395a0 of the car; a network race's machine is left out of the results while it is set
+    nfs::u32 extras[3];  // from the car, three dwords
+    nfs::u32 flag68;  // 0x4395a0 of the car; a network race's machine is left out of the results while it is set
 };
 
 /* The knockout series' state (raceType 2). */
@@ -137,139 +137,139 @@ struct TournamentState
 
 struct GameSettings
 {
-    x86::reg32 fileSize;  // config.dat's own size, 0x20f0: a file that does not start so is not taken
-    x86::reg32 defaultsStamp[2];  // two dwords the defaults copy from 0x55e8b8
-    x86::reg32 language;  // by the language's name (sub_472250): 0 English, 1 to 5 German, French, Spanish, Italian, Swedish
-    x86::reg32 recordsHolderKept;  // recordsHolder as the last cast or ghost set it
-    x86::reg32 installIsRemote;  // sub_4b62a0: the install is "remote": no sound, movies, modem or game of its own
-    x86::reg32 comPort;  // from 0, of four
-    x86::reg32 chosenModem;
+    nfs::u32 fileSize;  // config.dat's own size, 0x20f0: a file that does not start so is not taken
+    nfs::u32 defaultsStamp[2];  // two dwords the defaults copy from 0x55e8b8
+    nfs::u32 language;  // by the language's name (sub_472250): 0 English, 1 to 5 German, French, Spanish, Italian, Swedish
+    nfs::u32 recordsHolderKept;  // recordsHolder as the last cast or ghost set it
+    nfs::u32 installIsRemote;  // sub_4b62a0: the install is "remote": no sound, movies, modem or game of its own
+    nfs::u32 comPort;  // from 0, of four
+    nfs::u32 chosenModem;
     char phoneNumber[0x1e];
     char tcpAddress[0x1f];
     char ipxGameName[0xb];
-    x86::reg32 cameraViewsChosen[4];  // the camera's four views as the menu chose them
-    x86::reg32 cameraMode[2];  // the camera mode each player last had
-    x86::reg32 cameraViews[4];  // cameraViewsChosen made the race's view numbers (sub_472300)
+    nfs::u32 cameraViewsChosen[4];  // the camera's four views as the menu chose them
+    nfs::u32 cameraMode[2];  // the camera mode each player last had
+    nfs::u32 cameraViews[4];  // cameraViewsChosen made the race's view numbers (sub_472300)
     std::uint8_t unknown090[8];  // first of the sound's sixteen dwords the options screen keeps whole
-    x86::reg32 soundFlag98;  // set when musicMode is not (fitRaceSettings); default 1
-    x86::reg32 soundSurround;  // the speakers
-    x86::reg32 soundRateKind;  // SNDsetrate: 0, or -50 unless this is set
-    x86::reg32 musicMode;  // above 2 the race's music in its other form; default 2
-    x86::reg32 menuMusicVolume;
-    x86::reg32 menuMusicAsked;  // the menu tune asked for; none when kNoMenuMusic
-    x86::reg32 raceMusicVolume;
-    x86::reg32 effectsVolume;
-    x86::reg32 engineVolume;
-    x86::reg32 speechVolume;
-    x86::reg32 soundSetup;  // 2 taken as 0, 3 the 3D setup
-    x86::reg32 feedKeys[3];  // audio feed: the keys of the time, the position and the speed, 0 to 9
-    x86::reg32 configVersion;  // against [0x7a3a58]: another version resets the settings
-    x86::reg32 screenMode;  // the mode's index in the list
-    x86::reg32 screenWidth;  // the chosen mode's second dword; default 640
-    x86::reg32 detailLevel;  // car detail, 0 to 2
-    x86::reg32 useSpecular;
-    x86::reg32 useLights;
-    x86::reg32 viewDistance;  // 0 Full .. 3 Close
-    x86::reg32 skyDetail;  // 1 no sky dome pieces, 2 no sky's rest
-    x86::reg32 effectsLevel;  // 0 all, 1 the major ones, 2 none; sub_4dece0 reads it
-    x86::reg32 projectedText;  // sub_4483a0/sub_448330's choice; the projected text item
+    nfs::u32 soundFlag98;  // set when musicMode is not (fitRaceSettings); default 1
+    nfs::u32 soundSurround;  // the speakers
+    nfs::u32 soundRateKind;  // SNDsetrate: 0, or -50 unless this is set
+    nfs::u32 musicMode;  // above 2 the race's music in its other form; default 2
+    nfs::u32 menuMusicVolume;
+    nfs::u32 menuMusicAsked;  // the menu tune asked for; none when kNoMenuMusic
+    nfs::u32 raceMusicVolume;
+    nfs::u32 effectsVolume;
+    nfs::u32 engineVolume;
+    nfs::u32 speechVolume;
+    nfs::u32 soundSetup;  // 2 taken as 0, 3 the 3D setup
+    nfs::u32 feedKeys[3];  // audio feed: the keys of the time, the position and the speed, 0 to 9
+    nfs::u32 configVersion;  // against [0x7a3a58]: another version resets the settings
+    nfs::u32 screenMode;  // the mode's index in the list
+    nfs::u32 screenWidth;  // the chosen mode's second dword; default 640
+    nfs::u32 detailLevel;  // car detail, 0 to 2
+    nfs::u32 useSpecular;
+    nfs::u32 useLights;
+    nfs::u32 viewDistance;  // 0 Full .. 3 Close
+    nfs::u32 skyDetail;  // 1 no sky dome pieces, 2 no sky's rest
+    nfs::u32 effectsLevel;  // 0 all, 1 the major ones, 2 none; sub_4dece0 reads it
+    nfs::u32 projectedText;  // sub_4483a0/sub_448330's choice; the projected text item
     union
     {
         float alphaIntensity;  // the effects' intensity and the sun's glare
-        x86::reg32 alphaIntensityBits;
+        nfs::u32 alphaIntensityBits;
     };
-    x86::reg32 detailFlagFc;  // one of the machine-speed tables; polygons with a texture's bit 2 are drawn when 1
-    x86::reg32 viewAngle;  // 0 Normal; the port's 2 is Wide
-    x86::reg32 detailFlag104;  // set with useSpecular by sub_472d10; read in the race frame
-    x86::reg32 nearPolygons;  // polygons near the eye get a kind bit, on a driver with [0x7a3a58] & 6
-    x86::reg32 wideScreen;  // Wide Screen in the Graphics menu: the view between bars
+    nfs::u32 detailFlagFc;  // one of the machine-speed tables; polygons with a texture's bit 2 are drawn when 1
+    nfs::u32 viewAngle;  // 0 Normal; the port's 2 is Wide
+    nfs::u32 detailFlag104;  // set with useSpecular by sub_472d10; read in the race frame
+    nfs::u32 nearPolygons;  // polygons near the eye get a kind bit, on a driver with [0x7a3a58] & 6
+    nfs::u32 wideScreen;  // Wide Screen in the Graphics menu: the view between bars
     HudRecord hud[7];  // [seat * 2 + form]: three seats, racer and cop; [6] a kept copy of [0] while another car is watched
     std::uint8_t unknownC8c[0x1a4];  // one record's worth past hud[6]; no native reaches it
     DeviceRecord devices[0x10];
-    x86::reg32 forceCollision;  // force feedback strengths, 0 off to 100; the jolts
-    x86::reg32 forceRoad;
-    x86::reg32 forceEngine;
-    x86::reg32 forceBodyRoll;  // never with forceRoadGrip
-    x86::reg32 forceRoadGrip;
-    x86::reg32 deviceCount;
-    x86::reg32 forceDeviceCount;
-    x86::reg32 controls[3][0xd];  // 13 bindings: [0] one player's, [1] and [2] split screen's
+    nfs::u32 forceCollision;  // force feedback strengths, 0 off to 100; the jolts
+    nfs::u32 forceRoad;
+    nfs::u32 forceEngine;
+    nfs::u32 forceBodyRoll;  // never with forceRoadGrip
+    nfs::u32 forceRoadGrip;
+    nfs::u32 deviceCount;
+    nfs::u32 forceDeviceCount;
+    nfs::u32 controls[3][0xd];  // 13 bindings: [0] one player's, [1] and [2] split screen's
     union
     {
-        x86::reg32 unlockedCars;  // bits; used as a byte
+        nfs::u32 unlockedCars;  // bits; used as a byte
         std::uint8_t unlockedCarsByte;
     };
-    x86::reg32 unlockedAll;  // the bonus track open too
+    nfs::u32 unlockedAll;  // the bonus track open too
     std::int16_t duelsWon;  // a bit for each track
     std::int16_t duelsLost;
-    x86::reg32 recordsHolder;  // of the track's records (0x4cef00)
+    nfs::u32 recordsHolder;  // of the track's records (0x4cef00)
     std::uint8_t unknown1778[4];
     PlayerSettings players[2];
     std::uint8_t playersDone[8];  // cleared as a series starts
     std::uint8_t unknown185c[4];
-    x86::reg32 replayMode;  // 0 a race, 1 split screen, 2 a replay (sub_4bcb00 sets it while one plays back): no ghost, no forces, no driving
+    nfs::u32 replayMode;  // 0 a race, 1 split screen, 2 a replay (sub_4bcb00 sets it while one plays back): no ghost, no forces, no driving
     std::uint8_t unknown1864[4];
-    x86::reg32 unknown1868;  // written 2 by the defaults and sub_472d10; no native reads it
-    x86::reg32 lastTickRaced;  // the race tick last run past the start (sub_4c48d0), so 0: nothing to replay; cleared as the cast is built
-    x86::reg32 playMode;  // 0 one player, 1 split screen, 2 modem, 3 serial, 4 network
-    x86::reg32 raceSeed;
-    x86::reg32 raceType;  // 0 a single race, 1 a tournament, 2 a knockout, 3 Hot Pursuit
+    nfs::u32 unknown1868;  // written 2 by the defaults and sub_472d10; no native reads it
+    nfs::u32 lastTickRaced;  // the race tick last run past the start (sub_4c48d0), so 0: nothing to replay; cleared as the cast is built
+    nfs::u32 playMode;  // 0 one player, 1 split screen, 2 modem, 3 serial, 4 network
+    nfs::u32 raceSeed;
+    nfs::u32 raceType;  // 0 a single race, 1 a tournament, 2 a knockout, 3 Hot Pursuit
     KnockoutState knockout;
     TournamentState tournament;
     std::uint8_t unknown192e[2];
-    x86::reg32 seriesVariant;  // a series' variant, 0 or 1: sides chosen, harder opponents
-    x86::reg32 chosenOptions[6];  // the single race's options, copied to the race's
-    x86::reg32 pursuitOption;  // Hot Pursuit's, goes to raceOptionPursuit
-    x86::reg32 raceOptionComputerDrives;  // the race's options, 7 dwords: the player's car driven for him, the setup's grip goes by it
-    x86::reg32 raceOptionLaneVotes;
-    x86::reg32 raceOptionCones;  // set out as a race loads; also shown on the HUD
-    x86::reg32 raceOptionCopRadio;  // the co-driver's or the cops' radio
-    x86::reg32 raceOptionHazard;  // a car leans over too far: the hazard race
-    x86::reg32 raceOptionSimulation;  // the tyres' slip and the handling as a simulation's
-    x86::reg32 raceOptionPursuit;  // from pursuitOption
-    x86::reg32 track;
-    x86::reg32 lapsClass;  // 0x4cf160 of the laps: which of three tables of records
-    x86::reg32 laps;
-    x86::reg32 pursuitWinCount;  // laps or tickets to win; the HUD's ratio; the speeding limit
-    x86::reg32 pursuitOutCount;  // tickets that take a car out; the HUD's ratio
-    x86::reg32 backwards;  // the track run the other way. With the next three the "sides" a series chooses
-    x86::reg32 mirrored;  // the track mirrored: steering and calls swapped, own textures
-    x86::reg32 night;
-    x86::reg32 weather;  // rain or snow; lights on, the crowd
-    x86::reg32 trafficLevel;  // 0 to 2; 2 none
-    x86::reg32 opponentClass;  // 0 to 3 a class of cars, past that one car
+    nfs::u32 seriesVariant;  // a series' variant, 0 or 1: sides chosen, harder opponents
+    nfs::u32 chosenOptions[6];  // the single race's options, copied to the race's
+    nfs::u32 pursuitOption;  // Hot Pursuit's, goes to raceOptionPursuit
+    nfs::u32 raceOptionComputerDrives;  // the race's options, 7 dwords: the player's car driven for him, the setup's grip goes by it
+    nfs::u32 raceOptionLaneVotes;
+    nfs::u32 raceOptionCones;  // set out as a race loads; also shown on the HUD
+    nfs::u32 raceOptionCopRadio;  // the co-driver's or the cops' radio
+    nfs::u32 raceOptionHazard;  // a car leans over too far: the hazard race
+    nfs::u32 raceOptionSimulation;  // the tyres' slip and the handling as a simulation's
+    nfs::u32 raceOptionPursuit;  // from pursuitOption
+    nfs::u32 track;
+    nfs::u32 lapsClass;  // 0x4cf160 of the laps: which of three tables of records
+    nfs::u32 laps;
+    nfs::u32 pursuitWinCount;  // laps or tickets to win; the HUD's ratio; the speeding limit
+    nfs::u32 pursuitOutCount;  // tickets that take a car out; the HUD's ratio
+    nfs::u32 backwards;  // the track run the other way. With the next three the "sides" a series chooses
+    nfs::u32 mirrored;  // the track mirrored: steering and calls swapped, own textures
+    nfs::u32 night;
+    nfs::u32 weather;  // rain or snow; lights on, the crowd
+    nfs::u32 trafficLevel;  // 0 to 2; 2 none
+    nfs::u32 opponentClass;  // 0 to 3 a class of cars, past that one car
     std::uint8_t unknown1998[0x10];
-    x86::reg32 noTraffic;
-    x86::reg32 unknown19ac;  // default 1; no native reads it
-    x86::reg32 seriesRace;  // set as a series or pursuit builds its cast; 1 cuts the racers' levels
-    x86::reg32 localPlayer;  // the player at this machine
-    x86::reg32 viewedPlayer;  // the player the views follow
+    nfs::u32 noTraffic;
+    nfs::u32 unknown19ac;  // default 1; no native reads it
+    nfs::u32 seriesRace;  // set as a series or pursuit builds its cast; 1 cuts the racers' levels
+    nfs::u32 localPlayer;  // the player at this machine
+    nfs::u32 viewedPlayer;  // the player the views follow
     union
     {
-        x86::reg32 raceFlags;  // used as a byte: 1 and 0x20 the handling a simulation's, 2 start records, 4, 8 knock-out, 0x10; the menu's cheats
+        nfs::u32 raceFlags;  // used as a byte: 1 and 0x20 the handling a simulation's, 2 start records, 4, 8 knock-out, 0x10; the menu's cheats
         std::uint8_t raceFlagsByte;
     };
-    x86::reg32 cheatTrack;  // a cheat's track or cop car
-    x86::reg32 setting504;  // a race setting, 0 to 3; 3 not in a two-player series
-    x86::reg32 networkLobby;  // a network race's lobby: the machine ready, the sub-mode
-    x86::reg32 networkGame;  // a network game is set up; only this machine's player queued here
-    x86::reg32 entryCount;  // everyone in the cast
-    x86::reg32 racerCount;
-    x86::reg32 humanCount;
-    x86::reg32 copCount;
-    x86::reg32 opponentCount;
-    x86::reg32 pursuerCount;
-    x86::reg32 trafficCount;
+    nfs::u32 cheatTrack;  // a cheat's track or cop car
+    nfs::u32 setting504;  // a race setting, 0 to 3; 3 not in a two-player series
+    nfs::u32 networkLobby;  // a network race's lobby: the machine ready, the sub-mode
+    nfs::u32 networkGame;  // a network game is set up; only this machine's player queued here
+    nfs::u32 entryCount;  // everyone in the cast
+    nfs::u32 racerCount;
+    nfs::u32 humanCount;
+    nfs::u32 copCount;
+    nfs::u32 opponentCount;
+    nfs::u32 pursuerCount;
+    nfs::u32 trafficCount;
     RaceEntry entries[0x10];
-    x86::reg32 gridSlots[0x11];  // an entry's place on the grid
+    nfs::u32 gridSlots[0x11];  // an entry's place on the grid
 
     /* A table's record by the byte offset a native has in a register: what
      * index * size computes, wrapped as the game's address arithmetic wraps. */
-    HudRecord& hudAt(x86::reg32 byteOffset) { return *reinterpret_cast<HudRecord*>(reinterpret_cast<char*>(hud) + x86::sreg32(byteOffset)); }
-    DeviceRecord& deviceAt(x86::reg32 byteOffset) { return *reinterpret_cast<DeviceRecord*>(reinterpret_cast<char*>(devices) + x86::sreg32(byteOffset)); }
-    RaceEntry& entryAt(x86::reg32 byteOffset) { return *reinterpret_cast<RaceEntry*>(reinterpret_cast<char*>(entries) + x86::sreg32(byteOffset)); }
+    HudRecord& hudAt(nfs::u32 byteOffset) { return *reinterpret_cast<HudRecord*>(reinterpret_cast<char*>(hud) + nfs::s32(byteOffset)); }
+    DeviceRecord& deviceAt(nfs::u32 byteOffset) { return *reinterpret_cast<DeviceRecord*>(reinterpret_cast<char*>(devices) + nfs::s32(byteOffset)); }
+    RaceEntry& entryAt(nfs::u32 byteOffset) { return *reinterpret_cast<RaceEntry*>(reinterpret_cast<char*>(entries) + nfs::s32(byteOffset)); }
     /* A seat's record in a form (0 racer, 1 cop). */
-    HudRecord& hudOf(x86::reg32 seat, x86::reg32 form) { return hud[seat * 2 + form]; }
+    HudRecord& hudOf(nfs::u32 seat, nfs::u32 form) { return hud[seat * 2 + form]; }
 };
 
 #pragma pack(pop)
@@ -450,22 +450,22 @@ static_assert(offsetof(GameSettings, entries) == 0x19ec);
 static_assert(offsetof(GameSettings, gridSlots) == 0x20ac);
 
 /* Where the block is in the guest's memory, and the one place that says so. */
-constexpr x86::reg32 kGameSettingsAddress = 0x6fbb40;
+constexpr nfs::u32 kGameSettingsAddress = 0x6fbb40;
 
-inline GameSettings& gameSettings(win32::WinApplication* app)
+inline GameSettings& gameSettings(nfs::App* app)
 {
-    return *reinterpret_cast<GameSettings*>(&app->getMemory<x86::reg8>(kGameSettingsAddress));
+    return *reinterpret_cast<GameSettings*>(&app->getMemory<nfs::u8>(kGameSettingsAddress));
 }
 
 /* A field's guest address, for what cannot go through a field's value: an address
  * handed on to a game function, or a stretch of the block copied.  `field` as
  * offsetof takes it: players[1].name, hud, devices[0].gain.  A constant expression. */
-#define SETTINGS_ADDRESS(field) (::nfs3hp::kGameSettingsAddress + x86::reg32(offsetof(::nfs3hp::GameSettings, field)))
+#define SETTINGS_ADDRESS(field) (::nfs3hp::kGameSettingsAddress + nfs::u32(offsetof(::nfs3hp::GameSettings, field)))
 
 /* A seat's HUD record by address, for what copies rectangles or hands them on. */
-constexpr x86::reg32 hudRecordAddress(x86::reg32 seat, x86::reg32 form)
+constexpr nfs::u32 hudRecordAddress(nfs::u32 seat, nfs::u32 form)
 {
-    return SETTINGS_ADDRESS(hud) + (seat * 2 + form) * x86::reg32(sizeof(HudRecord));
+    return SETTINGS_ADDRESS(hud) + (seat * 2 + form) * nfs::u32(sizeof(HudRecord));
 }
 
 }  // namespace nfs3hp

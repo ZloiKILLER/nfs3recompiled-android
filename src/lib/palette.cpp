@@ -1,10 +1,10 @@
 #include <lib/palette.h>
 #include <lib/renderer.h>
 
-namespace win32
+namespace nfs
 {
 
-Palette::Palette(Renderer* renderer, const PALETTEENTRY* entries, x86::reg32 entryCount)
+Palette::Palette(Renderer* renderer, const Colour* entries, nfs::u32 entryCount)
     :   m_paletteSize(entryCount)
     ,   m_renderer(renderer)
 {
@@ -15,12 +15,12 @@ Palette::~Palette()
 {
 }
 
-void Palette::setEntries(const PALETTEENTRY *entries, x86::reg32 firstEntry, x86::reg32 entryCount)
+void Palette::setEntries(const Colour *entries, nfs::u32 firstEntry, nfs::u32 entryCount)
 {
     NFS2_ASSERT(firstEntry + entryCount <= m_paletteSize);
-    for (x86::reg32 i = 0; i < entryCount; ++i)
+    for (nfs::u32 i = 0; i < entryCount; ++i)
     {
-        m_palette[firstEntry + i] = entries[i].peRed << 24| entries[i].peGreen << 16 | entries[i].peBlue << 8 | 0xff ;
+        m_palette[firstEntry + i] = entries[i].red << 24| entries[i].green << 16 | entries[i].blue << 8 | 0xff ;
     }
     m_renderer->updatePalette(m_paletteSize, m_palette);
 }

@@ -3,9 +3,10 @@
 
 #include "game_settings.h"
 #include "native_guest.h"
+#include "os_threads.h"
 
-#include <lib/winapp.h>
-#include <cpu.h>
+#include <lib/app.h>
+#include <game_thread.h>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -25,7 +26,7 @@ namespace nfs3hp
 namespace fe
 {
 
-/* The game was told to stop (cpu.terminate) inside a call into it: the
+/* The game was told to stop (ts.terminate) inside a call into it: the
  * stand-in returns at once, as the game's code does. */
 struct Terminated
 {
@@ -37,18 +38,18 @@ struct Terminated
  * A register past `registerCount` keeps whatever value it has. */
 struct Arguments
 {
-    std::array<x86::reg32, 4> registers{};  // eax, edx, ebx, ecx
+    std::array<nfs::u32, 4> registers{};  // eax, edx, ebx, ecx
     std::size_t registerCount = 0;
-    std::array<x86::reg32, 16> stack{};
+    std::array<nfs::u32, 16> stack{};
     std::size_t stackCount = 0;
 };
 
-inline Arguments args(std::initializer_list<x86::reg32> registers, std::initializer_list<x86::reg32> stack = {})
+inline Arguments args(std::initializer_list<nfs::u32> registers, std::initializer_list<nfs::u32> stack = {})
 {
     Arguments a;
-    for (const x86::reg32 value : registers)
+    for (const nfs::u32 value : registers)
         a.registers[a.registerCount++] = value;
-    for (const x86::reg32 value : stack)
+    for (const nfs::u32 value : stack)
         a.stack[a.stackCount++] = value;
     return a;
 }
@@ -57,45 +58,45 @@ inline Arguments args(std::initializer_list<x86::reg32> registers, std::initiali
 class Guest
 {
 public:
-    Guest(win32::WinApplication* app, x86::CPU& cpu) : m_app(app), m_cpu(cpu) {}
+    Guest(nfs::App* app, nfs::ThreadState& ts) : m_app(app), m_ts(ts) {}
 
-    win32::WinApplication* app() const { return m_app; }
+    nfs::App* app() const { return m_app; }
     /* The guest's processor, for a direct call (fe::direct) from code that has only the Guest. */
-    x86::CPU& cpu() const { return m_cpu; }
+    nfs::ThreadState& ts() const { return m_ts; }
 
-    std::uint8_t byte(x86::reg32 address) const { return m_app->getMemory<x86::reg8>(address); }
-    std::uint16_t word(x86::reg32 address) const { return m_app->getMemory<x86::reg16>(address); }
-    std::uint32_t dword(x86::reg32 address) const { return m_app->getMemory<x86::reg32>(address); }
-    void setByte(x86::reg32 address, std::uint8_t value) { m_app->getMemory<x86::reg8>(address) = value; }
-    void setWord(x86::reg32 address, std::uint16_t value) { m_app->getMemory<x86::reg16>(address) = value; }
-    void setDword(x86::reg32 address, std::uint32_t value) { m_app->getMemory<x86::reg32>(address) = value; }
-    float floatAt(x86::reg32 address) const { return m_app->getMemory<float>(address); }
-    void setFloat(x86::reg32 address, float value) { m_app->getMemory<float>(address) = value; }
+    std::uint8_t byte(nfs::u32 address) const { return m_app->getMemory<nfs::u8>(address); }
+    std::uint16_t word(nfs::u32 address) const { return m_app->getMemory<nfs::u16>(address); }
+    std::uint32_t dword(nfs::u32 address) const { return m_app->getMemory<nfs::u32>(address); }
+    void setByte(nfs::u32 address, std::uint8_t value) { m_app->getMemory<nfs::u8>(address) = value; }
+    void setWord(nfs::u32 address, std::uint16_t value) { m_app->getMemory<nfs::u16>(address) = value; }
+    void setDword(nfs::u32 address, std::uint32_t value) { m_app->getMemory<nfs::u32>(address) = value; }
+    float floatAt(nfs::u32 address) const { return m_app->getMemory<float>(address); }
+    void setFloat(nfs::u32 address, float value) { m_app->getMemory<float>(address) = value; }
 
     /* A zero-terminated string copied within guest memory, terminator and all. */
-    void copyString(x86::reg32 to, x86::reg32 from);
+    void copyString(nfs::u32 to, nfs::u32 from);
     /* Its length, as strlen gives it. */
-    std::uint32_t length(x86::reg32 string) const;
+    std::uint32_t length(nfs::u32 string) const;
     /* Whether the string at `address` is `text`. */
-    bool holds(x86::reg32 address, const char* text) const;
+    bool holds(nfs::u32 address, const char* text) const;
 
     /* The guest function at `function`, called as a `call` instruction calls
      * it: a slot for the return address, the function, its result from eax.
      * Stack arguments are popped afterwards whether the callee popped them
      * (ret n) or left them to the caller.  Throws Terminated when the game
      * stops. */
-    x86::reg32 call(x86::reg32 function, const Arguments& arguments = Arguments());
+    nfs::u32 call(nfs::u32 function, const Arguments& arguments = Arguments());
 
     /* The lowest address of the stand-in's frame, laid out as the game's function's: its locals, where they were, for what the stand-in hands
      * to the game by address. */
-    x86::reg32 frame() const { return m_frame; }
-    void setFrame(x86::reg32 frame) { m_frame = frame; }
+    nfs::u32 frame() const { return m_frame; }
+    void setFrame(nfs::u32 frame) { m_frame = frame; }
 
 
 private:
-    win32::WinApplication* m_app;
-    x86::CPU& m_cpu;
-    x86::reg32 m_frame = 0;
+    nfs::App* m_app;
+    nfs::ThreadState& m_ts;
+    nfs::u32 m_frame = 0;
 };
 
 /* A typed core's own frame on the guest's stack (plan step 5): `bytes` below esp as the core
@@ -107,39 +108,55 @@ private:
 class Frame
 {
 public:
-    Frame(Guest& guest, x86::CPU& cpu, x86::reg32 bytes) : m_cpu(cpu), m_esp(cpu.esp)
+    Frame(Guest& guest, nfs::ThreadState& ts, nfs::u32 bytes) : m_ts(ts), m_esp(ts.sp)
     {
-        cpu.esp -= bytes;
-        guest.setFrame(cpu.esp);
+        ts.sp -= bytes;
+        guest.setFrame(ts.sp);
     }
-    ~Frame() { m_cpu.esp = m_esp; }
+    ~Frame() { m_ts.sp = m_esp; }
     Frame(const Frame&) = delete;
     Frame& operator=(const Frame&) = delete;
 
 private:
-    x86::CPU& m_cpu;
-    const x86::reg32 m_esp;
+    nfs::ThreadState& m_ts;
+    const nfs::u32 m_esp;
 };
 
 /* A typed core called as C++ from a menu's core (guest::direct, native_guest.h): another menu
  * file's, the port's, a library's.  Terminated thrown when the game stopped in it, as Guest::call
  * throws; its result as the core gives it (an optional, a bool, a value). */
-template <x86::reg32 Address, auto Core, typename... Args>
-auto direct(win32::WinApplication* app, x86::CPU& cpu, Args... args)
+template <nfs::u32 Address, auto Core, typename... Args>
+auto direct(nfs::App* app, nfs::ThreadState& ts, Args... args)
 {
-    if constexpr (std::is_void_v<decltype(guest::direct<Address, Core>(app, cpu, args...))>)
+    if constexpr (std::is_void_v<decltype(guest::direct<Address, Core>(app, ts, args...))>)
     {
-        guest::direct<Address, Core>(app, cpu, args...);
-        if (cpu.terminate)
+        guest::direct<Address, Core>(app, ts, args...);
+        if (ts.terminate)
             throw Terminated();
     }
     else
     {
-        auto result = guest::direct<Address, Core>(app, cpu, args...);
-        if (cpu.terminate)
+        auto result = guest::direct<Address, Core>(app, ts, args...);
+        if (ts.terminate)
             throw Terminated();
         return result;
     }
+}
+
+/* The game's lock at `section` entered or left (os::locks) from a menu's code: 0, what the code
+ * has in eax after it.  Terminated thrown when the game stopped while it waited. */
+inline nfs::u32 enterLock(Guest& guest, nfs::ThreadState& ts, nfs::u32 section)
+{
+    if (!os::locks::enter(guest.app(), ts, section))
+        throw Terminated();
+    return 0;
+}
+
+inline nfs::u32 leaveLock(Guest& guest, nfs::ThreadState& ts, nfs::u32 section)
+{
+    if (!os::locks::leave(guest.app(), ts, section))
+        throw Terminated();
+    return 0;
 }
 
 }  // namespace fe
@@ -155,7 +172,7 @@ namespace fe
 /* The x87 as the game's code uses it, for a stand-in that computes in
  * floating point as the game does: each sum and product rounded as the
  * control word asks (a float's precision in a race's pause screens, see
- * x86::FloatEnv), a comparison leaving the status word as fcom leaves it, and
+ * nfs::FloatEnv), a comparison leaving the status word as fcom leaves it, and
  * sub_4dfd56 -- frndint towards zero -- called where it is, the value on the
  * x87's stack.  A float in guest memory comes in and goes out as fld and
  * fst move it: Float(guest.floatAt(...)), float(value). */
@@ -165,20 +182,20 @@ public:
     explicit FloatMath(Guest& guest) : m_guest(guest) {}
 
     // fild
-    static x86::Float integer(std::int32_t value) { return x86::Float(x86::sreg32(value)); }
-    x86::Float load(x86::reg32 address) const { return x86::Float(m_guest.floatAt(address)); }
+    static nfs::Float integer(std::int32_t value) { return nfs::Float(nfs::s32(value)); }
+    nfs::Float load(nfs::u32 address) const { return nfs::Float(m_guest.floatAt(address)); }
 
     // The game's single precision, to the bit, with nothing of the x87 behind it (fp::, fpu.h).
-    x86::Float add(const x86::Float& a, const x86::Float& b) { return fp::add(a, b); }
-    x86::Float sub(const x86::Float& a, const x86::Float& b) { return fp::sub(a, b); }
-    x86::Float mul(const x86::Float& a, const x86::Float& b) { return fp::mul(a, b); }
+    nfs::Float add(const nfs::Float& a, const nfs::Float& b) { return fp::add(a, b); }
+    nfs::Float sub(const nfs::Float& a, const nfs::Float& b) { return fp::sub(a, b); }
+    nfs::Float mul(const nfs::Float& a, const nfs::Float& b) { return fp::mul(a, b); }
 
     /* fcom a, b and what a jump after it reads: ja, and jb (true unordered). */
-    bool above(const x86::Float& a, const x86::Float& b);
-    bool below(const x86::Float& a, const x86::Float& b);
+    bool above(const nfs::Float& a, const nfs::Float& b);
+    bool below(const nfs::Float& a, const nfs::Float& b);
 
     /* sub_4dfd56 and fistp: `value` cut to an integer towards zero. */
-    std::int32_t truncated(const x86::Float& value);
+    std::int32_t truncated(const nfs::Float& value);
 
 private:
     Guest& m_guest;
@@ -189,7 +206,7 @@ private:
  * compares or keeps it, so it has to be that one and not a copy. */
 struct GuestString
 {
-    x86::reg32 address;
+    nfs::u32 address;
     const char* text;
 };
 
@@ -202,14 +219,14 @@ struct GuestString
  * 0x555c48, found there by the screen's name. */
 namespace menu
 {
-constexpr x86::reg32 kOnLoad = 0x00;      // once, after the menus are loaded (sub_449990)
-constexpr x86::reg32 kOnEnter = 0x08;     // as the screen opens (sub_44ab40)
-constexpr x86::reg32 kOnExit = 0x0c;      // as it closes (sub_44aa30, sub_44b1a0)
-constexpr x86::reg32 kOnFrame = 0x10;     // every pass of the menu loop (sub_44b230); nonzero leaves the screen
-constexpr x86::reg32 kName = 0x14;        // char*, the .MNU's name
-constexpr x86::reg32 kFirstItem = 0x18;   // int16, its first item in the item table
-constexpr x86::reg32 kSelected = 0x1a;    // int16, the item selected, counted from the first
-constexpr x86::reg32 kSize = 0x24;
+constexpr nfs::u32 kOnLoad = 0x00;      // once, after the menus are loaded (sub_449990)
+constexpr nfs::u32 kOnEnter = 0x08;     // as the screen opens (sub_44ab40)
+constexpr nfs::u32 kOnExit = 0x0c;      // as it closes (sub_44aa30, sub_44b1a0)
+constexpr nfs::u32 kOnFrame = 0x10;     // every pass of the menu loop (sub_44b230); nonzero leaves the screen
+constexpr nfs::u32 kName = 0x14;        // char*, the .MNU's name
+constexpr nfs::u32 kFirstItem = 0x18;   // int16, its first item in the item table
+constexpr nfs::u32 kSelected = 0x1a;    // int16, the item selected, counted from the first
+constexpr nfs::u32 kSize = 0x24;
 }
 
 /* An item of a screen: 188 bytes in the table at 0x604ee0.  The fields the
@@ -217,19 +234,19 @@ constexpr x86::reg32 kSize = 0x24;
  * field); the screens' code sets the rest. */
 namespace item
 {
-constexpr x86::reg32 kTable = 0x604ee0;
-constexpr x86::reg32 kSize = 0xbc;
-constexpr x86::reg32 kType = 0x00;        // the widget: 5 a button, 17 a cascade... (registry at 0x557aa8)
-constexpr x86::reg32 kState = 0x04;       // byte; kDisabled greys the item out
-constexpr x86::reg32 kFlags = 0x05;       // byte; kHidden hides it, as `hidethis` does
-constexpr x86::reg32 kX = 0x06;           // int16, "x", on the 640x480 screen
-constexpr x86::reg32 kY = 0x08;           // int16, "y"
-constexpr x86::reg32 kHelp = 0x0c;        // char*, "help": its line of help text
-constexpr x86::reg32 kCodelink = 0x10;    // char*, "codelink": the name code finds it by
-constexpr x86::reg32 kText = 0x3c;        // char*, "text"
-constexpr x86::reg32 kNextMenu = 0x40;    // char*, a button's "nextmenu"
-constexpr x86::reg32 kListName = 0x58;    // char*, a button's "listname": the list it pops up
-constexpr x86::reg32 kOnClick = 0x64;     // a button's handler, set by code
+constexpr nfs::u32 kTable = 0x604ee0;
+constexpr nfs::u32 kSize = 0xbc;
+constexpr nfs::u32 kType = 0x00;        // the widget: 5 a button, 17 a cascade... (registry at 0x557aa8)
+constexpr nfs::u32 kState = 0x04;       // byte; kDisabled greys the item out
+constexpr nfs::u32 kFlags = 0x05;       // byte; kHidden hides it, as `hidethis` does
+constexpr nfs::u32 kX = 0x06;           // int16, "x", on the 640x480 screen
+constexpr nfs::u32 kY = 0x08;           // int16, "y"
+constexpr nfs::u32 kHelp = 0x0c;        // char*, "help": its line of help text
+constexpr nfs::u32 kCodelink = 0x10;    // char*, "codelink": the name code finds it by
+constexpr nfs::u32 kText = 0x3c;        // char*, "text"
+constexpr nfs::u32 kNextMenu = 0x40;    // char*, a button's "nextmenu"
+constexpr nfs::u32 kListName = 0x58;    // char*, a button's "listname": the list it pops up
+constexpr nfs::u32 kOnClick = 0x64;     // a button's handler, set by code
 constexpr std::uint8_t kDisabled = 0x01;
 constexpr std::uint8_t kHidden = 0x10;
 }
@@ -238,22 +255,22 @@ constexpr std::uint8_t kHidden = 0x10;
 class Item
 {
 public:
-    Item(Guest& guest, x86::reg32 address) : m_guest(&guest), m_address(address) {}
+    Item(Guest& guest, nfs::u32 address) : m_guest(&guest), m_address(address) {}
 
     explicit operator bool() const { return m_address != 0; }
-    x86::reg32 address() const { return m_address; }
+    nfs::u32 address() const { return m_address; }
 
     void setDisabled(bool disabled);
     void setHidden(bool hidden);
     void setX(std::int16_t x) { m_guest->setWord(m_address + item::kX, std::uint16_t(x)); }
-    void setHelp(x86::reg32 text) { m_guest->setDword(m_address + item::kHelp, text); }
-    void setText(x86::reg32 text) { m_guest->setDword(m_address + item::kText, text); }
-    void setListName(x86::reg32 name) { m_guest->setDword(m_address + item::kListName, name); }
-    void setOnClick(x86::reg32 handler) { m_guest->setDword(m_address + item::kOnClick, handler); }
+    void setHelp(nfs::u32 text) { m_guest->setDword(m_address + item::kHelp, text); }
+    void setText(nfs::u32 text) { m_guest->setDword(m_address + item::kText, text); }
+    void setListName(nfs::u32 name) { m_guest->setDword(m_address + item::kListName, name); }
+    void setOnClick(nfs::u32 handler) { m_guest->setDword(m_address + item::kOnClick, handler); }
 
 private:
     Guest* m_guest;
-    x86::reg32 m_address;
+    nfs::u32 m_address;
 };
 
 /* ---------------------------------------------------------------------------
@@ -261,11 +278,11 @@ private:
  * ------------------------------------------------------------------------- */
 
 /* sub_442a40: the screen's item by its codelink. */
-Item findItem(Guest& guest, x86::reg32 menu, const GuestString& codelink);
+Item findItem(Guest& guest, nfs::u32 menu, const GuestString& codelink);
 /* sub_4d1850: a line of the language's text, by its number. */
-x86::reg32 text(Guest& guest, std::uint32_t id);
+nfs::u32 text(Guest& guest, std::uint32_t id);
 /* sub_452020: how wide a text is drawn in a font, in pixels. */
-std::int32_t textWidth(Guest& guest, x86::reg32 text, std::uint32_t font);
+std::int32_t textWidth(Guest& guest, nfs::u32 text, std::uint32_t font);
 /* sub_444be0: a message of one line and one button, over the screen. */
 void messageBox(Guest& guest, std::uint32_t textId);
 
@@ -278,18 +295,18 @@ void messageBox(Guest& guest, std::uint32_t textId);
 struct Dialog
 {
     std::uint32_t lineCount;
-    x86::reg32 lines;            // char*[lineCount]
+    nfs::u32 lines;            // char*[lineCount]
     std::uint32_t buttonCount;
-    x86::reg32 buttons;          // char*[buttonCount]
+    nfs::u32 buttons;          // char*[buttonCount]
     std::uint32_t focus;         // the button highlighted first
-    x86::reg32 edit;             // the text typed into, copied first into the dialog's own buffer
+    nfs::u32 edit;             // the text typed into, copied first into the dialog's own buffer
     std::uint32_t editLength;    // the most characters
     std::uint32_t editMode;      // handed with the buffer to sub_443860; 1 for a name
-    x86::reg32 callback;
+    nfs::u32 callback;
 };
 void openDialog(Guest& guest, const Dialog& dialog);
 /* sub_444c10: the dialog's own buffer, what was typed. */
-x86::reg32 dialogEditText(Guest& guest);
+nfs::u32 dialogEditText(Guest& guest);
 /* sub_4446c0: which button is highlighted, 0 for the first. */
 std::uint32_t dialogFocus(Guest& guest);
 
@@ -298,13 +315,13 @@ std::uint32_t dialogFocus(Guest& guest);
 struct Question
 {
     std::uint32_t lineCount;
-    x86::reg32 lines;            // char*[lineCount]
+    nfs::u32 lines;            // char*[lineCount]
     std::uint32_t buttonCount;
-    x86::reg32 buttons;          // char*[buttonCount]
-    x86::reg32 buttonHelp;       // char*[buttonCount]: a line of help for each button (sub_445ac0), or 0
+    nfs::u32 buttons;          // char*[buttonCount]
+    nfs::u32 buttonHelp;       // char*[buttonCount]: a line of help for each button (sub_445ac0), or 0
     std::uint32_t focus;         // the button highlighted first
     std::uint32_t column;        // nonzero: the buttons one above the other, not in a row
-    x86::reg32 callback;
+    nfs::u32 callback;
 };
 void openQuestion(Guest& guest, const Question& question);
 
@@ -314,14 +331,14 @@ constexpr std::uint32_t kDialogHandled = 2;
 
 /* What a screen's handler hands the menu loop (sub_44b230) besides 0, nothing. */
 // Back screen by screen to the first one (sub_44aec0, until the screen at 0x6040d0).
-constexpr x86::reg32 kMenuBackToFirst = 4;
+constexpr nfs::u32 kMenuBackToFirst = 4;
 // The attract-mode movie has played over the screen: it closes without fading
 // out (sub_44aa30), and the loop goes on.
-constexpr x86::reg32 kMenuMoviePlayed = 9;
+constexpr nfs::u32 kMenuMoviePlayed = 9;
 
 /* 1 when the menu's last input came from the mouse (sub_451960, from
  * sub_49c000's poll), 0 when from the keys. */
-constexpr x86::reg32 kInputFromMouse = 0x664658;
+constexpr nfs::u32 kInputFromMouse = 0x664658;
 
 /* ---------------------------------------------------------------------------
  * Running a stand-in
@@ -349,13 +366,13 @@ enum Restores : std::uint8_t
 struct Site
 {
     const char* name;                 // "sub_437e00"
-    x86::reg32 stackBytes;            // the arguments its ret pops
+    nfs::u32 stackBytes;            // the arguments its ret pops
     /* What the game's function's prologue puts on the stack (the registers
      * it pushes, its locals) before it calls anything.  The stand-in leaves
      * the same room, so what it calls runs at the same stack addresses as it
      * did from the game's code: the C library's strtok keeps a pointer
      * into the stack between calls (the item lookup splits codelinks with it). */
-    x86::reg32 frameBytes;
+    nfs::u32 frameBytes;
     const GuestString* strings;
     std::size_t stringCount;
     std::uint8_t restores = kRestoreAll;  // Restores; ebp always
@@ -367,29 +384,29 @@ struct Site
  * the same -- there is no other code to leave it to. */
 void checkStrings(Guest& guest, Site& site);
 
-/* `body` run as the game's function runs, for a thunk (win32::ThunkPtr): in a frame of its size,
+/* `body` run as the game's function runs, for a thunk (nfs::ThunkPtr): in a frame of its size,
  * its result returned, the registers the function keeps left in `args` as they came (the others as
  * they came too: no caller reads them), esp moved on as its ret moves it; 0 when the game stopped
  * in it. */
 template <typename Body>
-x86::reg32 runThunk(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args, Site& site, Body body)
+nfs::u32 runThunk(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args, Site& site, Body body)
 {
-    Guest guest(app, cpu);
+    Guest guest(app, ts);
     if (site.ready == 0)
         checkStrings(guest, site);
-    const x86::reg32 esp = cpu.esp;
+    const nfs::u32 esp = ts.sp;
     try
     {
-        cpu.esp -= site.frameBytes;
-        guest.setFrame(cpu.esp);
-        const x86::reg32 result = body(guest);
-        cpu.esp = esp + 4 + site.stackBytes;
+        ts.sp -= site.frameBytes;
+        guest.setFrame(ts.sp);
+        const nfs::u32 result = body(guest);
+        ts.sp = esp + 4 + site.stackBytes;
         args.eax = result;
         return result;
     }
     catch (const Terminated&)
     {
-        cpu.esp = esp;
+        ts.sp = esp;
         return 0;
     }
 }
@@ -407,95 +424,95 @@ x86::reg32 runThunk(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args, 
 
 /* The options screens (native_frontend_options.cpp): the options screen and
  * the audio feed's keys (audfeed), */
-namespace frontend { x86::reg32 optionsOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 feedOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 feedOnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 feedSeparate(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 feedTimeButtonKey(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 feedPositionButtonKey(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 feedSpeedButtonKey(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 feedTimeListKey(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 feedPositionListKey(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 feedSpeedListKey(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { nfs::u32 optionsOnEnter(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 feedOnEnter(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 feedOnExit(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 feedSeparate(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 feedTimeButtonKey(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 feedPositionButtonKey(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 feedSpeedButtonKey(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 feedTimeListKey(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 feedPositionListKey(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 feedSpeedListKey(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
 /* the sound and its sliders, */
-namespace frontend { x86::reg32 audioOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 audioOnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 audioOnFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 audioVolumeDraw(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 audioMenuMusicMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 audioRaceMusicMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 audioEffectsMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 audioEngineMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 audioSpeechMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { nfs::u32 audioOnEnter(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 audioOnExit(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 audioOnFrame(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 audioVolumeDraw(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 audioMenuMusicMoved(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 audioRaceMusicMoved(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 audioEffectsMoved(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 audioEngineMoved(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 audioSpeechMoved(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
 /* and the graphics.  (The controls' screens -- the function keys, the fixed
  * ones, the controllers, their dead zones and force feedback -- are native
  * whole, declared with the game's.) */
-namespace frontend { x86::reg32 graphicsOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 graphicsOnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 graphicsOnFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 advancedOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 advancedOnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 advancedOnFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 advancedIntensityMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { nfs::u32 graphicsOnEnter(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 graphicsOnExit(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 graphicsOnFrame(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 advancedOnEnter(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 advancedOnExit(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 advancedOnFrame(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 advancedIntensityMoved(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
 
 /* The cars' screens (native_frontend_cars.cpp): car1 and car2, the music, the
  * developer's recorder, opponent, and cedbasic, a car's tuning, */
-namespace frontend { x86::reg32 carMenuMusicBack(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 carSaveFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 trackSaveFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 carRecord(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 trackRecord(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 car1OnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 car2OnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 car1OnFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 car2OnFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 car1OnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 car2OnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 car1EditClicked(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 car2EditClicked(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 car1ColourClicked(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 car2ColourClicked(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 opponentFitCar(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 opponentFitArt(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 opponentOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 opponentOnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 opponentOnFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 tuningLoad(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 tuningSave(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 tuningEngineMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 tuningBrakesMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 tuningSteeringMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 tuningGearsMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 tuningSuspensionMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 tuningAeroMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 tuningTiresMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 tuningSetSliders(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 tuningRememberSliders(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 tuningSlidersMoved(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 tuningBindSliders(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 tuningLoadAdvanced(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 tuningDefaultsAnswered(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 tuningDoneKey(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 tuningCancelKey(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 tuningCarListKey(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 tuningDefaultsKey(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 tuningBindDoneCancel(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 tuningFitButtons(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 tuningPrepare(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 tuningOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 tuningOnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 tuningAdvancedDiffers(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 tuningCopyAdvanced(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { nfs::u32 carMenuMusicBack(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 carSaveFrame(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 trackSaveFrame(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 carRecord(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 trackRecord(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 car1OnEnter(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 car2OnEnter(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 car1OnFrame(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 car2OnFrame(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 car1OnExit(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 car2OnExit(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 car1EditClicked(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 car2EditClicked(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 car1ColourClicked(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 car2ColourClicked(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 opponentFitCar(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 opponentFitArt(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 opponentOnEnter(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 opponentOnExit(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 opponentOnFrame(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 tuningLoad(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 tuningSave(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 tuningEngineMoved(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 tuningBrakesMoved(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 tuningSteeringMoved(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 tuningGearsMoved(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 tuningSuspensionMoved(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 tuningAeroMoved(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 tuningTiresMoved(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 tuningSetSliders(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 tuningRememberSliders(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 tuningSlidersMoved(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 tuningBindSliders(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 tuningLoadAdvanced(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 tuningDefaultsAnswered(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 tuningDoneKey(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 tuningCancelKey(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 tuningCarListKey(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 tuningDefaultsKey(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 tuningBindDoneCancel(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 tuningFitButtons(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 tuningPrepare(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 tuningOnEnter(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 tuningOnExit(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 tuningAdvancedDiffers(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 tuningCopyAdvanced(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
 /* and the track's (native_frontend_tracks.cpp): location and trkinfo. */
-namespace frontend { x86::reg32 locationOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 locationOnFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 locationOnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 infoPlaceTrackPlaces(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 infoOnEnter(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 infoOnFrame(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 infoOnExit(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 infoSpeak(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
-namespace frontend { x86::reg32 infoStopSpeaking(win32::WinApplication* app, x86::CPU& cpu, x86::Args& args); }
+namespace frontend { nfs::u32 locationOnEnter(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 locationOnFrame(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 locationOnExit(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 infoPlaceTrackPlaces(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 infoOnEnter(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 infoOnFrame(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 infoOnExit(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 infoSpeak(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
+namespace frontend { nfs::u32 infoStopSpeaking(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args); }
 
 }
 

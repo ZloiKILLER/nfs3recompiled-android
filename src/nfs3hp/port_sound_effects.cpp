@@ -68,8 +68,8 @@ enum BankIndex : int32_t
 
 // What the effects call: the streamed music's volume and the effect bus (SND's, by address), the game's own
 // music and race sound (as C++).
-constexpr reg32 kMusicLevel = 0x4e8b60, kBusInit = 0x4e9c70, kSetBusLevel = 0x4e9dfc;
-constexpr reg32 kMusicStop = 0x4109d0, kRaceSoundInit = 0x4129c0;
+constexpr u32 kMusicLevel = 0x4e8b60, kBusInit = 0x4e9c70, kSetBusLevel = 0x4e9dfc;
+constexpr u32 kMusicStop = 0x4109d0, kRaceSoundInit = 0x4129c0;
 
 int32_t bankHandle(App* app, int32_t i) { return kGameBanks(app, i).handle; }
 
@@ -141,12 +141,12 @@ bool isSpeech(App* app, int32_t bank, int32_t effect)
  * game's code has them on its stack at `at` (esp there).  Its handle, the
  * effects playing one more. */
 template <class Fill>
-Result play(App* app, CPU& cpu, reg32 at, Fill fill)
+Result play(App* app, ThreadState& ts, u32 at, Fill fill)
 {
     PlayOptions o;
     playDefaults(o);
     fill(o);
-    const Result handle = playSound(app, cpu, at - 4, o);
+    const Result handle = playSound(app, ts, at - 4, o);
     if (handle)
         kPlaying.set(app, kPlaying(app) + 1);
     return handle;
@@ -158,10 +158,10 @@ Result play(App* app, CPU& cpu, reg32 at, Fill fill)
  * `pitch` -- the volume scaled by its kind's (the engine's for bank 0's
  * effect 2, the speech's for the speech's banks, the effects' else).  -1 with
  * the effects off. */
-Result bankEffect(App* app, CPU& cpu, reg32 esp, int32_t bank, int32_t effect, int32_t volume, uint32_t pan,
+Result bankEffect(App* app, ThreadState& ts, u32 esp, int32_t bank, int32_t effect, int32_t volume, uint32_t pan,
                   uint8_t pitch)
 {
-    const HeldEbp ebp(cpu, esp - 0xc);
+    const HeldEbp ebp(ts, esp - 0xc);
     if (kEffectsOn(app) == 0)
         return -1;
     int32_t level;
@@ -174,7 +174,7 @@ Result bankEffect(App* app, CPU& cpu, reg32 esp, int32_t bank, int32_t effect, i
         level = int32_t(uint32_t(volume) * uint32_t(gameSettings(app).effectsVolume)) / 0x7f;
     else
         level = scaled(std::int32_t(gameSettings(app).effectsVolume), 55, volume);
-    return play(app, cpu, esp - 0xc - 0x14, [&](PlayOptions& o) {
+    return play(app, ts, esp - 0xc - 0x14, [&](PlayOptions& o) {
         o.bank = int8_t(bank);
         o.patch = effect;
         o.volume = int8_t(level);
@@ -184,44 +184,44 @@ Result bankEffect(App* app, CPU& cpu, reg32 esp, int32_t bank, int32_t effect, i
 }
 
 /* 0x418790's: the effect bus's level down (0). */
-Result busLevelDown(App* app, CPU& cpu, reg32 esp)
+Result busLevelDown(App* app, ThreadState& ts, u32 esp)
 {
-    cpu.esp = esp - 8;
-    return guest::direct<kSetBusLevel, setBusMaster>(app, cpu, esp - 8 - 4, 0, 0);
+    ts.sp = esp - 8;
+    return guest::direct<kSetBusLevel, setBusMaster>(app, ts, esp - 8 - 4, 0, 0);
 }
 
 /* 0x418770's: the effect bus's level up (127). */
-Result busLevelUp(App* app, CPU& cpu, reg32 esp)
+Result busLevelUp(App* app, ThreadState& ts, u32 esp)
 {
-    cpu.esp = esp - 8;
-    return guest::direct<kSetBusLevel, setBusMaster>(app, cpu, esp - 8 - 4, 0, 0x7f);
+    ts.sp = esp - 8;
+    return guest::direct<kSetBusLevel, setBusMaster>(app, ts, esp - 8 - 4, 0, 0x7f);
 }
 
 /* Silence -- the music and every sound stopped -- then the master volume
  * brought up a step at a time below `to`, the bus down when it is used.  The
  * code's ebp is `esp`, which SND's master volume reads. */
-static Result silenceAndRaise(App* app, CPU& cpu, reg32 esp, int32_t to)
+static Result silenceAndRaise(App* app, ThreadState& ts, u32 esp, int32_t to)
 {
-    if (!masterVolumeFrom(app, cpu, esp - 4, 0, esp))
+    if (!masterVolumeFrom(app, ts, esp - 4, 0, esp))
         return {};
-    cpu.esp = esp;
-    if (!guest::direct<kMusicStop, musicStopped>(app, cpu, esp - 4, 0u))
+    ts.sp = esp;
+    if (!guest::direct<kMusicStop, musicStopped>(app, ts, esp - 4, 0u))
         return {};
-    Result r = stopAllSounds(app, cpu, esp - 4);
+    Result r = stopAllSounds(app, ts, esp - 4);
     for (int32_t level = 0; r && level < to; ++level)
-        r = masterVolumeFrom(app, cpu, esp - 4, level, esp);
+        r = masterVolumeFrom(app, ts, esp - 4, level, esp);
     if (r && kBusUsed(app) != 0)
-        r = busLevelDown(app, cpu, esp - 4);
+        r = busLevelDown(app, ts, esp - 4);
     return r;
 }
 
 /* 0x416f60's: slot `slot`'s sound faded out (5 ticks) and the slot empty; the
  * effects playing, one less (that count back; else the slot as given). */
-Result slotStopped(App* app, CPU& cpu, reg32 esp, int32_t slot)
+Result slotStopped(App* app, ThreadState& ts, u32 esp, int32_t slot)
 {
     if (kEffectsOn(app) == 0 || slot == -1 || kSlots(app, slot).sound == -1)
         return slot;
-    if (!fadeSound(app, cpu, esp - 0x14 - 4, reg32(kSlots(app, slot).sound), 5, -1))
+    if (!fadeSound(app, ts, esp - 0x14 - 4, u32(kSlots(app, slot).sound), 5, -1))
         return {};
     kSlots.set(app, slot, {-1, -1});
     const int32_t playing = kPlaying(app) - 1;
@@ -234,11 +234,11 @@ Result slotStopped(App* app, CPU& cpu, reg32 esp, int32_t slot)
  * the effect for some, else from the slot's own bank -- the slot's old sound
  * stopped; or, the slot playing that effect already, its volume, pitch and
  * place changed.  The last call's answer. */
-Result slotPlayed(App* app, CPU& cpu, reg32 esp, int32_t slot, int32_t effect, int32_t volume, int32_t pitch,
-                  reg32 pan)
+Result slotPlayed(App* app, ThreadState& ts, u32 esp, int32_t slot, int32_t effect, int32_t volume, int32_t pitch,
+                  u32 pan)
 {
-    const reg32 frame = esp - 0xc;  // ebp as the code has it
-    const reg32 at = frame - 8;
+    const u32 frame = esp - 0xc;  // ebp as the code has it
+    const u32 at = frame - 8;
     const auto clamp = [](int32_t v) { return v < 0 ? 0 : v > 0x7f ? 0x7f : v; };
     pitch = clamp(pitch);
     volume = clamp(volume);
@@ -262,7 +262,7 @@ Result slotPlayed(App* app, CPU& cpu, reg32 esp, int32_t slot, int32_t effect, i
     else
         bank = bankHandle(app, kSlotBanks(app, slot));
     const auto start = [&](int32_t level, uint8_t pitchOf) {
-        return bankEffect(app, cpu, at - 8, bank, effect, level, pan, pitchOf);
+        return bankEffect(app, ts, at - 8, bank, effect, level, pan, pitchOf);
     };
     if (slot == 0x1f || slot == 0x13 || slot == 0x21)
     {
@@ -279,7 +279,7 @@ Result slotPlayed(App* app, CPU& cpu, reg32 esp, int32_t slot, int32_t effect, i
     {
         if (old.sound != -1 && slot > 3)
         {
-            if (!stopSound(app, cpu, at - 4, reg32(old.sound)))
+            if (!stopSound(app, ts, at - 4, u32(old.sound)))
                 return {};
             kPlaying.set(app, kPlaying(app) - 1);
         }
@@ -296,18 +296,18 @@ Result slotPlayed(App* app, CPU& cpu, reg32 esp, int32_t slot, int32_t effect, i
         level = scaled(std::int32_t(gameSettings(app).effectsVolume), 80, volume);
     else
         level = scaled(std::int32_t(gameSettings(app).effectsVolume), 55, volume);
-    const reg32 sound = reg32(old.sound);
-    Result r = setVolumeFrom(app, cpu, at - 4, sound, level, frame);
+    const u32 sound = u32(old.sound);
+    Result r = setVolumeFrom(app, ts, at - 4, sound, level, frame);
     // SND's bend's error text reads ebx, esi and edi as the code has them: the slot's offset (8 a slot), the slot,
     // the effect.
     if (r)
-        r = setBendFrom(app, cpu, at - 4, sound, pitch, reg32(slot) * 8, reg32(slot), reg32(effect));
+        r = setBendFrom(app, ts, at - 4, sound, pitch, u32(slot) * 8, u32(slot), u32(effect));
     if (r && gameSettings(app).soundSetup == 2)
-        r = placeSound(app, cpu, at - 4, sound, pan, 0);
+        r = placeSound(app, ts, at - 4, sound, pan, 0);
     if (r && kSurround(app) != 0)
-        return placeSound(app, cpu, at - 4, sound, kStereo(app) != 0 ? pan : 0, 0);
+        return placeSound(app, ts, at - 4, sound, kStereo(app) != 0 ? pan : 0, 0);
     if (r)
-        r = panSound(app, cpu, at - 4, sound, kStereo(app) != 0 ? stereoPan(pan) : 0x40);
+        r = panSound(app, ts, at - 4, sound, kStereo(app) != 0 ? stereoPan(pan) : 0x40);
     return r;
 }
 
@@ -316,8 +316,8 @@ Result slotPlayed(App* app, CPU& cpu, reg32 esp, int32_t slot, int32_t effect, i
  * side instead of the pan (the second player's slots 14 on) -- the horn (4) of
  * the first car left out half the time by the random (its quotient by 100
  * back then). */
-Result slotEffectPlayed(App* app, CPU& cpu, reg32 esp, int32_t slot, int32_t effect, reg32 ecx, reg32 ebx,
-                        reg32 volume, reg32 pan, reg32 player)
+Result slotEffectPlayed(App* app, ThreadState& ts, u32 esp, int32_t slot, int32_t effect, u32 ecx, u32 ebx,
+                        u32 volume, u32 pan, u32 player)
 {
     if (gameSettings(app).playMode == 1)
     {
@@ -329,30 +329,30 @@ Result slotEffectPlayed(App* app, CPU& cpu, reg32 esp, int32_t slot, int32_t eff
     const int32_t pitch = int32_t(uint32_t(product) + (product < 0 ? 0xffffu : 0u)) >> 16;
     if (gameSettings(app).track == 0 && effect == 4)
     {
-        const reg32 n = nextRandom(app);
+        const u32 n = nextRandom(app);
         if (n % 0x64 > 0x32)
             return int32_t(n / 0x64);
     }
-    return slotPlayed(app, cpu, esp - 3 * 4 - 4 - 8, slot, effect, int32_t(volume), pitch, pan);
+    return slotPlayed(app, ts, esp - 3 * 4 - 4 - 8, slot, effect, int32_t(volume), pitch, pan);
 }
 
 /* 0x418280's: effect 5 of the car's bank at full volume, in the middle. */
-Result carEffectFive(App* app, CPU& cpu, reg32 esp)
+Result carEffectFive(App* app, ThreadState& ts, u32 esp)
 {
-    return bankEffect(app, cpu, esp - 4 * 4 - 8, bankHandle(app, kCarBank), 5, 0x7f, 0, 0x40);
+    return bankEffect(app, ts, esp - 4 * 4 - 8, bankHandle(app, kCarBank), 5, 0x7f, 0, 0x40);
 }
 
 /* 0x4184f0's: effect `effect` of bank `bank` at `volume` scaled by the speech's,
  * pan `pan`, pitch `pitch`.  -1 with the effects off. */
-Result speechEffect(App* app, CPU& cpu, reg32 esp, int32_t bank, int32_t effect, int32_t volume, uint32_t pan,
+Result speechEffect(App* app, ThreadState& ts, u32 esp, int32_t bank, int32_t effect, int32_t volume, uint32_t pan,
                     uint8_t pitch)
 {
-    const reg32 frame = esp - 2 * 4;
+    const u32 frame = esp - 2 * 4;
     // SND's play reads ebp for a sample's place it never set: the code's frame pointer.
-    const HeldEbp ebp(cpu, frame);
+    const HeldEbp ebp(ts, frame);
     if (kEffectsOn(app) == 0)
         return -1;
-    return play(app, cpu, frame - 0x14, [&](PlayOptions& o) {
+    return play(app, ts, frame - 0x14, [&](PlayOptions& o) {
         o.bank = int8_t(bank);
         o.patch = effect;
         o.volume = int8_t(scaled(std::int32_t(gameSettings(app).speechVolume), 0x7f, volume));
@@ -364,9 +364,9 @@ Result speechEffect(App* app, CPU& cpu, reg32 esp, int32_t bank, int32_t effect,
 /* 0x4e8f28's: the angle of the vector (`along`, `across`), 0x400 a turn: the
  * smaller over the larger looked up in the arctangents at 0x5678b8, then put
  * in its octant. */
-reg32 vectorAngle(App* app, int32_t along, int32_t across)
+u32 vectorAngle(App* app, int32_t along, int32_t across)
 {
-    reg32 octant = 0;
+    u32 octant = 0;
     if (across < 0)
     {
         octant |= 8;
@@ -377,7 +377,7 @@ reg32 vectorAngle(App* app, int32_t along, int32_t across)
         octant |= 0x10;
         along = int32_t(0u - uint32_t(along));
     }
-    reg32 a;
+    u32 a;
     if (along == across)
         a = 0x80;
     else
@@ -387,7 +387,7 @@ reg32 vectorAngle(App* app, int32_t along, int32_t across)
             std::swap(along, across);
             octant |= 4;
         }
-        const reg32 q = reg32((uint64_t(uint32_t(along)) << 32) / uint32_t(across));
+        const u32 q = u32((uint64_t(uint32_t(along)) << 32) / uint32_t(across));
         a = app->getMemory<uint8_t>(((q >> 24) + ((q >> 23) & 1)) + 0x5678b8);
     }
     switch (octant)
@@ -410,13 +410,13 @@ reg32 vectorAngle(App* app, int32_t along, int32_t across)
 /* 0x4181d0's: menu effect `effect` of the first bank at `volume`, the game's
  * code's frame (4 words pushed) below `esp`.  SNDplay's handle (the effect
  * itself, as the code leaves eax, with sounds off). */
-Result playMenuEffectOf(App* app, CPU& cpu, reg32 esp, int32_t effect, int32_t volume)
+Result playMenuEffectOf(App* app, ThreadState& ts, u32 esp, int32_t effect, int32_t volume)
 {
-    const reg32 frame = esp - 4 * 4;
-    const HeldEbp ebp(cpu, frame);
+    const u32 frame = esp - 4 * 4;
+    const HeldEbp ebp(ts, frame);
     Result handle = effect;
     if (kMenuSoundsOff(app) == 0 && kEffectsOn(app) != 0)
-        handle = play(app, cpu, frame - 0x10, [&](PlayOptions& o) {
+        handle = play(app, ts, frame - 0x10, [&](PlayOptions& o) {
             o.bank = int8_t(bankHandle(app, kMenuBank));
             o.volume = int8_t(scaled(std::int32_t(gameSettings(app).effectsVolume), 55, volume));
             o.patch = effect;
@@ -437,38 +437,38 @@ Result playMenuEffectOf(App* app, CPU& cpu, reg32 esp, int32_t effect, int32_t v
 
 /* 0x4181d0: menu effect eax of the first bank at volume edx.  SNDplay's
  * handle (the effect itself, as the code leaves eax, with sounds off). */
-x86::reg32 playMenuEffect(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 playMenuEffect(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, playMenuEffectOf(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx)));
+    const Entry e(ts, args);
+    return e.finish(ts, args, playMenuEffectOf(app, ts, e.esp, int32_t(e.eax), int32_t(e.edx)));
 }
 
 /* 0x4182b0 (stdcall 4): effect edx of bank eax at volume ecx, pan ebx, pitch
  * the stack's word. */
-x86::reg32 playEffect(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 playEffect(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args,
-             bankEffect(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx), int32_t(e.ecx), e.ebx,
+    const Entry e(ts, args);
+    return e.finish(ts, args,
+             bankEffect(app, ts, e.esp, int32_t(e.eax), int32_t(e.edx), int32_t(e.ecx), e.ebx,
                         uint8_t(e.arg(app, 0))),
              4);
     return args.eax;
 }
 
 /* 0x418280: effect 5 of the car's bank at full volume, in the middle. */
-x86::reg32 playCarEffectFive(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 playCarEffectFive(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, carEffectFive(app, cpu, e.esp));
+    const Entry e(ts, args);
+    return e.finish(ts, args, carEffectFive(app, ts, e.esp));
 }
 
 /* 0x4184f0 (stdcall 4): effect edx of bank eax at volume ecx scaled by the
  * speech's, pan ebx, pitch the stack's word.  -1 with the effects off. */
-x86::reg32 playSpeechEffect(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 playSpeechEffect(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args,
-             speechEffect(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx), int32_t(e.ecx), e.ebx,
+    const Entry e(ts, args);
+    return e.finish(ts, args,
+             speechEffect(app, ts, e.esp, int32_t(e.eax), int32_t(e.edx), int32_t(e.ecx), e.ebx,
                           uint8_t(e.arg(app, 0))),
              4);
     return args.eax;
@@ -476,138 +476,138 @@ x86::reg32 playSpeechEffect(App* app, CPU& cpu, x86::Args& args)
 
 /* 0x4185e0: a side's angle eax (0..127; edx above 0 for the right) as a pan
  * (0..0xffff). */
-x86::reg32 panFromSide(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 panFromSide(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.back(cpu, args, panFromSideOf(app, int32_t(e.eax), int32_t(e.edx)));
+    const Entry e(ts, args);
+    return e.back(ts, args, panFromSideOf(app, int32_t(e.eax), int32_t(e.edx)));
 }
 
 /* 0x4185e0's core: the pan of side angle `angle` (edx `side`: above 0 for the right). */
-reg32 panFromSideOf(App*, int32_t angle, int32_t side)
+u32 panFromSideOf(App*, int32_t angle, int32_t side)
 {
     if (side <= 0)
         angle = 0x7f - angle + 0x80;
     int32_t pan = int32_t(uint32_t(angle) << 8) - 0x3ffe;
     if (pan < 0)
         pan += 0x10000;
-    return reg32(pan);
+    return u32(pan);
 }
 
 /* 0x418610: the master volume to nothing. */
-x86::reg32 masterSilent(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 masterSilent(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, masterVolumeFrom(app, cpu, e.frame(1) - 4, 0, e.frame(1)));
+    const Entry e(ts, args);
+    return e.finish(ts, args, masterVolumeFrom(app, ts, e.frame(1) - 4, 0, e.frame(1)));
 }
 
 /* 0x418620: the master volume back (0x78), the music's too when it is not
  * muted. */
-x86::reg32 masterBack(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 masterBack(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
+    const Entry e(ts, args);
     // The stream's volume (0x4e8b60, by its address) reads ebp: the code's frame.
-    const HeldEbp ebp(cpu, e.frame(2));
-    const Result r = masterVolumeFrom(app, cpu, e.frame(2) - 4, 0x78, e.frame(2));
+    const HeldEbp ebp(ts, e.frame(2));
+    const Result r = masterVolumeFrom(app, ts, e.frame(2) - 4, 0x78, e.frame(2));
     if (!r || kMusicUnmuted(app) == 0)
-        return e.finish(cpu, args, r);
-    reg32 music;
-    if (!pointerGame(app, cpu, e.frame(2), kMusicLevel, {reg32(musicVolume(app))}, {}, music))
+        return e.finish(ts, args, r);
+    u32 music;
+    if (!pointerGame(app, ts, e.frame(2), kMusicLevel, {u32(musicVolume(app))}, {}, music))
         return args.eax;
-    return e.back(cpu, args, music);
+    return e.back(ts, args, music);
 }
 
 /* 0x4186a0: silence, then the master volume back up to 127. */
-x86::reg32 silenceForMenus(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 silenceForMenus(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    const HeldEbp ebp(cpu, e.frame(2));
-    return e.finish(cpu, args, silenceAndRaise(app, cpu, e.frame(2), 0x80));
+    const Entry e(ts, args);
+    const HeldEbp ebp(ts, e.frame(2));
+    return e.finish(ts, args, silenceAndRaise(app, ts, e.frame(2), 0x80));
 }
 
 /* 0x4186f0: silence, then the master volume back up to 0x77, and the race's
  * sounds reset. */
-x86::reg32 silenceForRace(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 silenceForRace(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    const HeldEbp ebp(cpu, e.frame(2));
-    if (!silenceAndRaise(app, cpu, e.frame(2), 0x78))
+    const Entry e(ts, args);
+    const HeldEbp ebp(ts, e.frame(2));
+    if (!silenceAndRaise(app, ts, e.frame(2), 0x78))
         return args.eax;
-    cpu.esp = e.frame(2);
-    return e.finish(cpu, args, guest::direct<kRaceSoundInit, raceSoundsSetUp>(app, cpu, e.frame(2) - 4, 0u));
+    ts.sp = e.frame(2);
+    return e.finish(ts, args, guest::direct<kRaceSoundInit, raceSoundsSetUp>(app, ts, e.frame(2) - 4, 0u));
 }
 
 /* 0x418740: the effect bus set to type 0x14, its level 0. */
-x86::reg32 busInit(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 busInit(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, busInitOf(app, cpu, e.esp));
+    const Entry e(ts, args);
+    return e.finish(ts, args, busInitOf(app, ts, e.esp));
 }
 
 /* 0x418740's core: the effect bus set to type 0x14, its level 0; esp the frame base. */
-Result busInitOf(App* app, CPU& cpu, reg32 esp)
+Result busInitOf(App* app, ThreadState& ts, u32 esp)
 {
-    const reg32 frame = esp - 4 * 4;
-    cpu.esp = frame;
-    if (!guest::direct<kBusInit, initEffectBus>(app, cpu, frame - 4 - 4, 0, 0x14u, -1, -1, 0x7f))
+    const u32 frame = esp - 4 * 4;
+    ts.sp = frame;
+    if (!guest::direct<kBusInit, initEffectBus>(app, ts, frame - 4 - 4, 0, 0x14u, -1, -1, 0x7f))
         return std::nullopt;
-    cpu.esp = frame;
-    return guest::direct<kSetBusLevel, setBusMaster>(app, cpu, frame - 4, 0, 0);
+    ts.sp = frame;
+    return guest::direct<kSetBusLevel, setBusMaster>(app, ts, frame - 4, 0, 0);
 }
 
 /* 0x418770, 0x418790: the bus's level up (127) and down (0). */
-x86::reg32 busUp(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 busUp(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, busLevelUp(app, cpu, e.esp));
+    const Entry e(ts, args);
+    return e.finish(ts, args, busLevelUp(app, ts, e.esp));
 }
 
-x86::reg32 busDown(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 busDown(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, busLevelDown(app, cpu, e.esp));
+    const Entry e(ts, args);
+    return e.finish(ts, args, busLevelDown(app, ts, e.esp));
 }
 
 /* 0x4187a0: the race's slots stopped: 4..11 and 14..36. */
-x86::reg32 slotsStop(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 slotsStop(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
+    const Entry e(ts, args);
     Result r;
     for (int32_t slot = 4; slot <= 0xb; ++slot)
-        if (!(r = slotStopped(app, cpu, e.frame(2) - 4, slot)))
+        if (!(r = slotStopped(app, ts, e.frame(2) - 4, slot)))
             return args.eax;
     for (int32_t slot = 0xe; slot < 0x25; ++slot)
-        if (!(r = slotStopped(app, cpu, e.frame(2) - 4, slot)))
+        if (!(r = slotStopped(app, ts, e.frame(2) - 4, slot)))
             return args.eax;
-    return e.finish(cpu, args, r);
+    return e.finish(ts, args, r);
 }
 
 /* 0x4187e0: the music muted, or back at its volume. */
-x86::reg32 musicMuteToggle(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 musicMuteToggle(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    reg32 r;
+    const Entry e(ts, args);
+    u32 r;
     const bool unmuted = kMusicUnmuted(app) != 0;
-    if (!pointerGame(app, cpu, e.frame(2), kMusicLevel, {unmuted ? 0 : reg32(musicVolume(app)), 0}, {}, r))
+    if (!pointerGame(app, ts, e.frame(2), kMusicLevel, {unmuted ? 0 : u32(musicVolume(app)), 0}, {}, r))
         return args.eax;
     // Muted, the code writes dl as the call leaves it (0 it set before).
     kMusicUnmuted.set(app, unmuted ? uint8_t(args.edx) : 1);
-    return e.back(cpu, args, r);
+    return e.back(ts, args, r);
 }
 
 /* 0x416f60: slot eax stopped. */
-x86::reg32 slotStop(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 slotStop(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, slotStopped(app, cpu, e.esp, int32_t(e.eax)));
+    const Entry e(ts, args);
+    return e.finish(ts, args, slotStopped(app, ts, e.esp, int32_t(e.eax)));
 }
 
 /* 0x416fc0 (stdcall 12): slot eax plays effect edx, pitch ecx times ebx, volume,
  * pan and player the stack's words. */
-x86::reg32 slotEffect(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 slotEffect(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args,
-             slotEffectPlayed(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx), e.ecx, e.ebx, e.arg(app, 0),
+    const Entry e(ts, args);
+    return e.finish(ts, args,
+             slotEffectPlayed(app, ts, e.esp, int32_t(e.eax), int32_t(e.edx), e.ecx, e.ebx, e.arg(app, 0),
                               e.arg(app, 1), e.arg(app, 2)),
              0xc);
     return args.eax;
@@ -615,21 +615,21 @@ x86::reg32 slotEffect(App* app, CPU& cpu, x86::Args& args)
 
 /* 0x417080 (stdcall 4): slot eax plays effect edx at volume ecx, pitch ebx,
  * pan the stack's word. */
-x86::reg32 slotPlay(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 slotPlay(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args,
-             slotPlayed(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx), int32_t(e.ecx), int32_t(e.ebx),
+    const Entry e(ts, args);
+    return e.finish(ts, args,
+             slotPlayed(app, ts, e.esp, int32_t(e.eax), int32_t(e.edx), int32_t(e.ecx), int32_t(e.ebx),
                         e.arg(app, 0)),
              4);
     return args.eax;
 }
 
 /* 0x4e8f28: the angle of the vector (eax, edx), 0x400 a turn. */
-x86::reg32 SNDangle(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 SNDangle(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.back(cpu, args, vectorAngle(app, int32_t(e.eax), int32_t(e.edx)));
+    const Entry e(ts, args);
+    return e.back(ts, args, vectorAngle(app, int32_t(e.eax), int32_t(e.edx)));
 }
 
 }  // namespace port

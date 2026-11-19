@@ -18,7 +18,7 @@ namespace port
 /* The tables of the decoders' set-ups the mixer's start fills, by whether the
  * CPU has MMX (port_snd_mixsetup.cpp).  Without it the first table calls a
  * routine of the plain set (0x522100), which the port does not have. */
-Result pickPcmFirstSetups(App* app, CPU& cpu, reg32 esp);
+Result pickPcmFirstSetups(App* app, ThreadState& ts, u32 esp);
 void pickPcmSecondSetups(App* app);
 void pickXaSetups(App* app);
 void pickLastSetups(App* app);
@@ -29,17 +29,17 @@ void pickLastSetups(App* app);
  * as the code leaves them in eax.  And a channel's volume ramped towards its
  * target over at most `frames` frames, each mixed by itself: the frames it
  * took. */
-reg32 mixFrames(App* app, CPU& cpu, reg32 esp, reg32 target, int32_t frames, reg32 eax);
-reg32 rampChannel(App* app, CPU& cpu, reg32 esp, reg32 channel, reg32 frames);
+u32 mixFrames(App* app, ThreadState& ts, u32 esp, u32 target, int32_t frames, u32 eax);
+u32 rampChannel(App* app, ThreadState& ts, u32 esp, u32 channel, u32 frames);
 
 /* The game's conversions of a sound's samples (cdecl, every register kept): `count` 16-bit samples at 0x5008a0,
  * 8-bit at 0x500b10 (by a table), each to a float; `frames` stereo float frames to 16-bit samples at 0x500910
  * (where the loop stopped); the XA state at `state` decoded by the x87 at 0x500990 (stereo) and 0x500b90 (mono). */
-void samples16Converted(App* app, int32_t count, reg32 from, reg32 to);
-void samples8Converted(App* app, int32_t count, reg32 from, reg32 to);
-reg32 floatsPacked(App* app, uint32_t frames, reg32 from, reg32 to);
-void xaStereoConverted(App* app, reg32 state);
-void xaMonoConverted(App* app, reg32 state);
+void samples16Converted(App* app, int32_t count, u32 from, u32 to);
+void samples8Converted(App* app, int32_t count, u32 from, u32 to);
+u32 floatsPacked(App* app, uint32_t frames, u32 from, u32 to);
+void xaStereoConverted(App* app, u32 state);
+void xaMonoConverted(App* app, u32 state);
 
 }  // namespace port
 

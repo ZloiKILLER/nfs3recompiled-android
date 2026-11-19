@@ -22,25 +22,25 @@ namespace nfs3hp
 namespace
 {
 
-constexpr x86::reg32 kCars = 0x5e1120, kCarBytes = 0x9ac;
-constexpr x86::reg32 kClock = 0x7d3684, kPlayerCars = 0x5efa48;
+constexpr nfs::u32 kCars = 0x5e1120, kCarBytes = 0x9ac;
+constexpr nfs::u32 kClock = 0x7d3684, kPlayerCars = 0x5efa48;
 
 SDL_IOStream* s_file = nullptr;
 const char* s_what = "";
-x86::reg32 s_lastClock = 0, s_cars = 0, s_steps = 0;
+nfs::u32 s_lastClock = 0, s_cars = 0, s_steps = 0;
 bool s_passDone = false;
 
-void closeTrace(win32::WinApplication* app)
+void closeTrace(nfs::App* app)
 {
     if (!s_file)
         return;
     SDL_CloseIO(s_file);
     s_file = nullptr;
     SDL_Log("[TRACE] %s done: %u steps, %u cars, clock %u", s_what, unsigned(s_steps), unsigned(s_cars),
-            unsigned(app->getMemory<x86::reg32>(kClock)));
+            unsigned(app->getMemory<nfs::u32>(kClock)));
 }
 
-void openTrace(win32::WinApplication* app)
+void openTrace(nfs::App* app)
 {
     const char* root = SDL_GetAndroidExternalStoragePath();
     if (!root)
@@ -58,17 +58,17 @@ void openTrace(win32::WinApplication* app)
     }
     s_cars = gameSettings(app).entryCount;
     s_steps = 0;
-    const x86::reg32 header[4] = {0x5254464e, 1, replay ? 1u : 0u, s_cars};
+    const nfs::u32 header[4] = {0x5254464e, 1, replay ? 1u : 0u, s_cars};
     SDL_WriteIO(s_file, header, sizeof header);
     SDL_Log("[TRACE] writing %s, %u cars", path.c_str(), unsigned(s_cars));
 }
 
-void carStepped(win32::WinApplication* app, x86::reg32 car)
+void carStepped(nfs::App* app, nfs::u32 car)
 {
-    const x86::reg32 player = gameSettings(app).localPlayer;
-    if (player >= 16 || car != app->getMemory<x86::reg32>(kPlayerCars + player * 4))
+    const nfs::u32 player = gameSettings(app).localPlayer;
+    if (player >= 16 || car != app->getMemory<nfs::u32>(kPlayerCars + player * 4))
         return;
-    const x86::reg32 clock = app->getMemory<x86::reg32>(kClock);
+    const nfs::u32 clock = app->getMemory<nfs::u32>(kClock);
     /* The clock beginning again: a race started over from the pause menu, whose
      * new start is what the file should hold, or a replay come to its end and
      * going round again, whose first pass it already has. */
@@ -85,14 +85,14 @@ void carStepped(win32::WinApplication* app, x86::reg32 car)
     if (!s_file)
         return;
     SDL_WriteIO(s_file, &clock, 4);
-    for (x86::reg32 i = 0; i < s_cars && i < 16; ++i)
+    for (nfs::u32 i = 0; i < s_cars && i < 16; ++i)
     {
-        const x86::reg32 c = kCars + i * kCarBytes;
-        SDL_WriteIO(s_file, &app->getMemory<x86::reg8>(c + 0x1c), 4);
-        SDL_WriteIO(s_file, &app->getMemory<x86::reg8>(c + 0x98), 12);
-        SDL_WriteIO(s_file, &app->getMemory<x86::reg8>(c + 0xa4), 12);
-        SDL_WriteIO(s_file, &app->getMemory<x86::reg8>(c + 0xd8), 12);
-        SDL_WriteIO(s_file, &app->getMemory<x86::reg8>(c + 0xe4), 12);
+        const nfs::u32 c = kCars + i * kCarBytes;
+        SDL_WriteIO(s_file, &app->getMemory<nfs::u8>(c + 0x1c), 4);
+        SDL_WriteIO(s_file, &app->getMemory<nfs::u8>(c + 0x98), 12);
+        SDL_WriteIO(s_file, &app->getMemory<nfs::u8>(c + 0xa4), 12);
+        SDL_WriteIO(s_file, &app->getMemory<nfs::u8>(c + 0xd8), 12);
+        SDL_WriteIO(s_file, &app->getMemory<nfs::u8>(c + 0xe4), 12);
     }
     if (++s_steps % 64 == 0)
         SDL_FlushIO(s_file);
@@ -105,7 +105,7 @@ void startReplayTrace()
     diag::carStepped = carStepped;
 }
 
-void endReplayTrace(win32::WinApplication* app)
+void endReplayTrace(nfs::App* app)
 {
     closeTrace(app);
     s_passDone = false;

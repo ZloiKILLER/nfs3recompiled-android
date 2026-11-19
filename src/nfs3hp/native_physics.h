@@ -5,14 +5,14 @@
 
 /* native_physics.cpp's typed functions that other files call as C++ (guest::direct), and how the
  * game's code calls each by address.  Each may call the
- * game's other functions by address on `cpu`, and is nullopt when the game stopped in one. */
+ * game's other functions by address on `ts`, and is nullopt when the game stopped in one. */
 namespace nfs3hp
 {
 namespace physics
 {
 
 // The game's 0x4ae4c1 (a car's +0x608): car's physics for the frame; what the code leaves in eax.
-std::optional<x86::reg32> stepCar(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 car);
+std::optional<nfs::u32> stepCar(nfs::App* app, nfs::ThreadState& ts, nfs::u32 car);
 
 }  // namespace physics
 

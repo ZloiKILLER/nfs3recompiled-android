@@ -1,7 +1,7 @@
 #ifndef LIB_GLIDE_OUTPUT_H
 #define LIB_GLIDE_OUTPUT_H
 #include <cstdint>
-namespace win32 {
+namespace nfs {
 // THRASH mode records: width, height, output depth, ...; 10 DWORDs.
 // Keep mode IDs and availability unchanged. CPU LFB format is negotiated separately.
 inline void setGlideOutputDepth(uint32_t* modes, uint32_t depth) {

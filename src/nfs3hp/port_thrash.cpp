@@ -63,51 +63,51 @@ using guest::byte;
 /* ---- voodoo2a's data, at its load address (RVA + 0xa82200) ---- */
 
 /* What the game is handed: THRASH_about's descriptor and its lists. */
-constexpr reg32 kInfo = 0xa91f54;            // thrash::kAbout*, thrash::kAboutBytes
-constexpr reg32 kTextureFormats = 0xa91fd4;  // the descriptor's formats, a dword each, 9 of them
-constexpr reg32 kUnknownList = 0xa92000;     // the descriptor's 4 of what is not known
-constexpr reg32 kModes = 0xa92018;           // 17 modes of thrash::kModeBytes, the first unused
-constexpr reg32 kResolutions = 0xa922e8;     // each mode's resolution: Glide's id, or the port's
+constexpr u32 kInfo = 0xa91f54;            // thrash::kAbout*, thrash::kAboutBytes
+constexpr u32 kTextureFormats = 0xa91fd4;  // the descriptor's formats, a dword each, 9 of them
+constexpr u32 kUnknownList = 0xa92000;     // the descriptor's 4 of what is not known
+constexpr u32 kModes = 0xa92018;           // 17 modes of thrash::kModeBytes, the first unused
+constexpr u32 kResolutions = 0xa922e8;     // each mode's resolution: Glide's id, or the port's
 /* voodoo2a's map of THRASH's formats to Glide's (its LOD and aspect maps,
  * kLods and kAspects, in port_thrash.h). */
-constexpr reg32 kFormats = 0xa92348;
+constexpr u32 kFormats = 0xa92348;
 /* The card as Glide described it, GrHwConfiguration: the boards, then the
  * first one's type, frame buffer megabytes, revision, texture units, SLI and
  * its first unit's revision and megabytes. */
-constexpr reg32 kHardware = 0xa93714;
+constexpr u32 kHardware = 0xa93714;
 /* Strings: the name, and the Glide versions THRASH_is weighs; Watcom's
  * character classes (_IsTable), a byte's at its value + 1. */
-constexpr reg32 kName = 0xa916d4;            // "3Dfx Voodoo"
-constexpr reg32 kVersionLow = 0xa916ec;      // "2.42"
-constexpr reg32 kVersionHigh = 0xa916f4;     // "2.5"
-constexpr reg32 kCharacterClasses = 0xa92578;
+constexpr u32 kName = 0xa916d4;            // "3Dfx Voodoo"
+constexpr u32 kVersionLow = 0xa916ec;      // "2.42"
+constexpr u32 kVersionHigh = 0xa916f4;     // "2.5"
+constexpr u32 kCharacterClasses = 0xa92578;
 
 /* Its variables. */
 constexpr Var<uint8_t> kFlags{0xa91ef4};     // kSetUp, kWindowOpen
-constexpr Var<reg32> kFlagsWord{0xa91ef4};
+constexpr Var<u32> kFlagsWord{0xa91ef4};
 constexpr uint8_t kSetUp = 1, kWindowOpen = 2;
-constexpr Var<reg32> kRush{0xa91ef8};        // 1 on a card of type 1, which shares the screen: never here
-constexpr Var<reg32> kClearColour{0xa91efc}; // thrash::kStateClearColour
+constexpr Var<u32> kRush{0xa91ef8};        // 1 on a card of type 1, which shares the screen: never here
+constexpr Var<u32> kClearColour{0xa91efc}; // thrash::kStateClearColour
 constexpr Var<uint16_t> kClearDepth{0xa91f00};
-constexpr Var<reg32> kClearDepthWord{0xa91f00};
-constexpr Var<reg32> kBuffer{0xa91f04};      // the buffer drawn into, THRASH_window's less one
-constexpr Var<reg32> kWindow{0xa91f08};      // the game's window: thrash::kStateWindow, or the lambda's
-constexpr Var<reg32> kSwapInterval{0xa91f0c};// thrash::kStateFlipRate
-constexpr Var<reg32> kTakeScreen{0xa91f10};  // thrash::kState107: voodoo2a took the screen by DirectDraw by it
-constexpr Var<reg32> kWidth{0xa91f18};       // the window's size
-constexpr Var<reg32> kHeight{0xa91f1c};
-constexpr Var<reg32> kSmooth{0xa91f20};      // thrash::kStateAntiAlias
-constexpr Var<reg32> kTwoPass{0xa91f24};     // trilinear mipmapping, thrash::kMipLinear
-constexpr Var<reg32> kTextures{0xa91f28};    // the last record THRASH_talloc made; each points at the one before
-constexpr Var<reg32> kCombineLocal{0xa91f2c};// thrash::kStateShade's
-constexpr Var<reg32> kFindWindow{0xa91f30};  // the game's lambdas, stdcall functions of its own (thrash::kLambda*)
-constexpr Var<reg32> kLog{0xa91f34};
-constexpr Var<reg32> kLockHook{0xa91f38};    // told 1 before a lock of the frame buffer and 0 after
-constexpr Var<reg32> kExecute{0xa91f3c};     // what ran voodoo2a's mode set on the window's thread
-constexpr Var<reg32> kWindowMode{0xa91f44};  // thrash::kStateWindowMode
-constexpr Var<reg32> kTexturing{0xa92354};   // 1 while a texture is selected, 0 while none; -1 at first
-constexpr Var<reg32> kTextureNext{0xa937a8}; // the next free address of texture memory
-constexpr reg32 kDefaultLog = 0xa83a80;      // sub_a83a80, voodoo2a's own log, the lambda's default
+constexpr Var<u32> kClearDepthWord{0xa91f00};
+constexpr Var<u32> kBuffer{0xa91f04};      // the buffer drawn into, THRASH_window's less one
+constexpr Var<u32> kWindow{0xa91f08};      // the game's window: thrash::kStateWindow, or the lambda's
+constexpr Var<u32> kSwapInterval{0xa91f0c};// thrash::kStateFlipRate
+constexpr Var<u32> kTakeScreen{0xa91f10};  // thrash::kState107: voodoo2a took the screen by DirectDraw by it
+constexpr Var<u32> kWidth{0xa91f18};       // the window's size
+constexpr Var<u32> kHeight{0xa91f1c};
+constexpr Var<u32> kSmooth{0xa91f20};      // thrash::kStateAntiAlias
+constexpr Var<u32> kTwoPass{0xa91f24};     // trilinear mipmapping, thrash::kMipLinear
+constexpr Var<u32> kTextures{0xa91f28};    // the last record THRASH_talloc made; each points at the one before
+constexpr Var<u32> kCombineLocal{0xa91f2c};// thrash::kStateShade's
+constexpr Var<u32> kFindWindow{0xa91f30};  // the game's lambdas, stdcall functions of its own (thrash::kLambda*)
+constexpr Var<u32> kLog{0xa91f34};
+constexpr Var<u32> kLockHook{0xa91f38};    // told 1 before a lock of the frame buffer and 0 after
+constexpr Var<u32> kExecute{0xa91f3c};     // what ran voodoo2a's mode set on the window's thread
+constexpr Var<u32> kWindowMode{0xa91f44};  // thrash::kStateWindowMode
+constexpr Var<u32> kTexturing{0xa92354};   // 1 while a texture is selected, 0 while none; -1 at first
+constexpr Var<u32> kTextureNext{0xa937a8}; // the next free address of texture memory
+constexpr u32 kDefaultLog = 0xa83a80;      // sub_a83a80, voodoo2a's own log, the lambda's default
 
 /* voodoo2a's constants: z to Glide's 1/z, w to the scale of s and t, and its
  * fog table's top. */
@@ -118,35 +118,35 @@ constexpr float kFogScale = 255.0f;          // [0xa916cc]
 /* Texture memory as the port's Glide gave it out: each texture takes one slot
  * of it, whatever its size, so that each address is one texture's -- the key
  * ThrashRenderer keeps the texture under. */
-constexpr reg32 kTextureSlot = 8;
-constexpr reg32 kTextureMemoryLow = kTextureSlot;     // grTexMinAddress(0)
-constexpr reg32 kTextureMemoryHigh = 16 * 1024 * 1024;  // grTexMaxAddress(0)
+constexpr u32 kTextureSlot = 8;
+constexpr u32 kTextureMemoryLow = kTextureSlot;     // grTexMinAddress(0)
+constexpr u32 kTextureMemoryHigh = 16 * 1024 * 1024;  // grTexMaxAddress(0)
 
 /* ---- The picture ---- */
 
-win32::Renderer* s_screen = nullptr;        // the window, and the frame buffer the game locks
-win32::ThrashRenderer* s_renderer = nullptr;
+nfs::Renderer* s_screen = nullptr;        // the window, and the frame buffer the game locks
+nfs::ThrashRenderer* s_renderer = nullptr;
 SwapObserver s_swapObserver = nullptr;
 std::vector<GrVertex>* s_trace = nullptr;
-reg32 s_dynamicWidth = 1920, s_dynamicHeight = 1080;  // kResolutionDynamic's, until it is set
+u32 s_dynamicWidth = 1920, s_dynamicHeight = 1080;  // kResolutionDynamic's, until it is set
 /* fitFourThree: x becomes s_fitOffset + x * s_fitScale for everything drawn;
  * squeezeToLeft: each triangle narrowed by s_squeezeScale. */
 float s_fitScale = 1.0f, s_fitOffset = 0.0f, s_squeezeScale = 1.0f;
 /* The clip window as THRASH_clip last set it, put back after clearPicture. */
-reg32 s_clipWindow[4];
+u32 s_clipWindow[4];
 bool s_clipWindowSet = false;
 
 /* The window, opened: grSstWinOpen as the port's Glide had it -- the
  * resolution's size (Glide's, the port's own ids, or 640x480 for one it does
  * not know), a Renderer on the game's window at it, ThrashRenderer on that,
  * and at address 0 the texture of one texel an untextured draw selects. */
-void openPicture(App* app, reg32 window, reg32 resolution)
+void openPicture(App* app, u32 window, u32 resolution)
 {
-    static const struct { reg32 width, height; } kGlideSizes[] = {
+    static const struct { u32 width, height; } kGlideSizes[] = {
         {320, 200}, {320, 240}, {400, 256}, {512, 384}, {640, 200}, {640, 350}, {640, 400},
         {640, 480}, {800, 600}, {960, 720}, {856, 480}, {512, 256}, {1024, 768},
     };
-    reg32 width = 640, height = 480;
+    u32 width = 640, height = 480;
     if (resolution < sizeof kGlideSizes / sizeof kGlideSizes[0])
     {
         width = kGlideSizes[resolution].width;
@@ -176,13 +176,13 @@ void openPicture(App* app, reg32 window, reg32 resolution)
     {
         SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Unsupported resolution: %d", resolution);
     }
-    s_screen = new win32::Renderer(app, dynamic_cast<win32::Window*>(app->getResource(window)));
+    s_screen = new nfs::Renderer(app, dynamic_cast<nfs::Window*>(app->getResource(window)));
     s_screen->setVideoMode(width, height, 16);
     app->allocateResource(s_screen);
-    s_renderer = new win32::ThrashRenderer(s_screen);
+    s_renderer = new nfs::ThrashRenderer(s_screen);
     app->allocateResource(s_renderer);
     const uint16_t texel = 0xff;
-    s_renderer->setTextureData(0, 0, &texel, 8, 8, win32::TF_ARGB_4444);
+    s_renderer->setTextureData(0, 0, &texel, 8, 8, nfs::TF_ARGB_4444);
 }
 
 /* The window let go: grSstWinClose, and grGlideShutdown. */
@@ -214,13 +214,13 @@ void closePicture(App* app)
 struct Vertex
 {
     float x, y, ooz, sow, tow;
-    reg32 oow;  // the bits as they are
-    reg32 colour;
+    u32 oow;  // the bits as they are
+    u32 colour;
 };
 
-Vertex readVertex(App* app, reg32 in)
+Vertex readVertex(App* app, u32 in)
 {
-    typedef x86::Float F;
+    typedef nfs::Float F;
     const F zk = F(app->getMemory<float>(in + thrash::kVertexZ)) * F(kDepthScale);
     const F wk = F(app->getMemory<float>(in + thrash::kVertexRhw)) * F(kTexelScale);
     Vertex out;
@@ -230,14 +230,14 @@ Vertex readVertex(App* app, reg32 in)
     out.sow = float(F(app->getMemory<float>(in + thrash::kVertexU)) * wk);
     out.tow = float(wk * F(app->getMemory<float>(in + thrash::kVertexV)));
     out.ooz = float(zk);
-    const reg32 bgra = at(app, in + thrash::kVertexColour);
+    const u32 bgra = at(app, in + thrash::kVertexColour);
     out.colour = (bgra & 0xff00ff00) | (bgra >> 16 & 0xff) | (bgra & 0xff) << 16;
     return out;
 }
 
 /* The vertex in a slot of the renderer's batch: u and v before
  * finishTriangle brings far ones back. */
-void toBatch(const Vertex& v, win32::ThrashVertex& out)
+void toBatch(const Vertex& v, nfs::ThrashVertex& out)
 {
     out.x = v.x;
     out.y = v.y;
@@ -315,7 +315,7 @@ namespace
 {
 
 /* A batch slot's x fitted to the 4:3 rectangle, while fitFourThree is on. */
-void fit(win32::ThrashVertex& v)
+void fit(nfs::ThrashVertex& v)
 {
     if (s_fitScale == 1.0f && s_fitOffset == 0.0f)
         return;
@@ -323,7 +323,7 @@ void fit(win32::ThrashVertex& v)
 }
 
 /* A triangle in the batch narrowed, then fitted. */
-void place(win32::ThrashVertex* out)
+void place(nfs::ThrashVertex* out)
 {
     if (s_squeezeScale != 1.0f)
     {
@@ -335,9 +335,9 @@ void place(win32::ThrashVertex* out)
         fit(out[i]);
 }
 
-void batchTriangle(const win32::ThrashVertex& a, const win32::ThrashVertex& b, const win32::ThrashVertex& c)
+void batchTriangle(const nfs::ThrashVertex& a, const nfs::ThrashVertex& b, const nfs::ThrashVertex& c)
 {
-    win32::ThrashVertex* out = s_renderer->reserveTriangle();
+    nfs::ThrashVertex* out = s_renderer->reserveTriangle();
     out[0] = a;
     out[1] = b;
     out[2] = c;
@@ -346,7 +346,7 @@ void batchTriangle(const win32::ThrashVertex& a, const win32::ThrashVertex& b, c
 
 /* grDrawLine as the port's Glide drew it: fitted, then four triangles, a
  * pixel wide on each side, the outer corners clear. */
-void batchLine(win32::ThrashVertex a, win32::ThrashVertex b)
+void batchLine(nfs::ThrashVertex a, nfs::ThrashVertex b)
 {
     fit(a);
     fit(b);
@@ -355,21 +355,21 @@ void batchLine(win32::ThrashVertex a, win32::ThrashVertex b)
     float len = std::sqrt(orthX * orthX + orthY * orthY);
     orthX /= len / 2;
     orthY /= len / 2;
-    win32::ThrashVertex a1 = a;
+    nfs::ThrashVertex a1 = a;
     a1.color &= 0x00ffffff;
     a1.x -= orthX;
     a1.y -= orthY;
-    win32::ThrashVertex a2 = a;
-    win32::ThrashVertex a3 = a;
+    nfs::ThrashVertex a2 = a;
+    nfs::ThrashVertex a3 = a;
     a3.color &= 0x00ffffff;
     a3.x += orthX;
     a3.y += orthY;
-    win32::ThrashVertex b1 = b;
+    nfs::ThrashVertex b1 = b;
     b1.color &= 0x00ffffff;
     b1.x -= orthX;
     b1.y -= orthY;
-    win32::ThrashVertex b2 = b;
-    win32::ThrashVertex b3 = b;
+    nfs::ThrashVertex b2 = b;
+    nfs::ThrashVertex b3 = b;
     b3.color &= 0x00ffffff;
     b3.x += orthX;
     b3.y += orthY;
@@ -411,7 +411,7 @@ struct Drawing
 };
 
 /* grDrawTriangle(a, b, c): traced, then narrowed and fitted into the batch. */
-void plainTriangle(App* app, reg32 a, reg32 b, reg32 c)
+void plainTriangle(App* app, u32 a, u32 b, u32 c)
 {
     const Vertex v[3] = {readVertex(app, a), readVertex(app, b), readVertex(app, c)};
     if (s_trace)
@@ -419,7 +419,7 @@ void plainTriangle(App* app, reg32 a, reg32 b, reg32 c)
             s_trace->push_back(traced(corner));
     if (!s_renderer)
         return;
-    win32::ThrashVertex* out = s_renderer->reserveTriangle();
+    nfs::ThrashVertex* out = s_renderer->reserveTriangle();
     for (int i = 0; i < 3; ++i)
         toBatch(v[i], out[i]);
     place(out);
@@ -430,7 +430,7 @@ void plainTriangle(App* app, reg32 a, reg32 b, reg32 c)
  * sub_a839b0): the texture weighted by its LOD fraction -- a blend the port's
  * Glide took as nothing -- then by one less it, added on, which it took as the
  * destination blended whole from then on. */
-void triangle(App* app, const Drawing& d, reg32 a, reg32 b, reg32 c)
+void triangle(App* app, const Drawing& d, u32 a, u32 b, u32 c)
 {
     if (!d.twoPass)
     {
@@ -441,13 +441,13 @@ void triangle(App* app, const Drawing& d, reg32 a, reg32 b, reg32 c)
     if (!d.smooth)
         plainTriangle(app, a, b, c);
     if (s_renderer)
-        s_renderer->setAlphaBlendDst(win32::AB_1);
+        s_renderer->setAlphaBlendDst(nfs::AB_1);
     if (!d.smooth)
         plainTriangle(app, a, b, c);
 }
 
 /* A quad: triangles a b c and c d a. */
-void quad(App* app, const Drawing& d, reg32 a, reg32 b, reg32 c, reg32 e)
+void quad(App* app, const Drawing& d, u32 a, u32 b, u32 c, u32 e)
 {
     triangle(app, d, a, b, c);
     triangle(app, d, c, e, a);
@@ -455,7 +455,7 @@ void quad(App* app, const Drawing& d, reg32 a, reg32 b, reg32 c, reg32 e)
 
 /* A line, drawn only as Glide's own: none in two passes (sub_a83a30, a bare
  * ret), and grAADrawLine drew nothing. */
-void line(App* app, const Drawing& d, reg32 a, reg32 b)
+void line(App* app, const Drawing& d, u32 a, u32 b)
 {
     if (d.twoPass || d.smooth)
         return;
@@ -468,14 +468,14 @@ void line(App* app, const Drawing& d, reg32 a, reg32 b)
     }
     if (!s_renderer)
         return;
-    win32::ThrashVertex ends[2];
+    nfs::ThrashVertex ends[2];
     toBatch(from, ends[0]);
     toBatch(to, ends[1]);
     batchLine(ends[0], ends[1]);
 }
 
 /* The n-th of a mesh's vertices: an index times the vertex's size. */
-reg32 meshVertex(App* app, reg32 vertices, reg32 index)
+u32 meshVertex(App* app, u32 vertices, u32 index)
 {
     return vertices + (at(app, index) << 5);
 }
@@ -487,7 +487,7 @@ reg32 meshVertex(App* app, reg32 vertices, reg32 index)
  * of the mipmap) and the record before -- from voodoo2a's own malloc, which
  * THRASH_treset gives them back to; 0 when it does not fit.  It starts in the
  * next 2 MB bank if it would straddle one. */
-Result allocateTexture(App* app, CPU& cpu, reg32 width, reg32 height, reg32 format, reg32 levelCount)
+Result allocateTexture(App* app, ThreadState& ts, u32 width, u32 height, u32 format, u32 levelCount)
 {
     const int32_t widthLog = exponentOf(width);
     const int32_t heightLog = exponentOf(height);
@@ -496,24 +496,24 @@ Result allocateTexture(App* app, CPU& cpu, reg32 width, reg32 height, reg32 form
     int32_t smallest = largest - levels;
     if (smallest < 0)
         smallest = 0;
-    const reg32 largeLod = lodOf(app, largest);
-    const reg32 smallLod = lodOf(app, smallest);
-    const reg32 aspect = byte(app, kAspects + reg32(widthLog - heightLog));
-    const reg32 size = kTextureSlot;
-    reg32 start = kTextureNext(app);
-    const reg32 firstBank = (start - kTextureMemoryLow) & 0xffe00000;
-    const reg32 lastBank = (size + start - 1 - kTextureMemoryLow) & 0xffe00000;
+    const u32 largeLod = lodOf(app, largest);
+    const u32 smallLod = lodOf(app, smallest);
+    const u32 aspect = byte(app, kAspects + u32(widthLog - heightLog));
+    const u32 size = kTextureSlot;
+    u32 start = kTextureNext(app);
+    const u32 firstBank = (start - kTextureMemoryLow) & 0xffe00000;
+    const u32 lastBank = (size + start - 1 - kTextureMemoryLow) & 0xffe00000;
     if (lastBank != firstBank)
     {
         start = kTextureMemoryLow + lastBank;
         kTextureNext.set(app, start);
     }
-    const reg32 top = (kTextureMemoryHigh + 0xf) & ~reg32(0xf);
-    reg32 record = 0;
+    const u32 top = (kTextureMemoryHigh + 0xf) & ~u32(0xf);
+    u32 record = 0;
     if (int32_t(top - start) >= int32_t(size))
     {
-        record = thrashMalloc(app, cpu, kRecordBytes);
-        if (cpu.terminate)
+        record = thrashMalloc(app, ts, kRecordBytes);
+        if (ts.terminate)
             return {};
     }
     if (record != 0)
@@ -534,16 +534,16 @@ Result allocateTexture(App* app, CPU& cpu, reg32 width, reg32 height, reg32 form
 
 /* THRASH_treset, and a window opening: every texture given up, texture memory
  * free again, every record given back. */
-bool resetTextures(App* app, CPU& cpu)
+bool resetTextures(App* app, ThreadState& ts)
 {
     if (s_renderer)
         s_renderer->resetTextures();
     kTextureNext.set(app, kTextureMemoryLow);
-    while (const reg32 record = kTextures(app))
+    while (const u32 record = kTextures(app))
     {
-        const reg32 before = at(app, record + kRecordBefore);
-        thrashFree(app, cpu, record);
-        if (cpu.terminate)
+        const u32 before = at(app, record + kRecordBefore);
+        thrashFree(app, ts, record);
+        if (ts.terminate)
             return false;
         kTextures.set(app, before);
     }
@@ -554,34 +554,34 @@ bool resetTextures(App* app, CPU& cpu)
  * renderer in their format -- grTexDownloadMipMap's four the port took, the
  * rest nothing -- with the guest context let go meanwhile.  A palette went to
  * a table the port's Glide did not keep. */
-reg32 updateTexture(App* app, CPU& cpu, reg32 record, reg32 texels)
+u32 updateTexture(App* app, ThreadState& ts, u32 record, u32 texels)
 {
     if (texels == 0)
         return record;
     put(app, record + kRecordTexels, texels);
     if (!s_renderer)
         return record;
-    app->unlockContext(cpu);
-    const reg32 format = at(app, record + kRecordFormat);
-    const reg32 start = at(app, record + kRecordStart);
-    const void* data = &app->getMemory<const x86::reg8>(texels);
-    const reg32 largeLod = at(app, record + kRecordLargeLod), smallLod = at(app, record + kRecordSmallLod);
+    app->unlockContext(ts);
+    const u32 format = at(app, record + kRecordFormat);
+    const u32 start = at(app, record + kRecordStart);
+    const void* data = &app->getMemory<const nfs::u8>(texels);
+    const u32 largeLod = at(app, record + kRecordLargeLod), smallLod = at(app, record + kRecordSmallLod);
     if (format == 0xa)  // GR_TEXFMT_RGB_565
-        s_renderer->setTextureData(0, start, data, largeLod, smallLod, win32::TF_RGB_565);
+        s_renderer->setTextureData(0, start, data, largeLod, smallLod, nfs::TF_RGB_565);
     else if (format == 0xb)  // GR_TEXFMT_ARGB_1555
-        s_renderer->setTextureData(0, start, data, largeLod, smallLod, win32::TF_ARGB_1555);
+        s_renderer->setTextureData(0, start, data, largeLod, smallLod, nfs::TF_ARGB_1555);
     else if (format == 0xc)  // GR_TEXFMT_ARGB_4444
-        s_renderer->setTextureData(0, start, data, largeLod, smallLod, win32::TF_ARGB_4444);
+        s_renderer->setTextureData(0, start, data, largeLod, smallLod, nfs::TF_ARGB_4444);
     else if (format == kTexFmtArgb8888)
-        s_renderer->setTextureData(0, start, data, largeLod, smallLod, win32::TF_ARGB_8888);
-    app->lockContext(cpu);
+        s_renderer->setTextureData(0, start, data, largeLod, smallLod, nfs::TF_ARGB_8888);
+    app->lockContext(ts);
     return record;
 }
 
 /* THRASH_settexture(record), and THRASH_setstate 1: the texture drawn with,
  * or none -- the colour and alpha factors following, the texture times the
  * vertex colour or the vertex colour alone. */
-void selectTexture(App* app, reg32 record)
+void selectTexture(App* app, u32 record)
 {
     if (record == 0)
     {
@@ -622,7 +622,7 @@ double fogW(int i)
     return std::ldexp(1.0, 3 + (i >> 2)) / double(8 - (i & 3));
 }
 
-double fogExp(CPU& cpu, double w, float density)
+double fogExp(ThreadState& ts, double w, float density)
 {
     const double x = -(w * double(density));
     const double t = 1.4426950408889634 * x;
@@ -630,13 +630,13 @@ double fogExp(CPU& cpu, double w, float density)
     return fp::scale(1.0 + fp::f2xm1(fraction), t);
 }
 
-void fogTable(CPU& cpu, float density, uint8_t (&table)[64])
+void fogTable(ThreadState& ts, float density, uint8_t (&table)[64])
 {
-    const float scale = float(1.0 / (1.0 - fogExp(cpu, fogW(63), density)));
+    const float scale = float(1.0 / (1.0 - fogExp(ts, fogW(63), density)));
     for (int i = 0; i < 64; ++i)
     {
-        float value = float((1.0 - fogExp(cpu, fogW(i), density)) * double(scale));
-        reg32 bits;
+        float value = float((1.0 - fogExp(ts, fogW(i), density)) * double(scale));
+        u32 bits;
         std::memcpy(&bits, &value, sizeof bits);
         if (int32_t(bits) > 0x3f800000)
             value = 1.0f;
@@ -649,7 +649,7 @@ void fogTable(CPU& cpu, float density, uint8_t (&table)[64])
 
 /* NFS_CULL=0/1/2 overrides the game's culling, for A/B tests on a GPU that
  * takes the other winding as the front; read once. */
-reg32 culling(reg32 mode)
+u32 culling(u32 mode)
 {
     static const int overrideMode = []() {
         const char* value = std::getenv("NFS_CULL");
@@ -659,10 +659,10 @@ reg32 culling(reg32 mode)
         const unsigned long chosen = std::strtoul(value, &end, 0);
         return end != value && *end == '\0' && chosen <= 2 ? int(chosen) : -1;
     }();
-    return overrideMode >= 0 ? reg32(overrideMode) : mode;
+    return overrideMode >= 0 ? u32(overrideMode) : mode;
 }
 
-float asFloat(reg32 bits)
+float asFloat(u32 bits)
 {
     float value;
     std::memcpy(&value, &bits, sizeof value);
@@ -672,14 +672,14 @@ float asFloat(reg32 bits)
 /* The blend: the destination by one less the source's alpha, or whole; a
  * source factor the port's Glide did not take (1, 4, 4, 0 aside) leaves it as
  * it was. */
-void blend(reg32 destination)
+void blend(u32 destination)
 {
     if (!s_renderer)
         return;
     if (destination == 5)  // GR_BLEND_ONE_MINUS_SRC_ALPHA
-        s_renderer->setAlphaBlendDst(win32::AB_1mSrcAlpha);
+        s_renderer->setAlphaBlendDst(nfs::AB_1mSrcAlpha);
     else if (destination == 4)  // GR_BLEND_ONE
-        s_renderer->setAlphaBlendDst(win32::AB_1);
+        s_renderer->setAlphaBlendDst(nfs::AB_1);
 }
 
 }  // namespace
@@ -687,10 +687,10 @@ void blend(reg32 destination)
 /* THRASH_setstate(state, value): one piece of the driver's state, to the
  * renderer or to voodoo2a's variables.  1 for done, 0 for a state or value it
  * does not take. */
-reg32 setState(App* app, CPU& cpu, reg32 state, reg32 value)
+u32 setState(App* app, ThreadState& ts, u32 state, u32 value)
 {
-    win32::ThrashRenderer* const r = s_renderer;
-    reg32 result = 1;
+    nfs::ThrashRenderer* const r = s_renderer;
+    u32 result = 1;
     switch (state)
     {
     case thrash::kStateTexture:
@@ -778,7 +778,7 @@ reg32 setState(App* app, CPU& cpu, reg32 state, reg32 value)
         break;
     case thrash::kStateMipFilter:  // kMipLinear is kMipPoint in two passes
     {
-        reg32 twoPass = 0;
+        u32 twoPass = 0;
         if (value == thrash::kMipLinear)
             twoPass = 1;  // THRASH_setstate writes kMipPoint over the argument
         if (twoPass != kTwoPass(app))
@@ -807,7 +807,7 @@ reg32 setState(App* app, CPU& cpu, reg32 state, reg32 value)
             if (r)
                 r->setFogMode(2);  // GR_FOG_WITH_TABLE
             uint8_t table[64];
-            fogTable(cpu, float(1.0 / double(int32_t(value))), table);
+            fogTable(ts, float(1.0 / double(int32_t(value))), table);
             if (r)
                 r->setFogTable(table);
             result = 0;  // what voodoo2a gives back here
@@ -894,7 +894,7 @@ reg32 setState(App* app, CPU& cpu, reg32 state, reg32 value)
         else if (r)
         {
             r->setFogMode(2);
-            r->setFogTable(&app->getMemory<x86::reg8>(value));
+            r->setFogTable(&app->getMemory<nfs::u8>(value));
         }
         break;
     case thrash::kStateDepthWrite:
@@ -937,24 +937,24 @@ void queryHardware(App* app)
 /* sub_a83ac0: from the card, how many colour and auxiliary buffers each mode
  * can have in the frame buffer's memory, and the descriptor's card type and
  * texture memory. */
-void measureModes(App* app, reg32 info)
+void measureModes(App* app, u32 info)
 {
     int32_t memory = int32_t(at(app, kHardware + 8) << 20);
-    const reg32 type = at(app, kHardware + 4);
-    const reg32 rush = type == 1 ? 1 : 0;
+    const u32 type = at(app, kHardware + 4);
+    const u32 rush = type == 1 ? 1 : 0;
     kRush.set(app, rush);
-    reg32 sli = 0;
+    u32 sli = 0;
     if (rush == 0)
         sli = at(app, kHardware + 0x14);
     if (sli != 0)
         memory += memory;
-    reg32 mode = kModes + thrash::kModeBytes;
+    u32 mode = kModes + thrash::kModeBytes;
     for (int i = 1; i <= 16; ++i, mode += thrash::kModeBytes)
     {
-        const reg32 colourBuffers = mode + thrash::kModeColourBuffers, auxBuffers = mode + thrash::kModeAuxBuffers;
+        const u32 colourBuffers = mode + thrash::kModeColourBuffers, auxBuffers = mode + thrash::kModeAuxBuffers;
         const int32_t pixels = int32_t(at(app, mode + thrash::kModeWidth) * at(app, mode + thrash::kModeHeight));
         const int32_t frame = (int32_t(at(app, mode + thrash::kModeBits)) >> 3) * pixels;
-        put(app, colourBuffers, reg32(memory / frame));
+        put(app, colourBuffers, u32(memory / frame));
         if (at(app, mode + thrash::kModeWidth) == 0x3c0 && sli == 0)
             put(app, colourBuffers, 0);
         if (int32_t(at(app, mode + thrash::kModeWidth)) > 0x320 && kRush(app) != 0)
@@ -974,7 +974,7 @@ void measureModes(App* app, reg32 info)
     put(app, info + thrash::kAboutSubType, type);
     if (type == 0)
     {
-        const reg32 revision = at(app, kHardware + 0xc);
+        const u32 revision = at(app, kHardware + 0xc);
         if ((int32_t(revision) >> 8) == 1)
             put(app, info + thrash::kAboutSubType, 2);
         if ((int32_t(revision) >> 12) == 1)
@@ -985,17 +985,17 @@ void measureModes(App* app, reg32 info)
             put(app, info + thrash::kAboutSubType, 3);
         }
     }
-    const reg32 texture = kTextureMemoryHigh - kTextureMemoryLow - kTextureMemoryLow;
+    const u32 texture = kTextureMemoryHigh - kTextureMemoryLow - kTextureMemoryLow;
     put(app, info + thrash::kAboutVideoMemory, texture);
     if (int32_t(texture) > 0)
-        put(app, info + thrash::kAboutVideoMemory, (texture + 0xf) & ~reg32(0xf));
+        put(app, info + thrash::kAboutVideoMemory, (texture + 0xf) & ~u32(0xf));
     put(app, info + thrash::kAboutTotalMemory, 1);
 }
 
 /* sub_a84180(mode, buffers, auxiliary): the window opened in that mode, and
  * the driver's state set to its defaults.  A window already open is closed
  * first; no buffers at all only closes it, and gives back what ebx held. */
-Result openMode(App* app, CPU& cpu, reg32 ebx, reg32 mode, reg32 buffers, reg32 auxiliary)
+Result openMode(App* app, ThreadState& ts, u32 ebx, u32 mode, u32 buffers, u32 auxiliary)
 {
     if (kFlags(app) & kWindowOpen)
     {
@@ -1004,10 +1004,10 @@ Result openMode(App* app, CPU& cpu, reg32 ebx, reg32 mode, reg32 buffers, reg32 
     }
     if (buffers == 0)
         return int32_t(ebx);
-    reg32 resolution = 0xff;  // GR_RESOLUTION_NONE: the window's own size, which the port's Glide did not know
+    u32 resolution = 0xff;  // GR_RESOLUTION_NONE: the window's own size, which the port's Glide did not know
     if (kRush(app) == 0 || kWindowMode(app) == 0)
         resolution = at(app, kResolutions + mode * 4);
-    const reg32 entry = kModes + mode * thrash::kModeBytes;
+    const u32 entry = kModes + mode * thrash::kModeBytes;
     if (auxiliary != 0 && int32_t(buffers) > int32_t(at(app, entry + thrash::kModeAuxBuffers)))
         auxiliary = 0;
     openPicture(app, kWindow(app), resolution);
@@ -1021,10 +1021,10 @@ Result openMode(App* app, CPU& cpu, reg32 ebx, reg32 mode, reg32 buffers, reg32 
         kWidth.set(app, at(app, entry + thrash::kModeWidth));
         kHeight.set(app, at(app, entry + thrash::kModeHeight));
     }
-    if (!resetTextures(app, cpu))
+    if (!resetTextures(app, ts))
         return {};
     s_renderer->setAlphaTestRef(0x10);
-    static const reg32 kDefaults[][2] = {
+    static const u32 kDefaults[][2] = {
         {thrash::kStateTexture, 0}, {thrash::kStateCull, thrash::kCullCounterClockwise},
         {thrash::kStateTextureFilter, thrash::kFilterLinear}, {thrash::kStateShade, 1},
         {thrash::kStateTransparency, thrash::kTransparencyAlpha}, {thrash::kStateMipFilter, thrash::kMipPoint},
@@ -1034,29 +1034,29 @@ Result openMode(App* app, CPU& cpu, reg32 ebx, reg32 mode, reg32 buffers, reg32 
         {thrash::kStateGamma, 0x3f800000}, {thrash::kStateDepthBias, 0}, {thrash::kStateLodBias, 0},
     };
     for (const auto& pair : kDefaults)
-        setState(app, cpu, pair[0], pair[1]);
-    setState(app, cpu, thrash::kStateDepth, int32_t(auxiliary) >= 1 ? thrash::kDepthW : thrash::kDepthOff);
+        setState(app, ts, pair[0], pair[1]);
+    setState(app, ts, thrash::kStateDepth, int32_t(auxiliary) >= 1 ? thrash::kDepthW : thrash::kDepthOff);
     kFlags.set(app, uint8_t(kFlags(app) | kWindowOpen));
     return 1;
 }
 
 /* The game's hook around the frame buffer's locks, when it has set one.  False
  * when the game stopped in it. */
-bool lockHook(App* app, CPU& cpu, reg32 locking)
+bool lockHook(App* app, ThreadState& ts, u32 locking)
 {
-    const reg32 hook = kLockHook(app);
-    return hook == 0 || guest::pointerCall(app, cpu, hook, {}, {locking}).has_value();
+    const u32 hook = kLockHook(app);
+    return hook == 0 || guest::pointerCall(app, ts, hook, {}, {locking}).has_value();
 }
 
 /* ---- THRASH_is ---- */
 
 uint8_t characterClass(App* app, uint8_t c)
 {
-    return byte(app, kCharacterClasses + reg32(uint8_t(c + 1)));
+    return byte(app, kCharacterClasses + u32(uint8_t(c + 1)));
 }
 
 /* sub_a86b30, strcmp: -1, 0 or 1. */
-int32_t compareText(App* app, reg32 a, reg32 b)
+int32_t compareText(App* app, u32 a, u32 b)
 {
     for (;; ++a, ++b)
     {
@@ -1095,19 +1095,19 @@ bool screenRect(int& x, int& y, int& w, int& h, int& pictureWidth, int& pictureH
     return w > 0 && h > 0 && pictureWidth > 0 && pictureHeight > 0;
 }
 
-void clearPicture(App* app, CPU& cpu)
+void clearPicture(App* app, ThreadState& ts)
 {
     if (!s_screen || !s_renderer)
         return;
-    app->unlockContext(cpu);
+    app->unlockContext(ts);
     s_renderer->setClipWindow(0, 0, s_screen->getWidth(), s_screen->getHeight());
     s_renderer->clear(0);
     if (s_clipWindowSet)
         s_renderer->setClipWindow(s_clipWindow[0], s_clipWindow[1], s_clipWindow[2], s_clipWindow[3]);
-    app->lockContext(cpu);
+    app->lockContext(ts);
 }
 
-void setDynamicResolution(reg32 width, reg32 height)
+void setDynamicResolution(u32 width, u32 height)
 {
     s_dynamicWidth = width;
     s_dynamicHeight = height;
@@ -1125,32 +1125,32 @@ bool fullColourTextures()
 /* ---- voodoo2a's exports, typed (port_thrash.h) ---- */
 
 /* THRASH_drawtri(a, b, c). */
-void drawTri(App* app, CPU& cpu, reg32 a, reg32 b, reg32 c)
+void drawTri(App* app, ThreadState& ts, u32 a, u32 b, u32 c)
 {
     triangle(app, Drawing(app), a, b, c);
 }
 
 /* THRASH_drawquad(a, b, c, d). */
-void drawQuad(App* app, CPU& cpu, reg32 a, reg32 b, reg32 c, reg32 d)
+void drawQuad(App* app, ThreadState& ts, u32 a, u32 b, u32 c, u32 d)
 {
     quad(app, Drawing(app), a, b, c, d);
 }
 
 /* THRASH_drawquadmesh(count, vertices, quads): four vertex indices each. */
-void drawQuadMesh(App* app, CPU& cpu, reg32 count, reg32 vertices, reg32 quads)
+void drawQuadMesh(App* app, ThreadState& ts, u32 count, u32 vertices, u32 quads)
 {
     const Drawing d(app);
-    reg32 entry = quads;
+    u32 entry = quads;
     for (int32_t i = 0; i < int32_t(count); ++i, entry += 0x10)
         quad(app, d, meshVertex(app, vertices, entry), meshVertex(app, vertices, entry + 4),
              meshVertex(app, vertices, entry + 8), meshVertex(app, vertices, entry + 0xc));
 }
 
 /* THRASH_drawtrimesh(count, vertices, triangles): three indices each. */
-void drawTriMesh(App* app, CPU& cpu, reg32 count, reg32 vertices, reg32 triangles)
+void drawTriMesh(App* app, ThreadState& ts, u32 count, u32 vertices, u32 triangles)
 {
     const Drawing d(app);
-    reg32 entry = triangles;
+    u32 entry = triangles;
     for (int32_t i = 0; i < int32_t(count); ++i, entry += 0xc)
         triangle(app, d, meshVertex(app, vertices, entry), meshVertex(app, vertices, entry + 4),
                  meshVertex(app, vertices, entry + 8));
@@ -1158,24 +1158,24 @@ void drawTriMesh(App* app, CPU& cpu, reg32 count, reg32 vertices, reg32 triangle
 
 /* THRASH_drawtrifan(count, vertices): count triangles around the first
  * vertex, the n-th of it, n + 1 and n + 2. */
-void drawTriFan(App* app, CPU& cpu, reg32 count, reg32 vertices)
+void drawTriFan(App* app, ThreadState& ts, u32 count, u32 vertices)
 {
     const Drawing d(app);
     for (int32_t i = 0; i < int32_t(count); ++i)
-        triangle(app, d, vertices, vertices + reg32(i + 1) * thrash::kVertexBytes,
-                 vertices + reg32(i + 2) * thrash::kVertexBytes);
+        triangle(app, d, vertices, vertices + u32(i + 1) * thrash::kVertexBytes,
+                 vertices + u32(i + 2) * thrash::kVertexBytes);
 }
 
 /* THRASH_drawtristrip(count, vertices): count triangles along the strip, the
  * n-th of vertices n, n + 1 and n + 2 -- every other one n, n + 2, n + 1, all
  * of them wound the same way. */
-void drawTriStrip(App* app, CPU& cpu, reg32 count, reg32 vertices)
+void drawTriStrip(App* app, ThreadState& ts, u32 count, u32 vertices)
 {
     const Drawing d(app);
     for (int32_t i = 0; i < int32_t(count); ++i)
     {
-        const reg32 first = vertices + reg32(i) * thrash::kVertexBytes;
-        const reg32 second = first + thrash::kVertexBytes, third = second + thrash::kVertexBytes;
+        const u32 first = vertices + u32(i) * thrash::kVertexBytes;
+        const u32 second = first + thrash::kVertexBytes, third = second + thrash::kVertexBytes;
         if (i & 1)
             triangle(app, d, first, third, second);
         else
@@ -1184,39 +1184,39 @@ void drawTriStrip(App* app, CPU& cpu, reg32 count, reg32 vertices)
 }
 
 /* THRASH_drawline(a, b). */
-void drawLine(App* app, CPU& cpu, reg32 a, reg32 b)
+void drawLine(App* app, ThreadState& ts, u32 a, u32 b)
 {
     line(app, Drawing(app), a, b);
 }
 
 /* THRASH_drawlinemesh(count, vertices, lines): two indices each. */
-void drawLineMesh(App* app, CPU& cpu, reg32 count, reg32 vertices, reg32 lines)
+void drawLineMesh(App* app, ThreadState& ts, u32 count, u32 vertices, u32 lines)
 {
     const Drawing d(app);
-    reg32 entry = lines;
+    u32 entry = lines;
     for (int32_t i = 0; i < int32_t(count); ++i, entry += 8)
         line(app, d, meshVertex(app, vertices, entry), meshVertex(app, vertices, entry + 4));
 }
 
 /* THRASH_drawlinestrip(count, vertices): count lines, the n-th from vertex n
  * to n + 1. */
-void drawLineStrip(App* app, CPU& cpu, reg32 count, reg32 vertices)
+void drawLineStrip(App* app, ThreadState& ts, u32 count, u32 vertices)
 {
     const Drawing d(app);
     for (int32_t i = 0; i < int32_t(count); ++i)
-        line(app, d, vertices + reg32(i) * thrash::kVertexBytes, vertices + reg32(i + 1) * thrash::kVertexBytes);
+        line(app, d, vertices + u32(i) * thrash::kVertexBytes, vertices + u32(i + 1) * thrash::kVertexBytes);
 }
 
 /* THRASH_drawpoint(vertex), _drawpointmesh(count, vertices, points) and
  * _drawpointstrip(count, vertices): Glide's points, of which the port's drew
  * none. */
-void drawPoint(App* app, CPU& cpu, reg32 vertex)
+void drawPoint(App* app, ThreadState& ts, u32 vertex)
 {
     NFS2_USE(app);
     NFS2_USE(vertex);
 }
 
-void drawPointMesh(App* app, CPU& cpu, reg32 count, reg32 vertices, reg32 points)
+void drawPointMesh(App* app, ThreadState& ts, u32 count, u32 vertices, u32 points)
 {
     NFS2_USE(app);
     NFS2_USE(count);
@@ -1224,7 +1224,7 @@ void drawPointMesh(App* app, CPU& cpu, reg32 count, reg32 vertices, reg32 points
     NFS2_USE(points);
 }
 
-void drawPointStrip(App* app, CPU& cpu, reg32 count, reg32 vertices)
+void drawPointStrip(App* app, ThreadState& ts, u32 count, u32 vertices)
 {
     NFS2_USE(app);
     NFS2_USE(count);
@@ -1232,42 +1232,42 @@ void drawPointStrip(App* app, CPU& cpu, reg32 count, reg32 vertices)
 }
 
 /* THRASH_talloc(width, height, format, palette, levels). */
-std::optional<reg32> tAlloc(App* app, CPU& cpu, reg32 width, reg32 height, reg32 format, reg32 palette, reg32 levels)
+std::optional<u32> tAlloc(App* app, ThreadState& ts, u32 width, u32 height, u32 format, u32 palette, u32 levels)
 {
     NFS2_USE(palette);
-    const Result record = allocateTexture(app, cpu, width, height, format, levels);
+    const Result record = allocateTexture(app, ts, width, height, format, levels);
     if (!record)
         return std::nullopt;
-    return reg32(*record);
+    return u32(*record);
 }
 
 /* THRASH_treset: 1. */
-std::optional<reg32> tReset(App* app, CPU& cpu)
+std::optional<u32> tReset(App* app, ThreadState& ts)
 {
-    if (!resetTextures(app, cpu))
+    if (!resetTextures(app, ts))
         return std::nullopt;
     return 1;
 }
 
 /* THRASH_tupdate(record, texels, palette): the record. */
-reg32 tUpdate(App* app, CPU& cpu, reg32 texture, reg32 texels, reg32 palette)
+u32 tUpdate(App* app, ThreadState& ts, u32 texture, u32 texels, u32 palette)
 {
     NFS2_USE(palette);
-    return updateTexture(app, cpu, texture, texels);
+    return updateTexture(app, ts, texture, texels);
 }
 
 /* THRASH_settexture(record): 1. */
-reg32 setTexture(App* app, CPU& cpu, reg32 texture)
+u32 setTexture(App* app, ThreadState& ts, u32 texture)
 {
-    NFS2_USE(cpu);
+    NFS2_USE(ts);
     selectTexture(app, texture);
     return 1;
 }
 
 /* THRASH_window(buffer): which buffer to draw into, counted from 1; 0 is 1. */
-reg32 window(App* app, CPU& cpu, reg32 buffer)
+u32 window(App* app, ThreadState& ts, u32 buffer)
 {
-    NFS2_USE(cpu);
+    NFS2_USE(ts);
     if (buffer == 0)
         buffer = 1;
     kBuffer.set(app, buffer - 1);
@@ -1278,38 +1278,38 @@ reg32 window(App* app, CPU& cpu, reg32 buffer)
 
 /* THRASH_clearwindow: colour and depth cleared to what THRASH_setstate set,
  * the guest context let go meanwhile; the depth back. */
-reg32 clearWindow(App* app, CPU& cpu)
+u32 clearWindow(App* app, ThreadState& ts)
 {
-    const reg32 depth = kClearDepth(app);
+    const u32 depth = kClearDepth(app);
     if (s_renderer)
     {
-        app->unlockContext(cpu);
+        app->unlockContext(ts);
         s_renderer->clear(kClearColour(app));
-        app->lockContext(cpu);
+        app->lockContext(ts);
     }
     return depth;
 }
 
 /* THRASH_flushwindow and THRASH_idle: nothing to do on a Voodoo2. */
-void flushWindow(App* app, CPU& cpu)
+void flushWindow(App* app, ThreadState& ts)
 {
     NFS2_USE(app);
 }
 
-void idle(App* app, CPU& cpu)
+void idle(App* app, ThreadState& ts)
 {
     NFS2_USE(app);
 }
 
 /* THRASH_pageflip: the buffers swapped -- with nothing ever pending -- the
  * guest context let go meanwhile, then the game layer's look at the frame. */
-void pageFlip(App* app, CPU& cpu)
+void pageFlip(App* app, ThreadState& ts)
 {
     if (s_renderer)
     {
-        app->unlockContext(cpu);
+        app->unlockContext(ts);
         s_renderer->swap();
-        app->lockContext(cpu);
+        app->lockContext(ts);
         if (s_swapObserver)
             s_swapObserver(app);
     }
@@ -1319,18 +1319,18 @@ void pageFlip(App* app, CPU& cpu)
  * for the start of a vertical retrace, 3 tells how much of the FIFO is free.
  * The port's Glide was never busy and had no retrace, which voodoo2a waited
  * for four million tries before it gave up, and a FIFO 0xfff short of full. */
-reg32 sync(App* app, CPU& cpu, reg32 what)
+u32 sync(App* app, ThreadState& ts, u32 what)
 {
     NFS2_USE(app);
-    NFS2_USE(cpu);
+    NFS2_USE(ts);
     return what == 1 ? 1 : what == 3 ? 0xf000 : 0;
 }
 
 /* THRASH_clip(minX, minY, maxX, maxY): 1. */
-reg32 clip(App* app, CPU& cpu, reg32 minX, reg32 minY, reg32 maxX, reg32 maxY)
+u32 clip(App* app, ThreadState& ts, u32 minX, u32 minY, u32 maxX, u32 maxY)
 {
     NFS2_USE(app);
-    NFS2_USE(cpu);
+    NFS2_USE(ts);
     s_clipWindow[0] = minX;
     s_clipWindow[1] = minY;
     s_clipWindow[2] = maxX;
@@ -1346,18 +1346,18 @@ reg32 clip(App* app, CPU& cpu, reg32 minX, reg32 minY, reg32 maxX, reg32 maxY)
  * window's size and the buffer -- or 0, the game's lock hook told before and,
  * when there is no lock, after.  (voodoo2a then asked for a read lock as well,
  * which the port's Glide refused.) */
-std::optional<reg32> lockWindow(App* app, CPU& cpu)
+std::optional<u32> lockWindow(App* app, ThreadState& ts)
 {
-    if (!lockHook(app, cpu, 1))
+    if (!lockHook(app, ts, 1))
         return std::nullopt;
-    reg32 record = 0;
+    u32 record = 0;
     if (s_screen)
     {
-        const reg32 buffer = kBuffer(app);
-        const reg32 pixels = s_screen->lock(buffer);
-        const reg32 stride = s_screen->getWidth() * 2;
-        record = thrashMalloc(app, cpu, thrash::kLockBytes);
-        if (cpu.terminate)
+        const u32 buffer = kBuffer(app);
+        const u32 pixels = s_screen->lock(buffer);
+        const u32 stride = s_screen->getWidth() * 2;
+        record = thrashMalloc(app, ts, thrash::kLockBytes);
+        if (ts.terminate)
             return std::nullopt;
         if (record != 0)
         {
@@ -1369,21 +1369,21 @@ std::optional<reg32> lockWindow(App* app, CPU& cpu)
             put(app, record + thrash::kLockBuffer, kBuffer(app));
         }
     }
-    if (record == 0 && !lockHook(app, cpu, 0))
+    if (record == 0 && !lockHook(app, ts, 0))
         return std::nullopt;
     return record;
 }
 
 /* THRASH_unlockwindow(record): the lock let go, the record freed, the hook
  * told: 1. */
-std::optional<reg32> unlockWindow(App* app, CPU& cpu, reg32 lock)
+std::optional<u32> unlockWindow(App* app, ThreadState& ts, u32 lock)
 {
     if (lock != 0)
     {
         if (s_screen)
             s_screen->unlock(at(app, lock + thrash::kLockBuffer));
-        thrashFree(app, cpu, lock);
-        if (cpu.terminate || !lockHook(app, cpu, 0))
+        thrashFree(app, ts, lock);
+        if (ts.terminate || !lockHook(app, ts, 0))
             return std::nullopt;
     }
     return 1;
@@ -1393,41 +1393,41 @@ std::optional<reg32> unlockWindow(App* app, CPU& cpu, reg32 lock)
  * height, pixels): the buffer drawn into read back, or 565 pixels written
  * into it, the game's lock hook told around -- 0, from the port's Glide, which
  * did neither. */
-std::optional<reg32> readRect(App* app, CPU& cpu, reg32 x, reg32 y, reg32 width, reg32 height, reg32 pixels)
+std::optional<u32> readRect(App* app, ThreadState& ts, u32 x, u32 y, u32 width, u32 height, u32 pixels)
 {
     NFS2_USE(x);
     NFS2_USE(y);
     NFS2_USE(width);
     NFS2_USE(height);
     NFS2_USE(pixels);
-    if (!lockHook(app, cpu, 1) || !lockHook(app, cpu, 0))
+    if (!lockHook(app, ts, 1) || !lockHook(app, ts, 0))
         return std::nullopt;
     return 0;
 }
 
-std::optional<reg32> writeRect(App* app, CPU& cpu, reg32 x, reg32 y, reg32 width, reg32 height, reg32 pixels)
+std::optional<u32> writeRect(App* app, ThreadState& ts, u32 x, u32 y, u32 width, u32 height, u32 pixels)
 {
     NFS2_USE(x);
     NFS2_USE(y);
     NFS2_USE(width);
     NFS2_USE(height);
     NFS2_USE(pixels);
-    if (!lockHook(app, cpu, 1) || !lockHook(app, cpu, 0))
+    if (!lockHook(app, ts, 1) || !lockHook(app, ts, 0))
         return std::nullopt;
     return 0;
 }
 
 /* THRASH_about: the driver described, once -- its name, what it can do, its
  * texture formats and its modes -- from a look at the card. */
-reg32 about(App* app, CPU& cpu)
+u32 about(App* app, ThreadState& ts)
 {
-    NFS2_USE(cpu);
+    NFS2_USE(ts);
     if (at(app, kInfo) == 0)
     {
-        std::memset(&app->getMemory<x86::reg8>(kInfo), 0, thrash::kAboutBytes);
+        std::memset(&app->getMemory<nfs::u8>(kInfo), 0, thrash::kAboutBytes);
         put(app, kInfo + thrash::kAboutSignature, thrash::kSignature3dfx);
         put(app, kInfo + thrash::kAboutVersion, 0x68);
-        for (const reg32 field : {thrash::kAboutMinTextureWidth, thrash::kAboutTextureWidthMultiple,
+        for (const u32 field : {thrash::kAboutMinTextureWidth, thrash::kAboutTextureWidthMultiple,
                                   thrash::kAboutMinTextureHeight, thrash::kAboutTextureHeightMultiple,
                                   thrash::kAboutClipAlign})
             put(app, kInfo + field, 1);
@@ -1437,8 +1437,8 @@ reg32 about(App* app, CPU& cpu)
         put(app, kInfo + thrash::kAboutModeCount, 0x10);
         put(app, kInfo + thrash::kAboutModes, kModes);
         put(app, kInfo + thrash::kAboutMaxTextureHeight, kMaxTextureSide);  // port: voodoo2a 0x100
-        app->getMemory<x86::reg8>(kInfo + thrash::kAboutCaps) =
-            x86::reg8((app->getMemory<x86::reg8>(kInfo + thrash::kAboutCaps) | 0xe) & 0xfe);
+        app->getMemory<nfs::u8>(kInfo + thrash::kAboutCaps) =
+            nfs::u8((app->getMemory<nfs::u8>(kInfo + thrash::kAboutCaps) | 0xe) & 0xfe);
         put(app, kInfo + thrash::kAboutUnknown, kUnknownList);
         put(app, kInfo + thrash::kAboutTextureFormatCount, 9);
         put(app, kInfo + thrash::kAboutTextureFormats, kTextureFormats);
@@ -1447,7 +1447,7 @@ reg32 about(App* app, CPU& cpu)
             /* the port's full colour change: THRASH format 6, ARGB 8888, taken,
              * and handed to the renderer as such. */
             put(app, kTextureFormats + 6 * 4, 1);
-            app->getMemory<x86::reg8>(kFormats + 6) = x86::reg8(kTexFmtArgb8888);
+            app->getMemory<nfs::u8>(kFormats + 6) = nfs::u8(kTexFmtArgb8888);
         }
         std::strcpy(&app->getMemory<char>(kInfo + thrash::kAboutName), &app->getMemory<char>(kName));
         put(app, kInfo + thrash::kAboutSubType, 0);
@@ -1464,19 +1464,19 @@ reg32 about(App* app, CPU& cpu)
 }
 
 /* THRASH_selectdisplay(board): 1 for one of the boards, else 0. */
-reg32 selectDisplay(App* app, CPU& cpu, reg32 board)
+u32 selectDisplay(App* app, ThreadState& ts, u32 board)
 {
-    NFS2_USE(cpu);
+    NFS2_USE(ts);
     return int32_t(board) < int32_t(at(app, kHardware)) ? 1 : 0;
 }
 
 /* THRASH_init: Glide up, board 0, the modes measured.  The number of boards,
  * or 0 when it was already up.  (voodoo2a also had THRASH_restore run at its
  * exit, which never comes on the port.) */
-reg32 init(App* app, CPU& cpu)
+u32 init(App* app, ThreadState& ts)
 {
-    NFS2_USE(cpu);
-    reg32 result = 0;
+    NFS2_USE(ts);
+    u32 result = 0;
     if (!(kFlags(app) & kSetUp))
     {
         if (kLog(app) == 0)
@@ -1500,15 +1500,15 @@ reg32 init(App* app, CPU& cpu)
  * below esp as the export finds it, at its return address.  (Its VOODOO2_IS
  * from the environment never is: its C library's start-up, which would have
  * filled the environment, never runs on the port.) */
-reg32 is(App* app, CPU& cpu)
+u32 is(App* app, ThreadState& ts)
 {
     // (voodoo2a's push ebx left ebx at esp - 4, a dead slot: nothing written.)
-    const reg32 version = cpu.esp - 0x54;
+    const u32 version = ts.sp - 0x54;
     if (kLog(app) == 0)
         kLog.set(app, kDefaultLog);
     queryHardware(app);
     // From its first digit, or its end.
-    reg32 number = version;
+    u32 number = version;
     while (byte(app, number) != 0 && !(characterClass(app, byte(app, number)) & 0x20))
         ++number;
     if (compareText(app, number, kVersionLow) < 0)
@@ -1524,34 +1524,34 @@ reg32 is(App* app, CPU& cpu)
  * brought the window forward and, when the game gave it a way, had the
  * window's own thread open the mode while it waited: none of which the port's
  * Win32 did anything with.) */
-std::optional<reg32> setVideoModeEbx(App* app, CPU& cpu, reg32 ebx, reg32 mode, reg32 buffers, reg32 auxiliary)
+std::optional<u32> setVideoModeEbx(App* app, ThreadState& ts, u32 ebx, u32 mode, u32 buffers, u32 auxiliary)
 {
-    if (const reg32 findWindow = kFindWindow(app))
+    if (const u32 findWindow = kFindWindow(app))
     {
-        x86::Args none;
-        const std::optional<reg32> window = guest::pointerCall(app, cpu, findWindow, none);
+        nfs::Args none;
+        const std::optional<u32> window = guest::pointerCall(app, ts, findWindow, none);
         if (!window)
             return std::nullopt;
         kWindow.set(app, *window);
     }
-    const Result opened = openMode(app, cpu, ebx, mode, buffers, auxiliary);
+    const Result opened = openMode(app, ts, ebx, mode, buffers, auxiliary);
     if (!opened)
         return std::nullopt;
-    return reg32(*opened);
+    return u32(*opened);
 }
 
 /* The same for native callers: ebx matters only for no buffers, which only restore asks and takes no value of. */
-std::optional<reg32> setVideoMode(App* app, CPU& cpu, reg32 mode, reg32 buffers, reg32 auxiliary)
+std::optional<u32> setVideoMode(App* app, ThreadState& ts, u32 mode, u32 buffers, u32 auxiliary)
 {
-    return setVideoModeEbx(app, cpu, 0, mode, buffers, auxiliary);
+    return setVideoModeEbx(app, ts, 0, mode, buffers, auxiliary);
 }
 
 /* THRASH_restore: everything let go, the window first: 1. */
-std::optional<reg32> restore(App* app, CPU& cpu)
+std::optional<u32> restore(App* app, ThreadState& ts)
 {
     if (kFlagsWord(app) != 0)
     {
-        if ((kFlags(app) & kWindowOpen) && !setVideoMode(app, cpu, 0, 0, 0))
+        if ((kFlags(app) & kWindowOpen) && !setVideoMode(app, ts, 0, 0, 0))
             return std::nullopt;
         if (kExecute(app) != 0)
             kExecute.set(app, 0);
@@ -1573,255 +1573,255 @@ std::optional<reg32> restore(App* app, CPU& cpu)
  * stopped in it. */
 
 using port::App;
-using port::CPU;
+using port::ThreadState;
 using port::Entry;
-using port::reg32;
+using port::u32;
 namespace driver = port::driver;
 
-x86::reg32 THRASH_drawtri(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 THRASH_drawtri(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    driver::drawTri(app, cpu, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2));
-    return e.back(cpu, args, args.eax, 0xc);
+    const Entry e(ts, args);
+    driver::drawTri(app, ts, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2));
+    return e.back(ts, args, args.eax, 0xc);
 }
 
-x86::reg32 THRASH_drawquad(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 THRASH_drawquad(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    driver::drawQuad(app, cpu, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2), e.arg(app, 3));
-    return e.back(cpu, args, args.eax, 0x10);
+    const Entry e(ts, args);
+    driver::drawQuad(app, ts, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2), e.arg(app, 3));
+    return e.back(ts, args, args.eax, 0x10);
 }
 
-x86::reg32 THRASH_drawquadmesh(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 THRASH_drawquadmesh(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    driver::drawQuadMesh(app, cpu, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2));
-    return e.back(cpu, args, args.eax, 0xc);
+    const Entry e(ts, args);
+    driver::drawQuadMesh(app, ts, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2));
+    return e.back(ts, args, args.eax, 0xc);
 }
 
-x86::reg32 THRASH_drawtrimesh(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 THRASH_drawtrimesh(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    driver::drawTriMesh(app, cpu, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2));
-    return e.back(cpu, args, args.eax, 0xc);
+    const Entry e(ts, args);
+    driver::drawTriMesh(app, ts, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2));
+    return e.back(ts, args, args.eax, 0xc);
 }
 
-x86::reg32 THRASH_drawtrifan(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 THRASH_drawtrifan(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    driver::drawTriFan(app, cpu, e.arg(app, 0), e.arg(app, 1));
-    return e.back(cpu, args, args.eax, 8);
+    const Entry e(ts, args);
+    driver::drawTriFan(app, ts, e.arg(app, 0), e.arg(app, 1));
+    return e.back(ts, args, args.eax, 8);
 }
 
 /* voodoo2a's loop draws six at a time and keeps where the next six start in
  * the argument, which it leaves there. */
-x86::reg32 THRASH_drawtristrip(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 THRASH_drawtristrip(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
+    const Entry e(ts, args);
     const int32_t count = int32_t(e.arg(app, 0));
-    const reg32 vertices = e.arg(app, 1);
-    const reg32 eax = args.eax;
-    driver::drawTriStrip(app, cpu, reg32(count), vertices);
+    const u32 vertices = e.arg(app, 1);
+    const u32 eax = args.eax;
+    driver::drawTriStrip(app, ts, u32(count), vertices);
     if (count >= 6)
-        guest::put(app, e.esp + 8, vertices + reg32(count / 6) * 6 * thrash::kVertexBytes);
-    return e.back(cpu, args, eax, 8);
+        guest::put(app, e.esp + 8, vertices + u32(count / 6) * 6 * thrash::kVertexBytes);
+    return e.back(ts, args, eax, 8);
 }
 
-x86::reg32 THRASH_drawline(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 THRASH_drawline(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    driver::drawLine(app, cpu, e.arg(app, 0), e.arg(app, 1));
-    return e.back(cpu, args, args.eax, 8);
+    const Entry e(ts, args);
+    driver::drawLine(app, ts, e.arg(app, 0), e.arg(app, 1));
+    return e.back(ts, args, args.eax, 8);
 }
 
-x86::reg32 THRASH_drawlinemesh(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 THRASH_drawlinemesh(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    driver::drawLineMesh(app, cpu, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2));
-    return e.back(cpu, args, args.eax, 0xc);
+    const Entry e(ts, args);
+    driver::drawLineMesh(app, ts, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2));
+    return e.back(ts, args, args.eax, 0xc);
 }
 
-x86::reg32 THRASH_drawlinestrip(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 THRASH_drawlinestrip(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    driver::drawLineStrip(app, cpu, e.arg(app, 0), e.arg(app, 1));
-    return e.back(cpu, args, args.eax, 8);
+    const Entry e(ts, args);
+    driver::drawLineStrip(app, ts, e.arg(app, 0), e.arg(app, 1));
+    return e.back(ts, args, args.eax, 8);
 }
 
-x86::reg32 THRASH_drawpoint(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 THRASH_drawpoint(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    driver::drawPoint(app, cpu, e.arg(app, 0));
-    return e.back(cpu, args, args.eax, 4);
+    const Entry e(ts, args);
+    driver::drawPoint(app, ts, e.arg(app, 0));
+    return e.back(ts, args, args.eax, 4);
 }
 
-x86::reg32 THRASH_drawpointmesh(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 THRASH_drawpointmesh(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    driver::drawPointMesh(app, cpu, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2));
-    return e.back(cpu, args, args.eax, 0xc);
+    const Entry e(ts, args);
+    driver::drawPointMesh(app, ts, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2));
+    return e.back(ts, args, args.eax, 0xc);
 }
 
-x86::reg32 THRASH_drawpointstrip(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 THRASH_drawpointstrip(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    driver::drawPointStrip(app, cpu, e.arg(app, 0), e.arg(app, 1));
-    return e.back(cpu, args, args.eax, 8);
+    const Entry e(ts, args);
+    driver::drawPointStrip(app, ts, e.arg(app, 0), e.arg(app, 1));
+    return e.back(ts, args, args.eax, 8);
 }
 
 /* thrash::kMipLinear is kMipPoint in two passes: voodoo2a writes kMipPoint
  * over the argument. */
-x86::reg32 THRASH_setstate(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 THRASH_setstate(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    const reg32 state = e.arg(app, 0), value = e.arg(app, 1);
-    const reg32 result = driver::setState(app, cpu, state, value);
+    const Entry e(ts, args);
+    const u32 state = e.arg(app, 0), value = e.arg(app, 1);
+    const u32 result = driver::setState(app, ts, state, value);
     if (state == thrash::kStateMipFilter && value == thrash::kMipLinear)
         guest::put(app, e.esp + 8, thrash::kMipPoint);
-    return e.back(cpu, args, result, 8);
+    return e.back(ts, args, result, 8);
 }
 
-x86::reg32 THRASH_talloc(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 THRASH_talloc(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, driver::tAlloc(app, cpu, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2), e.arg(app, 3), e.arg(app, 4)),
+    const Entry e(ts, args);
+    return e.finish(ts, args, driver::tAlloc(app, ts, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2), e.arg(app, 3), e.arg(app, 4)),
              0x14);
 }
 
-x86::reg32 THRASH_treset(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 THRASH_treset(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, driver::tReset(app, cpu));
+    const Entry e(ts, args);
+    return e.finish(ts, args, driver::tReset(app, ts));
 }
 
-x86::reg32 THRASH_tupdate(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 THRASH_tupdate(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.back(cpu, args, driver::tUpdate(app, cpu, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2)), 0xc);
+    const Entry e(ts, args);
+    return e.back(ts, args, driver::tUpdate(app, ts, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2)), 0xc);
 }
 
-x86::reg32 THRASH_settexture(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 THRASH_settexture(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.back(cpu, args, driver::setTexture(app, cpu, e.arg(app, 0)), 4);
+    const Entry e(ts, args);
+    return e.back(ts, args, driver::setTexture(app, ts, e.arg(app, 0)), 4);
 }
 
-x86::reg32 THRASH_window(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 THRASH_window(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.back(cpu, args, driver::window(app, cpu, e.arg(app, 0)), 4);
+    const Entry e(ts, args);
+    return e.back(ts, args, driver::window(app, ts, e.arg(app, 0)), 4);
 }
 
-x86::reg32 THRASH_clearwindow(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 THRASH_clearwindow(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.back(cpu, args, driver::clearWindow(app, cpu));
+    const Entry e(ts, args);
+    return e.back(ts, args, driver::clearWindow(app, ts));
 }
 
-x86::reg32 THRASH_flushwindow(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 THRASH_flushwindow(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    driver::flushWindow(app, cpu);
-    return e.back(cpu, args, args.eax);
+    const Entry e(ts, args);
+    driver::flushWindow(app, ts);
+    return e.back(ts, args, args.eax);
 }
 
-x86::reg32 THRASH_idle(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 THRASH_idle(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    driver::idle(app, cpu);
-    return e.back(cpu, args, args.eax);
+    const Entry e(ts, args);
+    driver::idle(app, ts);
+    return e.back(ts, args, args.eax);
 }
 
-x86::reg32 THRASH_pageflip(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 THRASH_pageflip(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    const reg32 eax = args.eax;
-    driver::pageFlip(app, cpu);
-    return e.back(cpu, args, eax);
+    const Entry e(ts, args);
+    const u32 eax = args.eax;
+    driver::pageFlip(app, ts);
+    return e.back(ts, args, eax);
 }
 
-x86::reg32 THRASH_sync(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 THRASH_sync(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.back(cpu, args, driver::sync(app, cpu, e.arg(app, 0)), 4);
+    const Entry e(ts, args);
+    return e.back(ts, args, driver::sync(app, ts, e.arg(app, 0)), 4);
 }
 
-x86::reg32 THRASH_clip(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 THRASH_clip(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.back(cpu, args, driver::clip(app, cpu, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2), e.arg(app, 3)), 0x10);
+    const Entry e(ts, args);
+    return e.back(ts, args, driver::clip(app, ts, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2), e.arg(app, 3)), 0x10);
 }
 
-x86::reg32 THRASH_lockwindow(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 THRASH_lockwindow(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, driver::lockWindow(app, cpu));
+    const Entry e(ts, args);
+    return e.finish(ts, args, driver::lockWindow(app, ts));
 }
 
-x86::reg32 THRASH_unlockwindow(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 THRASH_unlockwindow(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, driver::unlockWindow(app, cpu, e.arg(app, 0)), 4);
+    const Entry e(ts, args);
+    return e.finish(ts, args, driver::unlockWindow(app, ts, e.arg(app, 0)), 4);
 }
 
-x86::reg32 THRASH_readrect(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 THRASH_readrect(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, driver::readRect(app, cpu, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2), e.arg(app, 3), e.arg(app, 4)),
+    const Entry e(ts, args);
+    return e.finish(ts, args, driver::readRect(app, ts, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2), e.arg(app, 3), e.arg(app, 4)),
              0x14);
 }
 
-x86::reg32 THRASH_writerect(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 THRASH_writerect(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args,
-                    driver::writeRect(app, cpu, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2), e.arg(app, 3), e.arg(app, 4)),
+    const Entry e(ts, args);
+    return e.finish(ts, args,
+                    driver::writeRect(app, ts, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2), e.arg(app, 3), e.arg(app, 4)),
                     0x14);
 }
 
-x86::reg32 THRASH_about(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 THRASH_about(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.back(cpu, args, driver::about(app, cpu));
+    const Entry e(ts, args);
+    return e.back(ts, args, driver::about(app, ts));
 }
 
-x86::reg32 THRASH_selectdisplay(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 THRASH_selectdisplay(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.back(cpu, args, driver::selectDisplay(app, cpu, e.arg(app, 0)), 4);
+    const Entry e(ts, args);
+    return e.back(ts, args, driver::selectDisplay(app, ts, e.arg(app, 0)), 4);
 }
 
-x86::reg32 THRASH_init(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 THRASH_init(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.back(cpu, args, driver::init(app, cpu));
+    const Entry e(ts, args);
+    return e.back(ts, args, driver::init(app, ts));
 }
 
-x86::reg32 THRASH_is(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 THRASH_is(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.back(cpu, args, driver::is(app, cpu));
+    const Entry e(ts, args);
+    return e.back(ts, args, driver::is(app, ts));
 }
 
-x86::reg32 THRASH_setvideomode(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 THRASH_setvideomode(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, driver::setVideoModeEbx(app, cpu, args.ebx, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2)), 0xc);
+    const Entry e(ts, args);
+    return e.finish(ts, args, driver::setVideoModeEbx(app, ts, args.ebx, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2)), 0xc);
 }
 
-x86::reg32 THRASH_restore(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 THRASH_restore(App* app, ThreadState& ts, nfs::Args& args)
 {
-    const Entry e(cpu, args);
-    return e.finish(cpu, args, driver::restore(app, cpu));
+    const Entry e(ts, args);
+    return e.finish(ts, args, driver::restore(app, ts));
 }
 
 /* sub_a84360, what voodoo2a's THRASH_setvideomode handed the game to run on
  * its window's thread, message 0x465.  This driver hands it nobody, so it has no mode to open: 1. */
-x86::reg32 THRASH_modemessage(App* app, CPU& cpu, x86::Args& args)
+nfs::u32 THRASH_modemessage(App* app, ThreadState& ts, nfs::Args& args)
 {
     NFS2_USE(app);
-    const Entry e(cpu, args);
-    return e.back(cpu, args, 1, 0x18);
+    const Entry e(ts, args);
+    return e.back(ts, args, 1, 0x18);
 }
 
 }  // namespace nfs3hp
