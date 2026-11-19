@@ -82,17 +82,6 @@ static bool requestMovieSkip()
     return true;
 }
 
-/* NFS_CAR_DETAIL_FULL, read once: unset or anything but "0" means on.  The
- * game's code patched by the port's car detail change asks it too. */
-bool fullCarDetail()
-{
-    static const bool full = []() {
-        const char* value = SDL_getenv("NFS_CAR_DETAIL_FULL");
-        return !value || SDL_strcmp(value, "0") != 0;
-    }();
-    return full;
-}
-
 /* The TCP/IP port a race is hosted and joined on (the port's network port change):
  * NFS_NET_PORT to start with, 9803 as the Modern Patch has it unless the player
  * chose 1030, the original's, and the connection screen moves it from there
@@ -139,75 +128,10 @@ void raceRunning(bool running)
     }
 }
 
-/* NFS_PERF_TRACE=1 (debug mode, Traces: perf_trace): the race summary's
- * Performance page shows "---" though the car measured its 0-100 and the rest
- * (2026-10-31: the car keeps them through the whole of takeDownRace; the
- * results' copy, sub_455410, is what is left to see).  These [PERF] and
- * [PERFTIME] lines follow them from the car to the results. */
-bool perfTraceOn()
+/* The race taken down: the replay trace closed. */
+static void raceDownStep(nfs::App* app)
 {
-    static const bool on = []() {
-        const char* value = SDL_getenv("NFS_PERF_TRACE");
-        return value && *value && *value != '0';
-    }();
-    return on;
-}
-
-void logPerformance(nfs::App* app, const char* where);
-
-/* A step of takeDownRace: the timings said, and at its first the trace closed. */
-static void raceDownStep(nfs::App* app, const char* where)
-{
-    logPerformance(app, where);
-    if (SDL_strcmp(where, "race taken down") == 0)
-        endReplayTrace(app);
-}
-
-/* Player one's timings in the car and in the results' first record (0x6647b0,
- * the race's copies of the players' cars, sub_455210), said with `where`. */
-void logPerformance(nfs::App* app, const char* where)
-{
-    if (!perfTraceOn())
-        return;
-    const nfs::u32 player = gameSettings(app).localPlayer;
-    const nfs::u32 car = player < 16 ? nfs::u32(app->getMemory<nfs::u32>(0x5efa48 + player * 4)) : 0u;
-    if (!car)
-        return;
-    SDL_Log("[PERFTIME] %s: car %08x 0-100=%u 0-160=%u, results %u records, first's 0-100=%u, replay %u, "
-            "ended %u",
-            where, unsigned(car), unsigned(app->getMemory<nfs::u32>(car + 0x26c)),
-            unsigned(app->getMemory<nfs::u32>(car + 0x270)), unsigned(app->getMemory<nfs::u32>(0x677d30)),
-            unsigned(app->getMemory<nfs::u32>(0x6647b0 + 0x26c)), unsigned(gameSettings(app).replayMode),
-            unsigned(app->getMemory<nfs::u32>(0x7d36b4)));
-}
-
-/* The results' records as the menus have them (sub_455410 copies the players'
- * cars there after the race, 0x9ac bytes each from 0x6647b0, their number at
- * 0x677d30; the cops' from 0x66e270, at 0x677d34): each record's player
- * (+0x1f0), flags (+0x200) and 0-100 km/h (+0x26c), written when they change. */
-void logResults(nfs::App* app)
-{
-    if (!perfTraceOn())
-        return;
-    static std::string s_last;
-    std::string now = "players";
-    const nfs::u32 count = app->getMemory<nfs::u32>(0x677d30);
-    for (nfs::u32 i = 0; i < count && i < 16; ++i)
-    {
-        const nfs::u32 r = 0x6647b0 + i * 0x9ac;
-        char one[64];
-        SDL_snprintf(one, sizeof one, " #%u:p%u f%02x 0-100=%u", unsigned(i), unsigned(app->getMemory<nfs::u32>(r + 0x1f0)),
-                     unsigned(app->getMemory<nfs::u8>(r + 0x200)), unsigned(app->getMemory<nfs::u32>(r + 0x26c)));
-        now += one;
-    }
-    char tail[64];
-    SDL_snprintf(tail, sizeof tail, "; cops %u; player %u", unsigned(app->getMemory<nfs::u32>(0x677d34)),
-                 unsigned(gameSettings(app).localPlayer));
-    now += tail;
-    if (now == s_last)
-        return;
-    s_last = now;
-    SDL_Log("[PERFTIME] results: %s", now.c_str());
+    endReplayTrace(app);
 }
 
 /* The loading screen at 4:3 in the middle of a wide screen, as the Modern Patch
@@ -264,7 +188,7 @@ bool takingText()
  * with the game's 32-bit textures taken, in full colour throughout. */
 nfs::u32 shownDepth(nfs::u32 depth)
 {
-    return depth == 16 && nfs3hp::port::driver::fullColourTextures() ? 32 : depth;
+    return depth == 16 ? 32 : depth;
 }
 
 /* View Distance at Full: the player's choice in the Graphics menu, [0x6fbc28],
@@ -307,17 +231,6 @@ nfs::u32 fullFarDistance(nfs::App* app, nfs::u32 distance)
     return viewDistanceFull(app) ? kFullFarDistance : distance;
 }
 
-/* NFS_MIRROR_FULL, read once: unset or anything but "0" means the rear-view
- * mirror draws as the main view does (the port's mirror detail change). */
-static bool fullMirror()
-{
-    static const bool full = []() {
-        const char* value = SDL_getenv("NFS_MIRROR_FULL");
-        return !value || SDL_strcmp(value, "0") != 0;
-    }();
-    return full;
-}
-
 /* The rear-view mirror at the main view's distances.  A single-screen race has
  * two views (sub_41d960): the main one from sub_41df10's first template, the
  * mirror from its fourth -- polygons culled beyond 150, the far distance 100,
@@ -329,7 +242,7 @@ static bool fullMirror()
  * own record at +0x1c stays).  Split screen has no mirror and is left alone. */
 void mirrorFollowsMain(nfs::App* app)
 {
-    if (!fullMirror() || gameSettings(app).playMode == 1 || app->getMemory<nfs::u32>(0x5dd0dc) != 2)
+    if (gameSettings(app).playMode == 1 || app->getMemory<nfs::u32>(0x5dd0dc) != 2)
         return;
     const nfs::u32 mainView = 0x5dd0e0;
     const nfs::u32 mirror = mainView + 0x54;
@@ -338,19 +251,11 @@ void mirrorFollowsMain(nfs::App* app)
 }
 
 /* A view pass's kind ([0x7a3d14], 1 for the mirror) where the game asks it to
- * leave something out of the mirror: with the mirror drawn in full, the main
- * view's 0 (the port's mirror detail change). */
+ * leave something out of the mirror: the main view's 0, the mirror drawn in
+ * full (the port's mirror detail change). */
 nfs::u32 mirrorAsMain(nfs::u32 kind)
 {
-    return kind == 1 && fullMirror() ? 0 : kind;
-}
-
-/* The mirror's factor on the car level-of-detail distances and the cars' cull
- * distance (sub_4bb5d0, [0x540138] = 0.6): 1 with the mirror drawn in full, so
- * the cars in it are the ones the main view would draw at that distance. */
-double mirrorCarScale(double scale)
-{
-    return fullMirror() ? 1.0 : scale;
+    return kind == 1 ? 0 : kind;
 }
 
 /* Wheel spin, per car.  The game turns a car's wheels by the frames elapsed
@@ -1463,61 +1368,6 @@ void viewTick(nfs::App* app)
             unsigned(peak >> 10), unsigned(app->getMemory<nfs::u32>(0x7a3d04) >> 10));
 }
 
-bool s_traceCars = false;
-
-/* NFS_CAR_TRACE: once a second of a race, every car the game keeps, appended to
- * cars.bin in the app's external files, to find the fields that say where each
- * car is and what its driver is doing.  sub_42c700 clears both arrays as a race
- * is set up: 16 cars of 0x9ac bytes at 0x5e1120, and 16 records of 0x4ac bytes
- * at 0x5eabe0 beside them.  Each record: "SCAR", the race clock, the number of
- * cars in the race [0x6fd510], 0, then the two arrays. */
-void traceCars(nfs::App* app, nfs::u32 clock)
-{
-    static SDL_IOStream* s_file = nullptr;
-    static bool s_failed = false;
-    if (!s_file)
-    {
-#ifdef __ANDROID__
-        const char* root = SDL_GetAndroidExternalStoragePath();
-#else
-        const char* root = ".";
-#endif
-        if (s_failed || !root)
-            return;
-        const std::string path = std::string(root) + "/cars.bin";
-        s_file = SDL_IOFromFile(path.c_str(), "wb");
-        if (!s_file)
-        {
-            s_failed = true;
-            SDL_Log("[CARS] cannot write %s", path.c_str());
-            return;
-        }
-        SDL_Log("[CARS] writing %s", path.c_str());
-    }
-    const nfs::u32 header[4] = { 0x52414353, clock, gameSettings(app).entryCount, 0 };
-    SDL_WriteIO(s_file, header, sizeof header);
-    SDL_WriteIO(s_file, &app->getMemory<nfs::u8>(0x5e1120), 0x9ac0);
-    SDL_WriteIO(s_file, &app->getMemory<nfs::u8>(0x5eabe0), 0x4ac0);
-    static nfs::u32 s_flushed = 0;
-    if (clock / 64 != s_flushed)
-    {
-        s_flushed = clock / 64;
-        SDL_FlushIO(s_file);
-    }
-}
-
-/* NFS_CAR_TRACE, closer: every frame from 26 to 38 s of the race clock (64
- * ticks a second), where on Aquatica the opponents pile up at the tunnel. */
-void traceCarsCloser(nfs::App* app)
-{
-    const nfs::u32 clock = app->getMemory<nfs::u32>(0x7d3684);
-    static nfs::u32 s_last = 0;
-    if (clock < 26 * 64 || clock > 38 * 64 || clock == s_last)
-        return;
-    s_last = clock;
-    traceCars(app, clock);
-}
-
 struct TickTrace
 {
     nfs::u32 clock = 0;
@@ -1583,8 +1433,6 @@ void traceTicks(nfs::App* app)
     const Uint64 now = SDL_GetTicks();
     const nfs::u32 clock = app->getMemory<nfs::u32>(0x7d3684);
     lookAtGpu();
-    if (s_traceCars)
-        traceCarsCloser(app);
     if (clock >= s_ticks.frameClock)
         ++s_ticks.ticksAFrame[SDL_min(clock - s_ticks.frameClock, nfs::u32(4))];
     s_ticks.frameClock = clock;
@@ -1615,8 +1463,7 @@ void traceTicks(nfs::App* app)
     /* The GPU's side of the same second: its work is the busy share of its
      * clock, so M cycles a frame compares seconds the governor ran at
      * different clocks; the cap is the highest clock it may take just now.
-     * depth16 counts the frames drawn with the Voodoo's 16-bit depth steps
-     * (NFS_DEPTH16=ab takes turns). */
+     * depth16 counts the frames drawn with the Voodoo's 16-bit depth steps. */
     if (s_ticks.gpuLooks && frames)
     {
         const int cap = readKernelNumber("/sys/kernel/gpu/gpu_max_clock");
@@ -1646,23 +1493,6 @@ void traceTicks(nfs::App* app)
                 threadData ? unsigned(app->getMemory<nfs::u32>(threadData + 0xc)) : 0u);
     s_unordered = unordered;
     s_indefinite = indefinite;
-    if (ticks && s_traceCars)
-    {
-        traceCars(app, clock);
-        /* The opponents' speed table (sub_40e000): speedsF/R.bin read whole to
-         * [0x552558], its second half at [0x55255c]; [0x56f22c] = 1 when it
-         * could not be read.  FNV-1a of the first 2152 bytes, the file's size
-         * on Aquatica, to compare with the file. */
-        const nfs::u32 table = app->getMemory<nfs::u32>(0x552558);
-        std::uint32_t hash = 2166136261u;
-        if (table)
-            for (nfs::u32 i = 0; i < 2152; ++i)
-                hash = (hash ^ app->getMemory<nfs::u8>(table + i)) * 16777619u;
-        SDL_Log("[AIDATA] speeds %08x, half %08x, missing %u, nodes %d, fnv %08x",
-                unsigned(table), unsigned(app->getMemory<nfs::u32>(0x55255c)),
-                unsigned(app->getMemory<nfs::u32>(0x56f22c)),
-                int(nfs::s32(app->getMemory<nfs::u32>(0x5dd940))), unsigned(hash));
-    }
     SDL_memset(s_ticks.ticksAFrame, 0, sizeof s_ticks.ticksAFrame);
     s_ticks.gpuLoad = s_ticks.gpuClock = s_ticks.gpuBusy = 0;
     s_ticks.gpuLooks = 0;
@@ -1817,6 +1647,10 @@ void pointerTick(nfs::App* app)
     if (!s_touchMutex)
         return;
     const bool driving = playerDriving(app);
+    /* On the race's loading screen a tap is a click and nothing more: it hurries the loading bar
+     * (graphics::loadingProgress), and is not handed to the game, whose queue would keep it for
+     * the race to find. */
+    const bool loading = nfs3hp::loadingScreenUp();
     if (driving && s_touchHeld)
     {
         nfs::Mouse::pressPointer(0, false);
@@ -1890,6 +1724,12 @@ void pointerTick(nfs::App* app)
             continue;
         }
         const bool touch = input.source == kSourceTouch;
+        if (touch && loading)
+        {
+            if (input.action == kTouchDown)
+                nfs::Mouse::notePress();
+            continue;
+        }
         if (touch && driving)
             continue;
         nfs::s32 toX = clampAxis(
@@ -2309,97 +2149,6 @@ void padKeysTick(nfs::App* app)
     nfs::Gamepad::muteGameKeys(muted);
 }
 
-/* Diagnostics for the bots (2026-09-29): what decides how hard sub_4064f0 lets a
- * bot accelerate.  Past a flag, [0x6fd50c], its force is doubled for a bot 3 to
- * 8 track nodes behind the player or 15 to 30 ahead, and tripled further off
- * either way -- a catch-up, if that is what the flag is.  Every five seconds of a
- * race the flags and, for each bot, how far it is from the player in nodes, the
- * factor that gives, its place and speed. */
-void botForceTick(nfs::App* app)
-{
-    static Uint64 s_last = 0;
-    if (!playerDriving(app))
-        return;
-    const Uint64 now = SDL_GetTicks();
-    if (now - s_last < 5000)
-        return;
-    s_last = now;
-    const nfs::u32 player = gameSettings(app).localPlayer;
-    const nfs::u32 playerCar = player < 16 ? nfs::u32(app->getMemory<nfs::u32>(0x5efa48 + player * 4)) : 0u;
-    const nfs::s32 playerNode = playerCar ? nfs::s32(app->getMemory<nfs::u32>(playerCar + 0x1c)) : 0;
-    std::string bots;
-    const nfs::u32 cars = gameSettings(app).entryCount;
-    for (nfs::u32 i = 0; i < cars && i < 16; ++i)
-    {
-        const nfs::u32 car = 0x5e1120 + i * 0x9ac;
-        if (car == playerCar)
-            continue;
-        const nfs::s32 d = nfs::s32(app->getMemory<nfs::u32>(car + 0x1c)) - playerNode;
-        const int factor = (d > -3 && d < 15) ? 1 : (d > -8 && d < 30) ? 2 : 3;
-        char one[96];
-        SDL_snprintf(one, sizeof one, " #%u:d%d x%d p%u v%.0f/%.0f", unsigned(app->getMemory<nfs::u32>(car + 0x1f0)),
-                     int(d), factor, unsigned(app->getMemory<nfs::u32>(car + 0x1fc)),
-                     double(app->getMemory<float>(car + 0x7c4)), double(app->getMemory<float>(car + 0x7b0)));
-        bots += one;
-    }
-    SDL_Log("[BOTFORCE] flag50c=%u 4cc=%u 4f0=%u player=%u node=%d 7a22da=%u 518=%u 508=%u 55eb2e=%02x:%s",
-            unsigned(gameSettings(app).networkGame), unsigned(gameSettings(app).weather),
-            unsigned(gameSettings(app).seriesRace), unsigned(player), int(playerNode),
-            unsigned(app->getMemory<nfs::u16>(0x7a22da)), unsigned(gameSettings(app).humanCount),
-            unsigned(gameSettings(app).networkLobby), unsigned(app->getMemory<nfs::u8>(0x55eb2e)),
-            bots.c_str());
-}
-
-/* Diagnostics for the race summary's Performance page (2026-10-31): player
- * one's timings as sub_4cdf10 keeps them in the car -- the start's node and
- * clock (+0x260, +0x264), 0-60 mph, 0-100 km/h, 0-100 mph, 0-160 km/h
- * (+0x268..+0x274), the quarter mile and 400 m (+0x278, +0x27c), the mile
- * and 1000 m (+0x280, +0x284) -- and what restarts them: in neutral
- * (+0x50b 1) slower than 0.5 along its axis (+0x4f4).  Written whenever one
- * of them changes, the race's clock [0x7d3684] beside it. */
-void perfTick(nfs::App* app)
-{
-    if (!nfs3hp::perfTraceOn())
-        return;
-    static nfs::u32 s_last[12] = {};
-    static bool s_had = false;
-    static bool s_raced = false;
-    if (!nfs3hp::raceIsRunning())
-    {
-        // Once after a race, on the results' first frame.
-        if (s_raced)
-            nfs3hp::logPerformance(app, "menus after the race");
-        s_raced = false;
-        nfs3hp::logResults(app);
-        s_had = false;
-        return;
-    }
-    s_raced = true;
-    const nfs::u32 player = gameSettings(app).localPlayer;
-    const nfs::u32 car = player < 16 ? nfs::u32(app->getMemory<nfs::u32>(0x5efa48 + player * 4)) : 0u;
-    if (!car)
-        return;
-    nfs::u32 now[12];
-    for (int i = 0; i < 10; ++i)
-        now[i] = app->getMemory<nfs::u32>(car + 0x260 + 4 * i);
-    // The start's clock moves every frame of a restart: kept out of the comparison.
-    const nfs::u32 startClock = now[1];
-    now[1] = 0;
-    const float speed = app->getMemory<float>(car + 0x4f4);
-    const nfs::u32 gear = app->getMemory<nfs::u8>(car + 0x50b);
-    now[10] = gear == 1 && speed > -0.5f && speed < 0.5f;
-    now[11] = app->getMemory<nfs::u8>(car + 0x200);
-    if (s_had && SDL_memcmp(now, s_last, sizeof now) == 0)
-        return;
-    s_had = true;
-    SDL_memcpy(s_last, now, sizeof now);
-    SDL_Log("[PERF] clock=%u gear=%u v=%.1f flags=%02x restart=%u start=%d/%u 0-60=%u 0-100=%u 0-100mph=%u "
-            "0-160=%u quarter=%u 400m=%u mile=%u 1000m=%u",
-            unsigned(app->getMemory<nfs::u32>(0x7d3684)), unsigned(gear), double(speed), unsigned(now[11]),
-            unsigned(now[10]), int(now[0]), unsigned(startClock), unsigned(now[2]), unsigned(now[3]), unsigned(now[4]),
-            unsigned(now[5]), unsigned(now[6]), unsigned(now[7]), unsigned(now[8]), unsigned(now[9]));
-}
-
 /* Every buffer swap: the finger and the mouse on the picture, which layout the
  * controls should be showing and which of the race's buttons, whether the pads'
  * keys go out, the phone's cornering and how the touch buttons steer. */
@@ -2417,8 +2166,6 @@ void onSwap(nfs::App* app)
     phoneTick(app);
     steeringTick(app);
     viewTick(app);
-    botForceTick(app);
-    perfTick(app);
     if (s_traceTicks)
         traceTicks(app);
     if (s_traceInput)
@@ -2634,13 +2381,11 @@ int main(int argc, char* argv[])
          * soon as they are further away than that.
          *
          * Holding the detailed model out to the cull distance makes every car
-         * match the player's.  It costs emulated CPU rather than GPU -- THRASH
+         * match the player's.  It costs CPU rather than GPU -- THRASH
          * takes screen-space vertices, so the game transforms all that geometry
-         * itself -- so NFS_CAR_DETAIL_FULL=0 restores the original distances,
-         * budget and texture sizes without a rebuild.  Only the High row is
-         * touched: Medium and Low stay as they were, and the cull distance
-         * itself is left alone so the draw distance does not change. */
-        if (nfs3hp::fullCarDetail())
+         * itself.  Only the High row is touched: Medium and Low stay as they
+         * were, and the cull distance itself is left alone so the draw
+         * distance does not change. */
         {
             /* Twice the cull distance rather than the distance itself: split
              * screen scales the three switch distances by 0.75, and the rear-view
@@ -2672,8 +2417,6 @@ int main(int argc, char* argv[])
         s_tracePointer = pointerTrace && *pointerTrace && *pointerTrace != '0';
         const char* tickTrace = SDL_getenv("NFS_TICK_TRACE");
         s_traceTicks = tickTrace && *tickTrace && *tickTrace != '0';
-        const char* carTrace = SDL_getenv("NFS_CAR_TRACE");
-        s_traceCars = carTrace && *carTrace && *carTrace != '0';
         const char* inputTrace = SDL_getenv("NFS_INPUT_TRACE");
         s_traceInput = inputTrace && *inputTrace && *inputTrace != '0';
         s_touchMutex = SDL_CreateMutex();
@@ -2698,9 +2441,7 @@ int main(int argc, char* argv[])
          * colour buffers, and within the driver's memory limit, which at 8 MB
          * leaves 1920x1080 about fifty kilobytes to spare.  The driver's data is
          * in place from construction on -- LoadLibrary does not copy it again --
-         * so this sticks.  NFS_WIDESCREEN=0 leaves the three entries alone. */
-        const char* widescreen = SDL_getenv("NFS_WIDESCREEN");
-        if (!widescreen || SDL_strcmp(widescreen, "0") != 0)
+         * so this sticks. */
         {
             static const struct { nfs::u32 entry, width, height, resolution; } kWide[] = {
                 { 12, 1280, 720, nfs3hp::port::driver::kResolution1280x720 },
@@ -2724,28 +2465,6 @@ int main(int argc, char* argv[])
         app.getMemory<nfs::u32>(0xa92018 + 6 * 40 + 16) = 0;
         nfs3hp::viewAngleStart(&app);
 
-#ifndef __ANDROID__
-        // Headless driver metadata regression: exercise the real recompiled queries.
-        if (SDL_getenv("NFS_CHECK_GLIDE_MODES")) {
-            for (const auto entry : {0x504e00u, 0xa83c60u}) {
-                nfs::ThreadState ts{};
-                const nfs::u32 descriptor = app.runThread(ts, entry);
-                const auto table = app.getMemory<nfs::u32>(descriptor + 0x40);
-                const auto count = app.getMemory<nfs::u32>(descriptor + 0x3c);
-                if (count != 16) return 2;
-                for (unsigned i = 1; i <= count; ++i) {
-                    const auto* mode = &app.getMemory<nfs::u32>(table + i*40);
-                    if (mode[2] != 32 || mode[3] != 4) return 3;
-                    SDL_Log("[OUTPUT32] driver=%x id=%u %ux%ux%u LFB-format=%u available=%u buffers=%u",
-                            entry, i, mode[0], mode[1], mode[2], mode[3], mode[4], mode[5]);
-                }
-                // Repeat query, including the cached descriptor path.
-                app.runThread(ts, entry);
-                if (app.getMemory<nfs::u32>(table + 40 + 8) != 32) return 4;
-            }
-            SDL_Log("[OUTPUT32] PASS: both drivers and cached queries");
-        } else
-#endif
         app.execute();
     }
     SDL_Quit();

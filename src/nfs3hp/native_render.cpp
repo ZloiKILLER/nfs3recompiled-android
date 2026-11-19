@@ -110,8 +110,7 @@ nfs::u32 hudReferenceHeight(nfs::App* app);
 void hudTablePanel(nfs::App* app, nfs::u32 player, bool otherLayout);
 // nfs3hp_main.cpp: the cabin's rectangle fitted to 4:3 (x, y, width, height).
 nfs::u32 cabinRect(nfs::App* app, nfs::u32 field);
-// nfs3hp_main.cpp: NFS_CAR_DETAIL_FULL, and the loading screen at 4:3 (ports).
-bool fullCarDetail();
+// nfs3hp_main.cpp: the loading screen at 4:3 (a port).
 void loadingScreenFit(nfs::App* app, nfs::ThreadState& ts, bool on);
 
 namespace
@@ -410,7 +409,7 @@ struct Registers
 /* A point in view space (x, y, z floats at `s`) onto the screen as a vertex
  * at `v`: z of 0 taken as 2^-16 (written back), 1/z at `inverse` and at +0xc,
  * x, y scaled ([0x56009c], [0x5600a0]) and centred ([0x5600a4], [0x5600a8]),
- * z's bits at +8.  As sub_432720, sub_47a1f0 and sub_4946e0 write it inline;
+ * z's bits at +8.  As sub_47a1f0 and sub_4946e0 write it inline;
  * leaves edx with z's bits. */
 void projectPoint(const Memory& m, nfs::u32 s, nfs::u32 inverse, nfs::u32 v, Registers& r)
 {
@@ -1306,593 +1305,6 @@ nfs::u32 quadByZ(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
     return g.eax;
 }
 
-/* sub_434120: the triangles of a polygon list to THRASH, from the record in
- * eax for as long as the next one is a triangle too (type 3, the word at +4).
- * A record: the next at +0, bit 0x40 of +7 to draw it twice, its corners at
- * +8, +0xc, +0x10 (the game's vertices, their clip codes at +0x14); the
- * texture at +0x18 and the corners' s, t at +0x20..+0x34, and for the second
- * pass at +0x50 and +0x54..+0x68.  A triangle whose corners share a clip bit
- * is skipped; one with a corner past the near plane (0x10) goes to sub_4c3ad0.
- * The rest are drawn by THRASH_drawtri with their s, t written to the corners,
- * the texture set (THRASH_setstate 1, the last one kept in [0x554e54]) and the
- * blending (state 0x68, kept in [0x554e58]) off, state 0x2c2 on around the
- * call when a corner is off the left (code bit 1); then, when asked for, again
- * with the second texture and the blending on.  Returns the record it stopped
- * at (0 at the end of the list) in eax.  sub_4c3ad0 gets the record in eax
- * and ebx, the near bits in edx, and ecx as the code leaves it: the low byte
- * the first corner's near bit, the next the third corner's code, the rest
- * what the last full write of ecx left. */
-nfs::u32 triangleRecords(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
-{
-    const RegisterImage image(args);
-    const Memory m{app};
-    // push ebx, ecx, edx, esi, edi, ebp; mov ebp, esp; sub esp, 4
-    const nfs::u32 frameEbp = ts.sp - 24;
-    const nfs::u32 frameEsp = ts.sp - 28;
-    nfs::u32 record = g.eax;
-    // ecx as the code leaves it: sub_4c3ad0 is handed it.
-    nfs::u32 ecx = g.ecx;
-
-    auto setState = [&](nfs::u32 state, nfs::u32 value) {
-        return driverAt<thrash::kThrashSetState, &port::driver::setState>(app, ts, frameEsp, state, value).has_value();
-    };
-    auto drawTriangle = [&](nfs::u32 a, nfs::u32 b, nfs::u32 c) {
-        return driverAt<thrash::kThrashDrawTri, &port::driver::drawTri>(app, ts, frameEsp, a, b, c).has_value();
-    };
-    // The corners' s, t from the record at `from`.
-    auto texture = [&](nfs::u32 from) {
-        for (const nfs::u32 corner : { 8u, 0xcu, 0x10u })
-        {
-            m.word(m.word(record + corner) + 0x18, m.word(record + from));
-            m.word(m.word(record + corner) + 0x1c, m.word(record + from + 4));
-            from += 8;
-        }
-    };
-    // The texture at `field` set, unless it is the one kept in [0x554e54].
-    auto setTexture = [&](nfs::u32 field, nfs::u32 from) {
-        const nfs::u32 handle = m.word(record + field);
-        if (handle)
-            texture(from);
-        if (m.word(0x554e54) == handle)
-            return true;
-        m.word(0x554e54, handle);
-        return setState(1, handle);
-    };
-    // The blending kept in [0x554e58] set to `on`.
-    auto setBlending = [&](nfs::u32 on) {
-        if (m.word(0x554e58) == on)
-            return true;
-        m.word(0x554e58, on);
-        return setState(0x68, on);
-    };
-    // The corners off the left (bit 1 of a code) or-ed.
-    auto offLeft = [&]() {
-        return (m.word(m.word(record + 8) + 0x14) & 1) | (m.word(m.word(record + 0xc) + 0x14) & 1)
-               | (m.word(m.word(record + 0x10) + 0x14) & 1);
-    };
-    // The triangle drawn, state 0x2c2 on around it when a corner is off the left.
-    auto draw = [&]() {
-        ecx = offLeft();
-        if (!ecx)
-            return drawTriangle(m.word(record + 8), m.word(record + 0xc), m.word(record + 0x10));
-        if (!setState(0x2c2, 1))
-            return false;
-        ecx = m.word(record + 8);
-        return drawTriangle(m.word(record + 8), m.word(record + 0xc), m.word(record + 0x10)) && setState(0x2c2, 0);
-    };
-
-    for (;;)
-    {
-        const nfs::u8 c0 = m.byte(m.word(record + 8) + 0x14), c1 = m.byte(m.word(record + 0xc) + 0x14);
-        const nfs::u8 c2 = m.byte(m.word(record + 0x10) + 0x14);
-        const nfs::u8 shared = c0 & c1 & c2;
-        setByte(ecx, 0, shared);
-        setByte(ecx, 1, c2);
-        if (!shared)
-        {
-            setByte(ecx, 0, c0 & 0x10);
-            const nfs::u8 nearBits = (c0 | c1 | c2) & 0x10;
-            if (nearBits)
-            {
-                if (!coreAt<0x4c3ad0, render::nearTriangleDrawn>(app, ts, frameEbp, frameEsp, record, nearBits, record, ecx))
-                    return g.eax;
-            }
-            else
-            {
-                if (m.word(0x554e58) != 0)
-                {
-                    ecx = 0;
-                    m.word(0x554e58, 0);
-                    if (!setState(0x68, 0))
-                        return g.eax;
-                }
-                if (!setTexture(0x18, 0x20) || !draw())
-                    return g.eax;
-                if (m.byte(record + 7) & 0x40)
-                {
-                    if (!setBlending(1) || !setTexture(0x50, 0x54) || !draw())
-                        return g.eax;
-                }
-            }
-        }
-        // The next record, while it is a triangle.
-        record = m.word(record);
-        if (!record || nfs::u16(m.word(record + 4)) != 3)
-            break;
-    }
-    g.eax = record;
-    ts.sp += 4;
-    return g.eax;
-}
-
-/* sub_4c3ad0: a triangle of sub_434120's polygon list with a corner past the
- * near plane, clipped to it and drawn as a fan.
- *   eax  the record (sub_434120's); dl  its corners' near bits or-ed
- * The corners go to work records at 0x7d35dc, 0x7d3600, 0x7d3624 (listed at
- * 0x5600e0): x, y, 1/w, then s, t times 1/w for the record's texture (+0x20
- * on) and for its second (+0x54 on).  With 0x10 in dl, the corners nearer
- * than [0x7d34f0] are cut away as sub_4bf790 cuts them -- t from 1/(a - b)
- * times (a - near), the second texture's s, t only for a record drawn twice,
- * the made vertices at 0x7d1198 (0x24 bytes), their pointers and codes at
- * 0x7d0e78 and 0x7d0db0.  What is left goes to Glide vertices at 0x7cdbb0 --
- * x, y, s/w, t/w, white, and the second texture's at +0xc, +8 -- a corner
- * with an indefinite x or y left out, and to THRASH_drawtrifan twice: with
- * the record's texture and the blending off, then with its second texture and
- * the blending on for a record drawn twice (sub_431900 setting the state),
- * else again the same.  Nothing is drawn when fewer than three corners are
- * left, or when the first corner has an indefinite x, y or 1/w. */
-nfs::u32 nearTriangle(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
-{
-    const RegisterImage image(args);
-    const Memory m{app};
-    // push ebx, ecx, esi, edi, ebp; mov ebp, esp; sub esp, 0x3c
-    const nfs::u32 frameEbp = ts.sp - 20;
-    const nfs::u32 frameEsp = ts.sp - 0x50;
-    const nfs::u32 record = g.eax;
-    const nfs::u8 nearBits = nfs::u8(g.edx);
-    auto leave = [&]() -> nfs::u32 { ts.sp += 4; return g.eax; };
-
-    const nfs::u32 twoPass = m.word(record + 0x50) && (m.byte(record + 7) & 0x40) ? 1 : 0;
-    // The corners' codes on the stack, the corners to the work records.
-    const nfs::u32 codes = frameEbp - 4;
-    {
-        const nfs::u32 corners[3] = { m.word(record + 8), m.word(record + 0xc), m.word(record + 0x10) };
-        for (nfs::u32 i = 0; i < 3; ++i)
-        {
-            const nfs::u32 v = corners[i];
-            const nfs::u32 to = 0x7d35dc + 0x24 * i;
-            const nfs::u32 st = record + 0x20 + 8 * i;
-            m.byte(codes + i, m.byte(v + 0x14));
-            const double s = M::mul(m.load(st), m.load(v + 0xc));
-            const double t = M::mul(m.load(st + 4), m.load(v + 0xc));
-            const double s2 = M::mul(m.load(st + 0x34), m.load(v + 0xc));
-            const double t2 = M::mul(m.load(st + 0x38), m.load(v + 0xc));
-            m.store(to, m.load(v));
-            m.store(to + 4, m.load(v + 4));
-            m.store(to + 8, m.load(v + 0xc));
-            m.store(to + 0xc, s);
-            m.store(to + 0x10, t);
-            m.store(to + 0x14, s2);
-            m.store(to + 0x18, t2);
-        }
-    }
-
-    nfs::u32 list = 0x5600e0;
-    nfs::u32 count = 3;
-    if (nearBits & 0x10)
-    {
-        const nfs::u32 outList = 0x7d0e78, outCodes = 0x7d0db0;
-        nfs::u32 kept = 0;
-        nfs::u32 made = 0;
-        nfs::u32 previous = 2;
-        for (nfs::u32 current = 0; current < 3; previous = current++)
-        {
-            const nfs::u8 previousCode = m.byte(codes + previous);
-            if (!(previousCode & 0x10))
-            {
-                m.word(outList + 4 * kept, m.word(list + 4 * previous));
-                m.byte(outCodes + kept, previousCode);
-                ++kept;
-            }
-            if (!((previousCode ^ m.byte(codes + current)) & 0x10))
-                continue;
-            const nfs::u32 a = m.word(list + 4 * previous);
-            const nfs::u32 b = m.word(list + 4 * current);
-            const nfs::u32 v = 0x7d1198 + made * 0x24;
-            const double aW = m.load(a + 8);
-            const double difference = M::sub(aW, m.load(b + 8));
-            const double past = M::sub(aW, m.load(0x7d34f0));
-            const double t = double(float(M::mul(M::div(1.0, difference), past)));
-            for (const nfs::u32 field : { 0u, 4u, 0xcu, 0x10u })
-            {
-                const double from = m.load(a + field);
-                m.store(v + field, M::sub(from, M::mul(M::sub(from, m.load(b + field)), t)));
-            }
-            if (twoPass)
-            {
-                const double s = m.load(a + 0x14);
-                m.store(v + 0x14, M::sub(s, M::mul(M::sub(s, m.load(b + 0x14)), t)));
-                const double tt = m.load(a + 0x18);
-                m.store(v + 0x18, M::sub(tt, M::mul(t, M::sub(tt, m.load(b + 0x18)))));
-            }
-            m.store(v + 8, m.load(0x7d34f0));
-            const nfs::u32 code = outCodes + kept;
-            m.byte(code, 0x10);
-            const double y = m.load(v + 4);
-            const double bottom = m.load(0x7d34e0);
-            if (!(y >= bottom))
-                m.byte(code, m.byte(code) | 8);
-            else
-            {
-                const double top = m.load(0x7d34dc);
-                if (y > top)
-                    m.byte(code, m.byte(code) | 4);
-            }
-            const double x = m.load(v);
-            const double left = m.load(0x7d34f4);
-            if (!(x >= left))
-                m.byte(code, m.byte(code) | 1);
-            else
-            {
-                const double right = m.load(0x7d34ec);
-                if (x > right)
-                    m.byte(code, m.byte(code) | 2);
-            }
-            m.word(outList + 4 * kept, v);
-            ++made;
-            ++kept;
-        }
-        if (kept < 3)
-            return leave();
-        list = outList;
-        count = kept;
-    }
-
-    // The fan, a corner with an indefinite x or y left out.
-    const nfs::u32 first = m.word(list);
-    for (const nfs::u32 field : { 0u, 4u, 8u })
-        if ((m.word(first + field) | 0x80000000) == 0xffc00000)
-            return leave();
-    nfs::u32 fan = 0x7cdbb0;
-    nfs::u32 drawn = 0;
-    nfs::u32 at = list;
-    for (nfs::u32 left = count; left; --left)
-    {
-        const nfs::u32 v = m.word(at);
-        const double inverse = double(float(M::div(1.0, m.load(v + 8))));
-        m.store(fan, m.load(v));
-        m.word(fan + 4, m.word(v + 4));
-        m.store(fan + 0x18, M::mul(m.load(v + 0xc), inverse));
-        const double t = m.load(v + 0x10);
-        m.word(fan + 0x14, 0);
-        m.word(fan + 0x10, 0xffffffff);
-        m.store(fan + 0x1c, M::mul(t, inverse));
-        if (twoPass)
-        {
-            m.store(fan + 0xc, M::mul(m.load(v + 0x14), inverse));
-            m.store(fan + 8, M::mul(inverse, m.load(v + 0x18)));
-        }
-        at += 4;
-        if ((m.word(fan) | 0x80000000) != 0xffc00000 && (m.word(fan + 4) | 0x80000000) != 0xffc00000)
-        {
-            fan += 0x20;
-            ++drawn;
-        }
-    }
-
-    // The state through sub_431900, then the fan to THRASH_drawtrifan.
-    auto setState = [&](nfs::u32 state, nfs::u32 value) {
-        return coreAt<0x431900, graphics::sendState>(app, ts, frameEbp, frameEsp, state, value);
-    };
-    auto drawFan = [&]() {
-        return driverAt<thrash::kThrashDrawTriFan, &port::driver::drawTriFan>(app, ts,
-            frameEsp, drawn - 2, 0x7cdbb0).has_value();
-    };
-    if (!setState(0x68, 0) || !setState(1, m.word(record + 0x18)) || !drawFan())
-        return g.eax;
-    if (twoPass)
-    {
-        if (!setState(0x68, 1) || !setState(1, m.word(record + 0x50)))
-            return g.eax;
-        // The second texture's s, t where THRASH reads them.
-        for (nfs::u32 i = 0; nfs::s32(i) < nfs::s32(drawn); ++i)
-        {
-            const nfs::u32 entryAt = i << 5;
-            const double t = m.load(entryAt + 0x7cdbb8);
-            m.word(entryAt + 0x7cdbc8, m.word(entryAt + 0x7cdbbc));
-            m.store(entryAt + 0x7cdbcc, t);
-        }
-    }
-    if (!drawFan())
-        return g.eax;
-    leave();
-    return g.eax;
-}
-
-/* sub_4332b0: the quads of a polygon list to THRASH, from the record in eax
- * for as long as the next one is a quad too (type 0, the word at +4).  A
- * record: the next at +0, its flags in the word at +6, its corners at +8,
- * +0xc, +0x10, +0x14 (a, b, c, d: the game's vertices, clip codes at +0x14),
- * its texture's record at +0x18 (handle at +4, the corners' s, t at +8..+0x24,
- * flags at +0x28).  Flag 1 turns the blending (state 0x68, kept in
- * [0x554e58]) on, flag 2 keeps the corners' s, t as they are; the texture is
- * set (state 1, kept in [0x554e54]), and a texture with 8 in its flags gets
- * sub_432390 with a's colour.  Then the quad goes to sub_433060 (flag 8), to
- * sub_4c1900 (a texture without 0x10 in its flags, or none), to sub_4c19e0
- * (a corner past the near plane), or to THRASH_drawquad -- state 0x2c2 on
- * around it when a corner is off the left.  Those take the corners in eax,
- * edx, ebx, ecx.  Returns the record it stopped at (0 at the end) in eax. */
-nfs::u32 quadRecords(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
-{
-    const RegisterImage image(args);
-    const Memory m{app};
-    // push ebx, ecx, edx, esi, edi, ebp; mov ebp, esp; sub esp, 0xc
-    const nfs::u32 frameEbp = ts.sp - 24;
-    const nfs::u32 frameEsp = ts.sp - 36;
-    nfs::u32 record = g.eax;
-
-    auto setState = [&](nfs::u32 state, nfs::u32 value) {
-        return driverAt<thrash::kThrashSetState, &port::driver::setState>(app, ts, frameEsp, state, value).has_value();
-    };
-    auto drawQuad = [&](nfs::u32 a, nfs::u32 b, nfs::u32 c, nfs::u32 d) {
-        return driverAt<thrash::kThrashDrawQuad, &port::driver::drawQuad>(app, ts, frameEsp, a, b, c, d).has_value();
-    };
-
-    for (;;)
-    {
-        const nfs::u32 a = m.word(record + 8), b = m.word(record + 0xc);
-        const nfs::u32 c = m.word(record + 0x10), d = m.word(record + 0x14);
-        const nfs::u32 recordFlags = nfs::u32(nfs::s32(m.word(record + 4)) >> 16);
-        const nfs::u32 blending = recordFlags & 1;
-        if (m.word(0x554e58) != blending)
-        {
-            m.word(0x554e58, blending);
-            if (!setState(0x68, blending))
-                return g.eax;
-        }
-
-        const nfs::u32 texture = m.word(record + 0x18);
-        if (texture)
-        {
-            if (!(recordFlags & 2))
-            {
-                // the record's texture read again for each, as the code does
-                auto from = [&](nfs::u32 field) { return m.word(record + 0x18) + field; };
-                m.word(a + 0x18, m.word(from(8)));
-                m.word(a + 0x1c, m.word(from(0xc)));
-                m.store(b + 0x18, m.load(from(0x10)));
-                m.store(b + 0x1c, m.load(from(0x14)));
-                m.word(c + 0x18, m.word(from(0x18)));
-                m.word(c + 0x1c, m.word(from(0x1c)));
-                m.store(d + 0x18, m.load(from(0x20)));
-                m.store(d + 0x1c, m.load(from(0x24)));
-            }
-            const nfs::u32 handle = m.word(m.word(record + 0x18) + 4);
-            if (m.word(0x554e54) != handle)
-            {
-                m.word(0x554e54, handle);
-                if (!setState(1, handle))
-                    return g.eax;
-            }
-        }
-        else if (m.word(0x554e54) != 0)
-        {
-            m.word(0x554e54, 0);
-            if (!setState(1, 0))
-                return g.eax;
-        }
-
-        if (m.word(record + 0x18) && (m.byte(m.word(record + 0x18) + 0x28) & 8)
-            && !coreAt<0x432390, graphics::softwareBlendColour>(app, ts, frameEbp, frameEsp, m.word(a + 0x10)))
-            return g.eax;
-
-        if (recordFlags & 8)
-        {
-            if (!coreAt<0x433060, render::quadWholeDrawn>(app, ts, frameEbp, frameEsp, a, b, c, d))
-                return g.eax;
-        }
-        else if (!m.word(record + 0x18) || !(m.byte(m.word(record + 0x18) + 0x28) & 0x10))
-        {
-            if (!coreAt<0x4c1900, frontend::rende::drawQuadClipped>(app, ts, frameEbp, frameEsp, a, b, c, d))
-                return g.eax;
-        }
-        else if ((m.word(a + 0x14) | m.word(b + 0x14) | m.word(c + 0x14) | m.word(d + 0x14)) & 0x10)
-        {
-            if (!coreAt<0x4c19e0, frontend::rende::drawQuadSplit>(app, ts, frameEbp, frameEsp, a, b, c, d))
-                return g.eax;
-        }
-        else if (!((m.word(a + 0x14) | m.word(b + 0x14) | m.word(c + 0x14) | m.word(d + 0x14)) & 1))
-        {
-            if (!drawQuad(a, b, c, d))
-                return g.eax;
-        }
-        else if (!setState(0x2c2, 1) || !drawQuad(a, b, c, d) || !setState(0x2c2, 0))
-            return g.eax;
-
-        // The next record, while it is a quad.
-        record = m.word(record);
-        if (!record || nfs::u16(m.word(record + 4)))
-            break;
-    }
-    g.eax = record;
-    ts.sp += 4;
-    return g.eax;
-}
-
-/* sub_432720: a quad subdivided until it is small enough on the screen.
- *   eax  the depth so far; edx, ebx, ecx, [esp+4]  its corners a, b, c, d
- *   projected (x and y as the projection divides them, then 1/w: three
- *   floats each); [esp+8..+0x14]  the corners themselves (the game's
- *   vertices, 0x20 bytes)
- * When sub_432690 asks for no deeper subdivision than eax, the quad goes to
- * sub_4c19e0 (a corner past the near plane) or THRASH_drawquad (state 0x2c2
- * on around it when a corner is off the left).  Otherwise the midpoints of
- * a b, a d, b c, d c and a c are made -- in the projected space, halved,
- * 1/w of 0 taken as 2^-16, then back to the screen as vertices on the
- * stack with their s, t and colour the corners' averages and a clip code of
- * their own -- and the four quads around the middle go to this function
- * again, each unless its corners share a clip bit.  stdcall: ret 0x14. */
-nfs::u32 subdivideQuad(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
-{
-    const RegisterImage image(args);
-    const Memory m{app};
-    const nfs::u32 entry = ts.sp;
-    // push esi, edi, ebp; mov ebp, esp; sub esp, 0x100; sub ebp, 0x6e
-    const nfs::u32 ebp = entry - 0x7a;
-    const nfs::u32 frameEsp = entry - 0x10c;
-    const nfs::u32 depth = g.eax;
-    const nfs::u32 sa = g.edx, sb = g.ebx, sc = g.ecx, sd = m.word(entry + 4);
-    const nfs::u32 a = m.word(entry + 8), b = m.word(entry + 0xc), c = m.word(entry + 0x10), d = m.word(entry + 0x14);
-    // eax as the last call leaves it, or as given
-    auto leave = [&]() -> nfs::u32 { ts.sp += 4 + 0x14; return g.eax; };
-    auto setState = [&](nfs::u32 state, nfs::u32 value) {
-        return driverAt<thrash::kThrashSetState, &port::driver::setState>(app, ts, frameEsp, state, value).has_value();
-    };
-    auto drawQuad = [&]() { return driverAt<thrash::kThrashDrawQuad, &port::driver::drawQuad>(app, ts,
-        frameEsp, a, b, c, d).has_value(); };
-
-    if (!coreAt<0x432690, collide::subdivisions>(app, ts, ebp, frameEsp, a, b, c, d))
-        return g.eax;
-    if (nfs::s32(g.eax) <= nfs::s32(depth))
-    {
-        // Small enough: drawn.
-        const nfs::u32 codes = m.word(a + 0x14) | m.word(b + 0x14) | m.word(c + 0x14) | m.word(d + 0x14);
-        if (codes & 0x10)
-        {
-            if (!coreAt<0x4c19e0, frontend::rende::drawQuadSplit>(app, ts, ebp, frameEsp, a, b, c, d))
-                return g.eax;
-        }
-        else if (!(codes & 1))
-        {
-            if (!drawQuad())
-                return g.eax;
-        }
-        else if (!setState(0x2c2, 1) || !drawQuad() || !setState(0x2c2, 0))
-            return g.eax;
-        return leave();
-    }
-
-    /* A midpoint: projected at `s` from the projected corners p, q, as a
-     * vertex at `v` from the corners u, w; 1/w's reciprocal kept at `inverse`. */
-    const double half = m.loadDouble(0x537484);
-    auto midpoint = [&](nfs::u32 p, nfs::u32 q, nfs::u32 u, nfs::u32 w, nfs::u32 s, nfs::u32 v,
-                        nfs::u32 inverse) {
-        m.store(s, M::mul(M::add(m.load(p), m.load(q)), half));
-        m.store(s + 4, M::mul(M::add(m.load(p + 4), m.load(q + 4)), half));
-        m.store(s + 8, M::mul(M::add(m.load(p + 8), m.load(q + 8)), half));
-        m.store(v + 0x18, M::mul(M::add(m.load(u + 0x18), m.load(w + 0x18)), half));
-        m.store(v + 0x1c, M::mul(half, M::add(m.load(u + 0x1c), m.load(w + 0x1c))));
-        m.word(v + 0x10, ((m.word(u + 0x10) >> 1) & 0x7f7f7f7f) + ((m.word(w + 0x10) >> 1) & 0x7f7f7f7f));
-        if (!(m.word(s + 8) & 0x7fffffff))
-            m.word(s + 8, 0x37800080);
-        m.store(inverse, M::div(1.0, m.load(s + 8)));
-        const double x = M::mul(m.load(0x56009c), m.load(inverse));
-        const double y = M::mul(m.load(0x5600a0), m.load(inverse));
-        m.word(v + 0xc, m.word(inverse));
-        const double screenY = M::mul(y, m.load(s + 4));
-        const double screenX = M::mul(x, m.load(s));
-        const nfs::u32 inverseZ = m.word(s + 8);
-        m.store(v, M::add(screenX, m.load(0x5600a4)));
-        m.word(v + 8, inverseZ);
-        m.store(v + 4, M::add(screenY, m.load(0x5600a8)));
-        m.byte(v + 0x14, clipCode(m, v));
-    };
-    const nfs::u32 s1 = ebp + 0xe, s2 = ebp + 0x1a, s3 = ebp + 0x26, s4 = ebp + 0x32, s5 = ebp + 0x3e;
-    const nfs::u32 v1 = ebp - 0x92, v2 = ebp - 0x72, v3 = ebp - 0x52, v4 = ebp - 0x32, v5 = ebp - 0x12;
-    midpoint(sa, sb, a, b, s1, v1, ebp + 0x4a);
-    midpoint(sa, sd, a, d, s2, v2, ebp + 0x4e);
-    midpoint(sb, sc, b, c, s3, v3, ebp + 0x52);
-    midpoint(sd, sc, d, c, s4, v4, ebp + 0x56);
-    midpoint(sa, sc, a, c, s5, v5, ebp + 0x5a);
-    auto code = [&](nfs::u32 vertex) { return nfs::u32(m.byte(vertex + 0x14)); };
-    // The four quads around the middle, each unless its corners share a bit.
-    auto quad = [&](nfs::u32 p, nfs::u32 q, nfs::u32 r, nfs::u32 t, nfs::u32 u, nfs::u32 v,
-                    nfs::u32 w, nfs::u32 z) {
-        if (code(u) & code(v) & code(w) & code(z))
-            return true;
-        return coreAt<0x432720, render::quadPieceDrawn>(app, ts, ebp, frameEsp, depth + 1, p, q, r, t, u, v, w, z);
-    };
-    if (!quad(sa, s1, s5, s2, a, v1, v5, v2) || !quad(s1, sb, s3, s5, v1, b, v3, v5)
-        || !quad(s2, s5, s4, sd, v2, v5, v4, d))
-        return g.eax;
-    const nfs::u32 last = code(v4);
-    if (code(v5) & code(v3) & code(c) & last)
-    {
-        g.eax = last;
-        return leave();
-    }
-    if (!coreAt<0x432720, render::quadPieceDrawn>(app, ts, ebp, frameEsp, depth + 1, s5, s3, sc, s4, v5, v3, c, v4))
-        return g.eax;
-    leave();
-    return g.eax;
-}
-
-/* sub_433060: a quad (eax, edx, ebx, ecx: a, b, c, d) drawn whole or
- * subdivided.  Nothing when its corners share a clip bit.  When sub_432690
- * asks for subdivision, the corners are projected -- x, y less the centre
- * ([0x5600a4], [0x5600a8]) over w (+0xc, 2^-16 for 0) times the scale
- * ([0x56009c], [0x5600a0]), and 1/w -- to the stack and the quad goes to
- * sub_432720 at depth 0; otherwise to sub_4c19e0 when a corner is past the
- * near plane, else to THRASH_drawquad (state 0x2c2 around it when a corner
- * is off the left). */
-nfs::u32 quadSubdivided(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
-{
-    const RegisterImage image(args);
-    const Memory m{app};
-    // push esi, edi, ebp; mov ebp, esp; sub esp, 0x48
-    const nfs::u32 ebp = ts.sp - 12;
-    const nfs::u32 frameEsp = ts.sp - 0x54;
-    const nfs::u32 a = g.eax, b = g.edx, c = g.ebx, d = g.ecx;
-    auto leave = [&]() -> nfs::u32 { ts.sp += 4; return g.eax; };
-    auto setState = [&](nfs::u32 state, nfs::u32 value) {
-        return driverAt<thrash::kThrashSetState, &port::driver::setState>(app, ts, frameEsp, state, value).has_value();
-    };
-    auto drawQuad = [&]() { return driverAt<thrash::kThrashDrawQuad, &port::driver::drawQuad>(app, ts,
-        frameEsp, a, b, c, d).has_value(); };
-
-    if (m.byte(a + 0x14) & m.byte(b + 0x14) & m.byte(c + 0x14) & m.byte(d + 0x14))
-        return leave();
-    if (!coreAt<0x432690, collide::subdivisions>(app, ts, ebp, frameEsp, a, b, c, d))
-        return g.eax;
-    if (!g.eax)
-    {
-        const nfs::u32 codes = m.word(a + 0x14) | m.word(b + 0x14) | m.word(c + 0x14) | m.word(d + 0x14);
-        if (codes & 0x10)
-        {
-            if (!coreAt<0x4c19e0, frontend::rende::drawQuadSplit>(app, ts, ebp, frameEsp, a, b, c, d))
-                return g.eax;
-        }
-        else if (!(codes & 1))
-        {
-            if (!drawQuad())
-                return g.eax;
-        }
-        else if (!setState(0x2c2, 1) || !drawQuad() || !setState(0x2c2, 0))
-            return g.eax;
-        return leave();
-    }
-
-    // Each corner projected: x, y, 1/w (a w of 0 taken as 2^-16).
-    auto project = [&](nfs::u32 v, nfs::u32 to) {
-        const nfs::u32 bits = m.word(v + 0xc);
-        const double w = double(asFloat((bits & 0x7fffffff) ? bits : 0x37800080));
-        const double x = M::div(M::sub(m.load(v), m.load(0x5600a4)), M::mul(w, m.load(0x56009c)));
-        const double inverse = M::div(1.0, w);
-        m.store(to, x);
-        const double y = M::div(M::sub(m.load(v + 4), m.load(0x5600a8)), M::mul(w, m.load(0x5600a0)));
-        m.store(to + 8, inverse);
-        m.store(to + 4, y);
-    };
-    project(a, ebp - 0x48);
-    project(b, ebp - 0x3c);
-    project(c, ebp - 0x30);
-    project(d, ebp - 0x24);
-    if (!coreAt<0x432720, render::quadPieceDrawn>(app, ts, ebp, frameEsp, 0, ebp - 0x48, ebp - 0x3c, ebp - 0x30, ebp - 0x24, a, b, c, d))
-        return g.eax;
-    leave();
-    return g.eax;
-}
-
 /* sub_433e30: the triangles of a polygon list that carry colours of their
  * own, from the record in eax while the next is a triangle too (type 3).  A
  * record: the next at +0, its flags at +7, its corners at +8, +0xc, +0x10;
@@ -2415,7 +1827,7 @@ nfs::u32 countdown(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
  * lights' state (sub_49c410, sub_49d640, the night set by sub_4b97b0 and
  * sub_4b9550 when [0x6fd4c8]), sub_49d750 .. sub_49d780, the glare
  * (sub_49d5c0 with the position raised by [view+0x2c]), the shadow
- * (sub_4c7380 without [0x7a3a60]), sub_49c420, and with [0x6fd4ac] 8 and
+ * (sub_4c7380 without the z-buffer, [0x7a3a60] 0), sub_49c420, and with [0x6fd4ac] 8 and
  * [view+0x34] the headlights' beam on the road (sub_492370) when the car
  * faces the camera (sub_4e01f0 below 0), its strength the dot times
  * [0x5400f8]. */
@@ -2458,8 +1870,6 @@ nfs::u32 carLights(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
     if (!callTo(0x49d750, { gameSettings(app).useSpecular != 0 ? 1u : 0u }) || !callTo(0x49d760, { 0x55d2a8 })
         || !callTo(0x49d8f0, { lightMatrix }) || !callTo(0x49d800, { 0x4f4f4f4f, 0x7f7f7f7f })
         || !callTo(0x4e0000, { 1, view + 8, ebp - 0x40, ebp - 0x4c }) || !callTo(0x49d780, { ebp - 0x4c }))
-        return g.eax;
-    if ((m.byte(0x7a3a58) & 2) && (!callTo(0x49d750, { 0 }) || !callTo(0x49d8f0, { 0xffffffff })))
         return g.eax;
     const nfs::u32 camera = m.word(0x55fe2c);
     m.store(ebp - 0x3c, M::add(m.load(ebp - 0x3c), m.load(camera + 0x2c)));
@@ -3509,14 +2919,6 @@ void choosePolygonDrawers(nfs::App* app)
         m.word(0x5f078c, 0x4347b0);
         m.word(0x5f0780, 0x433840);
     }
-    else if (abilities & 6)
-    {
-        m.word(0x5f0784, 0x433530);
-        m.word(0x5f0790, 0x433660);
-        m.word(0x5f0794, 0x434850);
-        m.word(0x5f078c, 0x434120);
-        m.word(0x5f0780, 0x4332b0);
-    }
     else
     {
         m.word(0x5f0784, 0x433a50);
@@ -3527,19 +2929,13 @@ void choosePolygonDrawers(nfs::App* app)
     }
 }
 
-/* sub_434870: choosePolygonDrawers; eax as the code leaves it: the abilities in its second
- * byte (mov ah), then the last pointer stored where that is a constant (0x4347b0, 0x433bb0). */
+/* sub_434870: choosePolygonDrawers; eax as the code leaves it: 0x4347b0 with bit 0x40 of the
+ * abilities (Direct3D), else 0x433bb0. */
 nfs::u32 polygonDrawers(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     const RegisterImage image(args);
     choosePolygonDrawers(app);
-    const u8 abilities = byteAt(app, kDriverAbilities);
-    if (abilities & 0x40)
-        g.eax = 0x4347b0;
-    else if (!(abilities & 6))
-        g.eax = 0x433bb0;
-    else
-        g.eax = (g.eax & 0xffff00ff) | (u32(abilities) << 8);
+    g.eax = (byteAt(app, kDriverAbilities) & 0x40) ? 0x4347b0 : 0x433bb0;
     ts.sp += 4;
     return g.eax;
 }
@@ -3582,12 +2978,11 @@ nfs::u32 glareColours(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 }
 
 /* sub_472d10: the detail settings, the game's highest of the five it chose by
- * the machine's speed, halved on a driver with bit 6 of
- * [0x7a3a58]: the eight words of each of the tables at 0x472168.. to
+ * the machine's speed: the eight words of each of the tables at 0x472168.. to
  * 0x6fbc28 (the view distance, kept full: a port), 0x6fbc2c, 0x6fbc1c,
  * 0x6fbc30, 0x6fbc20, 0x6fbc24, 0x6fbc3c and 0x791b28; the glare at 1 (0.5
  * when sub_4ee310 finds the driver's name at 0x53b01c), the screen width
- * for sub_4bee80, and sub_4483a0, sub_448330's choice of 0x6fbc34. */
+ * (640) for sub_4bee80, and sub_4483a0, sub_448330's choice of 0x6fbc34. */
 nfs::u32 detailSettings(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     const RegisterImage image(args);
@@ -3606,7 +3001,7 @@ nfs::u32 detailSettings(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
             app->getMemory<nfs::u16>(ebp - tables[k] + b) = app->getMemory<nfs::u16>(0x472168 + 10 * k + b);
     }
     // The detail for the fastest machine the game knows of: no phone is slower.
-    const nfs::u32 level = (m.byte(0x7a3a58) & 6) ? 2 : 4;
+    const nfs::u32 level = 4;
     auto entryOf = [&](nfs::u32 table) {
         return nfs::u32(nfs::s32(m.word(ebp + level * 2 - table - 2)) >> 16);
     };
@@ -3633,13 +3028,7 @@ nfs::u32 detailSettings(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
         if (!g.eax)
             settings.alphaIntensityBits = 0x3f000000;
     }
-    nfs::u32 width = 0x280;
-    if (m.byte(0x7a3a58) & 6)
-    {
-        width = 0x140;
-        settings.detailFlagFc = 0;
-        settings.projectedText = 0;
-    }
+    const nfs::u32 width = 0x280;
     if (!coreAt<0x4bee80, graphics::screenModeFor>(app, ts, ebp, frameEsp, width) || !coreAt<0x4483a0, frontend::menua::chooseModeOfWidth>(app, ts, ebp, frameEsp, g.eax)
         || !coreAt<0x448330, frontend::menua::copyChosenMode>(app, ts, ebp, frameEsp, ebp - 0x174))
         return g.eax;
@@ -4066,9 +3455,8 @@ nfs::u32 clearBuffers(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
     return g.eax;
 }
 
-/* sub_4a4410: the ten bouncing pictures of a 2D screen (not on the drivers
- * the strings at 0x53cf28 and 0x53cf34 name, nor with bit 2 of
- * [0x7a3a58]): placed at random (sub_4a4060) the first time, each moved by
+/* sub_4a4410: the ten bouncing pictures of a 2D screen (not on the Direct3D
+ * drivers the strings at 0x53cf28 and 0x53cf34 name): placed at random (sub_4a4060) the first time, each moved by
  * its speed (0x7a1ae8, 0x7a1b10) and put back (sub_4a40c0) when it leaves
  * 150..640 x 0..450, drawn by sub_4d7d90 with eleven fading copies trailing
  * behind it (the last picture as a shadow, its y from 225), centred by its
@@ -4104,8 +3492,6 @@ nfs::u32 bouncers(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
             if (g.eax)
                 return leave();
         }
-    if (m.byte(0x7a3a58) & 2)
-        return leave();
     if (m.word(0x55e95c) == 0xffffffff)
         for (nfs::u32 i = 0; i < 10; ++i)
         {
@@ -5236,23 +4622,6 @@ nfs::u32 startDriver(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
             return g.eax;
         m.word(0x7a3a70, 1);
         break;
-    case 1:
-    case 2:
-        if (!load(library) || !setState(0xa, 2) || !setState(3, 0)
-            || !out.driver<thrash::kThrashClearWindow, &port::driver::clearWindow>() || !setState(4, 0))
-            return g.eax;
-        out.push(0);
-        out.push(6);
-        m.word(0x7a3a68, 0);
-        m.word(0x7a3a60, 0);
-        if (!out.driver<thrash::kThrashSetState, &port::driver::setState>() || !setState(2, 0))
-            return g.eax;
-        m.word(0x7a3a64, 0);
-        if (!out.go<0x431c50, collide::fillBlendTables>())
-            return g.eax;
-        m.word(0x55fed0, 0x400000);
-        m.word(0x7a3a70, 0);
-        break;
     case 3:
     case 4:
     {
@@ -5881,8 +5250,7 @@ nfs::u32 hudInset(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 
 /* sub_48c7c0: the three-light start (and finish) panel: the quads at
  * 0x724790, 0x724810, 0x724890 drawn by THRASH_drawquad ([0x9ef94c]) with the
- * texture state (sub_431900) [0x749a38], under bit 2 of [0x7a3a58] state
- * 0x2bf on round the rest; then the lamp at 0x724d10 lit (0xffdcdb58, unlit
+ * texture state (sub_431900) [0x749a38]; then the lamp at 0x724d10 lit (0xffdcdb58, unlit
  * 0xff797c93) when [esp+4] is 0, the quads eax and edx (0x80 bytes each from
  * 0x724790) when it is 0 and 2, the lamp at 0x724c90, ebx and ecx when it is
  * 1, 1 and 3.  ret 4. */
@@ -5917,8 +5285,6 @@ nfs::u32 startLights(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
     for (const u32 corners : {0x724790u, 0x724810u, 0x724890u})
         if (!quad(corners))
             return g.eax;
-    if ((m.byte(0x7a3a58) & 2) && !out.go<0x431900, graphics::sendState>(0x2bf, 1))
-        return g.eax;
     for (const u32 at : {0x724d40u, 0x724d60u, 0x724d80u, 0x724d20u})
         m.word(at, choose(lit == 0));
     if (!quad(0x724d10) || !light(lights[0], lit == 0) || !light(lights[1], lit == 2))
@@ -5926,8 +5292,6 @@ nfs::u32 startLights(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
     for (const u32 at : {0x724cc0u, 0x724ce0u, 0x724d00u, 0x724ca0u})
         m.word(at, choose(lit == 1));
     if (!quad(0x724c90) || !light(lights[2], lit == 1) || !light(lights[3], lit == 3))
-        return g.eax;
-    if ((m.byte(0x7a3a58) & 2) && !out.go<0x431900, graphics::sendState>(0x2bf, 0))
         return g.eax;
     // eax as the last callee leaves it: a caller reads eax
     entry.restore(ts, Entry::kEsi | Entry::kEdi | Entry::kEbp, 4);
@@ -6147,8 +5511,7 @@ nfs::u32 barGauges(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
  * the four corners) in steps of its size times [0x53b76c] and [0x53b774] /
  * [0x53b77c], each tile a quad cut at the cabin's right and bottom edges, in
  * the colour sub_4206f0 gives the player's view (sub_422bd0; at night
- * sub_4b97b0's through sub_4b9550), under state 0x2bf 3 with bit 2 of
- * [0x7a3a58]; then the needles (sub_4880b0), the gear (when [0x55d6a4]: the
+ * sub_4b97b0's through sub_4b9550); then the needles (sub_4880b0), the gear (when [0x55d6a4]: the
  * view's +0x50b picks 0x791c10's 44-byte entry, a size and the texture) at
  * [0x55d69c], [0x55d6a0] of the cabin, and the bar gauges (sub_488470). */
 nfs::u32 cockpit(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
@@ -6219,8 +5582,6 @@ nfs::u32 cockpit(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
         m.word(corner[c] + 8, 0x37800080);
     for (const u32 c : {3, 2, 0, 1})
         m.word(corner[c] + 0x14, 0);
-    if ((m.byte(0x7a3a58) & 2) && !out.go<0x431900, graphics::sendState>(0x2bf, 3))
-        return g.eax;
     // the tiles, a column at a time, each cut at the cabin's right and bottom edges
     u32 tile = 0;
     double x = single(double(i32(left)));
@@ -6247,8 +5608,6 @@ nfs::u32 cockpit(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
         }
         x = nextX;
     }
-    if ((m.byte(0x7a3a58) & 2) && !out.go<0x431900, graphics::sendState>(0x2bf, 0))
-        return g.eax;
     if (!out.go<0x4880b0, render::needlesDrawn>(view))
         return g.eax;
     if (m.word(0x55d6a4))
@@ -6374,8 +5733,7 @@ nfs::u32 line(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
  * 0x55e1f4, drawn by THRASH_drawquadmesh under texture state [0x76da48]),
  * three for its back (0x55e284), and four segments spaced by [0x53b98c],
  * [0x53b994], [0x53b998].., the first [esp+8] of them lit (0xffff0000,
- * 0xccff5050; with bit 2 of [0x7a3a58] drawn flat in that colour,
- * sub_432390, by the list at 0x55e214); [esp+0xc] the colour of two corners.
+ * 0xccff5050); [esp+0xc] the colour of two corners.
  * The x87 work follows the game's code's order (sym/ssa2native.py).
  * ret 0xc. */
 nfs::u32 segmentMeter(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
@@ -6646,14 +6004,7 @@ nfs::u32 segmentMeter(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
         return g.eax;
     if (i32(lit) > -1)
     {
-        if (!state(0x68, 1) || !state(1, m.word(0x8b4844)))
-            return g.eax;
-        if (m.byte(0x7a3a58) & 2)
-        {
-            if (lit && (!out.go<0x432390, graphics::softwareBlendColour>(0xccff5050) || !mesh(lit + lit - 1, 0x55e214)))
-                return g.eax;
-        }
-        else if (!mesh(9, 0x55e1f4))
+        if (!state(0x68, 1) || !state(1, m.word(0x8b4844)) || !mesh(9, 0x55e1f4))
             return g.eax;
         if (!state(0x68, 0))
             return g.eax;
@@ -7327,37 +6678,16 @@ nfs::u32 hud(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
         r.eax = (r.eax << 5) + r.ecx;
         return callTo(0x47fcb0);
     };
-    // the 2D layers drawn: 0x725748, 0x76da48 (under state 0x2bf with bit 2 of [0x7a3a58]), 0x749a38
-    auto layers = [&](bool mirror) {
+    // the 2D layers drawn: 0x725748, 0x76da48, 0x749a38 (each test of bit 2 of [0x7a3a58] finds it clear)
+    auto layers = [&]() {
         r.eax = 0x725748;
         if (!callTo(0x49be40) || !callTo(0x48e770))
             return false;
-        flags.logic8(m.byte(0x7a3a58) & 2);
-        if (m.byte(0x7a3a58) & 2)
-        {
-            r.edx = 1;
-            r.eax = 0x2bf;
-            if (!callTo(0x431900))
-                return false;
-        }
+        flags.logic8(0);
         r.eax = 0x76da48;
         if (!callTo(0x49be40))
             return false;
-        flags.logic8(m.byte(0x7a3a58) & 2);
-        if (m.byte(0x7a3a58) & 2)
-        {
-            if (mirror)
-            {
-                r.eax = player();
-                if (!callTo(0x482190))
-                    return false;
-            }
-            r.eax = 0x2bf;
-            r.edx = 0;
-            flags.logic(0);
-            if (!callTo(0x431900))
-                return false;
-        }
+        flags.logic8(0);
         r.eax = 0x749a38;
         return callTo(0x49be40) && callTo(0x4d1340);
     };
@@ -7490,7 +6820,7 @@ nfs::u32 hud(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
         flags.compare(gameSettings(app).hudAt(r.edx + r.eax).mapStyle, 0);
         if (gameSettings(app).hudAt(r.edx + r.eax).mapStyle && !map())
             return g.eax;
-        if (!layers(false))
+        if (!layers())
             return g.eax;
         return finish();
     }
@@ -8718,7 +8048,7 @@ nfs::u32 hud(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
                 return g.eax;
         }
     }
-    // the layers, or in the top half of split screen with the other car's HUD off only the mirror's frame
+    // the layers, but in the top half of split screen with the other car's HUD off
     r.ebx = m.word(ebp - 0xc);
     bool layersOnly = false;
     flags.compare(r.ebx, 1);
@@ -8735,27 +8065,11 @@ nfs::u32 hud(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
     }
     if (!layersOnly)
     {
-        if (!layers(true))
+        if (!layers())
             return g.eax;
     }
     else
-    {
-        flags.logic8(m.byte(0x7a3a58) & 2);
-        if (m.byte(0x7a3a58) & 2)
-        {
-            r.eax = 0x2bf;
-            r.edx = r.ebx;
-            if (!callTo(0x431900))
-                return g.eax;
-            r.eax = player();
-            if (!callTo(0x482190))
-                return g.eax;
-            r.edx = 0;
-            r.eax = 0x2bf;
-            if (!callTo(0x431900))
-                return g.eax;
-        }
-    }
+        flags.logic8(0);  // test byte [0x7a3a58], 2: clear
     finish();
     return g.eax;
 }
@@ -8765,8 +8079,8 @@ nfs::u32 hud(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
  * stack; another car of the same model's (+0x220's +0x14) textures shared
  * through sub_4b7ba0, else loaded by sub_4b7a60 -- a pursuit car (model
  * 0..0x31, not the cop) with the model's own palette at 0x6fd54c -- at 256
- * for the player's car and 128 for the rest (256 for all with
- * NFS_CAR_DETAIL_FULL, a port); the player's shared to [0x55fe24] as well
+ * for the player's car and 128 for the rest (256 for all: the port's car
+ * detail change); the player's shared to [0x55fe24] as well
  * when [0x55d000] is 1. */
 nfs::u32 carTextures(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
@@ -8780,8 +8094,8 @@ nfs::u32 carTextures(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
     auto leave = [&]() -> nfs::u32 { entry.restore(ts, Entry::kEbx | Entry::kEcx | Entry::kEsi | Entry::kEdi | Entry::kEbp); return g.eax; };
     const u32 name = frame - 0x108;  // the model's name, on the frame for the loaders
     auto isPlayer = [&]() { return car == m.word(gameSettings(app).localPlayer * 4 + 0x5efa48); };
-    // port (apply_car_detail): every car at the player's texture size
-    const u32 size = isPlayer() ? 256u : (fullCarDetail() ? 256u : 128u);
+    // port (the car detail change): every car at the player's texture size, not 128
+    const u32 size = 256u;
     if (!out.go<0x439300, load::prefixOf>(gameSettings(app).entryAt(m.word(car + 0x1f0) * 108).car))
         return g.eax;
     // the model's name, as the inline strcpy copies it
@@ -8876,8 +8190,6 @@ nfs::u32 loadingScreen(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
     /* The calls hand on what the code has in eax, edx, ebx and ecx, stale values too: sub_4ef190
      * and sub_4f09c0 pass them on to the functions they call, sub_4ef1b0 pushes eax, and the
      * check compares those of sub_4d4080, sub_4d79b0 and sub_4ead90. */
-    if ((m.byte(0x7a3a58) & 2) && !out.go<0x431900, graphics::sendState>(0x2bf, 3))
-        return g.eax;
     // the window's rectangle (sub_4beb20 of 0x7cdac0) to the frame
     const u32 rect = ebp + 0x42;
     m.word(0x79f288, 1);
@@ -8984,8 +8296,6 @@ nfs::u32 loadingScreen(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
     m.store(0x79f280, M::add(M::add(single(textX), m.load(0x79f284)), m.load(0x53bdf8)));
     m.store(0x79f280, M::mul(scale, m.load(0x79f280)));
     if (!out.go<0x4d1340, port::text::fontsDrawn>(out.esp - 4))
-        return g.eax;
-    if ((m.byte(0x7a3a58) & 2) && !out.go<0x431900, graphics::sendState>(0x2bf, 0))
         return g.eax;
     entry.restore(ts, Entry::kEbx | Entry::kEcx | Entry::kEdx | Entry::kEsi | Entry::kEdi | Entry::kEbp);
     return g.eax;
@@ -9851,17 +9161,6 @@ std::optional<u32> viewRecordMade(nfs::App* app, nfs::ThreadState& ts, u32 kind,
     return runAsThunk(app, ts, viewRecord, {kind, size, record});
 }
 
-std::optional<u32> quadPieceDrawn(nfs::App* app, nfs::ThreadState& ts, u32 depth, u32 sa, u32 sb, u32 sc,
-                                    u32 sd, u32 a, u32 b, u32 c, u32 d)
-{
-    return runAsThunk(app, ts, subdivideQuad, {depth, sa, sb, sc}, {sd, a, b, c, d});
-}
-
-std::optional<u32> quadWholeDrawn(nfs::App* app, nfs::ThreadState& ts, u32 a, u32 b, u32 c, u32 d)
-{
-    return runAsThunk(app, ts, quadSubdivided, {a, b, c, d});
-}
-
 std::optional<u32> solidTextDrawn(nfs::App* app, nfs::ThreadState& ts, u32 text, u32 x, u32 y, u32 scale,
                                     u32 size, u32 texture, u32 matrix)
 {
@@ -9911,12 +9210,6 @@ std::optional<u32> cockpitDrawn(nfs::App* app, nfs::ThreadState& ts)
 std::optional<u32> clippedByZ(nfs::App* app, nfs::ThreadState& ts, u32 list, u32 codes, u32 any)
 {
     return runAsThunk(app, ts, clipByZ, {list, codes, any});
-}
-
-std::optional<u32> nearTriangleDrawn(nfs::App* app, nfs::ThreadState& ts, u32 record, u32 nearBits, u32 ebx,
-                                       u32 ecx)
-{
-    return runAsThunk(app, ts, nearTriangle, {record, nearBits, ebx, ecx});
 }
 
 std::optional<u32> pieceTextureMade(nfs::App* app, nfs::ThreadState& ts, u32 pieces, u32 record, u32 format,

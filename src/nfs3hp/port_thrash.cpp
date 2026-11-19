@@ -1113,15 +1113,6 @@ void setDynamicResolution(u32 width, u32 height)
     s_dynamicHeight = height;
 }
 
-bool fullColourTextures()
-{
-    static const bool on = []() {
-        const char* value = SDL_getenv("NFS_TEXTURES32");
-        return !value || SDL_strcmp(value, "0") != 0;
-    }();
-    return on;
-}
-
 /* ---- voodoo2a's exports, typed (port_thrash.h) ---- */
 
 /* THRASH_drawtri(a, b, c). */
@@ -1442,13 +1433,10 @@ u32 about(App* app, ThreadState& ts)
         put(app, kInfo + thrash::kAboutUnknown, kUnknownList);
         put(app, kInfo + thrash::kAboutTextureFormatCount, 9);
         put(app, kInfo + thrash::kAboutTextureFormats, kTextureFormats);
-        if (fullColourTextures())
-        {
-            /* the port's full colour change: THRASH format 6, ARGB 8888, taken,
-             * and handed to the renderer as such. */
-            put(app, kTextureFormats + 6 * 4, 1);
-            app->getMemory<nfs::u8>(kFormats + 6) = nfs::u8(kTexFmtArgb8888);
-        }
+        /* the port's full colour change: THRASH format 6, ARGB 8888, taken,
+         * and handed to the renderer as such. */
+        put(app, kTextureFormats + 6 * 4, 1);
+        app->getMemory<nfs::u8>(kFormats + 6) = nfs::u8(kTexFmtArgb8888);
         std::strcpy(&app->getMemory<char>(kInfo + thrash::kAboutName), &app->getMemory<char>(kName));
         put(app, kInfo + thrash::kAboutSubType, 0);
         if (!(kFlags(app) & kSetUp))

@@ -235,6 +235,7 @@ struct MouseImpl
     SDL_Mutex*  mutex;
     float       accumDx, accumDy, accumDz;
     nfs::u32  buttons;
+    nfs::u32  presses;  // buttons gone down, any of them, ever (Mouse::presses)
 
     static const nfs::u32 kBufferCapacity = 64;
     Mouse::BufferedEvent buffer[kBufferCapacity];
@@ -244,6 +245,7 @@ struct MouseImpl
         :   mutex(SDL_CreateMutex())
         ,   accumDx(0.f), accumDy(0.f), accumDz(0.f)
         ,   buttons(0)
+        ,   presses(0)
         ,   bufferHead(0), bufferCount(0)
     {
         /* Registered exactly once, thanks to mouseImpl()'s function-local
@@ -308,6 +310,7 @@ bool SDLCALL mouseEventWatch(void* /*userdata*/, SDL_Event* event)
             SDL_LockMutex(m.mutex);
             if (down) m.buttons |= (nfs::u32(1) << bit);
             else      m.buttons &= ~(nfs::u32(1) << bit);
+            m.presses += down ? 1 : 0;
             m.pushEvent(DIMOFS_BUTTON0 + bit, down ? 0x80 : 0x00);
             SDL_UnlockMutex(m.mutex);
         }
@@ -352,8 +355,26 @@ void Mouse::pressPointer(nfs::u32 button, bool down)
     SDL_LockMutex(m.mutex);
     if (down) m.buttons |= (nfs::u32(1) << button);
     else      m.buttons &= ~(nfs::u32(1) << button);
+    m.presses += down ? 1 : 0;
     m.pushEvent(DIMOFS_BUTTON0 + button, down ? 0x80 : 0x00);
     SDL_UnlockMutex(m.mutex);
+}
+
+void Mouse::notePress()
+{
+    MouseImpl& m = mouseImpl();
+    SDL_LockMutex(m.mutex);
+    ++m.presses;
+    SDL_UnlockMutex(m.mutex);
+}
+
+nfs::u32 Mouse::presses()
+{
+    MouseImpl& m = mouseImpl();
+    SDL_LockMutex(m.mutex);
+    const nfs::u32 count = m.presses;
+    SDL_UnlockMutex(m.mutex);
+    return count;
 }
 
 Mouse::MouseState Mouse::getState()

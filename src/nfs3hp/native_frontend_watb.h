@@ -34,10 +34,8 @@ u32 sortKey(App* app, ThreadState& ts, u32 element);
 u32 returnZero(App* app, ThreadState& ts);
 // The game's 0x4ff570: printf's and scanf's floats, [__EFG_printf] and [__EFG_scanf].
 u32 initFloatFormatters(App* app, ThreadState& ts);
-// The game's 0x4ff59c: where there is a real x87, its state's save and restore for the signal handlers.
-u32 initChipBugHooks(App* app, ThreadState& ts);
-// The game's 0x4ff5dc: an x87 looked for, by what fninit leaves in the control word (`previous` eax as it came).
-u32 init8087(App* app, ThreadState& ts, u32 previous);
+// The game's 0x4ff5dc: the runtime's x87 started: fninit, and eax 0 (no x87 noted, as on the port there is none).
+u32 init8087(App* app, ThreadState& ts);
 // The game's 0x4fd1c0: the palette among the records that follow a shape, or 0.
 u32 shapeClut(App* app, ThreadState& ts, u32 shape);
 // The game's 0x4fd540: a filled rectangle of `colour`, drawn by movdfl as a shape of the window's type with no pixels.
@@ -154,8 +152,6 @@ u32 colourToArgb(App* app, ThreadState& ts, u32 colour);
 u32 dispatchKey(App* app, ThreadState& ts, u32 code);
 // The game's 0x50c5d4: a handler given a number, a free one or its own, and the key `key` set to it.
 u32 registerKey(App* app, ThreadState& ts, u32 key, u32 handler);
-// The game's 0x50d560: a memory copy, 32 bytes at a time through the x87 where it can.
-u32 copyBlock(App* app, ThreadState& ts, u32 from, u32 to, u32 left);
 // The game's 0x50d6e0: ARGBs over palette indices, each result the nearest index.
 u32 blendSpanIndexed(App* app, ThreadState& ts, u32 from, u32 to, u32 count);
 // The game's 0x50d7e0: ARGBs over 1555 pixels.

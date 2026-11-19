@@ -86,12 +86,6 @@
     <string name="debug_mode" translatable="false">Debug mode</string>
     <string name="debug_mode_note" translatable="false">Off: nothing is written to the log and the game starts as a player has it. On: the log is open and the switches below reach the game when it next starts. Launch extras (adb, the names under each switch) still win for that one start.</string>
     <string name="debug_traces" translatable="false">Traces</string>
-    <string name="debug_picture" translatable="false">Picture and renderer</string>
-    <string name="debug_depth16" translatable="false">Depth in the Voodoo\'s 16-bit steps (depth16)</string>
-    <string name="debug_depth16_auto" translatable="false">As the renderer chooses</string>
-    <string name="debug_depth16_off" translatable="false">Off</string>
-    <string name="debug_depth16_on" translatable="false">On</string>
-    <string name="debug_depth16_ab" translatable="false">Five seconds each, in turns [GPU]</string>
     <string name="debug_reset" translatable="false">Reset every switch</string>
     <!-- The Logs screen under Data: in English in every language, like Advanced
          (it is for sending a report). -->

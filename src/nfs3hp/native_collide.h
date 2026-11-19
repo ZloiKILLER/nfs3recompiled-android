@@ -49,15 +49,7 @@ void layerNothing(nfs::App* app, nfs::u32 count, nfs::u32 layer);
 void secondLayerNothing(nfs::App* app, nfs::u32 layer);
 // The game's 0x431c40: the main pass's first layer: nothing.
 void firstLayerNothing(nfs::App* app, nfs::u32 layer);
-// The game's 0x431c50: the software renderer's blend tables; the last quotient, as the code leaves it.
-nfs::u32 fillBlendTables(nfs::App* app);
-// The game's 0x431d50: the span at `span` blended into the screen.
-void blendInto(nfs::App* app, nfs::u32 span);
-// The game's 0x432690: how finely the quad of corners a, b, c, d is subdivided (0, 1 or 2).
-nfs::u32 subdivisions(nfs::App* app, nfs::u32 a, nfs::u32 b, nfs::u32 c, nfs::u32 d);
-// The game's 0x433530: the textured triangles from `record` on drawn; the next record.
-std::optional<nfs::u32> texturedTriangles(nfs::App* app, nfs::ThreadState& ts, nfs::u32 record);
-// The game's 0x433660 and 0x4339d0: the flat triangle at `record` drawn; the next record.
+// The game's 0x4339d0: the flat triangle at `record` drawn; the next record.
 std::optional<nfs::u32> flatTriangle(nfs::App* app, nfs::ThreadState& ts, nfs::u32 record);
 // The game's 0x4336e0: the triangles from `record` on drawn, by z for their flag; the next record.
 std::optional<nfs::u32> trianglesByZ(nfs::App* app, nfs::ThreadState& ts, nfs::u32 record);

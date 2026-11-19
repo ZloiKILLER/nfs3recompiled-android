@@ -17,8 +17,6 @@ bool sendState(nfs::App* app, nfs::ThreadState& ts, nfs::u32 state, nfs::u32 val
 // The game's 0x431900 as C++ that gives its answer back (the driver's, 1 for a state not sent); nullopt when the
 // game stopped.
 std::optional<nfs::u32> stateAnswer(nfs::App* app, nfs::ThreadState& ts, nfs::u32 state, nfs::u32 value);
-// The game's 0x432390: the software blending's rows for the colour 0xAARRGGBB chosen and sent.
-bool softwareBlendColour(nfs::App* app, nfs::ThreadState& ts, nfs::u32 colour);
 // The game's 0x433d40: a quad of a polygon list with colours of its own drawn.
 bool colouredQuadRecord(nfs::App* app, nfs::ThreadState& ts, nfs::u32 record);
 // The game's 0x4347d0: a line of a polygon list drawn.
@@ -28,6 +26,9 @@ bool messageBox(nfs::App* app, nfs::ThreadState& ts, nfs::u32 player, nfs::u32 t
 // The game's 0x495230: the loading bar at the per cent at `perCentAt` (the address of the word the
 // code pushes; 101 written back there past 100).
 bool loadingProgress(nfs::App* app, nfs::ThreadState& ts, nfs::u32 perCentAt);
+// Port: whether the loading bar's last move was drawn where it was asked to go -- the bar is paced
+// to take its time, and a load all done waits at 100 per cent until this says so.
+bool loadingBarReached();
 // The game's 0x49c600: a texture of `width` by `height` allocated; eax its handle, as the driver
 // leaves it.
 bool textureAllocated(nfs::App* app, nfs::ThreadState& ts, nfs::u32 width, nfs::u32 height);
@@ -44,8 +45,6 @@ bool textureUpdated(nfs::App* app, nfs::ThreadState& ts, nfs::u32 texture, nfs::
                     nfs::u32 width, nfs::u32 height);
 // The game's 0x4bee80: the screen mode the Screen Size list would have for `width`, 1 for none.
 std::optional<nfs::u32> screenModeFor(nfs::App* app, nfs::ThreadState& ts, nfs::u32 width);
-// The game's 0x4eb3c0: the table of reciprocals made, once.
-bool reciprocalsMade(nfs::App* app, nfs::ThreadState& ts);
 // The game's 0x4f8830: the screen's functions kept for the driver.
 bool screenFunctionsSet(nfs::App* app, nfs::ThreadState& ts);
 

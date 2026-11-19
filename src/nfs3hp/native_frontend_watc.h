@@ -229,12 +229,6 @@ u32 threadStartHook(App* app, ThreadState& ts, u32 eax);
 u32 mathErrorHook(App* app, ThreadState& ts, u32 eax);
 // The game's 0x52c878: abort's report.
 u32 abnormalTermination(App* app, ThreadState& ts);
-// The game's 0x52c88a: a double's 0 in edx:eax.
-std::uint64_t doubleZero(App* app, ThreadState& ts);
-// The game's 0x52c89b: the math error, and a double's infinity, in edx:eax, of the sign in what it returns.
-std::uint64_t doubleInfinityHook(App* app, ThreadState& ts);
-// The game's 0x52c8a7: errno's ERANGE, the math error, and a double's infinity of the sign in eax.
-std::uint64_t doubleInfinity(App* app, ThreadState& ts, u32 sign);
 // The game's 0x52e3f8: the driver's hook, 0.
 u32 zeroJump(App* app, ThreadState& ts);
 // The game's 0x52e4e0: a line of text at a position.

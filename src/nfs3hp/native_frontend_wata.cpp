@@ -92,28 +92,15 @@ nfs::u32 timerWait(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
 nfs::u32 textDepth(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
 nfs::u32 textSetPen(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
 nfs::u32 textSetAttribute(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
-nfs::u32 mixA4Bit(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
-nfs::u32 mixA16Bit(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
-nfs::u32 mixA32Bit(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
-nfs::u32 mixB4Bit(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
-nfs::u32 mixB16Bit(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
-nfs::u32 mixB32Bit(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
-nfs::u32 mixC4Bit(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
-nfs::u32 mixC16Bit(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
-nfs::u32 mixC32Bit(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
 nfs::u32 mixD4Bit(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
 nfs::u32 mixD16Bit(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
 nfs::u32 mixD32Bit(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
-nfs::u32 mixA24Bit(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
-nfs::u32 mixB24Bit(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
-nfs::u32 mixC24Bit(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
 nfs::u32 mixD24Bit(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
 nfs::u32 blitDispatch(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
 nfs::u32 blitShapeAtPosition(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
 nfs::u32 surfaceFillAndDraw(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
 nfs::u32 textMeasureGlyph(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
 nfs::u32 textMeasure(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
-nfs::u32 processorCountLoops(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
 nfs::u32 registryAddEntry(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
 nfs::u32 screenPixels(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
 nfs::u32 windowSave(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
@@ -1401,12 +1388,10 @@ constexpr u32 kRequestId = 4, kRequestBuffer = 8, kRequestOffset = 0xc, kRequest
 constexpr u32 kRequestOwned = 0x18, kRequestName = 0x1c, kRequestKind = 0x20, kRequestCallback = 0x24;
 constexpr u32 kNextRequestId = 0x565284, kCurrentPool = 0x5643f4;
 constexpr u32 kAsyncSource = 0x54c680;
-constexpr u32 kBlockBytes = 0x10e;    // of a stream, what the sound streams want topped up by
 
 constexpr u32 kQueueTake = 0x50df60, kQueueLength = 0x50e1d0, kQueueFree = 0x50dde0;
 constexpr u32 kFillZeroes = 0x4e070c, kCloseEvent = 0x4dfc00, kCreateThread = 0x4df7a0;
 constexpr u32 kLockDrive = 0x4e40a0, kUnlockDrive = 0x4e40f0;
-constexpr u32 kBlockSize = 0x4ff820, kTopUp = 0x4ff670, kWaitTopUp = 0x4ff7f0;
 constexpr u32 kAsyncTask = 0x4f0d20, kAsyncThread = 0x4f1820;
 constexpr u32 kRequestHasId = 0x4f0cb0;
 
@@ -1743,7 +1728,8 @@ nfs::u32 frontend::asyncReadStatus(nfs::App* app, nfs::ThreadState& ts, nfs::Arg
 }
 
 /* sub_4f1820: the reader's thread: a request at a time from the waiting queue, until it is told
- * to close. */
+ * to close.  Port: no read waits for the music stream to be topped up first (0x4ff670, 0x4ff7f0),
+ * as the game's did so one CD drive would not seek under the music. */
 u32 frontend::wata::asyncThreadMain(App* app, ThreadState& ts)
 {
     Guest guest(app, ts);
@@ -1795,8 +1781,6 @@ u32 frontend::wata::asyncThreadMain(App* app, ThreadState& ts)
             const u32 file = guest.dword(handle);
             if (file != 0)
             {
-                const u32 blocks = u32(s32(guest.dword(request + kRequestSize)) / s32(kBlockBytes));
-                const u32 wanted = blocks + fe::direct<kBlockSize, port::stream::loadBlockSizeIs>(app, ts);
                 if (guest.dword(request + kRequestBuffer) == 0)
                 {
                     guest.setDword(kErrorFile, kAsyncSource);
@@ -1810,8 +1794,6 @@ u32 frontend::wata::asyncThreadMain(App* app, ThreadState& ts)
                 {
                     guest.setDword(request + kRequestOwned, guest.dword(asyncRecord(guest) + kAsyncSharedBuffer));
                 }
-                fe::direct<kTopUp, port::stream::topUpAsked>(app, ts, ts.sp - 4, wanted);
-                fe::direct<kWaitTopUp, port::stream::topUpWaited>(app, ts, ts.sp - 4);
                 fe::direct<kLockDrive, ea::handleDriveLocked>(app, ts, guest.dword(handle));
                 // The game's code hands it the request in ebx too, which it does not read.
                 fe::direct<0x4e2e60, ea::seekChecked>(app, ts, guest.dword(handle), guest.dword(request + kRequestOffset));
@@ -1842,8 +1824,6 @@ u32 frontend::wata::asyncThreadMain(App* app, ThreadState& ts)
             guest.setDword(asyncRecord(guest) + kAsyncFile, 0);
             if (guest.dword(request + kRequestName) != 0)
             {
-                fe::direct<kTopUp, port::stream::topUpAsked>(app, ts, ts.sp - 4, fe::direct<kBlockSize, port::stream::loadBlockSizeIs>(app, ts));
-                fe::direct<kWaitTopUp, port::stream::topUpWaited>(app, ts, ts.sp - 4);
                 const u32 record = asyncRecord(guest);
                 fe::direct<0x4e28d0, ea::openToRead>(app, ts, guest.dword(request + kRequestName), record + kAsyncFile, record + kAsyncFileStart, record + kAsyncFileSize);
                 fe::direct<0x4e1890, ea::purgeBlock>(app, ts, guest.dword(request + kRequestName));
@@ -1859,9 +1839,6 @@ u32 frontend::wata::asyncThreadMain(App* app, ThreadState& ts)
             }
             else
             {
-                const u32 blocks = u32(s32(guest.dword(request + kRequestSize)) / s32(kBlockBytes));
-                fe::direct<kTopUp, port::stream::topUpAsked>(app, ts, ts.sp - 4, fe::direct<kBlockSize, port::stream::loadBlockSizeIs>(app, ts) + blocks);
-                fe::direct<kWaitTopUp, port::stream::topUpWaited>(app, ts, ts.sp - 4);
                 fe::direct<kLockDrive, ea::handleDriveLocked>(app, ts, guest.dword(asyncRecord(guest) + kAsyncFile));
                 fe::direct<0x4e2e60, ea::seekChecked>(app, ts, guest.dword(asyncRecord(guest) + kAsyncFile), guest.dword(request + kRequestOffset));
                 if (*fe::direct<0x4e2de0, ea::readChecked>(app, ts, guest.dword(asyncRecord(guest) + kAsyncFile), guest.dword(request + kRequestBuffer), guest.dword(request + kRequestSize)) == 0)
@@ -1906,20 +1883,17 @@ constexpr u32 kTailCall = u32(0) - 4;
 
 constexpr u32 kTicks = 0x79c1a4;
 
-// The mixers: B (sub_50d560) has a typed core, called as C++; the others none yet: by address.
-constexpr u32 kMixA = 0x50356c, kMixB = 0x50d560, kMixC = 0x503280, kMixD = 0x5033e4;
+// The copy behind the spans' front doors: the memmove (native_mix.cpp), by address.
+constexpr u32 kSpanCopy = 0x5033e4;
 
-/* A tail call with the count (ebx) turned from one size into another's, the samples (eax) and where
- * they go (edx) on to the mixer as they came. */
+/* A tail call with the count (ebx) turned from one size into another's, the pixels (eax) and where
+ * they go (edx) on to the copy as they came. */
 template <typename Scale>
-u32 tailScaled(nfs::App* app, nfs::ThreadState& ts, u32 from, u32 to, u32 count, u32 target,
-                 Scale scale)
+u32 tailScaled(nfs::App* app, nfs::ThreadState& ts, u32 from, u32 to, u32 count, Scale scale)
 {
     Guest guest(app, ts);
     const fe::Frame frame(guest, ts, kTailCall);
-    if (target == kMixB)
-        return fe::direct<0x50d560, frontend::watb::copyBlock>(app, ts, from, to, scale(count));
-    return fe::pointerCall(guest, target, args({ from, to, scale(count) }));
+    return fe::pointerCall(guest, kSpanCopy, args({ from, to, scale(count) }));
 }
 
 u32 half(u32 count) { return u32(s32(count) >> 1); }
@@ -2041,119 +2015,12 @@ nfs::u32 frontend::textSetAttribute(nfs::App* app, nfs::ThreadState& ts, nfs::Ar
     return fe::runThunk(app, ts, args, site, [&](Guest&) { return wata::textSetAttribute(app, ts, value); });
 }
 
-/* The mixers' front doors, a table for each format at 0x5651e0: a count of samples turned into one
- * of bytes (halved for 4 bits, doubled for 16, three times for 24, four times for 32). */
-u32 frontend::wata::mixA4Bit(App* app, ThreadState& ts, u32 from, u32 to, u32 count)
-{
-    return tailScaled(app, ts, from, to, count, kMixA, half);
-}
-
-nfs::u32 frontend::mixA4Bit(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
-{
-    static Site site{ "sub_4f0880", 0, 0, nullptr, 0, 0 };
-    const u32 from = args.eax, to = args.edx, count = args.ebx;
-    return fe::runThunk(app, ts, args, site, [&](Guest&) { return wata::mixA4Bit(app, ts, from, to, count); });
-}
-
-u32 frontend::wata::mixA16Bit(App* app, ThreadState& ts, u32 from, u32 to, u32 count)
-{
-    return tailScaled(app, ts, from, to, count, kMixA, twice);
-}
-
-nfs::u32 frontend::mixA16Bit(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
-{
-    static Site site{ "sub_4f0890", 0, 0, nullptr, 0, 0 };
-    const u32 from = args.eax, to = args.edx, count = args.ebx;
-    return fe::runThunk(app, ts, args, site, [&](Guest&) { return wata::mixA16Bit(app, ts, from, to, count); });
-}
-
-u32 frontend::wata::mixA32Bit(App* app, ThreadState& ts, u32 from, u32 to, u32 count)
-{
-    return tailScaled(app, ts, from, to, count, kMixA, fourTimes);
-}
-
-nfs::u32 frontend::mixA32Bit(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
-{
-    static Site site{ "sub_4f08c0", 0, 0, nullptr, 0, 0 };
-    const u32 from = args.eax, to = args.edx, count = args.ebx;
-    return fe::runThunk(app, ts, args, site, [&](Guest&) { return wata::mixA32Bit(app, ts, from, to, count); });
-}
-
-u32 frontend::wata::mixB4Bit(App* app, ThreadState& ts, u32 from, u32 to, u32 count)
-{
-    return tailScaled(app, ts, from, to, count, kMixB, half);
-}
-
-nfs::u32 frontend::mixB4Bit(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
-{
-    static Site site{ "sub_4f08d0", 0, 0, nullptr, 0, 0 };
-    const u32 from = args.eax, to = args.edx, count = args.ebx;
-    return fe::runThunk(app, ts, args, site, [&](Guest&) { return wata::mixB4Bit(app, ts, from, to, count); });
-}
-
-u32 frontend::wata::mixB16Bit(App* app, ThreadState& ts, u32 from, u32 to, u32 count)
-{
-    return tailScaled(app, ts, from, to, count, kMixB, twice);
-}
-
-nfs::u32 frontend::mixB16Bit(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
-{
-    static Site site{ "sub_4f08e0", 0, 0, nullptr, 0, 0 };
-    const u32 from = args.eax, to = args.edx, count = args.ebx;
-    return fe::runThunk(app, ts, args, site, [&](Guest&) { return wata::mixB16Bit(app, ts, from, to, count); });
-}
-
-u32 frontend::wata::mixB32Bit(App* app, ThreadState& ts, u32 from, u32 to, u32 count)
-{
-    return tailScaled(app, ts, from, to, count, kMixB, fourTimes);
-}
-
-nfs::u32 frontend::mixB32Bit(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
-{
-    static Site site{ "sub_4f0910", 0, 0, nullptr, 0, 0 };
-    const u32 from = args.eax, to = args.edx, count = args.ebx;
-    return fe::runThunk(app, ts, args, site, [&](Guest&) { return wata::mixB32Bit(app, ts, from, to, count); });
-}
-
-u32 frontend::wata::mixC4Bit(App* app, ThreadState& ts, u32 from, u32 to, u32 count)
-{
-    return tailScaled(app, ts, from, to, count, kMixC, half);
-}
-
-nfs::u32 frontend::mixC4Bit(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
-{
-    static Site site{ "sub_4f0920", 0, 0, nullptr, 0, 0 };
-    const u32 from = args.eax, to = args.edx, count = args.ebx;
-    return fe::runThunk(app, ts, args, site, [&](Guest&) { return wata::mixC4Bit(app, ts, from, to, count); });
-}
-
-u32 frontend::wata::mixC16Bit(App* app, ThreadState& ts, u32 from, u32 to, u32 count)
-{
-    return tailScaled(app, ts, from, to, count, kMixC, twice);
-}
-
-nfs::u32 frontend::mixC16Bit(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
-{
-    static Site site{ "sub_4f0930", 0, 0, nullptr, 0, 0 };
-    const u32 from = args.eax, to = args.edx, count = args.ebx;
-    return fe::runThunk(app, ts, args, site, [&](Guest&) { return wata::mixC16Bit(app, ts, from, to, count); });
-}
-
-u32 frontend::wata::mixC32Bit(App* app, ThreadState& ts, u32 from, u32 to, u32 count)
-{
-    return tailScaled(app, ts, from, to, count, kMixC, fourTimes);
-}
-
-nfs::u32 frontend::mixC32Bit(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
-{
-    static Site site{ "sub_4f0960", 0, 0, nullptr, 0, 0 };
-    const u32 from = args.eax, to = args.edx, count = args.ebx;
-    return fe::runThunk(app, ts, args, site, [&](Guest&) { return wata::mixC32Bit(app, ts, from, to, count); });
-}
-
+/* The spans' front doors in the copy set the port's processor has (sub_4f09c0), its table at
+ * 0x56524c: a count of pixels turned into one of bytes (halved for 4 bits, doubled for 16, three
+ * times for 24, four times for 32).  The sets of the other processors are gone. */
 u32 frontend::wata::mixD4Bit(App* app, ThreadState& ts, u32 from, u32 to, u32 count)
 {
-    return tailScaled(app, ts, from, to, count, kMixD, half);
+    return tailScaled(app, ts, from, to, count, half);
 }
 
 nfs::u32 frontend::mixD4Bit(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
@@ -2165,7 +2032,7 @@ nfs::u32 frontend::mixD4Bit(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args
 
 u32 frontend::wata::mixD16Bit(App* app, ThreadState& ts, u32 from, u32 to, u32 count)
 {
-    return tailScaled(app, ts, from, to, count, kMixD, twice);
+    return tailScaled(app, ts, from, to, count, twice);
 }
 
 nfs::u32 frontend::mixD16Bit(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
@@ -2177,7 +2044,7 @@ nfs::u32 frontend::mixD16Bit(nfs::App* app, nfs::ThreadState& ts, nfs::Args& arg
 
 u32 frontend::wata::mixD32Bit(App* app, ThreadState& ts, u32 from, u32 to, u32 count)
 {
-    return tailScaled(app, ts, from, to, count, kMixD, fourTimes);
+    return tailScaled(app, ts, from, to, count, fourTimes);
 }
 
 nfs::u32 frontend::mixD32Bit(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
@@ -2187,59 +2054,13 @@ nfs::u32 frontend::mixD32Bit(nfs::App* app, nfs::ThreadState& ts, nfs::Args& arg
     return fe::runThunk(app, ts, args, site, [&](Guest&) { return wata::mixD32Bit(app, ts, from, to, count); });
 }
 
-namespace
-{
-/* Three times the count, for 24 bits; the samples in eax (and in ecx too, which no mixer reads),
- * where they go in edx. */
-u32 mixTriple(nfs::App* app, nfs::ThreadState& ts, u32 samples, u32 to, u32 count, u32 target)
+/* Three times the count, for 24 bits; the pixels in eax (and in ecx too, which the copy does not
+ * read), where they go in edx. */
+u32 frontend::wata::mixD24Bit(App* app, ThreadState& ts, u32 samples, u32 to, u32 count)
 {
     Guest guest(app, ts);
     const fe::Frame frame(guest, ts, 4);
-    if (target == kMixB)
-        return fe::direct<0x50d560, frontend::watb::copyBlock>(app, ts, samples, to, count * 3);
-    return fe::pointerCall(guest, target, args({ samples, to, count * 3 }));
-}
-}
-
-u32 frontend::wata::mixA24Bit(App* app, ThreadState& ts, u32 samples, u32 to, u32 count)
-{
-    return mixTriple(app, ts, samples, to, count, kMixA);
-}
-
-nfs::u32 frontend::mixA24Bit(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
-{
-    static Site site{ "sub_4f08a0", 0, 0, nullptr, 0, fe::kRestoreEcx };
-    const u32 samples = args.eax, to = args.edx, count = args.ebx;
-    return fe::runThunk(app, ts, args, site, [&](Guest&) { return wata::mixA24Bit(app, ts, samples, to, count); });
-}
-
-u32 frontend::wata::mixB24Bit(App* app, ThreadState& ts, u32 samples, u32 to, u32 count)
-{
-    return mixTriple(app, ts, samples, to, count, kMixB);
-}
-
-nfs::u32 frontend::mixB24Bit(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
-{
-    static Site site{ "sub_4f08f0", 0, 0, nullptr, 0, fe::kRestoreEcx };
-    const u32 samples = args.eax, to = args.edx, count = args.ebx;
-    return fe::runThunk(app, ts, args, site, [&](Guest&) { return wata::mixB24Bit(app, ts, samples, to, count); });
-}
-
-u32 frontend::wata::mixC24Bit(App* app, ThreadState& ts, u32 samples, u32 to, u32 count)
-{
-    return mixTriple(app, ts, samples, to, count, kMixC);
-}
-
-nfs::u32 frontend::mixC24Bit(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
-{
-    static Site site{ "sub_4f0940", 0, 0, nullptr, 0, fe::kRestoreEcx };
-    const u32 samples = args.eax, to = args.edx, count = args.ebx;
-    return fe::runThunk(app, ts, args, site, [&](Guest&) { return wata::mixC24Bit(app, ts, samples, to, count); });
-}
-
-u32 frontend::wata::mixD24Bit(App* app, ThreadState& ts, u32 samples, u32 to, u32 count)
-{
-    return mixTriple(app, ts, samples, to, count, kMixD);
+    return fe::pointerCall(guest, kSpanCopy, args({ samples, to, count * 3 }));
 }
 
 nfs::u32 frontend::mixD24Bit(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
@@ -2249,18 +2070,16 @@ nfs::u32 frontend::mixD24Bit(nfs::App* app, nfs::ThreadState& ts, nfs::Args& arg
     return fe::runThunk(app, ts, args, site, [&](Guest&) { return wata::mixD24Bit(app, ts, samples, to, count); });
 }
 
-/* sub_4f09c0: the blitter that suits the processor, chosen the first time, called: the shape and
- * its place (eax, edx and ebx, which the game's code hands on as they came) and the blitters the
- * choice names.  The MMX blitter's emms is nothing here: the x87 is not shared. */
+/* sub_4f09c0: the shape drawn by the blitters of the copy set the port's processor has, MMX's, the
+ * fourth in the table at 0x565274 (the game chose one the first time it drew, by the processor):
+ * the shape and its place (eax, edx and ebx, which the game's code hands on as they came).  The
+ * MMX blitter's emms is nothing here: the x87 is not shared. */
 u32 frontend::wata::blitDispatchAt(App* app, ThreadState& ts, u32 shape, u32 x, u32 y)
 {
     Guest guest(app, ts);
     const fe::Frame frame(guest, ts, 4);
-    constexpr u32 kChoice = 0x565270, kHasMmx = 0x5643b4, kTable = 0x565274;
-    if (s32(guest.dword(kChoice)) < 0)
-        guest.setDword(kChoice, guest.dword(kHasMmx) != 0 ? 3 : 1);
-    const u32 blitters = guest.dword(kTable + 4 * guest.dword(kChoice));
-    return fe::direct<0x50b0b0, watb::moveShape>(app, ts, shape, x, y, blitters);
+    constexpr u32 kMmxBlitters = 0x565280;
+    return fe::direct<0x50b0b0, watb::moveShape>(app, ts, shape, x, y, guest.dword(kMmxBlitters));
 }
 
 nfs::u32 frontend::blitDispatch(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
@@ -2352,30 +2171,6 @@ nfs::u32 frontend::textMeasure(nfs::App* app, nfs::ThreadState& ts, nfs::Args& a
     const u32 text = args.eax, leftOut = args.edx, topOut = args.ebx, widthOut = args.ecx;
     const u32 heightOut = app->getMemory<u32>(ts.sp + 4);
     return fe::runThunk(app, ts, args, site, [&](Guest&) { return wata::textMeasure(app, ts, text, leftOut, topOut, widthOut, heightOut); });
-}
-
-/* sub_4f2170: how many times round a loop in so many ticks: the processor's speed. */
-u32 frontend::wata::processorCountLoops(App* app, ThreadState& ts, s32 ticks)
-{
-    Guest guest(app, ts);
-    const fe::Frame frame(guest, ts, 6 * 4 + 8);
-    const u32 start = guest.dword(kTicks);
-    u32 loops = 0;
-    do
-    {
-        giveWayInWait(app, ts);
-        volatile s32 dividend = 0x5555aaaa;
-        (void)(dividend / 0x21);
-        ++loops;
-    } while (s32(guest.dword(kTicks) - start) < ticks);
-    return loops;
-}
-
-nfs::u32 frontend::processorCountLoops(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
-{
-    static Site site{ "sub_4f2170", 0, 0, nullptr, 0, fe::kRestoreAll };
-    const s32 ticks = s32(args.eax);
-    return fe::runThunk(app, ts, args, site, [&](Guest&) { return wata::processorCountLoops(app, ts, ticks); });
 }
 
 /* sub_4f4650: a string and a value into the next row of the table at 0x79f524. */
@@ -2970,8 +2765,6 @@ u32 frontend::wata::graphicsStart(App* app, ThreadState& ts)
     }
     fe::direct<0x503e50, wina::paletteSet>(app, ts, 0, 0x100, 0x568c30);
     fe::direct<0x48eff0, port::timerStarted>(app, ts, guest.dword(0x5643d8));
-    fe::direct<0x4f1c70, removed::checkProcessor>(app, ts);
-    fe::direct<0x4f1ef0, removed::timeProcessor>(app, ts);
     fe::direct<0x517b30, menz::eaTextStart>(app, ts);
     fe::direct<0x4ef520, eab::fontUse>(app, ts, 0x5662e4);
     const u32 black = fe::direct<0x4ef760, eab::colourPack>(app, ts, 0xff000000u);

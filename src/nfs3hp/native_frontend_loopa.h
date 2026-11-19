@@ -50,8 +50,6 @@ u32 recordCar(App* app, ThreadState& ts, u32 car);
 u32 playbackPose(App* app, ThreadState& ts, u32 positionOut, u32 matrixOut);
 // The game's 0x495190: the loading bar's four corners scaled by the view's size.
 u32 barScale(App* app, ThreadState& ts, u32 corner0, u32 corner1, u32 corner2, u32 corner3);
-// The game's 0x497430: the table of reciprocal roots, a byte each.
-u32 fillRootBytes(App* app, ThreadState& ts);
 // The game's 0x4a3390: the game's start.
 u32 gameStart(App* app, ThreadState& ts);
 // The game's 0x4a33a0: the game's end.

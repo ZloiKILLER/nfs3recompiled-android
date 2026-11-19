@@ -1021,32 +1021,11 @@ private fun AdvancedScreen(a: LauncherActivity) {
         }
         if (a.debugMode) {
             key(generation) {
-                val groups = listOf(
-                    R.string.debug_traces to DebugOptions.TRACES,
-                    R.string.debug_picture to DebugOptions.PICTURE,
-                )
-                for ((title, options) in groups) {
-                    Panel(width) {
-                        Label(stringResource(title))
-                        for (option in options)
-                            BooleanSetting(preferences, option.preference(), option.byDefault,
-                                option.description, option.name) {}
-                    }
-                }
                 Panel(width) {
-                    Label(stringResource(R.string.debug_depth16))
-                    var depth by remember {
-                        mutableIntStateOf(DebugOptions.DEPTH16_VALUES.indexOf(
-                            preferences.getString("debug_" + DebugOptions.DEPTH16, "")).coerceAtLeast(0))
-                    }
-                    ChoiceList(
-                        listOf(stringResource(R.string.debug_depth16_auto), stringResource(R.string.debug_depth16_off),
-                            stringResource(R.string.debug_depth16_on), stringResource(R.string.debug_depth16_ab)),
-                        depth,
-                    ) { index ->
-                        depth = index
-                        preferences.edit().putString("debug_" + DebugOptions.DEPTH16, DebugOptions.DEPTH16_VALUES[index]).apply()
-                    }
+                    Label(stringResource(R.string.debug_traces))
+                    for (option in DebugOptions.TRACES)
+                        BooleanSetting(preferences, option.preference(), option.byDefault,
+                            option.description, option.name) {}
                 }
             }
             MenuButton(stringResource(R.string.debug_reset), {

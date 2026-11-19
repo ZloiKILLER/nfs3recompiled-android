@@ -366,8 +366,6 @@ DEAD(0x4f15f0)  // 10 instructions
 DEAD(0x4f1610)  // 83 instructions; "win/async.c"
 DEAD(0x4f1710)  // 42 instructions; "win/async.c"
 DEAD(0x4f1ea0)  // 27 instructions
-DEAD(0x4f20b0)  // 68 instructions; "win/cpuspeed.c"
-DEAD(0x4f21c0)  // 79 instructions
 DEAD(0x4f2360)  // 10 instructions
 DEAD(0x4f2d00)  // 12 instructions
 DEAD(0x4f2d20)  // 10 instructions
@@ -465,7 +463,6 @@ DEAD(0x4fda20)  // 179 instructions
 DEAD(0x4fdc90)  // 337 instructions
 DEAD(0x4ff0e0)  // 3 instructions
 DEAD(0x4ff5d0)  // 3 instructions
-DEAD(0x4ff624)  // 16 instructions
 DEAD(0x5028b8)  // 4 instructions
 DEAD(0x503700)  // 45 instructions
 DEAD(0x5037a0)  // 39 instructions

@@ -124,8 +124,7 @@ constexpr u32 kSeed = 0x554f10, kProduct = 0x554f14, kMultiplier = 0x554f18;
 // speed's damping, the force and turn handed to the step (three floats).
 constexpr u32 kStep = 0x56ec58, kSubsteps = 0x56ec78, kHeadingError = 0x56ec60, kDamping = 0x56ec68;
 constexpr u32 kPush = 0x56ec6c, kPushY = 0x56ec70, kPushZ = 0x56ec74;
-// What is called by address: the cops' sounds, the lane votes (0x40de30, its thunk's
-// NFS_CAR_TRACE record); and of the typed files' those whose registers a thunk here leaves,
+// What is called by address: the cops' sounds, the lane votes (0x40de30); and of the typed files' those whose registers a thunk here leaves,
 // which their headers do not give: the car at rest settled, the dot product where its eax is read
 // after it.  The menu files' -- the opponents' pull and heading, the distance of two cars, a matrix
 // transposed, the sirens, a turn skipped (native_frontend_sim*.cpp) -- are called as C++ (feCore),

@@ -8,8 +8,7 @@
 
 /* EA's streaming, rewritten (port.h says how): the CD stream that a reader
  * thread fills from a file (port_snd_cdstream.cpp) and the SND streamer that
- * plays it, with the system tasks it runs on and the top-up the loads wait
- * for (port_snd_stream.cpp).
+ * plays it, with the system tasks it runs on (port_snd_stream.cpp).
  *
  * The streams' records stay where the game has them -- Pathfinder and the
  * movies' streamer read them there -- and are read and written in place.

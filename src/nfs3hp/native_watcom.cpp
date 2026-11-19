@@ -2130,15 +2130,12 @@ nfs::u32 localtime(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
  * control word and the status word are left as its code leaves them; eax
  * too, where fnstsw and sahf leave a byte of the status word in it.  A math
  * error goes to __math87_err, and on to __reporterror, still the game's
- * code: its struct exception, _matherr, errno.  On a Pentium with the FDIV
- * bug IF@DATAN2 went to __fpatan_wrap, the game's code
- * too. ---- */
+ * code: its struct exception, _matherr, errno. ---- */
 
 namespace
 {
 
 constexpr nfs::u32 kReportError = 0x5243a7;  // __reporterror
-constexpr nfs::u32 k8087 = 0x5644c0;         // _8087: whether there is an x87
 constexpr nfs::u32 kMinusOne = 0x54c970;     // floor's -1.0
 constexpr nfs::u32 kExpMax = 0x56716c, kExpMin = 0x567174;  // exp's limits, doubles
 constexpr nfs::u32 kHalfPi = 0x56719c;       // IF@DACOS's pi/2, 80 bits
@@ -2483,22 +2480,13 @@ nfs::u32 modf(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 }
 
 /* _control87 (clib/fpu/c/cntrl87.c, 0x4f7c90): the control word's bits of
- * edx made eax's, if there is an x87 (_8087); the control word, or 0. */
+ * edx made eax's, if there is an x87 (_8087); the control word, or 0.  The
+ * port's runtime notes none (_8087 at 0x5644c0 stays 0, 0x4ff5dc): the
+ * control word left as it is, 0. */
 nfs::u32 control87(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    nfs::u32 word = 0;
-    if (byte(app, k8087) != 0)
-    {
-        word = ts.fenv.control.word;
-        const nfs::u32 mask = args.edx;
-        if (mask != 0)
-        {
-            word = (~mask & word) | (mask & args.eax);
-            ts.fenv.setControl(nfs::u16(word));
-            word = (word & 0xffff0000) | ts.fenv.control.word;
-        }
-    }
-    returns(ts, args, word & 0xffff);
+    NFS2_USE(app);
+    returns(ts, args, 0);
     return args.eax;
 }
 
@@ -11729,11 +11717,10 @@ nfs::u32 cstart_(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 
 
 /* ---- The maths' error report: __reporterror, which builds _matherr's struct
- * exception and prints the error when _matherr does not take it.  (The game's
- * way round the Pentium's FDIV bug, __fpatan_wrap and __fdiv_fpr, is gone: no
- * phone has it.)  The x87's instructions are the same operations of the port's
- * x87 as the game's code has for them, in the same order, so that the
- * results, the control word and the status word are its to the bit. ---- */
+ * exception and prints the error when _matherr does not take it.  The x87's
+ * instructions are the same operations of the port's x87 as the game's code
+ * has for them, in the same order, so that the results, the control word and
+ * the status word are its to the bit. ---- */
 namespace
 {
 
@@ -11742,31 +11729,6 @@ constexpr u32 kMathErrorNames = 0x56af70;   // the functions' names, by __report
 constexpr u32 kMathTypeNames = 0x56b150;    // "DOMAIN", "SING" ...: the error's type's name
 constexpr u32 kMathErrorSeparator = 0x551fed;  // ": " between them
 constexpr u32 kStdStreams = 0x566f58;       // __iob
-constexpr u32 kFdivTable = 0x56ccdc;        // __fdiv_fpr's: 8 variants for each register
-constexpr u32 kFdivBadNibbles = 0x56ccc0;   // which of a divisor's top nibbles the bug can hit
-constexpr u32 kFdivScaleDown = 0x56ccd0, kFdivScaleUp = 0x56ccd4;  // 15/16 and 17/16, floats
-constexpr u32 kFdivDenormalScale = 0x56ccd8;  // 2^63, a float
-constexpr u32 kAtanTable = 0x56cb38;        // atan2's ways out, by the quadrant and the swap
-constexpr u32 kAtanSteps = 0x56cb6c, kAtanStep = 0x56cb70;  // the table's 16 steps, floats
-constexpr u32 kOne = 0x56cb28;              // 1.0, a double
-constexpr u32 kAtanPolynomial = 0x56cb74;   // 6 long doubles
-constexpr u32 kAtanAngles = 0x56cbb0;       // the steps' angles, long doubles 16 bytes apart
-constexpr u32 kHalfPiLong = 0x56cb58, kPiLong = 0x56cb62;  // pi/2 and pi, long doubles
-
-nfs::Float loadLong(nfs::App* app, u32 address)
-{
-    return nfs::Float(app->getMemory<nfs::Float80>(address));
-}
-
-void storeLong(nfs::App* app, u32 address, const nfs::Float& value)
-{
-    app->getMemory<nfs::Float80>(address) = nfs::Float(value);
-}
-
-nfs::Float loadSingle(nfs::App* app, u32 address)
-{
-    return nfs::Float(app->getMemory<float>(address));
-}
 
 /* _matherr's hook as __matherr's call makes it: eax and ebx the struct exception, the others kept;
  * its eax, nullopt when the game stopped (a call through the runtime's pointer, as hook's). */

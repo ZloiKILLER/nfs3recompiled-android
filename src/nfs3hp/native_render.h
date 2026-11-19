@@ -99,13 +99,6 @@ std::optional<nfs::u32> hudFrameBuilt(nfs::App* app, nfs::ThreadState& ts, nfs::
 // 0x41df10: a view record.
 std::optional<nfs::u32> viewRecordMade(nfs::App* app, nfs::ThreadState& ts, nfs::u32 kind, nfs::u32 size,
                                          nfs::u32 record);
-// 0x432720: a quad piece at depth `depth` from the projected corners sa..sc and sd (first stack word), the vertices a..d.
-std::optional<nfs::u32> quadPieceDrawn(nfs::App* app, nfs::ThreadState& ts, nfs::u32 depth, nfs::u32 sa,
-                                         nfs::u32 sb, nfs::u32 sc, nfs::u32 sd, nfs::u32 a, nfs::u32 b,
-                                         nfs::u32 c, nfs::u32 d);
-// 0x433060: the quad a, b, c, d drawn whole or subdivided.
-std::optional<nfs::u32> quadWholeDrawn(nfs::App* app, nfs::ThreadState& ts, nfs::u32 a, nfs::u32 b,
-                                         nfs::u32 c, nfs::u32 d);
 // 0x475b50: the text `text` at (`x`, `y`) in the solid font, `scale`, `size`, `texture` and `matrix` the words it takes
 // on the stack (the first one lowest).
 std::optional<nfs::u32> solidTextDrawn(nfs::App* app, nfs::ThreadState& ts, nfs::u32 text, nfs::u32 x,
@@ -128,9 +121,6 @@ std::optional<nfs::u32> cockpitDrawn(nfs::App* app, nfs::ThreadState& ts);
 // 0x4bf790: the triangle `list` (three corners) clipped by z, `codes` their codes, `any` the codes or-ed.
 std::optional<nfs::u32> clippedByZ(nfs::App* app, nfs::ThreadState& ts, nfs::u32 list, nfs::u32 codes,
                                      nfs::u32 any);
-// 0x4c3ad0: the near triangle of record `record`, `nearBits` its near bits, `ebx` the record again, `ecx` as the code has it.
-std::optional<nfs::u32> nearTriangleDrawn(nfs::App* app, nfs::ThreadState& ts, nfs::u32 record,
-                                            nfs::u32 nearBits, nfs::u32 ebx, nfs::u32 ecx);
 // 0x49d640: the sun's lighting back to the game's defaults.
 std::optional<nfs::u32> sunLightingReset(nfs::App* app, nfs::ThreadState& ts);
 // 0x41b9b0, 0x482b00 and 0x482620: the view pass, the HUD and the countdown of the race, `view` in eax and `esi` as the

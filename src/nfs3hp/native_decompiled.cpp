@@ -133,8 +133,9 @@ nfs::u32 swapRaceVolumes(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 }
 
 /* Whether the driver draws on a 3D card: 0 for the software renderers, 1 for
- * the others, as the driver starts (sub_4b59c0, startDriverNative).  With it
- * clear the polygons are sorted by sub_4c7480, not into depth buckets. */
+ * the others, as the driver starts (sub_4b59c0, startDriverNative); 0 too while
+ * the Z-buffer is off (hudStates).  With it clear the polygons are sorted by
+ * sub_4c7480, not into depth buckets. */
 constexpr u32 kDriverOnCard = 0x7a3a60;
 
 /* The depth offsets, 10 floats from 0x7dcfdc, each handed to the code that

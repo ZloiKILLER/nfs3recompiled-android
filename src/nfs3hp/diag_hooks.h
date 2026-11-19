@@ -13,8 +13,8 @@ namespace diag
 
 // A car's physics stepped (physics::carPhysics), the car in `car`.
 inline void (*carStepped)(nfs::App* app, nfs::u32 car) = nullptr;
-// A step of the race being taken down (graphics::takeDownRace).
-inline void (*raceDown)(nfs::App* app, const char* where) = nullptr;
+// The race being taken down (graphics::takeDownRace).
+inline void (*raceDown)(nfs::App* app) = nullptr;
 // The menus ask once a frame whether to go straight to the last race's replay.
 inline bool (*takeAutoReplay)() = nullptr;
 

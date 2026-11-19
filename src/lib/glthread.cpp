@@ -94,32 +94,24 @@ void start()
     s_threadId = thread.get_id();
     thread.detach();
     SDL_AddEventWatch(lifecycleWatch, nullptr);
-    SDL_Log("[GFX] OpenGL on a thread of its own (NFS_GL_THREAD=0 draws on the game thread)");
+    SDL_Log("[GFX] OpenGL on a thread of its own");
 }
 
-}
-
-bool on()
+/* The thread started with the first thing asked of it. */
+void started()
 {
-    static const bool s_on = []() {
-        const char* value = SDL_getenv("NFS_GL_THREAD");
-        const bool on = !(value && SDL_strcmp(value, "0") == 0);
-        if (on)
-            start();
-        return on;
+    static const bool s_started = []() {
+        start();
+        return true;
     }();
-    return s_on;
+    (void)s_started;
+}
+
 }
 
 void post(Renderer* renderer, std::function<void()> work)
 {
-    if (!on())
-    {
-        renderer->setCurrent();
-        work();
-        renderer->clearCurrent();
-        return;
-    }
+    started();
     {
         std::lock_guard<std::mutex> lock(s_mutex);
         s_jobs.push_back(Job{renderer, std::move(work)});
@@ -129,7 +121,8 @@ void post(Renderer* renderer, std::function<void()> work)
 
 void finish()
 {
-    if (!on() || std::this_thread::get_id() == s_threadId)
+    started();
+    if (std::this_thread::get_id() == s_threadId)
         return;
     std::unique_lock<std::mutex> lock(s_mutex);
     s_idle.wait(lock, []() { return s_jobs.empty() && !s_busy; });
@@ -137,8 +130,7 @@ void finish()
 
 void release()
 {
-    if (!on())
-        return;
+    started();
     if (std::this_thread::get_id() == s_threadId)
     {
         if (s_current)
@@ -156,8 +148,7 @@ void release()
 
 unsigned long long presentPosted(int frames)
 {
-    if (!on())
-        return 0;
+    started();
     const Uint64 start = SDL_GetTicksNS();
     std::unique_lock<std::mutex> lock(s_mutex);
     ++s_presents;
@@ -167,8 +158,7 @@ unsigned long long presentPosted(int frames)
 
 void presentDone()
 {
-    if (!on())
-        return;
+    started();
     std::lock_guard<std::mutex> lock(s_mutex);
     --s_presents;
     s_idle.notify_all();

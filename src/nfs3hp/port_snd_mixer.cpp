@@ -28,15 +28,15 @@
  *   +0xdc0 the add of a block at that volume into the accumulator; their state
  *          from +0xd90 (+0xddc and +0xdc4 are a second volume, set but unused).
  *
- * These are the MMX set the game picks with the port's CPU ([0x5643b4] set),
- * all of those found in use in menus, races and movies.  Each is done here as
- * its x86 does it, to the bit -- integers wrapping as the x86's do, the
- * MMX's saturating and high-half products as plain integer loops, the reverb's
- * floats in double with float stores -- on the game's own memory, so the game's
- * half of SND (starting, stopping, volumes, banks, streams) sees no
- * difference.  The functions the channels are given are set up by
- * port_snd_mixsetup.cpp; the rest of the game's mixer code is dead
- * (native_snd_dead.inc) and stops the game if called.  What this calls of the
+ * These are the MMX set, the only one the mixer's start hands out
+ * (port_snd_fx.cpp), all of those found in use in menus, races and movies.
+ * Each is done here as its x86 does it, to the bit -- integers wrapping as the
+ * x86's do, the MMX's saturating and high-half products as plain integer
+ * loops, the reverb's floats in double with float stores -- on the game's own
+ * memory, so the game's half of SND (starting, stopping, volumes, banks,
+ * streams) sees no difference.  The functions the channels are given are set
+ * up by port_snd_mixsetup.cpp; what is left of the game's mixer code never
+ * runs (native_snd_dead.inc) and stops the game if called.  What this calls of the
  * game's half, all of it native too: a stream's next chunk ([0x5678b4],
  * sub_5118fc, sub_511998) and a channel's end ([0x9f6b1c]), a few times a
  * second.
@@ -69,10 +69,8 @@ constexpr u32 kBuffersStart = 0x9f6b28;   // where the three buffers lie
 constexpr u32 kShift = 0x9f6a5a;          // the accumulator's frame shift (0 here)
 constexpr u32 kBlockBytes = 0x9f6a58;     // a 256-frame block's output, in bytes
 constexpr u32 kOutput = 0x9f6b20;         // cdecl (frames, accumulator, output)
-constexpr u32 kClear = 0x9f6a5c;          // cdecl (accumulator, dwords)
 constexpr u32 kAfterChannel = 0x9f6a64;
 constexpr u32 kBeforeOutput = 0x9f6a68;
-constexpr u32 kEndHook = 0x9f6b24;
 constexpr u32 kEndedAt = 0x9f6b1c;        // the game's: register call (channel)
 constexpr u32 kNextChunk = 0x5678b4;      // the game's stream refill: (state, length)
 constexpr u32 kCoefficients1 = 0x56ad70;  // XA predictors, two words each
@@ -84,7 +82,6 @@ constexpr u32 kNibbles = 0xa0bea0;        // XA: (shift * 16 + nibble) -> the ni
  * two low passes, in float, and back into the accumulator (sub_523118). */
 constexpr u32 kSendChannel = 0x5230dc;
 constexpr u32 kReverb = 0x523118;
-constexpr u32 kReverbInts = 0x9f6a5b;     // nonzero: the send in 16 bits, as here
 constexpr u32 kSend = 0xa0caa0;           // 16-bit stereo, a block of it
 constexpr u32 kReverbBuffer = 0xa0c6a0;   // float, one a frame
 constexpr u32 kReverbIdle = 0xa0d2a0;     // blocks since a channel last sent; the tail stops at 500
@@ -1145,14 +1142,6 @@ struct Mixer
     double loadFloat(u32 a) const { float v; std::memcpy(&v, m + a, 4); return double(v); }
     void storeFloat(u32 a, double v) { const float x = float(v); std::memcpy(m + a, &x, 4); }
 
-    /* The emms the MMX set needs before the x87, or the plain set's ret. */
-    void beforeFloat()
-    {
-        const u32 end = r32(kEndHook);
-        if (end != 0x520a00 && end != 0x4ffd80)
-            guest(end, 0, 0, 0, 0);
-    }
-
     /* sub_5230dc: a channel's block sent into the reverb at its second volume. */
     void send(u32 ch, u32 frames, u32 source, u32 ramped)
     {
@@ -1227,7 +1216,6 @@ struct Mixer
 
     void reverbBack(u32 frames, u32 source, u32 accumulator)
     {
-        beforeFloat();
         double magic;
         std::memcpy(&magic, m + kMagicRound, 8);
         const u32 end = source + frames * 4;
@@ -1242,28 +1230,22 @@ struct Mixer
         }
     }
 
+    /* sub_5209a0, the MMX set's clear. */
     void clearAccumulator(u32 at, u32 dwords)
     {
-        if (r32(kClear) == 0x5209a0)
-        {
-            if (i32(dwords) > 0)
-                fill(at, 0, dwords * 4);
-        }
-        else
-        {
-            guest(r32(kClear), 0, 0, 0, 0, {at, dwords});
-        }
+        if (i32(dwords) > 0)
+            fill(at, 0, dwords * 4);
     }
 
     /* sub_523118: the send to float (sub_522f90, left plus right), the send
-     * cleared, the reverb, and back into the accumulator. */
+     * cleared, the reverb, and back into the accumulator.  The emms that
+     * sub_522f90 and sub_522fd4 start with (sub_520a00) is nothing here. */
     void reverb(u32 frames, u32 accumulator)
     {
         const u32 idle = r32(kReverbIdle) + 1;
         w32(kReverbIdle, idle);
         if (i32(idle) >= 500)
             return;
-        beforeFloat();
         const u32 floats = kReverbBuffer + frames * 4;
         for (u32 from = kSend, to = kReverbBuffer; to < floats; from += 4, to += 4)
             storeFloat(to, double(i32(s16(from)) + i32(s16(from + 2))));
@@ -1284,7 +1266,7 @@ struct Mixer
     void beforeOutput(u32 frames, u32 accumulator)
     {
         const u32 hook = r32(kBeforeOutput);
-        if (hook == kReverb && r8(kReverbInts) != 0)
+        if (hook == kReverb)
             reverb(frames, accumulator);
         else if (hook != 0)
             guest(hook, frames, accumulator, 0, 0);
@@ -1337,7 +1319,7 @@ struct Mixer
     }
 
     /* sub_500604: a channel whose sound ran out faded to nothing, freed, and
-     * the game told. */
+     * the game told (its emms, sub_520a00, is nothing here). */
     void ended(u32 i)
     {
         const u32 ch = channel(i);
@@ -1348,9 +1330,6 @@ struct Mixer
         w8(ch + 7, s8(ch + 2) < 0 ? 1 : 0xff);
         secondVolume(ch);
         ramp(ch, 0x100);
-        const u32 end = r32(kEndHook);
-        if (end != 0x520a00 && end != 0x4ffd80)
-            guest(end, 0, 0, 0, 0);
         w8(ch, 0);
         guest(r32(kEndedAt), i, 0, 0, 0);
     }

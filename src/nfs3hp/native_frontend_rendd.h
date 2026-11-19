@@ -106,8 +106,6 @@ u32 drawListPlain(App* app, ThreadState& ts, u32 view, u32 list);
 u32 drawListAt(App* app, ThreadState& ts, u32 view, u32 list, u32 depth);
 // The game's 0x4bc0b0: the list drawn as a list of the depth, and left empty.
 u32 drawListMirrored(App* app, ThreadState& ts, u32 view, u32 list, u32 depth);
-// The game's 0x4bf110: the table of reciprocals at 0x7d30d8.
-u32 fillReciprocals(App* app, ThreadState& ts);
 // The game's 0x4bf1b0: the clip's numbers, the vertex cache marked unused.
 u32 setClipBounds(App* app, ThreadState& ts, u32 left, u32 top, u32 right, u32 bottom, u32 nearest,
                     u32 farthest);

@@ -41,16 +41,6 @@ void message(nfs::App* app, nfs::ThreadState& ts, nfs::u32 format, guest::Words 
 
 }  // namespace ea
 
-namespace removed
-{
-
-// 0x4f1c70: the processor "checked": the mixing's MMX set on, no timestamp counter.
-void checkProcessor(nfs::App* app);
-// 0x4f1ef0: the processor's speed "timed": nothing.
-void timeProcessor(nfs::App* app);
-
-}  // namespace removed
-
 namespace guest
 {
 

@@ -514,7 +514,6 @@ void Renderer::present()
 
 void Renderer::presentFrame(nfs::u32 width, nfs::u32 height)
 {
-    const Uint64 presentStart = SDL_GetTicksNS();
     glBindTexture(GL_TEXTURE_2D, m_texture);
     int w, h;
     SDL_GetWindowSizeInPixels(m_window->m_window, &w, &h);
@@ -599,11 +598,6 @@ void Renderer::presentFrame(nfs::u32 width, nfs::u32 height)
      * ends up here too).  Every message-trace line carries this count, which is how
      * "the game was told about the key" gets tied to "a new frame came out". */
     NFS_MSG_FRAME();
-    /* Mostly waiting: the window's clear on the buffer coming back from the
-     * display, the swap on the GPU.  Not work a faster core would shorten.
-     * On the game's thread only; on the GL thread present() counts the wait. */
-    if (!glthread::on())
-        m_presentNs += SDL_GetTicksNS() - presentStart;
     glthread::presentDone();
 }
 
@@ -810,8 +804,7 @@ namespace
  * runs the game thread on a big core it holds at half its clock; told a frame
  * went over, it raises that core's clock for the thread, and told they come in
  * early, lowers it -- instead of guessing from load.  Looked up at run time:
- * the app starts on Android 8, where none of it exists and nothing happens.
- * NFS_PERF_HINT=0 turns it off. */
+ * the app starts on Android 8, where none of it exists and nothing happens. */
 class PerformanceHint
 {
 public:
@@ -839,9 +832,6 @@ private:
     void start(Uint64 targetNs)
     {
         m_tried = true;
-        const char* setting = SDL_getenv("NFS_PERF_HINT");
-        if (setting && SDL_strcmp(setting, "0") == 0)
-            return;
         void* library = dlopen("libandroid.so", RTLD_NOW | RTLD_LOCAL);
         GetManager getManager = library ? GetManager(dlsym(library, "APerformanceHint_getManager")) : nullptr;
         CreateSession create = library ? CreateSession(dlsym(library, "APerformanceHint_createSession")) : nullptr;

@@ -208,13 +208,6 @@ public class NFS3Activity extends SDLActivity
                             setEnv(option.environment[i], option.environment[i + 1]);
             if (getIntent().getBooleanExtra("auto_replay", false))
                 setEnv("NFS_AUTO_REPLAY", "1");
-            String depth16 = DebugOptions.depth16(preferences, getIntent());
-            if ("off".equals(depth16))
-                setEnv("NFS_DEPTH16", "0");
-            else if ("on".equals(depth16))
-                setEnv("NFS_DEPTH16", "1");
-            else if ("ab".equals(depth16))
-                setEnv("NFS_DEPTH16", "ab");
         }
 
         /* The Display screen's choice (GamePreferences.screenOrientation).

@@ -34,7 +34,6 @@ nfs::u32 watbNothing50dbf0(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 nfs::u32 watbAllocHandleJump(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
 nfs::u32 watbFreeHandleJump(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
 nfs::u32 watbInitFloatFormatters(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
-nfs::u32 watbInitChipBugHooks(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
 nfs::u32 watbInit8087(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
 nfs::u32 watbShapeClut(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
 nfs::u32 watbDrawFilledRect(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
@@ -99,7 +98,6 @@ nfs::u32 watbPlotMask32(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
 nfs::u32 watbColourToArgb(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
 nfs::u32 watbDispatchKey(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
 nfs::u32 watbRegisterKey(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
-nfs::u32 watbCopyBlock(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
 nfs::u32 watbBlendSpanIndexed(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
 nfs::u32 watbBlendSpan1555(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
 nfs::u32 watbBlendSpan565(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
@@ -458,68 +456,21 @@ nfs::u32 frontend::watbInitFloatFormatters(nfs::App* app, nfs::ThreadState& ts, 
     });
 }
 
-namespace
+/* sub_4ff5dc, the runtime's initializer of priority 2: fninit, which empties the x87's stack, and
+ * eax 0.  The game's code went on to look for an x87 by what fninit leaves in the control word and
+ * to note it in _8087 and _real87 (0x5644c0, 0x5644c1); the port's x87 starts with 0x7f
+ * (nfs::FloatEnv::init), whose high byte is no x87's, so the two stay 0 as the image has them and
+ * the test is gone. */
+nfs::u32 frontend::watb::init8087(App*, ThreadState& ts)
 {
-constexpr u32 k8087 = 0x5644c0, kReal87 = 0x5644c1, kNo87Found = 0x567834;
-}
-
-/* sub_4ff59c: where there is a real x87, its state's save and restore for the signal
- * handlers.  Its call of sub_51f272, the test for the Pentium's FDIV bug, is gone in the
- * port, which leaves the word it was handed in eax. */
-nfs::u32 frontend::watb::initChipBugHooks(App* app, ThreadState& ts)
-{
-    Guest guest(app, ts);
-    if (guest.byte(kReal87) != 0)
-    {
-        guest.setDword(0x56acf0, 0x4ff590);
-        guest.setDword(0x56acf4, 0x4ff598);
-    }
-    return guest.word(0x56acf8);
-}
-
-nfs::u32 frontend::watbInitChipBugHooks(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
-{
-    static fe::Site site = makeSite("sub_4ff59c", 0, 0);
-    return fe::runThunk(app, ts, args, site, [&](Guest&) { return watb::initChipBugHooks(app, ts); });
-}
-
-/* sub_4ff5dc: an x87 looked for, by what fninit leaves in the control word: the port's x87 starts
- * with 0x7f (nfs::FloatEnv::init), whose high byte is no x87's.  The fninit itself, which empties the x87's
- * stack, its thunk does. */
-nfs::u32 frontend::watb::init8087(App* app, ThreadState& ts, u32 argEax)
-{
-    constexpr u32 kFninitControl = 0x7f;
-    Guest guest(app, ts);
-    const fe::Frame locals(guest, ts, 4);
-    const std::uint8_t found = guest.byte(k8087);
-    if (found != 0)
-        return (argEax & 0xffff00ff) | (u32(found) << 8);
-    guest.setByte(kReal87, 0);
-    const u32 word = kFninitControl;
-    const std::uint8_t high = std::uint8_t(word >> 8);
-    u32 result = (word & 0xffffff00) | high;
-    std::uint8_t present = 0;
-    if (high == 3)
-    {
-        result = guest::direct<0x4ff59c, initChipBugHooks>(app, ts);
-        present = std::uint8_t(result);
-    }
-    if (guest.byte(kNo87Found) == 0)
-    {
-        guest.setByte(k8087, present);
-        guest.setByte(kReal87, present);
-    }
-    return result;
+    ts.fenv.init();
+    return 0;
 }
 
 nfs::u32 frontend::watbInit8087(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     static fe::Site site = makeSite("sub_4ff5dc", 0, 0);
-    return fe::runThunk(app, ts, args, site, [&](Guest&) {
-        if (guest::byte(app, k8087) == 0)
-            ts.fenv.init();
-        return watb::init8087(app, ts, args.eax);
-    });
+    return fe::runThunk(app, ts, args, site, [&](Guest&) { return watb::init8087(app, ts); });
 }
 
 // ---------------------------------------------------------------------------
@@ -2924,111 +2875,6 @@ nfs::u32 frontend::watbRegisterKey(nfs::App* app, nfs::ThreadState& ts, nfs::Arg
 // ---------------------------------------------------------------------------
 // Spans in alpha, drawn by sub_50db30
 // ---------------------------------------------------------------------------
-
-/* sub_50d560: a memory copy, 32 bytes at a time through the x87 where it can.  fld and
- * fstp qword only move the bits, as the game's code's doubles do, in this order
- * (which shows where the two overlap). */
-nfs::u32 frontend::watb::copyBlock(App* app, ThreadState& ts, u32 argEax, u32 argEdx, u32 argEbx)
-{
-    Guest guest(app, ts);
-    u32 to = argEdx, from = argEax;
-    u32 left = argEbx;
-    const auto copy1 = [&] {
-        guest.setByte(to, guest.byte(from));
-        from += 1;
-        to += 1;
-        left -= 1;
-    };
-    const auto copy2 = [&] {
-        guest.setWord(to, guest.word(from));
-        from += 2;
-        to += 2;
-        left -= 2;
-    };
-    const auto copy4 = [&] {
-        guest.setDword(to, guest.dword(from));
-        from += 4;
-        to += 4;
-        left -= 4;
-    };
-    const auto load = [&](u32 offset) { return app->getMemory<double>(from + offset); };
-    const auto store = [&](u32 offset, double value) { app->getMemory<double>(to + offset) = value; };
-    if ((to & 7) != 0)
-    {
-        if ((to & 1) != 0 && s32(left) >= 1)
-            copy1();
-        if ((to & 2) != 0 && s32(left) >= 2)
-            copy2();
-        if ((to & 4) != 0 && s32(left) >= 4)
-            copy4();
-    }
-    left -= 0x80;
-    while (s32(left) >= 0)
-    {
-        const double a0 = load(0), a20 = load(0x20), a40 = load(0x40), a60 = load(0x60);
-        const double a10 = load(0x10), a8 = load(8), a18 = load(0x18);
-        store(0, a0);
-        store(8, a8);
-        store(0x10, a10);
-        store(0x18, a18);
-        const double a30 = load(0x30), a28 = load(0x28), a38 = load(0x38);
-        store(0x20, a20);
-        store(0x28, a28);
-        store(0x30, a30);
-        store(0x38, a38);
-        const double a50 = load(0x50), a48 = load(0x48), a58 = load(0x58);
-        store(0x40, a40);
-        store(0x48, a48);
-        store(0x50, a50);
-        store(0x58, a58);
-        const double a70 = load(0x70), a68 = load(0x68), a78 = load(0x78);
-        store(0x60, a60);
-        store(0x68, a68);
-        store(0x70, a70);
-        store(0x78, a78);
-        from += 0x80;
-        to += 0x80;
-        left -= 0x80;
-    }
-    left += 0x60;
-    while (s32(left) >= 0)
-    {
-        const double a0 = load(0), a8 = load(8);
-        store(0, a0);
-        store(8, a8);
-        const double a10 = load(0x10), a18 = load(0x18);
-        store(0x10, a10);
-        store(0x18, a18);
-        from += 0x20;
-        to += 0x20;
-        left -= 0x20;
-    }
-    left += 0x18;
-    while (s32(left) >= 0)
-    {
-        store(0, load(0));
-        from += 8;
-        to += 8;
-        left -= 8;
-    }
-    left += 8;
-    if (left != 0)
-    {
-        if (left >= 4)
-            copy4();
-        if (left >= 2)
-            copy2();
-        if (left >= 1)
-            copy1();
-    }
-    return to;
-}
-
-nfs::u32 frontend::watbCopyBlock(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
-{
-    static fe::Site site = makeSite("sub_50d560", 0, 0, kLeavesEbxEdx);
-    return fe::runThunk(app, ts, args, site, [&](Guest&) { return watb::copyBlock(app, ts, args.eax, args.edx, args.ebx); });
-}
 
 /* sub_50d6e0: ARGBs over palette indices, each result the nearest index. */
 nfs::u32 frontend::watb::blendSpanIndexed(App* app, ThreadState& ts, u32 argEax, u32 argEdx, u32 argEbx)

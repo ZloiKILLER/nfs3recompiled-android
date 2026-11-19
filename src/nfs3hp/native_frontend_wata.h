@@ -8,7 +8,7 @@
 #include <optional>
 
 /* native_frontend_wata.cpp's typed functions (carp.txt's reader, NPS's DLLs, the install file and
- * the disc, the asynchronous file reader, the timer, the mixers' and blitter's front doors, the
+ * the disc, the asynchronous file reader, the timer, the span copies' and blitter's front doors, the
  * window's and text's small functions, the HUD editor's drag and drop), which other files call as
  * C++ (guest::direct), and how the game's code calls each by address.  Each calls the game's other functions as C++ where they have typed cores, by address
  * otherwise, and throws fe::Terminated when the game stopped in one, as a call by address does.  The
@@ -119,39 +119,15 @@ u32 textDepth(App* app, ThreadState& ts);
 u32 textSetPen(App* app, ThreadState& ts, u32 x, u32 y);
 // The game's 0x4f0860: the text's attribute set, and on to what follows it.
 u32 textSetAttribute(App* app, ThreadState& ts, u32 value);
-// The game's 0x4f0880: mixer A's front door for 4-bit samples (eax) going to edx: the count (ebx) made bytes.
-u32 mixA4Bit(App* app, ThreadState& ts, u32 from, u32 to, u32 count);
-// The game's 0x4f0890: mixer A's front door for 16-bit samples (eax) going to edx: the count (ebx) made bytes.
-u32 mixA16Bit(App* app, ThreadState& ts, u32 from, u32 to, u32 count);
-// The game's 0x4f08c0: mixer A's front door for 32-bit samples (eax) going to edx: the count (ebx) made bytes.
-u32 mixA32Bit(App* app, ThreadState& ts, u32 from, u32 to, u32 count);
-// The game's 0x4f08d0: mixer B's front door for 4-bit samples (eax) going to edx: the count (ebx) made bytes.
-u32 mixB4Bit(App* app, ThreadState& ts, u32 from, u32 to, u32 count);
-// The game's 0x4f08e0: mixer B's front door for 16-bit samples (eax) going to edx: the count (ebx) made bytes.
-u32 mixB16Bit(App* app, ThreadState& ts, u32 from, u32 to, u32 count);
-// The game's 0x4f0910: mixer B's front door for 32-bit samples (eax) going to edx: the count (ebx) made bytes.
-u32 mixB32Bit(App* app, ThreadState& ts, u32 from, u32 to, u32 count);
-// The game's 0x4f0920: mixer C's front door for 4-bit samples (eax) going to edx: the count (ebx) made bytes.
-u32 mixC4Bit(App* app, ThreadState& ts, u32 from, u32 to, u32 count);
-// The game's 0x4f0930: mixer C's front door for 16-bit samples (eax) going to edx: the count (ebx) made bytes.
-u32 mixC16Bit(App* app, ThreadState& ts, u32 from, u32 to, u32 count);
-// The game's 0x4f0960: mixer C's front door for 32-bit samples (eax) going to edx: the count (ebx) made bytes.
-u32 mixC32Bit(App* app, ThreadState& ts, u32 from, u32 to, u32 count);
-// The game's 0x4f0970: mixer D's front door for 4-bit samples (eax) going to edx: the count (ebx) made bytes.
+// The game's 0x4f0970: the span copy's front door for 4-bit pixels (eax) going to edx: the count (ebx) made bytes.
 u32 mixD4Bit(App* app, ThreadState& ts, u32 from, u32 to, u32 count);
-// The game's 0x4f0980: mixer D's front door for 16-bit samples (eax) going to edx: the count (ebx) made bytes.
+// The game's 0x4f0980: the span copy's front door for 16-bit pixels (eax) going to edx: the count (ebx) made bytes.
 u32 mixD16Bit(App* app, ThreadState& ts, u32 from, u32 to, u32 count);
-// The game's 0x4f09b0: mixer D's front door for 32-bit samples (eax) going to edx: the count (ebx) made bytes.
+// The game's 0x4f09b0: the span copy's front door for 32-bit pixels (eax) going to edx: the count (ebx) made bytes.
 u32 mixD32Bit(App* app, ThreadState& ts, u32 from, u32 to, u32 count);
-// The game's 0x4f08a0: mixer A's front door for 24-bit samples (eax) going to edx: the count (ebx) made bytes.
-u32 mixA24Bit(App* app, ThreadState& ts, u32 samples, u32 to, u32 count);
-// The game's 0x4f08f0: mixer B's front door for 24-bit samples (eax) going to edx: the count (ebx) made bytes.
-u32 mixB24Bit(App* app, ThreadState& ts, u32 samples, u32 to, u32 count);
-// The game's 0x4f0940: mixer C's front door for 24-bit samples (eax) going to edx: the count (ebx) made bytes.
-u32 mixC24Bit(App* app, ThreadState& ts, u32 samples, u32 to, u32 count);
-// The game's 0x4f0990: mixer D's front door for 24-bit samples (eax) going to edx: the count (ebx) made bytes.
+// The game's 0x4f0990: the span copy's front door for 24-bit pixels (eax) going to edx: the count (ebx) made bytes.
 u32 mixD24Bit(App* app, ThreadState& ts, u32 samples, u32 to, u32 count);
-// The game's 0x4f09c0: the blitter that suits the processor, chosen the first time, called: the shape at x, y.
+// The game's 0x4f09c0: the shape drawn at x, y by the blitters of the copy set the port's processor has (MMX's).
 u32 blitDispatchAt(App* app, ThreadState& ts, u32 shape, u32 x, u32 y);
 // The game's 0x4f0a10: the blitter, the place the two 12-bit fields of the shape\'s position word.
 u32 blitShapeAtPosition(App* app, ThreadState& ts, u32 shape);
@@ -161,8 +137,6 @@ u32 surfaceFillAndDraw(App* app, ThreadState& ts, u32 x, u32 y, u32 width, u32 h
 u32 textMeasureGlyph(App* app, ThreadState& ts, s32 x, s32 y, s32 width, s32 height);
 // The game's 0x4f0c90: sub_4f0b60 with room for the whole string.
 u32 textMeasure(App* app, ThreadState& ts, u32 text, u32 leftOut, u32 topOut, u32 widthOut, u32 heightOut);
-// The game's 0x4f2170: how many times round a loop in so many ticks: the processor's speed.
-u32 processorCountLoops(App* app, ThreadState& ts, s32 ticks);
 // The game's 0x4f4650: a string and a value into the next row of the table at 0x79f524.
 u32 registryAddEntry(App* app, ThreadState& ts, u32 name, u32 value);
 // The game's 0x4f46b0: the current screen's surface's pixels.

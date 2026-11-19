@@ -139,8 +139,7 @@ constexpr u32 kVoiceRecords = 0x571124;
 // Constants of the game's.
 constexpr u32 kVolume = 0x53684c, kTicks = 0x79c1a4;
 
-// What is called by address: the AI-votes trace hook (0x40de30, its
-// thunk's NFS_CAR_TRACE record), the police chase (0x411750, no core), the
+// What is called by address: the lane votes (0x40de30), the police chase (0x411750, no core), the
 // traffic's top speed (0x40bfe0, its eax left by slowForPolice), and
 // the game's/other parts' natives (stood in for where they would run on a
 // made-up world): a traffic car linked (0x404690, whose eax resetTrafficCar

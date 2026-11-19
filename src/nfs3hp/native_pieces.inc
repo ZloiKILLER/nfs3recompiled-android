@@ -37,11 +37,6 @@ DEAD(0x51039e)
 DEAD(0x52468f)
 DEAD(0x5247ab)
 
-// Watcom's hooks to save and restore the FPU, which sub_4ff59c stores at 0x56acf0 and
-// 0x56acf4: nothing reads the slots.
-DEAD(0x4ff590)
-DEAD(0x4ff598)
-
 // Data in the code, read by natives where it is in the image; a piece, under a false pointer.
 DEAD(0x457260)
 DEAD(0x4576e0)
@@ -50,19 +45,6 @@ DEAD(0x49fdd0)
 DEAD(0x4a78b6)
 DEAD(0x4b6a10)
 DEAD(0x4ccbfa)
-
-// Stubs since before the audit could name them, not entered in test2.  The audit calls
-// them reachable: 0x503280.. and 0x50356c.. (where frontend::mixC* and mixA* of
-// native_frontend_wata.cpp go on to), 0x5269d4 and 0x51f272 (named by the FDIV bug's
-// test), the rest by a word in the image that holds their address.
-DEAD(0x503280)
-DEAD(0x503281)
-DEAD(0x50356c)
-DEAD(0x50356d)
-DEAD(0x51f272)
-DEAD(0x51f320)
-DEAD(0x5269d4)
-DEAD(0x526aeb)
 
 // Nothing calls these, and no aligned word of the image holds their address: the audit
 // keeps them only for words that happen to read so at odd addresses, or for lying in

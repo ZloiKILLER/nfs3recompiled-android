@@ -97,14 +97,11 @@ constexpr u8 kBackspace = 8, kLastControl = 4, kAttributeEscape = 0x0e, kFirstPr
 // EA's random numbers' six words (snd::eaRandom draws from them).
 constexpr u32 kRandom = 0x5644e0;
 // The loads': whether a missing file is complained of; the last file's size;
-// the load's hook; what the load's block size is handed.
+// the load's hook.
 constexpr u32 kComplain = 0x56440c, kLoadedSize = 0x5643f8;
-constexpr u32 kLoadHook = 0x567868, kLoadSomething = 0x567860;
+constexpr u32 kLoadHook = 0x567868;
 constexpr u32 kWhere = 0x552190, kWhereFunction = 0x552194, kWhereLine = 0x552198;
 constexpr u32 kLoadFile = 0x549928, kLoadFunction = 0x549938, kLoadLine = 0x4b;
-// The stream's top-up before a load, and the bytes of the file each more of it is.
-constexpr u32 kTopUpFirst = 0x1f4;
-constexpr s32 kTopUpBytes = 0x10e;
 // The archive's: fopen's mode "rb", the block's name ""; the header's words
 // (its size at 0xc, the files' count at 8, the entries from 0x10, each its
 // offset, size and name); the block's slack and its allocation's flags;
@@ -115,7 +112,6 @@ constexpr u32 kVivSlack = 0x30, kVivBlockFlags = 0x10, kSeekSet = 0, kVivNameByt
 // What is called by address.
 constexpr u32 kFillZero = 0x4e070c;
 constexpr u32 kOpen = 0x4e28d0, kRead = 0x4e2de0;
-constexpr u32 kTopUp = 0x4ff7c0, kTopUpEnd = 0x4ff7e0, kLoadBlockSize = 0x4ff820, kLoadFlags = 0x4ff830;
 constexpr u32 kAllocate = 0x4e1620, kFree = 0x4e1890, kLoadWhole = 0x4e0ec0;
 
 /* Room on the guest's stack for what a callee is handed the address of: the
@@ -618,21 +614,17 @@ std::optional<bool> fileThere(App* app, ThreadState& ts, u32 name)
 }
 
 /* loadfileadr: the file named `name` loaded whole into a block allocated
- * with `flags` -- the sound's stream topped up before (0x4ff7c0), the more so
- * the bigger the file; its size kept at 0x5643f8.  The load's hook
- * (0x567868), if set, is handed the block, the name and the flags, and what
- * it gives back is the block (none: the block freed).  The block, or 0.  The
- * open's handle, where and size are in the frame, under ebx, ecx, esi, edi
- * and ebp pushed.  The sound's top-up, block size and flags (port_snd_stream's,
- * no typed function) by address: the top-up hands edx and ecx on to its
- * function, as the port's code has had them -- the frame's handle's and
- * size's addresses, then the flags and the size's address. */
+ * with `flags`; its size kept at 0x5643f8.  The load's hook (0x567868), if
+ * set, is handed the block, the name and the flags, and what it gives back is
+ * the block (none: the block freed).  The block, or 0.  The open's handle,
+ * where and size are in the frame, under ebx, ecx, esi, edi and ebp pushed.
+ * Port: the music stream is no longer topped up before and after the load
+ * (0x4ff7c0, 0x4ff7e0), which kept one CD drive from seeking under the music;
+ * the stream reads on between the load's blocks. */
 std::optional<u32> loadWhole(App* app, ThreadState& ts, u32 name, u32 flags)
 {
     const GuestFrame frame(ts, 0x14, 0xc);
     const u32 sizeAt = frame - 0xc, whereAt = frame - 8, handleAt = frame - 4;
-    if (!guest::pointerCall(app, ts, kTopUp, {kTopUpFirst, handleAt, whereAt, sizeAt}).has_value())
-        return std::nullopt;
     const auto opened = guest::direct<kOpen, ea::openToRead>(app, ts, name, handleAt, whereAt, sizeAt);
     if (!opened)
         return std::nullopt;
@@ -644,14 +636,6 @@ std::optional<u32> loadWhole(App* app, ThreadState& ts, u32 name, u32 flags)
             return std::nullopt;
         return 0;
     }
-    const s32 size = s32(at(app, sizeAt));
-    const auto loadFlags = guest::pointerCall(app, ts, kLoadFlags, {at(app, handleAt)});
-    if (!loadFlags)
-        return std::nullopt;
-    const auto blockSize = guest::pointerCall(app, ts, kLoadBlockSize, {at(app, kLoadSomething), *loadFlags, kLoadFile});
-    if (!blockSize
-        || !guest::pointerCall(app, ts, kTopUp, {*blockSize + u32(size / kTopUpBytes), *loadFlags, kLoadFile, sizeAt}).has_value())
-        return std::nullopt;
     const u32 bytes = at(app, sizeAt);
     put(app, kWhere, kLoadFile);
     put(app, kWhereLine, kLoadLine);
@@ -665,8 +649,7 @@ std::optional<u32> loadWhole(App* app, ThreadState& ts, u32 name, u32 flags)
             return std::nullopt;
         put(app, kLoadedSize, at(app, sizeAt));
     }
-    if (!guest::direct<0x4e2da0, ea::closeChecked>(app, ts, at(app, handleAt))
-        || !guest::pointerCall(app, ts, kTopUpEnd, {}).has_value())
+    if (!guest::direct<0x4e2da0, ea::closeChecked>(app, ts, at(app, handleAt)))
         return std::nullopt;
     if (at(app, kLoadHook) == 0 || *block == 0)
         return *block;

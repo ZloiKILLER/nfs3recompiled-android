@@ -103,7 +103,7 @@ the game and in the checks' worlds).
 | `0x564ef0` | `_IsTable`: a byte of flags a character, EOF first (`0x02` space, `0x20` digit) |
 | `0x552140` | `_Bits`: 1, 2, 4 .. `0x80`, for the sets `__setbits` makes |
 | `0x9f3810` | `atexit`'s 32 functions, their count at `0x9f3890` |
-| `0x567858` | `__chipbug`, which `fpatan` is wrapped for |
+| `0x567858` | `__chipbug`, which `fpatan` was wrapped for (the wrapper is gone, see below) |
 
 ## The functions
 
@@ -350,28 +350,25 @@ call; the rest are called only from these -- `_nheapshrink` also from
 | `0x4f80b4` | `IF@DEXP` | `mathlib/a/exp87.asm` | 1 | native |
 | `0x4f8116` | `exp` | `mathlib/a/exp87.asm` | 1 | native |
 | `0x4f9482` | `IF@DACOS` | `mathlib/a/acos87.asm` | 3 | native |
-| `0x4ff624` | `__fpatan_wrap` |  | 2 | native |
 | `0x502890` | `__set_EDOM` | `clib/startup/c/seterrno.c` | 1 | native |
 | `0x50ea4e` | `modf` |  | 1 | native |
 | `0x51655c` | `__math87_err` |  | 6 | native |
 | `0x51a1ba` | `__@DSQRT` |  | 1 | native |
-| `0x51f320` | (internal): `__fpatan_wrap`'s atan2, each division by `__fdiv_fpr` |  | 1 | native |
 | `0x5243a7` | `__reporterror` |  | 1 | native |
 | `0x5243b1` | (internal): `__reporterror`'s struct exception |  | 2 | native |
-| `0x5269d4` | (internal): `__fdiv_fpr`'s safe division |  | 4 | native |
-| `0x526aeb` | `__fdiv_fpr` |  | 2 | native |
 | `0x52b647` | (internal): the maths' error printed |  | 1 | native |
 | `0x52b68f` | (internal): `_matherr`'s call |  | 1 | native |
 | `0x52e400` | `__get_std_stream` |  | 1 | native |
 
 The native ones are their instructions as the generated code has them: the
 same operations of the port's x87, in the same order -- fldpi and fldl2e as
-the doubles it loads -- so that they are its to the bit in either FPU.  So are
-the Pentium FDIV bug's (`__fpatan_wrap`, while `__chipbug` says so: an atan2
-of a table and a polynomial, each division through `0x526aeb` and
-`0x5269d4`; its `fnsave` and `frstor` are not the generated code's either)
-and a math error's report (`__reporterror` on: its `struct exception`,
-`_matherr` through its pointer, the message to `stderr`, `errno`).
+the doubles it loads -- so that they are its to the bit in either FPU.  So is
+a math error's report (`__reporterror` on: its `struct exception`,
+`_matherr` through its pointer, the message to `stderr`, `errno`).  What the
+runtime had for the Pentium's FDIV bug -- `__fpatan_wrap` and its atan2,
+`__fdiv_fpr`, the start-up test (`0x51f2a0`, now nothing) and the software
+doubles it divided with -- is gone, with the x87's detection (`0x4ff5dc` only
+initialises the port's float state).
 
 `sscanf` and `strtod` are native too (with the strings, above): `__scnf`
 reads through the two routines in its specs (`cget_string` at `0x4f04f0` and

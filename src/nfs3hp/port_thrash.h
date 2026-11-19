@@ -91,9 +91,8 @@ void setDynamicResolution(u32 width, u32 height);
  * Glide 3 numbers it for the Voodoo 4 and 5 (GR_TEXFMT_ARGB_8888), each texel
  * a little-endian 0xAARRGGBB.  THRASH_about maps the game's 32-bit format to
  * it (the port's full colour change), and the texels reach the renderer as they
- * are.  Offered unless NFS_TEXTURES32 is 0 (fullColourTextures). */
+ * are. */
 constexpr u32 kTexFmtArgb8888 = 0x12;
-bool fullColourTextures();
 
 /* A texture side the Voodoo2 never had: 512, past Glide 2's GR_LOD_256 (0).
  * THRASH_about offers it, its LOD is one less than 256's (-1), and the

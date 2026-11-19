@@ -258,9 +258,6 @@ it draws, so a line of text can stand next to a gauge or at the edge of the
 screen. The in-car cabin fills the width at its own proportions, centred, with a
 little of the roof and the dashboard's lower edge cut off.
 
-`NFS_WIDESCREEN=0` takes the wide modes back out wherever an environment
-variable can be set — the launcher does not set this one.
-
 View Distance at Full draws the whole track out to the far distance in every
 mode, split screen and night included, as the Modern Patch does; the other
 settings keep the original distances.
@@ -290,7 +287,7 @@ comparison and logos. The original let only its Direct3D drivers take them and
 shrank them to 16 bits for a Voodoo2; here the Voodoo2 driver takes them too
 (`port_thrash.cpp`), so Screen Size reads "x 32". Art that is 16-bit
 on the disc — the track surfaces and most of the menu backgrounds — stays as it
-is. `NFS_TEXTURES32=0` goes back to 16-bit textures.
+is.
 
 ### Projected headlights
 
@@ -301,7 +298,7 @@ to lose the fraction of a texel per pixel, and the lit area broke into moving
 blocks — the same artefact the Modern Patch shows under dgVoodoo. A triangle
 whose wrapped coordinates lie that far out is moved back by a whole number of
 repeats before it is drawn (worked out in double, so nothing it samples
-changes), and the lit road draws clean. `NFS_TEXCOORD_REBASE=0` turns this off.
+changes), and the lit road draws clean.
 
 The headlights' light pool, a car's shadow and the glow of its lights in the
 rain are laid on the road with a less-or-equal depth test. The Voodoo kept 16
@@ -311,8 +308,7 @@ flickered against the road and each other. The fragment shader rounds depth to
 the Voodoo's 16-bit steps, but only where the driver gave a depth buffer of more
 than the 16 bits asked for (Mali gives 24); a real 16-bit buffer already holds
 those steps. Never on an Adreno 5xx: there the shader's depth write broke the
-depth test, and the wheels showed through the body. `NFS_DEPTH16=0` or `1`
-overrides the choice.
+depth test, and the wheels showed through the body.
 
 ### Rear-view mirror
 
@@ -320,8 +316,8 @@ In a single race the mirror is drawn as the main view is: the same draw
 distance, the near track model, cars at full size, the sky with its clouds and
 lightning, the cars' lights and the headlights' light. The original cut all of
 that down for the mirror (a reach of 100 against 500, the far track model, cars
-at 0.6 of their size, a flat sky). There is no menu option;
-`NFS_MIRROR_FULL=0` brings the original's mirror back (`nfs3hp_main.cpp`, `fullMirror`).
+at 0.6 of their size, a flat sky). There is no menu option (`nfs3hp_main.cpp`,
+`mirrorFollowsMain`, `mirrorAsMain`).
 
 ### Network races
 
@@ -381,11 +377,22 @@ which only what is drawn sees.
 
 The game measured the processor at start-up and chose by it: movies' quality and
 whether to drop their in-between frames, the detail settings of a first start, MMX
-routines or plain ones, the x87's copies. It also worked round the Pentium's FDIV
-bug. None of this is on the port: `nfs3hp::removed` answers with constants, movies
-are always at their best quality and the detail at the game's highest. A movie still
-drops a frame that is late against its sound; that is keeping them together, not the
-processor's speed.
+routines or plain ones for the sound's mixing and the 2D copies, the x87's copies.
+It also worked round the Pentium's FDIV bug. None of this is on the port: the
+measuring and the choices are gone, with the plain mixing routines, the copy sets
+other than the one used, the FDIV test and Watcom's software doubles it divided
+with, and the x87's detection. The detail is at the game's highest and movies are
+decoded at their best quality, though the display mode the port gives the movie
+player still has it skip the in-between (MADe) frames. A movie still drops a frame
+that is late against its sound; that is keeping them together, not the processor's
+speed.
+
+Also gone: the software renderers' code (driver slot 0, their polygon drawers and
+quad subdivision, their blend tables; the polygons sorted by depth buckets stay,
+for a race with the Z-buffer off), two tables of reciprocals built at start-up
+that nothing reads, and the wait for the music before each file the game loads.
+The game topped the music stream up first, so that one CD drive would not seek
+under the music; on the phone the stream reads on between a load's blocks.
 
 ## The port's system services
 
@@ -614,18 +621,11 @@ from the phone; the rest keep their defaults.
 | `NFS_FPS_CAP` | `30` | Frame rate the renderer paces presents to. The game's logic is tuned for 30 Hz. |
 | `NFS_GAMMA`, `NFS_BRIGHTNESS`, `NFS_CONTRAST` | `1.0`, `0`, `1.0` | Applied to the finished frame in the final blit, so menus and movies are covered as well as a race. Where they start; Advanced Graphics moves them from there. |
 | `NFS_ORIENTATION` | unset | `auto` allows both landscape directions as the rotation lock allows; anything else pins one. Must be set before `SDL_Init`. |
-| `NFS_CAR_DETAIL_FULL` | on | With Car Detail at High, every car keeps its detailed model and the player's texture size out to the draw distance, in every view, and the limit on how many are drawn at once is lifted. `0` restores the original. |
-| `NFS_MIRROR_FULL` | on | The rear-view mirror is drawn as the main view is: its distances, the track's detailed models, cars at full detail, the sky with clouds and lightning, car lights and the headlights' light. `0` restores the original short, coarse mirror. |
-| `NFS_WIDESCREEN` | on | `0` takes the 1280x720, 1600x900 and 1920x1080 modes back out of the Screen Size list. |
-| `NFS_TEXTURES32` | on | `0` has the Voodoo2 driver refuse 32-bit textures again, so the game shrinks them to 16 bits as it used to. |
-| `NFS_TEXCOORD_REBASE` | on | `0` leaves far-out texture coordinates as the game sends them (see Projected headlights), to compare. |
-| `NFS_DEPTH16` | auto | On where the depth buffer has more than 16 bits and the GPU is not an Adreno 5xx. `0` keeps the GPU's own depth precision, `1` forces the Voodoo's 16-bit steps (see Projected headlights); the `[GPU]` lines count the frames drawn in them. |
 | `NFS_LOG` | on | `0` (debug mode off, the launcher's Advanced screen) writes nothing to the log: log priority critical, and SDL's direct Android logging held back (`android/app/jni/sdl_quiet.h`). With debug mode off the launcher sets none of the diagnostic variables. |
 | `NFS_NET_PORT` | `9803` | TCP port of network races, as the Modern Patch has it; the connection screen offers the original's `1030`. |
 | `NFS_NET_TRACE` | off | `1` (extra `net_trace`) writes a network race into the log: EA's comm library events and packet sends (`[COMM]`), up to 400 datagrams per socket instead of 16 (`[NET]`), and each new indirect call target once per thread after the IPX transport opens (`[CALL]`). For finding where two machines stop on the way into a race. |
 | `NFS_REPLAY_TRACE` | off | `1` (debug mode, Traces: `replay_trace`) every car at every physics step to `logs/trace-*.bin` (see Comparing builds by a replay). |
 | `NFS_AUTO_REPLAY` | off | `1` (debug mode, launch extra `auto_replay`) no movies, and from the first menu straight into the replay in `replay.rp3`. |
-| `NFS_PERF_TRACE` | off | `1` (debug mode, Traces: `perf_trace`, "Missing performance data logging") follows player one's 0-100 and the other timings from the car (`sub_4cdf10`) through the race's take-down to the results' copy (`sub_455410`), for the race summary's Performance page showing `---`: `[PERF]` when the car's change, `[PERFTIME]` at each step of `takeDownRace` and when the results' records change. |
 | `NFS_FUNC_LOG` | off | `1` (debug mode, switch `live_counter`) samples which functions run, to `functions.bin` (see Live functions log). |
 | `NFS_AUDIO_RATE` | unset | The output's own sample rate. The game mixes at 22050 Hz and SDL converts to this; a device opened at any other rate is resampled by Android, off its low-latency path. Unset, the device opens at SDL's default. |
 | `NFS_TOUCH_STEER_LEFT` etc. | unset | Keys the touch overlay sends for steering and the pedals, so that endpoint can report them as axes. |

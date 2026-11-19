@@ -15,10 +15,9 @@ namespace nfs3hp
 namespace port
 {
 
-/* The tables of the decoders' set-ups the mixer's start fills, by whether the
- * CPU has MMX (port_snd_mixsetup.cpp).  Without it the first table calls a
- * routine of the plain set (0x522100), which the port does not have. */
-Result pickPcmFirstSetups(App* app, ThreadState& ts, u32 esp);
+/* The tables of the decoders' set-ups the mixer's start fills, the MMX set's
+ * (port_snd_mixsetup.cpp). */
+void pickPcmFirstSetups(App* app);
 void pickPcmSecondSetups(App* app);
 void pickXaSetups(App* app);
 void pickLastSetups(App* app);

@@ -1578,21 +1578,16 @@ nfs::u32 frontend::inputStateClose(nfs::App* app, nfs::ThreadState& ts, nfs::Arg
     return runThunk(app, ts, args, site, [&](Guest&) { return eab::inputStateClosedWith(app, ts, args.eax); });
 }
 
-/* sub_4f22e0: the file named at eax read into edx, its size kept at 0x5643f8; the sound
- * topped up before (sub_4ff7c0), the more so the bigger the file.  edx, or 0 if empty. */
+/* sub_4f22e0: the file named at eax read into edx, its size kept at 0x5643f8.  edx, or 0 if
+ * empty.  Port: the music stream is no longer topped up before the read (sub_4ff7c0). */
 nfs::u32 frontend::eab::fileLoadInto(App* app, ThreadState& ts, u32 name, u32 into)
 {
-    constexpr u32 kTopUp = 0x4ff7c0;
     Guest g(app, ts);
     const fe::Frame frame(g, ts, 0x1c);
     const u32 size = g.frame(), handle = g.frame() + 8;
-    fe::pointerCall(g, kTopUp, args({ 0x190, handle, g.frame() + 4, size }));
-    fe::direct<0x4e28d0, ea::openToRead>(app, ts, name, handle, g.frame() + 4, size);  // as sub_4ff7c0 was handed them
-    const u32 bytes = g.dword(size);
-    if (bytes == 0)
+    fe::direct<0x4e28d0, ea::openToRead>(app, ts, name, handle, g.frame() + 4, size);
+    if (g.dword(size) == 0)
         return 0;
-    // ebx as the first call left it, ecx the divisor (mov ecx, 0x1c2; idiv ecx).
-    fe::pointerCall(g, kTopUp, args({ u32(s32(bytes) / 0x1c2) + 0x190, u32(s32(bytes) % 0x1c2), g.frame() + 4, 0x1c2 }));
     fe::direct<0x4e2de0, ea::readChecked>(app, ts, g.dword(handle), into, g.dword(size));
     g.setDword(0x5643f8, g.dword(size));
     fe::direct<0x4e2da0, ea::closeChecked>(app, ts, g.dword(handle));

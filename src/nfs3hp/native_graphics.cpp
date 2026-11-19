@@ -51,6 +51,10 @@
 #include "native_frontend_hudx.h"
 #include "native_frontend_connect.h"
 
+#include <SDL3/SDL.h>
+#include <lib/gamepad.h>
+#include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -421,67 +425,11 @@ nfs::u32 setRenderState(App* app, ThreadState& ts, nfs::Args& args)
     return g.eax;
 }
 
-/* The software renderers' blending (softtria's): the rows of the colour
- * tables a blended colour is drawn with, sent as a state of their own with the
- * function that blends by them. */
-constexpr u32 kStateSoftwareBlend = 0x2bd;
-constexpr u32 kSoftwareBlendDraw = 0x431d50;     // what the state hands the renderer
-constexpr u32 kBlendTable = 0x5f1798;            // 64 bytes a row
-constexpr u32 kBlendTableGreen = 0x5f0798;       // the green rows of a 5:6:5 screen, twice as long
-constexpr u32 kBlendRowBlue = 0x5f1f98, kBlendRowRed = 0x5f1f9c, kBlendRowGreen = 0x5f1fa4;  // the rows chosen
-constexpr u32 kScreenBits = 0x56438c;            // 15 for a 5:5:5 screen
-
-/* A blended colour's row of the blending tables: the channel times the alpha, by 2048, a row a
- * step. */
-u32 blendStep(u32 channel, u32 alpha)
-{
-    return channel * alpha >> 11;  // at most 255 * 255: the code's sar is a shift
-}
-
-/* 0x432390's core: with the blending on (kKeptBlend 1), the rows for colour 0xAARRGGBB chosen and
- * sent with kSoftwareBlendDraw.  eax at the call as the code has it: the green row's offset. */
-bool softwareBlendColour(App* app, ThreadState& ts, u32 colour)
-{
-    if (at(app, kKeptBlend) != 1)
-        return true;
-    const u32 alpha = colour >> 24;
-    put(app, kBlendRowBlue, kBlendTable + (blendStep(colour & 0xff, alpha) << 6));
-    put(app, kBlendRowRed, kBlendTable + (blendStep(colour >> 16 & 0xff, alpha) << 6));
-    const u32 green = blendStep(colour >> 8 & 0xff, alpha) << 5;
-    const u32 offset = at(app, kScreenBits) == 0xf ? green * 2 : green << 2;
-    put(app, kBlendRowGreen, (at(app, kScreenBits) == 0xf ? kBlendTable : kBlendTableGreen) + offset);
-    return setState(app, ts, kStateSoftwareBlend, kSoftwareBlendDraw).has_value();
-}
-
-/* 0x432390: softwareBlendColour for colour eax. */
-nfs::u32 setSoftwareBlendColour(App* app, ThreadState& ts, nfs::Args& args)
-{
-    const RegisterImage image(args);
-    const Kept kept(g, kEbx | kEcx | kEdx);
-    if (!softwareBlendColour(app, ts, g.eax))
-        return g.eax;
-    kept.back(g);
-    ts.sp += 4;
-    return g.eax;
-}
-
-/* 0x432370: the software renderers' blending off (kStateSoftwareBlend 0). */
-nfs::u32 clearSoftwareBlend(App* app, ThreadState& ts, nfs::Args& args)
-{
-    const RegisterImage image(args);
-    const Kept kept(g, kEcx | kEdx);
-    if (!setState(app, ts, kStateSoftwareBlend, 0))
-        return g.eax;
-    kept.back(g);
-    ts.sp += 4;
-    return g.eax;
-}
-
 /* ---- The frame ---- */
 
 /* 0x434a00's core: a frame ended: the window taken (THRASH_window 2) but on PowerVR, the picture
- * flushed if `flush`, flipped if `flip`, the window again, and on a card that is neither PowerVR nor
- * a software renderer, the window cleared.  eax as the driver leaves it. */
+ * flushed if `flush`, flipped if `flip`, the window again, and but on PowerVR the window cleared.
+ * eax as the driver leaves it. */
 bool frameEnd(App* app, ThreadState& ts, bool flip, bool flush)
 {
     const bool powerVr = half(app, kDriverFlags) & kDriverPowerVr;
@@ -489,7 +437,7 @@ bool frameEnd(App* app, ThreadState& ts, bool flip, bool flush)
     if (!window() || (flush && !driven<thrash::kThrashFlushWindow, &port::driver::flushWindow>(app, ts)) || (flip && !driven<thrash::kThrashPageFlip, &port::driver::pageFlip>(app, ts))
         || !window())
         return false;
-    if (!(byte(app, kDriverFlags) & kDriverSoftware) && !powerVr)
+    if (!powerVr)
         return driven<thrash::kThrashClearWindow, &port::driver::clearWindow>(app, ts).has_value();
     return true;
 }
@@ -557,7 +505,7 @@ nfs::u32 driverIdle(App* app, ThreadState& ts, nfs::Args& args)
 
 /* ---- Clearing and flipping ---- */
 
-constexpr u32 kDriverOnCard = 0x7a3a60;      // 1 but on the software renderers (sub_4b59c0)
+constexpr u32 kDriverOnCard = 0x7a3a60;      // the z-buffer: 1 (sub_4b59c0), 0 when turned off (sub_431b40)
 constexpr u16 kDriverSofttria = 0x02;        // kDriverFlags' bit for softtria
 
 /* 0x4d5c90's core: the window cleared with the depth test as the driver has it, and the depth test
@@ -683,12 +631,11 @@ nfs::u32 clearBothBuffersAndReset(App* app, ThreadState& ts, nfs::Args& args)
     return g.eax;
 }
 
-/* 0x4d9120's core: the window taken (THRASH_window 2) and, but on softtria, cleared; ecx and edx
- * kept, as the code keeps them. */
+/* 0x4d9120's core: the window taken (THRASH_window 2) and cleared; ecx and edx kept, as the code
+ * keeps them. */
 bool windowTakenAndCleared(App* app, ThreadState& ts)
 {
-    return driven<thrash::kThrashWindow, &port::driver::window>(app, ts, 2)
-        && (!!(byte(app, kDriverFlags) & kDriverSofttria) || clearDepth(app, ts));
+    return driven<thrash::kThrashWindow, &port::driver::window>(app, ts, 2) && clearDepth(app, ts);
 }
 
 /* 0x4d9120: windowTakenAndCleared. */
@@ -945,11 +892,10 @@ nfs::u32 drawViewSurround(App* app, ThreadState& ts, nfs::Args& args)
     return g.eax;
 }
 
-/* ---- The software renderer's frame buffer ---- */
+/* ---- The frame buffer's lock ---- */
 
-constexpr u32 kFrameLocked = 0x56aff4;       // the frame buffer locked by the game
+constexpr u32 kFrameLocked = 0x56aff4;       // the screen record the frame buffer is locked for
 constexpr u32 kFrameLock = 0xa18220;         // THRASH_lockwindow's record, or none
-constexpr u32 kFrameBuffers = 0x565020;      // two buffers to free as the lock goes
 constexpr u32 kFreeBuffer = 0x509b10;
 
 /* sub_509b10, a block freed, by address: the block in eax. */
@@ -958,38 +904,9 @@ bool freeBlock(App* app, ThreadState& ts, u32 block)
     return viaCore<kFreeBuffer, frontend::watb::removeRow>(app, ts, block);
 }
 
-/* 0x5248f0's core: the frame buffer's lock let go of (THRASH_unlockwindow) and its two buffers
- * freed, if it is locked; ebx, ecx and edx kept, as the code keeps them.  eax as the last call
- * leaves it. */
-bool frameBufferUnlocked(App* app, ThreadState& ts)
-{
-    const u32 lock = at(app, kFrameLock);
-    if (lock != 0)
-    {
-        if (!driven<thrash::kThrashUnlockWindow, &port::driver::unlockWindow>(app, ts, lock))
-            return false;
-        put(app, kFrameLock, 0);
-        if (!freeBlock(app, ts, at(app, kFrameBuffers)) || !freeBlock(app, ts, at(app, kFrameBuffers + 4)))
-            return false;
-    }
-    return true;
-}
-
-/* 0x5248f0: frameBufferUnlocked. */
-nfs::u32 unlockFrameBuffer(App* app, ThreadState& ts, nfs::Args& args)
-{
-    const RegisterImage image(args);
-    const Kept kept(g, kEbx | kEcx | kEdx);
-    if (!frameBufferUnlocked(app, ts))
-        return g.eax;
-    kept.back(g);
-    ts.sp += 4;
-    return g.eax;
-}
-
-/* 0x5178d0's core: the frame buffer let go of -- unlocked straight when the game locked it, by
- * frameBufferUnlocked when the driver did -- and the window taken (THRASH_window 0); ecx and edx
- * kept, as the code keeps them. */
+/* 0x5178d0's core: the frame buffer's lock, which frameBufferLocked keeps with its screen record,
+ * let go of (THRASH_unlockwindow), and the window taken (THRASH_window 0); ecx and edx kept, as the
+ * code keeps them. */
 bool frameLockReleased(App* app, ThreadState& ts)
 {
     if (at(app, kFrameLocked) != 0)
@@ -999,8 +916,6 @@ bool frameLockReleased(App* app, ThreadState& ts)
         put(app, kFrameLock, 0);
         put(app, kFrameLocked, 0);
     }
-    else if (at(app, kFrameLock) != 0 && !frameBufferUnlocked(app, ts))
-        return false;
     return driven<thrash::kThrashWindow, &port::driver::window>(app, ts, 0).has_value();
 }
 
@@ -1010,18 +925,6 @@ nfs::u32 releaseFrameLock(App* app, ThreadState& ts, nfs::Args& args)
     const RegisterImage image(args);
     const Kept kept(g, kEcx | kEdx);
     if (!frameLockReleased(app, ts))
-        return g.eax;
-    kept.back(g);
-    ts.sp += 4;
-    return g.eax;
-}
-
-/* 0x517990: the frame buffer let go of and the picture flipped. */
-nfs::u32 releaseAndFlip(App* app, ThreadState& ts, nfs::Args& args)
-{
-    const RegisterImage image(args);
-    const Kept kept(g, kEcx | kEdx);
-    if (!frameLockReleased(app, ts) || !driven<thrash::kThrashPageFlip, &port::driver::pageFlip>(app, ts))
         return g.eax;
     kept.back(g);
     ts.sp += 4;
@@ -1157,6 +1060,7 @@ constexpr u32 kModeHandle = 0x5643e0;        // sub_4eff00's to let go of
 constexpr u32 kScreens = 0x564394;           // how many screens: past 1 the second set up too
 constexpr u32 kFirstScreen = 0x56502c, kSecondScreen = 0x565064;
 constexpr u32 kScreenSetWidth = 0x565030, kScreenSetHeight = 0x565034, kScreenSetBits = 0x565048;
+constexpr u32 kScreenBits = 0x56438c;        // the screen's bits a pixel, 15 for a 5:5:5 one
 constexpr u32 kKeepScreenSize = 0x5247c0;    // eax, edx, ebx: width, height, bits (0 for 640, 480, 16)
 constexpr u32 kLetGo = 0x4eff00;
 constexpr u32 kSetUpScreen = 0x5179d0;       // eax which, ebx its record
@@ -1539,7 +1443,7 @@ constexpr u32 kPointerWidth = 640, kPointerHeight = 480;
 std::optional<u32> raceTakenDown(App* app, ThreadState& ts, u32 extra)
 {
     if (diag::raceDown)
-        diag::raceDown(app, "race taken down");
+        diag::raceDown(app);
     raceRunning(false);
     put(app, kInRace, 0);
     if (!guest::direct<0x4bef50, render::screenModeSet>(app, ts, at(app, kMenuScreenMode)))
@@ -1571,36 +1475,21 @@ std::optional<u32> raceTakenDown(App* app, ThreadState& ts, u32 extra)
     if (extra != 0
         && !viaCore<kRaceEndExtra, frontend::rendc::backImage>(app, ts, eax, g.edx, g.ebx, g.ecx))
         return std::nullopt;
-    const auto after = [&](u32 end) {
-        if (diag::raceDown)
-        {
-            char where[32];
-            std::snprintf(where, sizeof where, "after sub_%x", unsigned(end));
-            diag::raceDown(app, where);
-        }
-    };
     if (!viaCore<0x4bc950, frontend::sime::effectsFree>(app, ts))
         return std::nullopt;
-    after(0x4bc950);
     if (!viaCore<0x4bcd60, frontend::loopb::replayEnd>(app, ts))
         return std::nullopt;
-    after(0x4bcd60);
     if (!guest::direct<0x42dd00, raceload::stopTick>(app, ts))
         return std::nullopt;
-    after(0x42dd00);
     if (!viaCore<0x478000, frontend::menuf::raceEndEmpty>(app, ts))
         return std::nullopt;
-    after(0x478000);
     if (!viaCore<0x4c4830, frontend::loopb::teardown>(app, ts))
         return std::nullopt;
-    after(0x4c4830);
     if (!viaCore<0x4782d0, frontend::loada::horizonFreeCall>(app, ts))
         return std::nullopt;
-    after(0x4782d0);
     const std::optional<u32> left = guest::direct<0x41da60, track::letGoOfTrack>(app, ts);
     if (!left)
         return std::nullopt;
-    after(0x41da60);
     return left;
 }
 
@@ -2986,6 +2875,109 @@ bool appendFormatted(App* app, ThreadState& ts, u32 text, u32 format, u32 first,
     return !ts.terminate;
 }
 
+/* Port: the loading bar paced as the Modern Patch paces it.
+ *
+ * Drawn at most every kBarPeriod.  The game moves it after every texture of the track -- 157 to 278
+ * of them -- and every move drew it into both buffers, two flips, each held to its frame by the
+ * frame cap: up to 18 s of a load spent waiting on the bar.  A move sooner than the period after
+ * the last one drawn is not drawn (the system's tasks still run, and the stop check is the
+ * callers'); a move to 100 per cent always is.
+ *
+ * And it takes kBarSplash from the loading picture to its end, whatever the loading takes: the bar
+ * shows no more than the share of that time gone, and once the time is up it goes on by at most
+ * kBarStepMost a move drawn.  The race's load, all of it done, waits at 100 per cent until the bar
+ * is there (loadingBarReached, frontend::loopa::raceLoad).  Any key but Escape (and Android's
+ * Back, its Escape) or a click cuts the time short -- a mouse's button, or a tap, which on the
+ * loading screen is the pointer's as in the menus (pointerTick) -- and the bar then runs to its
+ * end at kBarStepMost a move.  Escape stops the load as ever (0x4a33d0).
+ *
+ * The loading screen's start (loadingScreenShown) starts it all over, its first move drawn. */
+namespace
+{
+using BarClock = std::chrono::steady_clock;
+constexpr BarClock::duration kBarPeriod = std::chrono::milliseconds(50);
+constexpr BarClock::duration kBarSplash = std::chrono::seconds(5);
+constexpr float kBarStepMost = 5.0f;   // per cent a move drawn, once the time is up
+BarClock::time_point s_barDrawn, s_barStart;
+bool s_barDrawnYet = false;
+bool s_barTimed = false;               // the time still holds the bar back
+float s_barShown = 0.0f;               // the per cent last drawn
+bool s_barReached = true;              // the last move asked for was drawn as it was asked
+std::atomic<bool> s_barHurried{false};
+bool s_barWatching = false;
+u32 s_barClicks = 0;                   // nfs::Mouse::presses() as the loading screen came up
+
+/* SDL's event watch, on whatever thread an event comes in: a key that hurries the bar. */
+bool SDLCALL barHurryWatch(void* /*userdata*/, SDL_Event* event)
+{
+    switch (event->type)
+    {
+    case SDL_EVENT_KEY_DOWN:
+        if (!event->key.repeat && event->key.scancode != SDL_SCANCODE_ESCAPE
+            && event->key.scancode != SDL_SCANCODE_AC_BACK)
+            s_barHurried.store(true, std::memory_order_relaxed);
+        break;
+    default:
+        break;
+    }
+    return true;
+}
+
+/* The bar started over for a new loading screen. */
+void barStarted()
+{
+    if (!s_barWatching)
+    {
+        SDL_AddEventWatch(barHurryWatch, nullptr);
+        s_barWatching = true;
+    }
+    s_barHurried.store(false, std::memory_order_relaxed);
+    s_barClicks = nfs::Mouse::presses();
+    s_barStart = BarClock::now();
+    s_barDrawnYet = false;
+    s_barTimed = true;
+    s_barShown = 0.0f;
+    s_barReached = true;
+}
+
+/* The per cent to draw for a move to `asked`, or nullopt when this move is not drawn. */
+std::optional<float> barPaced(float asked)
+{
+    const BarClock::time_point now = BarClock::now();
+    if (s_barHurried.load(std::memory_order_relaxed) || nfs::Mouse::presses() != s_barClicks)
+        s_barTimed = false;
+    if (asked < 100.0f && s_barDrawnYet && now - s_barDrawn < kBarPeriod)
+        return std::nullopt;
+    float shown = asked;
+    const BarClock::duration gone = now - s_barStart;
+    bool stepped = true;
+    if (s_barTimed && gone < kBarSplash)
+    {
+        const float allowed = 100.0f * std::chrono::duration<float>(gone).count()
+                              / std::chrono::duration<float>(kBarSplash).count();
+        if (allowed <= asked)
+        {
+            shown = allowed;
+            stepped = false;
+        }
+    }
+    else
+        s_barTimed = false;
+    if (stepped && shown > s_barShown + kBarStepMost)
+        shown = s_barShown + kBarStepMost;
+    s_barDrawn = now;
+    s_barDrawnYet = true;
+    s_barShown = shown;
+    return shown;
+}
+}  // namespace
+
+/* Port: whether the last move of the loading bar was drawn where it was asked to go (kBarSplash). */
+bool loadingBarReached()
+{
+    return s_barReached;
+}
+
 /* 0x494fa0's core: the loading screen put up as a race loads (but with it turned off): the race's
  * track's picture -- one of its several in turn, or the car's when there is none or [0x6fd4fc] asks
  * for it -- loaded and shown in both buffers; the textures let go of, and the race's x87 precision
@@ -2996,6 +2988,7 @@ bool loadingScreenShown(App* app, ThreadState& ts)
 {
     if (at(app, kLoadingOff) != 0)
         return true;
+    barStarted();  // port: the bar paced over again (kBarSplash)
     const GuestFrame frame(ts, 0x18, 0x114);
     const u32 name = frame - 0x114, track = frame - 0x14;
     menuPrecision(app, ts);
@@ -3104,13 +3097,29 @@ bool drawBar(App* app, ThreadState& ts)
  * the bar's share) drawn after the loading text, in both buffers, while the loading text is up; the
  * system's tasks run first.  The menus' x87 precision while it draws, the race's after (eax as
  * that leaves it).  The x87's operations as the code does them, each float stored where it stores
- * one; its compare (fcom, fnstsw) a float compare that gives what C0 gives, NaN too. */
+ * one; its compare (fcom, fnstsw) a float compare that gives what C0 gives, NaN too.
+ * Port: paced, not every move drawn, and below 100 per cent into one buffer only (kBarSplash). */
 bool loadingProgress(App* app, ThreadState& ts, u32 perCentAt)
 {
     if (!viaPort<kRunSystemTasks, port::stream::runDueTasks>(app, ts, 0))
         return false;
     if (at(app, kLoadingTextShown) == 0)
+    {
+        s_barReached = true;  // port: no bar to wait for (kBarSplash)
         return true;
+    }
+    // port: the bar paced (kBarSplash): drawn where barPaced says, or not at all.
+    const float asked = floatAt(app, perCentAt);
+    const std::optional<float> paced = barPaced(asked);
+    if (!paced)
+    {
+        s_barReached = false;
+        return true;
+    }
+    s_barReached = *paced == asked;
+    putFloat(app, perCentAt, *paced);
+    const bool full =
+        !belowOrUnordered(nfs::Float(floatAt(app, perCentAt)), nfs::Float(app->getMemory<double>(kLoadingAll)));
     if (!driven<thrash::kThrashSync, &port::driver::sync>(app, ts, 0) || !driven<thrash::kThrashWindow, &port::driver::window>(app, ts, 2))
         return false;
     menuPrecision(app, ts);
@@ -3147,12 +3156,10 @@ bool loadingProgress(App* app, ThreadState& ts, u32 perCentAt)
         putClipCode(app, corner(n));
     if (!stateSent(app, ts, thrash::kStateTexture, 0))
         return false;
-    // Softtria's shading on for the bar, and off again.
-    const auto shaded = [&](u32 value) {
-        return !(byte(app, kDriverFlags) & kDriverSofttria) || stateSent(app, ts, thrash::kStateShade, value);
-    };
-    for (int buffer = 0; buffer < 2; ++buffer)
-        if ((buffer == 1 && !driven<thrash::kThrashSync, &port::driver::sync>(app, ts, 0)) || !shaded(1) || !drawBar(app, ts) || !shaded(0)
+    // port: both buffers only at 100 per cent; below it the other catches up at the next move drawn.
+    const int buffers = full ? 2 : 1;
+    for (int buffer = 0; buffer < buffers; ++buffer)
+        if ((buffer == 1 && !driven<thrash::kThrashSync, &port::driver::sync>(app, ts, 0)) || !drawBar(app, ts)
             || !flushFlip(app, ts))
             return false;
     racePrecision(app, ts);
@@ -3983,17 +3990,6 @@ constexpr u32 kHudBoxTexture = 0x749a38, kHudFlashTexture = 0x8b4844;
 constexpr u32 kHudTextScale = 0x791b50;
 constexpr u32 kHalf = 0x53b5e8, kHalfAgain = 0x53b5ec;  // 0.5f each
 
-/* setSoftwareBlendColour as the code calls it: colour eax, ebx, ecx and edx kept. */
-bool blendColourKept(App* app, ThreadState& ts, u32 colour)
-{
-    const Kept kept(g, kEbx | kEcx | kEdx);
-    g.eax = colour;
-    if (!softwareBlendColour(app, ts, colour))
-        return false;
-    kept.back(g);
-    return true;
-}
-
 // A player's HUD box: three quads, then the flashing bar's two (kCornerBytes a corner, four a quad).
 constexpr u32 kHudBoxBytes = 0x280, kHudQuadBytes = 0x80, kHudBarFirst = 0x180, kHudBarSecond = 0x200;
 constexpr u32 kHudTextFont = 0x44;
@@ -4045,8 +4041,6 @@ bool messageBox(App* app, ThreadState& ts, u32 player, u32 text)
         || !stateSent(app, ts, thrash::kStateTexture, at(app, kHudFlashTexture)))
         return false;
     const u32 bar = box + (s32(at(app, kTicks) & 0x3f) < 0x20 ? kHudBarFirst : kHudBarSecond);
-    if ((byte(app, kDriverFlags) & kDriverSofttria) && !blendColourKept(app, ts, at(app, bar + kCornerColour)))
-        return false;
     return quad(bar) && stateSent(app, ts, thrash::kStateBlend, 0);
 }
 
@@ -4068,14 +4062,14 @@ constexpr u32 kRaceView = 0x7a3d14;          // the view drawn
 constexpr u32 kTimes = 0x7a3cf0;             // what each stage took, the last one's into here
 constexpr u32 kKeepTime = 0x4bc030;          // eax the view, edx kTimes
 constexpr u32 kStartTime = 0x4bc000;         // eax 1, esi where the time goes
-constexpr u32 kSoftwareRaceView = 0x7a3a60;  // 0: the software renderers' order
 constexpr u32 kRaceHudOff = 0x7d36a0, kRaceViewPaused = 0x7a3d10, kRaceCountdown = 0x7a3d18;
 constexpr u32 kRaceFrameSteps[] = {0x4dece0, 0x4dedf0, 0x4cc600};
 
 /* 0x4bc160's core: a frame of the race's view for `pass` (0 the main one, 1 the mirror, others
- * neither): the frame's lists set up, the window cleared on the software renderers, the sky
- * (sub_4782e0), the view (sub_41b9b0), the effects, the cars, the smoke and the rest, each stage
- * timed (sub_4bc030 with what sub_4bc000 or the stage gave back); then the HUD for the main pass
+ * neither): the frame's lists set up, the sky (sub_4782e0), the view (sub_41b9b0), the effects, the
+ * cars, the smoke and the rest -- each stage timed (sub_4bc030 with what sub_4bc000 or the stage gave
+ * back), or without the z-buffer ([0x7a3a60] 0) gathered from the depth buckets (sub_4c7580) as one
+ * stage; then the HUD for the main pass
  * (sub_482b00) or the mirror's frame (sub_484030), and the countdown.  A stage gives its time back
  * as Watcom returns a record: into the frame at esi, as deep as the code has it -- esi as the code
  * has it at each call, its copies' too, for what a callee writes there.  The registers each call
@@ -4126,7 +4120,6 @@ bool raceFrameDrawn(App* app, ThreadState& ts, u32 pass)
     const auto layers = [&](u32 first, u32 second) {
         return pass != 0 || (firstLayer(first) && secondLayer(second));
     };
-    const auto softtria = [&]() { return (byte(app, kDriverFlags) & kDriverSofttria) != 0; };
     if (pass == 0 && !secondLayer(0))
         return false;
     guest::direct<0x4318c0, collide::forgetStates>(app, ts);
@@ -4134,23 +4127,13 @@ bool raceFrameDrawn(App* app, ThreadState& ts, u32 pass)
         || !viaCore<0x4c75f0, frontend::rende::clearFarBuckets>(app, ts)
         || !viaCore<0x4c73e0, frontend::rende::clearDepthBuckets>(app, ts))
         return false;
-    if (pass == 0 && (byte(app, kDriverFlags) & kDriverSoftware) && !driven<thrash::kThrashClearWindow, &port::driver::clearWindow>(app, ts))
-        return false;
-    const u32 sky = softtria() ? frame - 0x50 : frame - 0x48;
-    if (softtria() && !stateSent(app, ts, thrash::kStateShade, 1))
-        return false;
+    const u32 sky = frame - 0x48;
     // sub_4782e0 takes the view in eax (the race view's sky) and the record in esi.
     esi = sky;
     if (!viaCore<0x4782e0, frontend::loada::skyViewTo>(app, ts, kRaceView, sky) || !keep(sky) || !layers(0, 1))
         return false;
-    if (softtria())
-    {
-        const u32 detail = gameSettings(app).detailFlag104;
-        if (!stateSent(app, ts, thrash::kStateShade, detail != 0 || gameSettings(app).night == 1 ? 1 : detail))
-            return false;
-    }
     u32 last;
-    if (at(app, kSoftwareRaceView) == 0)
+    if (at(app, kDriverOnCard) == 0)
     {
         if (!callWith(kRaceView, 0x41b9b0) || !layers(1, 2)
             || !viaCore<0x4c6f00, frontend::rende::skidMarksDraw>(app, ts, kRaceView))
@@ -4218,7 +4201,7 @@ bool raceFrameDrawn(App* app, ThreadState& ts, u32 pass)
         if (!firstLayer(2))
             return false;
     }
-    return !softtria() || stateSent(app, ts, thrash::kStateShade, 0);
+    return true;
 }
 
 /* 0x4bc160: raceFrameDrawn for pass eax. */
@@ -4227,53 +4210,6 @@ nfs::u32 raceFrame(App* app, ThreadState& ts, nfs::Args& args)
     const RegisterImage image(args);
     const Kept kept(g, kEbx | kEcx | kEdx | kEsi | kEdi);
     if (!raceFrameDrawn(app, ts, g.eax))
-        return g.eax;
-    kept.back(g);
-    ts.sp += 4;
-    return g.eax;
-}
-
-/* ---- The reciprocals ---- */
-
-constexpr u32 kReciprocalsMade = 0x564ed0;
-constexpr u32 kReciprocals = 0x9ef990;       // 1024 words: 2^32 / (n * 4) + 1, the first 0
-constexpr u32 kDivide64 = 0x503760;          // native_snd_strm's div64: (low, high, divisor), stdcall
-
-/* port::div64 (0x503760), by address: (low, high, divisor) on the stack, stdcall.  The quotient. */
-std::optional<u32> divide64(App* app, ThreadState& ts, u32 low, u32 high, u32 divisor)
-{
-    if (!called(app, ts, kDivide64, {low, high, divisor}))
-        return std::nullopt;
-    return g.eax;
-}
-
-/* 0x4eb3c0's core: the table of reciprocals made, once: for n from 1 to 1023, the 64-bit 1:0
- * divided by 4n, plus 1.  The registers at each division as the code has them: edx its count, a
- * step on, eax the last entry. */
-bool reciprocalsMade(App* app, ThreadState& ts)
-{
-    if (at(app, kReciprocalsMade) != 0)
-        return true;
-    put(app, kReciprocals, 0);
-    for (u32 divisor = 4; divisor != 0x1000; divisor += 4)
-    {
-        g.edx = divisor + 4;
-        const std::optional<u32> quotient = divide64(app, ts, 0, 1, divisor);
-        if (!quotient)
-            return false;
-        put(app, kReciprocals + divisor, *quotient + 1);
-        g.eax = *quotient + 1;
-    }
-    put(app, kReciprocalsMade, at(app, kReciprocalsMade) + 1);
-    return true;
-}
-
-/* 0x4eb3c0: reciprocalsMade. */
-nfs::u32 makeReciprocals(App* app, ThreadState& ts, nfs::Args& args)
-{
-    const RegisterImage image(args);
-    const Kept kept(g, kEdx);
-    if (!reciprocalsMade(app, ts))
         return g.eax;
     kept.back(g);
     ts.sp += 4;

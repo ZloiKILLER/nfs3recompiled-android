@@ -52,9 +52,8 @@
 
 /* The game's loop, decompiled:
  *
- *   the game         its start (sub_4a3390, sub_4b6020) and end (sub_4a33a0), the table
- *                    of reciprocal roots made at the start (sub_497430), whether the game
- *                    is installed "remote" (sub_4b62a0);
+ *   the game         its start (sub_4a3390, sub_4b6020) and end (sub_4a33a0), whether the
+ *                    game is installed "remote" (sub_4b62a0);
  *   a race           one session of it (sub_4a3690): its loading (sub_4a3400), its restart
  *                    (sub_4a33b0), the loop that runs until it ends, what it hands back;
  *   the ghost        a car's pose recorded a tick in eight (sub_477c20) and read back
@@ -808,6 +807,16 @@ nfs::u32 frontend::loopa::raceLoad(App* app, ThreadState& ts)
     if (stopped())
         return 1;
     progress(kProgress95);
+    /* port: the load all done, the bar given the rest of its time to reach 100 per cent, as the
+     * Modern Patch does it (graphics::loadingBarReached); a press hurries it, Escape stops the load. */
+    for (;;)
+    {
+        progress(kProgress100);
+        if (graphics::loadingBarReached())
+            break;
+        if (stopped())
+            return 1;
+    }
     if (fe::direct<0x4c62a0, frontend::inpa::raceSetUp>(app, ts) != 0)
         return 1;
     progress(kProgress100);
@@ -963,8 +972,6 @@ nfs::u32 frontend::loopa::gameInit(App* app, ThreadState& ts)
     fe::direct<0x4a6390, ea::networkReset>(app, ts, 1);
     fe::direct<0x4df7a0, ea::threadStarted>(app, ts, 0x42dc20u, 0u, 1u, 0x7a3aacu);
     fe::direct<0x496310, frontend::sime::makeRootTable>(app, ts);
-    guest::direct<0x497430, fillRootBytes>(app, ts);
-    fe::direct<0x4bf110, frontend::rendd::fillReciprocals>(app, ts);
 
     // fninit's control word, as fnstcw stores it (single precision, 0x7f); fldcw changes nothing here.
     guest.setWord(kControlWord, 0x7f);
@@ -973,29 +980,6 @@ nfs::u32 frontend::loopa::gameInit(App* app, ThreadState& ts)
     const u32 single = word & 0xfffff0ff;
     guest.setDword(kControlWord, single);
     return single;
-}
-
-/* sub_497430: a byte for each of 128 floats, 0.5 to just under 2 by their top seven mantissa
- * bits: the reciprocal of its root, rounded to the same bits.  Entry 64, the one that is 1
- * itself, is 255 by hand.  eax is what was last worked out. */
-nfs::u32 frontend::loopa::fillRootBytes(App* app, ThreadState& ts)
-{
-    Guest guest(app, ts);
-    const fe::Frame frame(guest, ts, 12 + 4);
-    constexpr u32 kTable = 0x79f364;
-    u32 last = 0;
-    for (u32 i = 0; i < 0x80; ++i)
-    {
-        // The square root (native_frontend_simc.cpp's), as a double.
-        const double root = fe::direct<0x4ea920, frontend::simc::squareRootOf>(app, ts, (i << 17) | 0x3f000000);
-        const float reciprocal = float(fp::div(1.0, root));
-        u32 bits;
-        std::memcpy(&bits, &reciprocal, sizeof bits);
-        last = ((bits + 0x2000) >> 15) & 0xff;
-        guest.setByte(kTable + i, std::uint8_t(last));
-    }
-    guest.setByte(kTable + 0x40, 0xff);
-    return last;
 }
 
 /* sub_4b62a0: whether the install's kind at 0x7a26b4 starts "remote", which the game keeps
@@ -1218,12 +1202,6 @@ nfs::u32 frontend::loopBarScale(nfs::App* app, nfs::ThreadState& ts, nfs::Args& 
     static fe::Site site{ "sub_495190", 0, 0, nullptr, 0, fe::kRestoreEsi | fe::kRestoreEdi };
     const u32 corner0 = args.eax, corner1 = args.edx, corner2 = args.ebx, corner3 = args.ecx;
     return fe::runThunk(app, ts, args, site, [&](Guest&) { return loopa::barScale(app, ts, corner0, corner1, corner2, corner3); });
-}
-
-nfs::u32 frontend::loopFillRootBytes(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
-{
-    static fe::Site site{ "sub_497430", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEdx };
-    return fe::runThunk(app, ts, args, site, [&](Guest&) { return loopa::fillRootBytes(app, ts); });
 }
 
 nfs::u32 frontend::loopGameStart(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)

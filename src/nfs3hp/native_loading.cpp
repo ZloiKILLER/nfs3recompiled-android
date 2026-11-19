@@ -585,18 +585,14 @@ nfs::u32 fceRecords(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
  * kFullFarDistance) and twice the track's longest step from one block's centre
  * to the next: the view can stand anywhere in its block, so a piece the far
  * distance takes in may lie that much further from the block's centre than
- * from the view.  NFS_TRACK_NEIGHBOURS=0 keeps the track's own lists. */
+ * from the view. */
 constexpr float kNeighbourFar = 700.0f;
 
 void extendNeighbours(nfs::App* app)
 {
-    static const bool on = []() {
-        const char* value = SDL_getenv("NFS_TRACK_NEIGHBOURS");
-        return !value || SDL_strcmp(value, "0") != 0;
-    }();
     nfs::u8* m = memoryOf(app);
     const nfs::s32 last = nfs::s32(read32(m, 0x5dd83c));
-    if (!on || last < 0 || last >= 2000)
+    if (last < 0 || last >= 2000)
         return;
     const nfs::u32 count = nfs::u32(last) + 1;
     auto record = [](nfs::u32 block) { return 0x571370 + block * 0x5c0; };

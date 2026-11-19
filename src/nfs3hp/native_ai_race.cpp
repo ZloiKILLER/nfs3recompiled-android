@@ -111,7 +111,7 @@ constexpr u32 kRadioMessages = 0x55224c, kByTickets = 0x5521ac, kSirens = 0x7dd8
 constexpr u32 kRamming = 0x56ea70;
 
 // What is called by address: the game's, ea::yRotation (whose frame on the guest's stack sits
-// under the angle the code pushes), the lane votes (0x40de30, its thunk's NFS_CAR_TRACE record);
+// under the angle the code pushes), the lane votes (0x40de30);
 // and the typed files' calls whose thunks here leave what the callee leaves in a register beyond
 // what its header gives -- the vectors' subtraction's, the timer's, the stop's, the horn's end's,
 // a node's and a ram's eax.  The other typed files' functions are called as C++ (guest::direct),

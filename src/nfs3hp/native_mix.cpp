@@ -3,10 +3,11 @@
 #include <cstring>
 #include <utility>
 
-/* EA SND's mixing, plain: adding a block into the accumulator at its volume, the
- * accumulator into the output, interpolating, decoding EA's XA ADPCM -- and the
- * memmove's forward copy.  The game has these written for MMX; here they are
- * ordinary loops over 16-bit samples that give the same samples to the bit.
+/* EA SND's mixing routines, the MMX set (the only one the port's mixer is
+ * given): adding a block into the accumulator at its volume, the accumulator
+ * into the output, interpolating, decoding EA's XA ADPCM -- and the memmove's
+ * forward copy.  Here they are ordinary loops over 16-bit samples that give
+ * the MMX code's samples to the bit.
  *
  * Their counts run as the x86's did, signed and at least once where its loops
  * did.  What a block's 8-bit samples get in their low bytes is what the last

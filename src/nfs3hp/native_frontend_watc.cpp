@@ -123,9 +123,6 @@ nfs::u32 watcThreadEndHook(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 nfs::u32 watcThreadStartHook(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
 nfs::u32 watcMathErrorHook(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
 nfs::u32 watcAbnormalTermination(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
-nfs::u32 watcDoubleZero(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
-nfs::u32 watcDoubleInfinityHook(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
-nfs::u32 watcDoubleInfinity(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
 nfs::u32 watcZeroJump(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
 nfs::u32 watcTextAt(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
 nfs::u32 watcStrtol(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
@@ -2896,65 +2893,6 @@ nfs::u32 frontend::watcAbnormalTermination(nfs::App* app, nfs::ThreadState& ts, 
 {
     static fe::Site site = makeSite("sub_52c878", 0, 0, kEdx);
     return fe::runThunk(app, ts, args, site, [&](Guest&) { return watc::abnormalTermination(app, ts); });
-}
-
-/* sub_52c88a: a double's 0, in edx:eax: high and low dwords. */
-std::uint64_t frontend::watc::doubleZero(App* app, ThreadState& ts)
-{
-    (void)app;
-    (void)ts;
-    return 0;
-}
-
-/* The thunks of these: the double's low dword in eax, its high one left in edx. */
-nfs::u32 frontend::watcDoubleZero(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
-{
-    static fe::Site site = makeSite("sub_52c88a", 0, 0, 0);
-    return fe::runThunk(app, ts, args, site, [&](Guest&) {
-        const std::uint64_t d = watc::doubleZero(app, ts);
-        args.edx = u32(d >> 32);
-        return u32(d);
-    });
-}
-
-/* sub_52c89b: the math error (0x83 handed to its hook), and a double's infinity, in edx:eax, of the
- * sign in what that gives back. */
-std::uint64_t frontend::watc::doubleInfinityHook(App* app, ThreadState& ts)
-{
-    const u32 sign = fe::direct<0x52ed20, mathErrorHook>(app, ts, 0x83u);
-    return std::uint64_t((sign & 0x80000000) | 0x7ff00000) << 32;
-}
-
-nfs::u32 frontend::watcDoubleInfinityHook(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
-{
-    static fe::Site site = makeSite("sub_52c89b", 0, 0, 0);
-    return fe::runThunk(app, ts, args, site, [&](Guest&) {
-        const std::uint64_t d = watc::doubleInfinityHook(app, ts);
-        args.edx = u32(d >> 32);
-        return u32(d);
-    });
-}
-
-/* sub_52c8a7: errno's ERANGE, the math error (0x84 handed to its hook), and a double's infinity of
- * the sign in eax, in edx:eax. */
-std::uint64_t frontend::watc::doubleInfinity(App* app, ThreadState& ts, u32 sign)
-{
-    Guest guest(app, ts);
-    const fe::Frame frame(guest, ts, 4);
-    fe::direct<0x5028a4, watcom::clib::setERANGE>(app, ts);
-    fe::direct<0x52ed20, mathErrorHook>(app, ts, 0x84u);
-    return std::uint64_t((sign & 0x80000000) | 0x7ff00000) << 32;
-}
-
-nfs::u32 frontend::watcDoubleInfinity(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
-{
-    static fe::Site site = makeSite("sub_52c8a7", 0, 0, 0);
-    const u32 sign = args.eax;
-    return fe::runThunk(app, ts, args, site, [&](Guest&) {
-        const std::uint64_t d = watc::doubleInfinity(app, ts, sign);
-        args.edx = u32(d >> 32);
-        return u32(d);
-    });
 }
 
 /* sub_52e3f8: the driver's hook, 0. */

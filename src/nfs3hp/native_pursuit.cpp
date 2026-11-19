@@ -113,8 +113,7 @@ constexpr u32 kRaceFrame = 0x7d3684;
 constexpr u32 kNodeCount = 0x5dd940, kNodes = 0x5dd948;
 // The class records of the pursuit (0x18 bytes), by the car's +0x30.
 constexpr u32 kClassKind = 0x552274, kClassFlag = 0x552278, kClassKeen = 0x55227c;
-// What is called by address: the game's, the lane votes (0x40de30, its thunk's NFS_CAR_TRACE
-// record), strncpy; and of the typed files' those whose eax a thunk
+// What is called by address: the game's, the lane votes (0x40de30), strncpy; and of the typed files' those whose eax a thunk
 // here leaves, which their headers give only as whether (a cop near, a node within reach, the cop
 // held, the car driven on), or that the code hands words on the guest's stack (the debug text, the
 // tunnel's test, which takes a copy of the place).  The menu files' (the radar, the places named,

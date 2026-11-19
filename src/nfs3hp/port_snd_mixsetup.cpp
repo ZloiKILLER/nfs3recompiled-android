@@ -9,11 +9,10 @@
  * its resampler's; setMixStep calls the resampler's step setter, which picks
  * the resampler by the step.
  *
- * The port's CPU has MMX ([0x5643b4] set): the tables hold the MMX set.  Of it,
- * these are the set-ups of the decoders the mixer knows -- PCM looped, once and
- * streamed, XA once, XA with an intro, XA stereo streamed from memory and from
- * a file.  The others (8-bit PCM, the rest of the XA variants, the plain set)
- * are dead code (native_snd_dead.inc).
+ * The tables hold the MMX set, the only one the port has.  Of it, these are the
+ * set-ups of the decoders the mixer knows -- PCM looped, once and streamed, XA
+ * once, XA with an intro, XA stereo streamed from memory and from a file; the
+ * others' are in port_snd_mixfuncs.cpp.
  *
  * A decoder's set-up, as the tables' entries take it (stdcall, 4 words): eax
  * the voice, edx the channel's decoder state, ebx and ecx the sound's data and
@@ -30,7 +29,6 @@ namespace port
 namespace
 {
 
-constexpr Var<u32> kMmx{0x5643b4};
 constexpr Table<u32> kDecoderSetups{0x9f6a6c};   // the 28 set-ups, by format and way
 constexpr Table<float> kXaFloats{0xa0baa0};        // 13 shifts of 16 nibbles each
 constexpr Table<int32_t> kXaIntegers{0xa0bea0};
@@ -38,7 +36,6 @@ constexpr Table<u32> kPacketPlayers{0xa0b044};   // 16 packet players (0: none)
 constexpr Var<int32_t> kReverbIdle{0xa0d2a0};      // blocks since a channel last sent; the tail stops at 500
 constexpr u32 kReverbSendBuffer = 0xa0caa0;      // 16-bit stereo, a block of it
 constexpr Var<u32> kClearFunction{0x9f6a5c};     // cdecl (buffer, dwords)
-constexpr u32 kPlainTables = 0x522100;           // the plain set's tables, first
 
 void setWord(App* app, u32 at, u32 value) { app->getMemory<u32>(at) = value; }
 void setHalf(App* app, u32 at, uint16_t value) { app->getMemory<uint16_t>(at) = value; }
@@ -275,28 +272,16 @@ void setStereoStep(App* app, u32 state, u32 step)
     setResamplerStep(app, state, step, 0x14, 0x1c, {0x520440, 0x5205bc}, {0x520438, 0x5205b0}, {0x5203f0, 0x52046c});
 }
 
-/* 0x521d80's: the PCM decoders' first set-ups' table, by MMX (the plain set
- * starts with its own routine). */
-Result pickPcmFirstSetups(App* app, ThreadState& ts, u32 esp)
+/* 0x521d80's: the PCM decoders' first set-ups' table, the MMX set's. */
+void pickPcmFirstSetups(App* app)
 {
-    if (kMmx(app) != 0)
-        fillSetups(app, 0, {0x5274b0, 0x5274d0, 0x527500, 0x527520, 0x527540, 0x527560, 0x527590, 0x5275b0});
-    else
-    {
-        if (!pointerGame(app, ts, esp - 6 * 4, kPlainTables))
-            return {};
-        fillSetups(app, 0, {0x5275d0, 0x5275f0, 0x527620, 0x527640, 0x527660, 0x527680, 0x5276b0, 0x5276d0});
-    }
-    return 0;
+    fillSetups(app, 0, {0x5274b0, 0x5274d0, 0x527500, 0x527520, 0x527540, 0x527560, 0x527590, 0x5275b0});
 }
 
 /* 0x521e60's: the second table of the PCM set-ups. */
 void pickPcmSecondSetups(App* app)
 {
-    if (kMmx(app) != 0)
-        fillSetups(app, 8, {0x5276f0, 0x527710, 0x527740, 0x527760, 0x527780, 0x5277a0, 0x5277d0, 0x5277f0});
-    else
-        fillSetups(app, 8, {0x527810, 0x527840, 0x527870, 0x527890, 0x5278b0, 0x5278e0, 0x527910, 0x527930});
+    fillSetups(app, 8, {0x5276f0, 0x527710, 0x527740, 0x527760, 0x527780, 0x5277a0, 0x5277d0, 0x5277f0});
 }
 
 /* 0x521f30's: the XA float table: for each of 13 shifts, the 16 nibbles
@@ -320,30 +305,16 @@ void fillXaIntegerTable(App* app)
 void pickXaSetups(App* app)
 {
     fillXaFloatTable(app);
-    if (kMmx(app) != 0)
-    {
-        fillXaIntegerTable(app);
-        fillSetups(app, 16, {0x529104, 0x529534, 0x529778, 0x5299f4, 0x529c2c, 0x52a144, 0x52a354, 0x52a5b4});
-    }
-    else
-        fillSetups(app, 16, {0x527ae8, 0x527f20, 0x52813c, 0x5283a4, 0x5285b8, 0x528a98, 0x528cac, 0x528f0c});
+    fillXaIntegerTable(app);
+    fillSetups(app, 16, {0x529104, 0x529534, 0x529778, 0x5299f4, 0x529c2c, 0x52a144, 0x52a354, 0x52a5b4});
 }
 
 /* 0x5220a0's: the last of the decoders' set-ups' tables. */
 void pickLastSetups(App* app)
 {
-    if (kMmx(app) != 0)
-    {
-        kDecoderSetups.set(app, 24, 0x52a790);
-        kDecoderSetups.set(app, 26, 0x52a970);
-        kDecoderSetups.set(app, 27, 0x52ab70);
-    }
-    else
-    {
-        kDecoderSetups.set(app, 24, 0x52ad28);
-        kDecoderSetups.set(app, 26, 0x52af30);
-        kDecoderSetups.set(app, 27, 0x52b160);
-    }
+    kDecoderSetups.set(app, 24, 0x52a790);
+    kDecoderSetups.set(app, 26, 0x52a970);
+    kDecoderSetups.set(app, 27, 0x52ab70);
 }
 
 /* 0x5230b8's: the reverb's start: its send cleared, its tail run out (500).
@@ -503,7 +474,8 @@ nfs::u32 resampleStereoStep(App* app, ThreadState& ts, nfs::Args& args)
 nfs::u32 pcmTablesFirst(App* app, ThreadState& ts, nfs::Args& args)
 {
     const Entry e(ts, args);
-    return e.finish(ts, args, pickPcmFirstSetups(app, ts, e.esp));
+    pickPcmFirstSetups(app);
+    return e.back(ts, args, 0);
 }
 
 nfs::u32 pcmTablesSecond(App* app, ThreadState& ts, nfs::Args& args)

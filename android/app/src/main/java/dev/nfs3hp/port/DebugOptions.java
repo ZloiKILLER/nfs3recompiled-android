@@ -20,11 +20,6 @@ final class DebugOptions
     }
 
     static final String ENABLED = "debug_mode";
-    /* The depth in the Voodoo's 16-bit steps: "" leaves it to the renderer,
-     * which chooses by the depth buffer and the GPU; "ab" takes turns of five
-     * seconds with and without, to weigh the GPU's load ([GPU]). */
-    static final String DEPTH16 = "depth16";
-    static final String[] DEPTH16_VALUES = { "", "off", "on", "ab" };
 
     /** One switch: its name (the launch extra, and the preference behind
      *  "debug_"), what the game does without it, and the environment it sets
@@ -57,8 +52,6 @@ final class DebugOptions
         new Option("trace_ticks", false, "The game's clock against real time [TICKS]", "NFS_TICK_TRACE", "1"),
         new Option("trace_input", false, "What player one's car is driven with [INPUT]", "NFS_INPUT_TRACE", "1"),
         new Option("trace_pointer", false, "The game's cursor and the touch pointer", "NFS_POINTER_TRACE", "1"),
-        // Every car's memory once a second of a race, to cars.bin (with trace_ticks).
-        new Option("trace_cars", false, "Every car's memory to cars.bin (with ticks)", "NFS_CAR_TRACE", "1"),
         /* Samples which of the game's functions run, to functions.bin in the
          * game's folder (func_log.cpp); tools/profile_report.py reads it. */
         new Option("live_counter", false,
@@ -69,9 +62,6 @@ final class DebugOptions
             "NFS_REPLAY_TRACE", "1"),
         new Option("replay_fast", false, "The game's time 8 times as fast, no frame cap (for checking replays)",
             "NFS_TIME_SCALE", "8", "NFS_FPS_CAP", "0"),
-        // The race summary's Performance page left empty: the timings from the car to the results.
-        new Option("perf_trace", false, "Missing performance data logging [PERF] [PERFTIME]",
-            "NFS_PERF_TRACE", "1"),
         new Option("net_trace", false, "EA's comm library, for network races [COMM]", "NFS_NET_TRACE", "1"),
         /* Every call the game makes through a pointer (its tables, callbacks,
          * imports) by name, File::read's byte counts, and SDL's "opening file
@@ -81,22 +71,19 @@ final class DebugOptions
             "NFS_TRACE_API", "1", "SDL_LOGGING", "app=verbose,error=verbose"),
     };
 
-    static final Option[] PICTURE = {
-        new Option("mirror_full", true, "Full rear-view mirror (off: the original's)", "NFS_MIRROR_FULL", "0"),
-        new Option("car_detail_full", true, "Full car detail", "NFS_CAR_DETAIL_FULL", "0"),
-        new Option("textures32", true, "Full-colour textures", "NFS_TEXTURES32", "0"),
-        new Option("widescreen", true, "Widescreen modes in the driver", "NFS_WIDESCREEN", "0"),
-        new Option("track_neighbours", true, "Extended track neighbours", "NFS_TRACK_NEIGHBOURS", "0"),
-        new Option("texcoord_rebase", true, "Texture coordinates brought near the origin", "NFS_TEXCOORD_REBASE", "0"),
-        new Option("gl_thread", true, "OpenGL on its own thread", "NFS_GL_THREAD", "0"),
-        new Option("perf_hint", true, "Android performance hint", "NFS_PERF_HINT", "0"),
+    static final Option[][] ALL = { TRACES };
+
+    /* Switches of earlier builds, gone with what they switched: their preferences cleared with the
+     * rest.  The car-specs native against the generated code and the natives' checks; the empty
+     * Performance page and the cars' memory, both settled; the picture's and the renderer's own,
+     * which only turned the port's proven changes off; the depth in 16-bit steps, the renderer's
+     * own choice now. */
+    static final String[] RETIRED = {
+        "debug_natives", "debug_native_check", "debug_perf_trace", "debug_trace_cars",
+        "debug_mirror_full", "debug_car_detail_full", "debug_textures32", "debug_widescreen",
+        "debug_track_neighbours", "debug_texcoord_rebase", "debug_gl_thread", "debug_perf_hint",
+        "debug_depth16",
     };
-
-    static final Option[][] ALL = { TRACES, PICTURE };
-
-    /* Switches of earlier builds, gone with what they switched (the car-specs native against the
-     * generated code, the natives' checks): their preferences cleared with the rest. */
-    static final String[] RETIRED = { "debug_natives", "debug_native_check" };
 
     /** Debug mode as the player left it, or as this launch asks. */
     static boolean enabled(SharedPreferences preferences, Intent launch)
@@ -118,12 +105,6 @@ final class DebugOptions
         return preferences.getBoolean(option.preference(), option.byDefault);
     }
 
-    static String depth16(SharedPreferences preferences, Intent launch)
-    {
-        String value = launch != null ? launch.getStringExtra(DEPTH16) : null;
-        return value != null ? value : preferences.getString("debug_" + DEPTH16, "");
-    }
-
     /** Debug mode off: every switch back where the game has it. */
     static void reset(SharedPreferences preferences)
     {
@@ -133,6 +114,6 @@ final class DebugOptions
                 edit.remove(option.preference());
         for (String retired : RETIRED)
             edit.remove(retired);
-        edit.remove("debug_" + DEPTH16).apply();
+        edit.apply();
     }
 }

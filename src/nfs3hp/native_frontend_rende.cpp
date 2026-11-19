@@ -17,7 +17,6 @@
 #include "native_frontend_sime.h"
 #include "native_graphics.h"
 #include "native_vertices.h"
-#include "thrash_calls.h"
 #include "native_render.h"
 #include <nfs3hp.h>
 #include <cstring>
@@ -28,8 +27,6 @@ namespace nfs3hp
 {
 namespace frontend
 {
-nfs::u32 rendDrawQuadClipped(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
-nfs::u32 rendDrawQuadSplit(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
 nfs::u32 rendSkidAddSegment(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
 nfs::u32 rendSkidMarksDraw(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
 nfs::u32 rendPolygonDepths(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
@@ -71,9 +68,6 @@ nfs::u32 rendSparksPass(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
 /* What the race's drawing does around the port's vertex and polygon code,
  * decompiled:
  *
- *   a quad on the card     clipped by its corners' codes, drawn whole, as two
- *                          triangles or through the polygon clipper (sub_4c1900,
- *                          sub_4c19e0);
  *   the skid marks         a wheel's sliding laid down as segments, shared out
  *                          among 64 strips of 16 (sub_4db940, sub_4db8b0,
  *                          sub_4db750, sub_4c6cb0), and drawn (sub_4c6f00);
@@ -221,7 +215,6 @@ constexpr std::uint8_t kKeepsEdxEdi = fe::kRestoreEdx | fe::kRestoreEdi;
 constexpr std::uint8_t kKeepsAllButEsi = fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx | fe::kRestoreEdi;
 
 // The game's functions, by address.
-constexpr u32 kClipPolygon = 0x4c2cd0;       // eax three corners, edx their codes, ebx the codes' or
 constexpr u32 kDepthBuckets = 0x4c7790;      // eax a list, the stack its depth
 constexpr u32 kSortedBuckets = 0x4c7610;
 constexpr u32 kGatherSorted = 0x4c7320;      // esi where the list goes
@@ -234,143 +227,7 @@ constexpr u32 kStrstr = 0x4e0820;
 constexpr u32 kDisplayFlags = 0x7a3a58;      // byte; bit 2 a card with alpha
 constexpr u32 kDrawnOnCard = 0x7a3a60;       // 0: polygons sorted here, no z-buffer
 constexpr u32 kFrameTime = 0x7d3684;
-
-/* ---------------------------------------------------------------------------
- * A quad on the card: sub_4c1900, sub_4c19e0
- * ------------------------------------------------------------------------- */
-
-/* One of the driver's functions through the game's pointer to it (thrash_calls.h): its eax,
- * Terminated when the game stopped in it, as Guest::call. */
-template <u32 Slot, auto Function, typename... Words>
-u32 driverCall(Guest& guest, Words... words)
-{
-    const std::optional<u32> eax = guest::driver<Slot, Function>(guest.app(), guest.ts(), words...);
-    if (!eax)
-        throw fe::Terminated();
-    return *eax;
-}
-
 constexpr u32 kVertexCode = 0x14;            // a corner's clip code, a byte
-
-/* The frame both have: a triangle's three corners and the four corners' codes. */
-constexpr u32 kQuadFrame = 0x14;
-constexpr u32 kQuadCodes = 0xc;              // from the frame's bottom
-
-/* The second triangle's corners and codes for the clipper. */
-u32 clipSecondTriangle(Guest& guest, u32 a, u32 c, u32 d, uint8_t codeC, uint8_t codeD, uint8_t any)
-{
-    const u32 corners = guest.frame();
-    const u32 codes = corners + kQuadCodes;
-    guest.setDword(corners, a);
-    guest.setDword(corners + 4, c);
-    guest.setDword(corners + 8, d);
-    guest.setByte(codes + 1, codeC);
-    guest.setByte(codes + 2, codeD);
-    return callAt(guest, kClipPolygon, args({ corners, codes, any }));
-}
-
-u32 clipFirstTriangle(Guest& guest, u32 a, u32 b, u32 c, uint8_t any)
-{
-    const u32 corners = guest.frame();
-    guest.setDword(corners, a);
-    guest.setDword(corners + 4, b);
-    guest.setDword(corners + 8, c);
-    return callAt(guest, kClipPolygon, args({ corners, corners + kQuadCodes, any }));
-}
-
-/* The four corners' codes, in the frame where the clipper reads them. */
-void noteQuadCodes(Guest& guest, u32 a, u32 b, u32 c, u32 d)
-{
-    const u32 codes = guest.frame() + kQuadCodes;
-    guest.setByte(codes, guest.byte(a + kVertexCode));
-    guest.setByte(codes + 1, guest.byte(b + kVertexCode));
-    guest.setByte(codes + 2, guest.byte(c + kVertexCode));
-    guest.setByte(codes + 3, guest.byte(d + kVertexCode));
-}
-
-}  // namespace
-
-/* sub_4c1900: the quad a b c d: nothing when one plane has all four out, the
- * driver's quad when none is out, else the triangles a b c and a c d, each
- * skipped, drawn or clipped by its own corners' codes. */
-nfs::u32 frontend::rende::drawQuadClipped(App* app, ThreadState& ts, u32 a, u32 b, u32 c, u32 d)
-{
-    Guest guest(app, ts);
-    const fe::Frame ownFrame(guest, ts, 12 + kQuadFrame);
-    // eax as the code has it, a first and what each call leaves; the other registers are left, not read.
-    u32 eax = a;
-    noteQuadCodes(guest, a, b, c, d);
-    const u32 codes = guest.frame() + kQuadCodes;
-    const uint8_t codeA = guest.byte(codes), codeB = guest.byte(codes + 1), codeC = guest.byte(codes + 2), codeD = guest.byte(codes + 3);
-    const uint8_t outOfFirst = uint8_t(codeA & codeB & codeC);
-    const uint8_t anyOfFirst = uint8_t(codeA | codeB | codeC);
-    if ((outOfFirst & codeD) != 0)
-        return withHigh(withLow(eax, uint8_t(outOfFirst & codeD)), outOfFirst);
-    if ((anyOfFirst | codeD) == 0)
-        driverCall<thrash::kThrashDrawQuad, &port::driver::drawQuad>(guest, a, b, c, d);
-        return eax;
-
-    if (outOfFirst != 0)
-        eax = withHigh(eax, outOfFirst);
-    else if (anyOfFirst == 0)
-        driverCall<thrash::kThrashDrawTri, &port::driver::drawTri>(guest, a, b, c);  // void: eax as it was
-    else
-        eax = clipFirstTriangle(guest, a, b, c, anyOfFirst);
-
-    // The codes again: the clipper has had them.
-    const uint8_t again = guest.byte(codes), againC = guest.byte(codes + 2), againD = guest.byte(codes + 3);
-    const uint8_t outOfSecond = uint8_t(again & againC & againD);
-    if (outOfSecond != 0)
-        return withLow(eax, outOfSecond);
-    const uint8_t anyOfSecond = uint8_t(again | againC | againD);
-    if (anyOfSecond == 0)
-    {
-        driverCall<thrash::kThrashDrawTri, &port::driver::drawTri>(guest, a, c, d);
-        return eax;
-    }
-    return clipSecondTriangle(guest, a, c, d, againC, againD, anyOfSecond);
-}
-
-
-/* sub_4c19e0: the same, never as one quad: the triangles a b c and a c d. */
-nfs::u32 frontend::rende::drawQuadSplit(App* app, ThreadState& ts, u32 a, u32 b, u32 c, u32 d)
-{
-    Guest guest(app, ts);
-    const fe::Frame ownFrame(guest, ts, 12 + kQuadFrame);
-    // eax as the code has it, a first and what each call leaves; the other registers are left, not read.
-    u32 eax = a;
-    noteQuadCodes(guest, a, b, c, d);
-    const u32 codes = guest.frame() + kQuadCodes;
-    const uint8_t codeA = guest.byte(codes), codeB = guest.byte(codes + 1), codeC = guest.byte(codes + 2), codeD = guest.byte(codes + 3);
-    const uint8_t outOfFirst = uint8_t(codeA & codeB & codeC);
-    if ((outOfFirst & codeD) != 0)
-        return withHigh(withLow(eax, outOfFirst), uint8_t(outOfFirst & codeD));
-
-    if (outOfFirst == 0)
-    {
-        const uint8_t anyOfFirst = uint8_t(codeA | codeB | codeC);
-        if (anyOfFirst == 0)
-            driverCall<thrash::kThrashDrawTri, &port::driver::drawTri>(guest, a, b, c);  // void: eax as it was
-        else
-            eax = clipFirstTriangle(guest, a, b, c, anyOfFirst);
-    }
-
-    // The codes again: the clipper has had them.
-    const uint8_t again = guest.byte(codes), againC = guest.byte(codes + 2), againD = guest.byte(codes + 3);
-    const uint8_t outOfSecond = uint8_t(again & againC & againD);
-    if (outOfSecond != 0)
-        return withHigh(withLow(eax, outOfSecond), againD);
-    const uint8_t anyOfSecond = uint8_t(again | againC | againD);
-    if (anyOfSecond == 0)
-    {
-        driverCall<thrash::kThrashDrawTri, &port::driver::drawTri>(guest, a, c, d);
-        return eax;
-    }
-    return clipSecondTriangle(guest, a, c, d, againC, againD, anyOfSecond);
-}
-
-namespace
-{
 
 /* ---------------------------------------------------------------------------
  * The skid marks: sub_4db940, sub_4db8b0, sub_4db750, sub_4c6cb0, sub_4c6f00
@@ -1606,20 +1463,6 @@ nfs::u32 frontend::rende::loadEffects(App* app, ThreadState& ts)
     return guest::direct<0x4a33d0, loada::stopCheck>(app, ts);
 }
 
-
-nfs::u32 frontend::rendDrawQuadClipped(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
-{
-    static fe::Site site{ "sub_4c1900", 0, 0, nullptr, 0, kKeepsEsiEdi };
-    const u32 a = args.eax, b = args.edx, c = args.ebx, d = args.ecx;
-    return fe::runThunk(app, ts, args, site, [&](Guest&) { return rende::drawQuadClipped(app, ts, a, b, c, d); });
-}
-
-nfs::u32 frontend::rendDrawQuadSplit(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
-{
-    static fe::Site site{ "sub_4c19e0", 0, 0, nullptr, 0, kKeepsEsiEdi };
-    const u32 a = args.eax, b = args.edx, c = args.ebx, d = args.ecx;
-    return fe::runThunk(app, ts, args, site, [&](Guest&) { return rende::drawQuadSplit(app, ts, a, b, c, d); });
-}
 
 nfs::u32 frontend::rendSkidAddSegment(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {

@@ -17,17 +17,12 @@ class Renderer;
  * and this thread, which holds the GL context, draws it in the same order while
  * the game goes on with its next frame.  It is at most one frame behind
  * (throttle): the picture is as late as a swap made it before, and no later.
- *
- * NFS_GL_THREAD=0 runs everything on the calling thread, as it was: post() then
- * makes the context current, runs the work and lets the context go. */
+ * The thread starts with the first thing asked of it. */
 namespace glthread
 {
 
-/* Whether the GL work goes to the thread; read once. */
-bool on();
-
 /* `work`, with `renderer`'s context current: on the GL thread after everything
- * posted before it, or here and now. */
+ * posted before it. */
 void post(Renderer* renderer, std::function<void()> work);
 
 /* Returns once everything posted has run. */

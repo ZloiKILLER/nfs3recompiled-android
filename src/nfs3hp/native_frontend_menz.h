@@ -115,25 +115,8 @@ u32 paletteFrom6Bits(App* app, ThreadState& ts, u32 count, u32 from, u32 to);
 u32 paletteFrom8Bits(App* app, ThreadState& ts, u32 count, u32 from, u32 to);
 // The game's 0x52448c: what a long double is: zero, a number, NaN, infinity or denormal.
 u32 longDoubleKind(App* app, ThreadState& ts, u32 value);
-// The game's 0x52643c: Watcom's __FDD: edx:eax divided by ecx:ebx.  `top` is what the caller's x87 holds in st(0):
-// the careful division (the Pentium's FDIV bug, which no machine here has) keeps it in memory.
-u32 doubleDivide(App* app, ThreadState& ts, u32 low, u32 high, u32 otherLow, u32 otherHigh, double top);
-// The game's 0x526642: Watcom's __FDS: edx:eax less ecx:ebx.
-u32 doubleSubtract(App* app, ThreadState& ts, u32 low, u32 high, u32 otherLow, u32 otherHigh);
-// The game's 0x5267ff: Watcom's __FDM: edx:eax times ecx:ebx.
-u32 doubleMultiply(App* app, ThreadState& ts, u32 low, u32 high, u32 otherLow, u32 otherHigh);
-// The game's 0x526674: the x87's way's end for sub_5267ff: `product` the answer (st(0), its thunk takes it off).
-u32 doubleProductFromX87(App* app, ThreadState& ts, double product);
-// The game's 0x52699c: edx:eax against ecx:ebx: -1, 0 or 1.
-u32 doubleCompare(App* app, ThreadState& ts, u32 low, u32 high, u32 otherLow, u32 otherHigh);
-// The game's 0x51f2a0: the runtime's start-up test of the Pentium's FDIV bug; `top` what the caller's x87 holds in st(0).
-u32 fdivBugCheck(App* app, ThreadState& ts, u32 eax, double top);
-// The game's 0x52700c: `top` (st(0)) divided by a double on the stack, safe from the bug, `below` (st(1)) kept
-// for it; the quotient, which its code leaves in st(0) (eax as it came).
-double safeDivide(App* app, ThreadState& ts, double top, double below, u32 divisorLow, u32 divisorHigh);
-// The game's 0x526f87: `divisor` (st(0)) and `dividend` (st(1)) put in memory for the careful division; its
-// answer, which its code leaves in their place.
-double safeDivideCall(App* app, ThreadState& ts, double dividend, double divisor);
+// The game's 0x51f2a0: the runtime's start-up test of the Pentium's FDIV bug: nothing on the port, eax as it came.
+u32 fdivBugCheck(App* app, ThreadState& ts, u32 eax);
 
 }  // namespace menz
 }  // namespace frontend

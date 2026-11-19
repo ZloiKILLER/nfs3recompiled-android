@@ -5,7 +5,7 @@
 #include "native_guest.h"
 
 /* native_frontend_rende.cpp's typed functions (the race's drawing around the port's vertex and polygon
- * code: a quad on the card, the skid marks, the depth buckets, the blinking quads, the particles, the
+ * code: the skid marks, the depth buckets, the blinking quads, the particles, the
  * smoke, the effects' textures), which other files call as C++ (guest::direct), and how the game's code
  * calls each by address.  Each calls the game's other functions by
  * address on `ts` and throws fe::Terminated when the game stopped in one, as a call by address does; its result
@@ -21,10 +21,6 @@ using App = nfs::App;
 using ThreadState = nfs::ThreadState;
 using u32 = nfs::u32;
 
-// The game's 0x4c1900: the quad a b c d drawn, clipped by its corners' codes.
-u32 drawQuadClipped(App* app, ThreadState& ts, u32 a, u32 b, u32 c, u32 d);
-// The game's 0x4c19e0: the same as the triangles a b c and a c d.
-u32 drawQuadSplit(App* app, ThreadState& ts, u32 a, u32 b, u32 c, u32 d);
 // The game's 0x4c6cb0: a skid segment on the strip being laid, or a new one.
 u32 skidAddSegment(App* app, ThreadState& ts, u32 from, u32 to, u32 alphaFrom, u32 alphaTo, u32 mode);
 // The game's 0x4c6f00: the skid strips near the view drawn as one list.

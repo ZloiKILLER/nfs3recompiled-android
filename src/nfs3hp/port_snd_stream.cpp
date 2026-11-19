@@ -5,18 +5,14 @@
 
 #include <lib/thread.h>
 
-#ifdef __ANDROID__
-#include <SDL3/SDL.h>
-#endif
-
-#include <chrono>
 #include <cstdint>
-#include <cstdio>
 
 /* EA's streaming, rewritten (port_snd_stream.h says how): the system tasks
- * the game's loop and the streams run on, the coordination of the stream's
- * top-up with the game's file loads, and the SND streamer that plays a CD
- * stream (music, a movie's sound) through a voice.
+ * the game's loop and the streams run on, and the SND streamer that plays a CD
+ * stream (music, a movie's sound) through a voice.  The game's coordination of
+ * the stream with its file loads (iocoord.c: the stream topped up before each
+ * load, so one CD drive would not seek under the music) is gone: the stream
+ * reads on between a load's blocks.
  *
  * The system tasks: 16 of 0x10 bytes at 0x9ef7e8 -- the function, its period
  * in ticks, the tick it runs next, whether it runs now.
@@ -92,7 +88,6 @@ constexpr Var<u32> kTaskDepth{0x564670};  // the tasks' nesting
 constexpr Var<u32> kTaskTick{0x564674};   // the tick the tasks last ran at
 constexpr Var<u32> kTaskTiming{0x56466c}, kTaskTime{0x564668};
 constexpr Var<int32_t> kClock{0x79c1a0};    // the tasks' clock
-constexpr Var<u32> kSoundRunning{0x5643d8};  // the sound thread runs
 
 // The streamer's.
 constexpr Var<u32> kCdStreamOf{0x56467c};  // the CD stream it plays
@@ -113,24 +108,16 @@ constexpr Var<uint8_t> kFormatKnown{0x56470c}, kChunkState{0x56470d};
 constexpr Var<int8_t> kLoopNow{0x56470e}, kLoopLast{0x56470f};
 constexpr Var<int32_t> kHeadersSeen{0x564710}, kHeadersWanted{0x564714}, kBytesWanted{0x564718};
 constexpr Table<int32_t> kLoops{0x56471c};
-constexpr Var<int32_t> kTopupWanted{0x56476c}, kTopupBy{0x564770};
 constexpr Table<uint8_t> kOldFormat{0x564774}, kNewFormat{0x564780};
 constexpr u32 kStreamName = 0x56478c;        // the file's name, up to 0x80 bytes
 constexpr Var<uint8_t> kStreamNameEnd{0x56480b};
 constexpr Var<u32> kEndsSeen{0x564678};
-constexpr Var<u32> kTopupHook{0x56480c};     // Pathfinder's, when it streams
 constexpr Var<u32> kNextChunk{0x5678b4};     // what the mixer calls for the next chunk
 constexpr Var<u32> kStreamerRestore{0xa09b30};
 constexpr u32 kStreamService = 0x4e85a8;
 
-// The top-up's coordination (iocoord.c).
-constexpr Var<u32> kTopupFunction{0x9f6a50};
-constexpr Var<u32> kTopupEvent{0x567864}, kToppedUp{0x56785c};
-constexpr Var<u32> kLoadLock{0x564480};
-
 // The game's functions the streams call.
-constexpr u32 kMainThread = 0x4df930, kCreateEvent = 0x4dfb00, kSetEvent = 0x4dfb20, kWaitEvent = 0x4dfb70;
-constexpr u32 kSleep = 0x4df8e0, kStrncpy = 0x4e0e30, kStrncmp = 0x4eb390;
+constexpr u32 kStrncpy = 0x4e0e30, kStrncmp = 0x4eb390;
 
 // The sources of the errors, and their functions.
 constexpr u32 kStreamFile = 0x54ac34, kTaskFile = 0x54abf8;
@@ -275,197 +262,6 @@ Result runTasksFor(App* app, ThreadState& ts, u32 esp, u32 ticks)
         result = u32(*r);
     }
     return int32_t(result);
-}
-
-/* 0x4ff670: the stream topped up with `argument` before a load -- under the
- * load's lock but on the main thread -- or, with no top-up, the wait ended at
- * once.  `edx` and `ecx` are the caller's, which the code hands the top-up
- * function as they came (it keeps them). */
-Result topUp(App* app, ThreadState& ts, u32 esp, u32 argument, u32 edx, u32 ecx)
-{
-    const u32 frame = esp - 5 * 4;
-    u32 eax;
-    if (!took(directFrom<kMainThread, ea::isThreadNow>(app, ts, frame, 0u), eax))
-        return {};
-    const bool other = eax == 0;
-    if (kTopupEvent(app) == 0)
-    {
-        if (!took(directFrom<kCreateEvent, ea::newAutoEvent>(app, ts, frame), eax))
-            return {};
-        kTopupEvent.set(app, eax);
-    }
-    if (kTopupFunction(app) != 0)
-    {
-        // The load's lock taken with the lock pushed from edi.
-        if (other)
-        {
-            const Result entered = enterSection(app, ts, esp - 6 * 4, kLoadLock(app));
-            if (!entered)
-                return {};
-            eax = u32(*entered);
-        }
-        kToppedUp.set(app, 0);
-        // Through the pointer: the argument in eax and ebx.
-        if (!pointerGame(app, ts, frame, kTopupFunction(app), {argument, edx, argument, ecx}, {}, eax))
-            return {};
-        if (other)
-        {
-            const Result r = leaveSection(app, ts, frame, kLoadLock(app));
-            if (!r)
-                return {};
-            eax = u32(*r);
-        }
-        return int32_t(eax);
-    }
-    kToppedUp.set(app, 1);
-    if (!took(directFrom<kSetEvent, eventPostedWith>(app, ts, frame, 0u, kTopupEvent(app)), eax))
-        return {};
-    return int32_t(eax);
-}
-
-/* 0x4ff780: the top-up done, its waiters let go.  `eax` is what the code has
- * there, which it gives back unless it sets the event. */
-Result topUpDone(App* app, ThreadState& ts, u32 esp, u32 eax)
-{
-    const u32 frame = esp - 2 * 4;
-    if (kTopupEvent(app) != 0)
-    {
-        kToppedUp.set(app, 1);
-        if (!took(directFrom<kSetEvent, eventPostedWith>(app, ts, frame, 0u, kTopupEvent(app)), eax))
-            return {};
-    }
-    return int32_t(eax);
-}
-
-Result topUpFinished(App* app, ThreadState& ts, u32 esp, u32 how);
-
-/* Port: how long the main thread waits for a top-up at most, in real time.
- * The game's own check ends one within a second of its clock; one that waits
- * on past this the check is not ending at all -- the menus froze so on the way
- * back from the showcase to the car screen, rarely, since 0.76, no stack to
- * say why.  Past it the top-up is ended as the check's timeout ends it, and
- * the state it was left in logged once. */
-constexpr long kTopupWaitMostMs = 3000;
-
-/* The top-up's state, as a wait cut short left it. */
-void logTopupWaitCut(App* app)
-{
-    int32_t due = 0;
-    uint32_t running = 0;
-    bool found = false;
-    for (int32_t i = 0; i < kTaskCount && !found; ++i)
-    {
-        const Task& task = kTasks(app, i);
-        if (task.function != kStreamService)
-            continue;
-        found = true;
-        due = task.next;
-        running = task.running;
-    }
-    char service[64];
-    if (found)
-        std::snprintf(service, sizeof service, "due %d ticks ago, running %u", kTimer(app) - due, running);
-    else
-        std::snprintf(service, sizeof service, "not among the tasks");
-#ifdef __ANDROID__
-    SDL_Log
-#else
-    std::printf
-#endif
-        ("[SND] a top-up's wait cut after %ld ms: timer %d, tasks' clock %d (last ran %d), depth %d, wanted %d by %d,"
-         " stream state %u, handle %d, service added %u, the stream's service %s",
-         kTopupWaitMostMs, kTimer(app), kClock(app), int32_t(kTaskTick(app)), int32_t(kTaskDepth(app)),
-         kTopupWanted(app), kTopupBy(app) - kTimer(app), unsigned(kStreamState(app)), kStreamHandle(app),
-         unsigned(kServiceAdded(app)), service);
-}
-
-/* The error waittopupstream raises when a surface is locked, with the
- * registers it keeps pushed, and then the tasks run a ms apart until the
- * top-up is done (or there is no event): its wait on the main thread, entered
- * by a jump with edx and ebp pushed (`esp` is the code's after them).  eax
- * as it leaves.  Port: no longer than kTopupWaitMostMs. */
-Result waitOnMainThread(App* app, ThreadState& ts, u32 esp)
-{
-    u32 eax;
-    if (!took(ts, directFrom<kSurface, ea::surfaceIsLocked>(app, ts, esp) ? 1u : 0u, eax))
-        return {};
-    // The error with esi, ecx and ebx pushed (and popped after it).
-    if (eax != 0)
-    {
-        const Result r = fail(app, ts, esp - 12, Where{0x54e0c4, 0x54e0d4}, 0x5e, {0x54e0e4}, eax);
-        if (!r)
-            return {};
-        eax = u32(*r);
-    }
-    const auto since = std::chrono::steady_clock::now();
-    for (;;)
-    {
-        safepoint(app, ts);
-        if (kTopupEvent(app) == 0)
-            break;
-        // The code holds the flag in ebp, and hands it the tasks as their argument (0).
-        const u32 toppedUp = kToppedUp(app);
-        if (toppedUp != 0)
-            break;
-        if (std::chrono::steady_clock::now() - since > std::chrono::milliseconds(kTopupWaitMostMs))
-        {
-            logTopupWaitCut(app);
-            const Result r = topUpFinished(app, ts, esp - 4, 0);
-            if (!r)
-                return {};
-            eax = u32(*r);
-            break;
-        }
-        if (!took(directFrom<kSleep, ea::sleepFor>(app, ts, esp, 1u), eax))
-            return {};
-        const Result r = runDueTasks(app, ts, esp - 4, toppedUp);
-        if (!r)
-            return {};
-        eax = u32(*r);
-    }
-    return int32_t(eax);
-}
-
-/* 0x4ff76e: waittopupstream's wait on another thread: the event waited for
- * (`esp` the code's after the pushes). */
-Result waitOnEvent(App* app, ThreadState& ts, u32 esp, u32 event)
-{
-    u32 eax;
-    if (!took(directFrom<kWaitEvent, ea::eventWaited>(app, ts, esp, event), eax))
-        return {};
-    return int32_t(eax);
-}
-
-/* 0x4ff7f0 (waittopupstream): the top-up waited for -- on the main thread by
- * the tasks, on another by its event (none, no wait). */
-Result waitForTopup(App* app, ThreadState& ts, u32 esp)
-{
-    const u32 frame = esp - 2 * 4;  // edx and ebp pushed
-    u32 eax;
-    if (!took(directFrom<kMainThread, ea::isThreadNow>(app, ts, frame, 0u), eax))
-        return {};
-    // The waits are the code's jumps: on with the stack as it is.
-    if (eax != 0)
-        return waitOnMainThread(app, ts, frame);
-    const u32 event = kTopupEvent(app);
-    if (event != 0)
-        return waitOnEvent(app, ts, frame, event);
-    return int32_t(eax);
-}
-
-Result topUpAsked(App* app, ThreadState& ts, u32 esp, u32 argument)
-{
-    return topUp(app, ts, esp, argument, 0, 0);
-}
-
-Result topUpWaited(App* app, ThreadState& ts, u32 esp)
-{
-    return waitForTopup(app, ts, esp);
-}
-
-u32 loadBlockSizeIs(App*)
-{
-    return 0x3e8;
 }
 
 /* 0x5017b4: the chunks the platform holds of a stream's: none here. */
@@ -640,7 +436,6 @@ Result setUpStreamer(App* app, ThreadState& ts, u32 esp, u32 stream, u32 options
 Result restoreStreamer(App* app, ThreadState& ts, u32 esp)
 {
     const u32 frame = esp - 1 * 4;
-    kTopupFunction.set(app, 0);
     if (kInited(app) == 0 || kStreamerRestore(app) == 0)
         return kNotStarted;
     if (!purgeStreamer(app, ts, frame - 4))
@@ -810,7 +605,6 @@ Result purgeStreamer(App* app, ThreadState& ts, u32 esp)
     kStreamState.set(app, 0);
     app->getMemory<uint8_t>(kStreamName) = 0;
     kPatchSet.set(app, 0);
-    kTopupFunction.set(app, 0);
     u32 eax = 0;
     if (kServiceAdded(app) != 0)
     {
@@ -881,90 +675,6 @@ Result bufferedTime(App* app, ThreadState& ts, u32 esp)
     if (!leaveAudio(app, ts, base - 4, u32(*r)))
         return {};
     return result;
-}
-
-/* 0x4e7dd0: the top-up wanted no more: done (its waiters let go), and
- * Pathfinder's hook told with `how`. */
-Result topUpFinished(App* app, ThreadState& ts, u32 esp, u32 how)
-{
-    const u32 frame = esp - 1 * 4;
-    kTopupWanted.set(app, 0);
-    Result r = topUpDone(app, ts, frame - 4, how);
-    if (!r)
-        return {};
-    u32 eax = u32(*r);
-    if (kTopupHook(app) != 0 && !pointerGame(app, ts, frame, kTopupHook(app), {0, 0}, {}, eax))
-        return {};
-    return int32_t(eax);
-}
-
-/* 0x4e7df4 (iSNDstreamchecktopup): whether the top-up asked for is done --
- * the stream holds the time asked, its reader waits, or it has nothing more
- * to read -- or timed out.  With none asked for, `eax` as it came. */
-Result checkTopUp(App* app, ThreadState& ts, u32 esp, u32 eax)
-{
-    const u32 frame = esp - 1 * 4;
-    if (kTopupWanted(app) == 0)
-        return int32_t(eax);
-    const Result time = bufferedTime(app, ts, frame - 4);
-    if (!time)
-        return {};
-    int32_t how = -1;
-    if (*time >= kTopupWanted(app))
-        how = 1;
-    else if (readerIsWaiting(app, cdStreamAt(app)) != 0)
-    {
-        const int32_t held = platformHolds(kVoiceChunks(app));
-        if (held > 1)
-            return held;
-        how = 0;
-    }
-    else if (readerIsIdle(app) && kTopupHook(app) == 0)
-        how = 1;
-    if (how != -1 && !topUpFinished(app, ts, frame - 4, u32(how)))
-        return {};
-    // The timer read into eax, what the function gives back unless timed out.
-    const int32_t timer = kTimer(app);
-    if (timer > kTopupBy(app))
-    {
-        const Result r = fail(app, ts, esp - 2 * 4, Where{kStreamFile, 0x54ae8c}, 0x412, {0x54aea4}, 0x412);
-        if (!r)
-            return {};
-        return topUpFinished(app, ts, frame - 4, 0);
-    }
-    return timer;
-}
-
-/* 0x4e7e98 (iSNDstreamsetbuftime): a top-up to `wanted` ms asked for
- * (Pathfinder's hook adding its own), within as many seconds as the sound
- * thread runs.  Before SNDinit `wanted` back, as it came in eax. */
-Result askTopUp(App* app, ThreadState& ts, u32 esp, int32_t wanted)
-{
-    const u32 frame = esp - 3 * 4;
-    if (kInited(app) == 0)
-        return wanted;
-    if (wanted <= 0)
-        return fail(app, ts, esp - 5 * 4, Where{kStreamFile, 0x54aedc}, 0x426, {0x54aef4}, u32(wanted));
-    if (kTopupHook(app) != 0)
-    {
-        u32 added;
-        if (!pointerGame(app, ts, frame, kTopupHook(app), {u32(wanted), u32(wanted)}, {}, added))
-            return {};
-        wanted = int32_t(u32(wanted) + added);
-    }
-    kTopupBy.set(app, int32_t(u32(kTimer(app)) + kSoundRunning(app) * 60));
-    kTopupWanted.set(app, wanted);
-    u32 eax;
-    if (!took(ts, directFrom<kSurface, ea::surfaceIsLocked>(app, ts, frame) ? 1u : 0u, eax))
-        return {};
-    if (eax == 0)
-    {
-        const Result r = checkTopUp(app, ts, frame - 4, eax);
-        if (!r)
-            return {};
-        eax = u32(*r);
-    }
-    return int32_t(eax);
 }
 
 /* 0x4e7ff8: the chunks queued and playing given back to the reader. */
@@ -1229,7 +939,7 @@ Result refillChunk(App* app, ThreadState& ts, u32 esp, u32 data, u32 frames)
 
 /* 0x4e89f8 (iSNDstreamstart): the stream's voice started on its patch, with
  * the stream's volume, pan, bend and effect level: its handle, its voice, its
- * chunks; the top-up the loads wait for set.  The handle; -1 while the last
+ * chunks.  The handle; -1 while the last
  * still plays.  `ebp` is the caller's, which the code does not touch and the
  * patch's play reads unset (playPatchFrom). */
 Result startStreamVoice(App* app, ThreadState& ts, u32 esp, u32 ebp)
@@ -1266,7 +976,6 @@ Result startStreamVoice(App* app, ThreadState& ts, u32 esp, u32 ebp)
     kStreamState.set(app, 2);
     kPatchSet.set(app, 0);
     kStartTries.set(app, 0);
-    kTopupFunction.set(app, 0x4e7e98);
     return kStreamHandle(app);
 }
 
@@ -1339,7 +1048,7 @@ bool readerReady(App* app)
 
 /* 0x4e85a8 (iSNDstreamservice): the streamer's system task, by its state:
  * filling (the chunks parsed until the headers wanted are in, then the voice
- * started), playing (chunks parsed, the top-up checked), ending (the voice
+ * started), playing (chunks parsed), ending (the voice
  * stopped when the chunks run out), interrupted (the queue dropped and the
  * new file's chunks parsed).  `ebp` is what the task finds there (the system
  * tasks' caller's), which the code does not touch, for the voice's start. */
@@ -1429,8 +1138,6 @@ Result serviceStreamer(App* app, ThreadState& ts, u32 esp, u32 ebp)
             if (c.parsed == 1 || !(int32_t(c.chunk) > 0 || int32_t(c.chunk) <= -10))
                 break;
         }
-        if (!checkTopUp(app, ts, frame - 4, eax))
-            return {};
         return done();
     }
     if (state == 3)
@@ -1455,8 +1162,6 @@ Result serviceStreamer(App* app, ThreadState& ts, u32 esp, u32 ebp)
     }
     if (state == 4)
     {
-        if (!checkTopUp(app, ts, frame - 4, eax))
-            return {};
         if (int32_t(bytesBuffered(app, cdStreamAt(app))) <= 0x1388)
             return done();
         if (kQueueHead(app) != 0)
@@ -1531,116 +1236,6 @@ nfs::u32 waitSystemTasks(App* app, ThreadState& ts, nfs::Args& args)
     return e.finish(ts, args, stream::runTasksFor(app, ts, e.esp, e.eax));
 }
 
-nfs::u32 setTopupFunction(App* app, ThreadState& ts, nfs::Args& args)
-{
-    const Entry e(ts, args);
-    stream::kTopupFunction.set(app, e.eax);
-    return e.back(ts, args, e.eax);
-}
-
-nfs::u32 topUpStream(App* app, ThreadState& ts, nfs::Args& args)
-{
-    const Entry e(ts, args);
-    return e.finish(ts, args, stream::topUp(app, ts, e.esp, e.eax, e.edx, e.ecx));
-}
-
-nfs::u32 topupDone(App* app, ThreadState& ts, nfs::Args& args)
-{
-    const Entry e(ts, args);
-    return e.finish(ts, args, stream::topUpDone(app, ts, e.esp, e.eax));
-}
-
-nfs::u32 toppedUp(App* app, ThreadState& ts, nfs::Args& args)
-{
-    const Entry e(ts, args);
-    return e.back(ts, args, stream::kToppedUp(app));
-}
-
-/* The fragments of waittopupstream entered by a jump with edx and ebp pushed
- * (their esp is the code's after the pushes): they pop the two and return for
- * the function's caller. */
-namespace
-{
-
-// The two they pop: ebp, then edx.
-struct Popped
-{
-    u32 ebp, edx;
-};
-Popped poppedTwo(App* app, const Entry& e) { return {app->getMemory<u32>(e.esp), app->getMemory<u32>(e.esp + 4)}; }
-
-}  // namespace
-
-nfs::u32 waitTopupMain(App* app, ThreadState& ts, nfs::Args& args)
-{
-    const Entry e(ts, args);
-    const Result r = stream::waitOnMainThread(app, ts, e.esp);
-    if (!r)
-        return args.eax;
-    const Popped p = poppedTwo(app, e);
-    e.back(ts, args, u32(*r), 8);
-    args.ebp = p.ebp;
-    args.edx = p.edx;
-    return args.eax;
-}
-
-nfs::u32 waitTopupEvent(App* app, ThreadState& ts, nfs::Args& args)
-{
-    const Entry e(ts, args);
-    const Result r = stream::waitOnEvent(app, ts, e.esp, e.edx);
-    if (!r)
-        return args.eax;
-    const Popped p = poppedTwo(app, e);
-    e.back(ts, args, u32(*r), 8);
-    args.ebp = p.ebp;
-    args.edx = p.edx;
-    return args.eax;
-}
-
-nfs::u32 waitTopupDone(App* app, ThreadState& ts, nfs::Args& args)
-{
-    const Entry e(ts, args);
-    const Popped p = poppedTwo(app, e);
-    e.back(ts, args, e.eax, 8);
-    args.ebp = p.ebp;
-    args.edx = p.edx;
-    return args.eax;
-}
-
-nfs::u32 waitTopupStream(App* app, ThreadState& ts, nfs::Args& args)
-{
-    const Entry e(ts, args);
-    return e.finish(ts, args, stream::waitForTopup(app, ts, e.esp));
-}
-
-nfs::u32 topUpBeforeLoad(App* app, ThreadState& ts, nfs::Args& args)
-{
-    const Entry e(ts, args);
-    if (stream::kTopupFunction(app) == 0 || stream::kSoundRunning(app) == 0)
-        return e.back(ts, args, e.eax);
-    if (!stream::topUp(app, ts, e.esp - 4, e.eax, e.edx, e.ecx))
-        return args.eax;
-    return e.finish(ts, args, stream::waitForTopup(app, ts, e.esp));
-}
-
-nfs::u32 topupReturn(App*, ThreadState& ts, nfs::Args& args)
-{
-    const Entry e(ts, args);
-    return e.back(ts, args, e.eax);
-}
-
-nfs::u32 loadBlockSize(App*, ThreadState& ts, nfs::Args& args)
-{
-    const Entry e(ts, args);
-    return e.back(ts, args, 0x3e8);
-}
-
-nfs::u32 loadFlags(App*, ThreadState& ts, nfs::Args& args)
-{
-    const Entry e(ts, args);
-    return e.back(ts, args, 0);
-}
-
 nfs::u32 platformChunks(App*, ThreadState& ts, nfs::Args& args)
 {
     const Entry e(ts, args);
@@ -1705,24 +1300,6 @@ nfs::u32 SNDstreambuftime(App* app, ThreadState& ts, nfs::Args& args)
 {
     const Entry e(ts, args);
     return e.finish(ts, args, stream::bufferedTime(app, ts, e.esp));
-}
-
-nfs::u32 streamToppedUp(App* app, ThreadState& ts, nfs::Args& args)
-{
-    const Entry e(ts, args);
-    return e.finish(ts, args, stream::topUpFinished(app, ts, e.esp, e.eax));
-}
-
-nfs::u32 iSNDstreamchecktopup(App* app, ThreadState& ts, nfs::Args& args)
-{
-    const Entry e(ts, args);
-    return e.finish(ts, args, stream::checkTopUp(app, ts, e.esp, e.eax));
-}
-
-nfs::u32 iSNDstreamsetbuftime(App* app, ThreadState& ts, nfs::Args& args)
-{
-    const Entry e(ts, args);
-    return e.finish(ts, args, stream::askTopUp(app, ts, e.esp, int32_t(e.eax)));
 }
 
 nfs::u32 parseStreamChunk(App* app, ThreadState& ts, nfs::Args& args)

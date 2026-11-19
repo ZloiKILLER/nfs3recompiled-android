@@ -39,10 +39,10 @@
  * name; a call through a pointer finds it too.  They do the original's arithmetic in
  * the original's order, rounded as the game's code rounds it, at single
  * precision.  They carry the
- * port's changes to their code: the mirror's car scale (mirrorCarScale) and
- * its headlight light on the road (mirrorAsMain), the alpha intensity's
+ * port's changes to their code: the mirror's cars at the main view's detail
+ * (carDetailOf) and its headlight light on the road (mirrorAsMain), the alpha intensity's
  * scaling on this driver.
- * (The hooks left at the end -- arenaReset, aiVotes, the [COMM] traces --
+ * (The hooks left at the end -- arenaReset, the [COMM] traces --
  * only watch, and always hand the call on to the game's code.)
  *
  * The arithmetic is the emulated FPU's own (SingleMath: FPU::add, sub, mul, div
@@ -72,7 +72,6 @@ namespace nfs3hp
 
 // nfs3hp_main.cpp: a view pass's kind as the main view's where the mirror is drawn in full.
 nfs::u32 mirrorAsMain(nfs::u32 kind);
-double mirrorCarScale(double scale);
 
 namespace vertices
 {
@@ -3281,10 +3280,11 @@ void signedDivide(nfs::s64 dividend, nfs::s32 divisor, nfs::u32& quotient, nfs::
  * corners from the half sizes at +0x114, turned by its matrix (+0xc0) and the
  * view's, projected into 0x7a3bf0 -- is wholly off one side of the screen;
  * otherwise 0 to 3 by the mean depth of the corners against the Car Detail
- * row of 0x55fdf4 (times 0.75 in split screen or at night, times the mirror's
- * factor -- nfs3hp::mirrorCarScale -- in the mirror, times the camera's
- * zoom), or -1 past the last.  Entered at `esp`; its frame below four
- * pushes and 0xd8 bytes. */
+ * row of 0x55fdf4 (times 0.75 in split screen or at night, times the camera's
+ * zoom), or -1 past the last.  The port's mirror detail change: the mirror's
+ * cars at the main view's distances, without the game's 0.6 for it
+ * ([0x540138]).  Entered at `esp`; its frame below four pushes and 0xd8
+ * bytes. */
 u32 carDetailOf(App* app, ThreadState& ts, u32 esp, u32 view, u32 car, u32 out)
 {
     const SingleMath M;
@@ -3320,13 +3320,6 @@ u32 carDetailOf(App* app, ThreadState& ts, u32 esp, u32 view, u32 car, u32 out)
         t[1] = float(M.mul(t[1], k));
         t[2] = float(M.mul(k, t[2]));
         t[0] = float(M.mul(t[0], k));
-    }
-    if (word(view) == 1)
-    {
-        const double k = mirrorCarScale(app->getMemory<double>(nfs::u32(0x540138)));
-        for (int i = 0; i < 3; ++i)
-            t[i] = float(M.mul(t[i], k));
-        t[3] = float(M.mul(k, t[3]));
     }
     if (asBits(zoom) != 0x3f800000)
     {
@@ -4200,55 +4193,6 @@ bool arenaReset(nfs::App* app, nfs::ThreadState& ts)
     const nfs::u32 used = app->getMemory<nfs::u32>(0x55fe38) - app->getMemory<nfs::u32>(0x55fe34);
     if (used > s_arenaPeak && used <= app->getMemory<nfs::u32>(0x7a3d04) + 0x1000)
         s_arenaPeak = used;
-    return false;
-}
-
-/* sub_40de30 is where an opponent's driver acts on the
- * lane votes sub_409c00 has just added up for it (0x56eea8 on, three
- * directions each, sub_4096b0 among the voters).  NFS_CAR_TRACE writes, for
- * every opponent from 24 to 40 s of the race clock, the car (0x9ac bytes) and
- * the votes (0x56ee80, 0x100 bytes) to ai.bin beside cars.bin.  Each record:
- * "AIVT", the race clock, the car's place in the array at 0x5e1120, 0. */
-bool aiVotes(nfs::App* app, nfs::ThreadState& ts, const nfs::Args& registers)
-{
-    static const bool on = []() {
-        const char* value = SDL_getenv("NFS_CAR_TRACE");
-        return value && *value && *value != '0';
-    }();
-    if (!on)
-        return false;
-    const nfs::u32 clock = app->getMemory<nfs::u32>(0x7d3684);
-    const nfs::u32 car = registers.eax;
-    if (clock < 24 * 64 || clock > 40 * 64 || car < 0x5e1120 || car >= 0x5e1120 + 16 * 0x9ac)
-        return false;
-    static SDL_IOStream* s_file = nullptr;
-    static bool s_failed = false;
-    if (!s_file)
-    {
-        if (s_failed)
-            return false;
-#ifdef __ANDROID__
-        const char* root = SDL_GetAndroidExternalStoragePath();
-#else
-        const char* root = ".";
-#endif
-        const std::string path = std::string(root ? root : ".") + "/ai.bin";
-        s_file = SDL_IOFromFile(path.c_str(), "wb");
-        s_failed = !s_file;
-        SDL_Log("[AI] %s %s", s_file ? "writing" : "cannot write", path.c_str());
-        if (!s_file)
-            return false;
-    }
-    const nfs::u32 header[4] = { 0x54564941, clock, (car - 0x5e1120) / 0x9ac, 0 };
-    SDL_WriteIO(s_file, header, sizeof header);
-    SDL_WriteIO(s_file, &app->getMemory<nfs::u8>(car), 0x9ac);
-    SDL_WriteIO(s_file, &app->getMemory<nfs::u8>(0x56ee80), 0x100);
-    static nfs::u32 s_flushed = 0;
-    if (clock / 64 != s_flushed)
-    {
-        s_flushed = clock / 64;
-        SDL_FlushIO(s_file);
-    }
     return false;
 }
 

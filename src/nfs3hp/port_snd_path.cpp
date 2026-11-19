@@ -14,8 +14,8 @@
  *
  * Pathfinder's state lies where the game has it (0x5645c0..0x56480c); the
  * streamer it queues the stretches on (port_snd_stream.cpp) is called as C++,
- * and its system task and top-up hook are the game's code's for the stream to
- * call.  Each function is here as C++ and as the thunk around it the game's
+ * and its system task is the game's code's for the stream to call.  Its
+ * top-up hook (0x4e6d94) went with the stream's top-ups before loads.  Each function is here as C++ and as the thunk around it the game's
  * code calls; the thunks give back what the game's callers read of the
  * registers besides eax: SNDpathstartstream's ebx and edx (as its last calls
  * leave them), SNDpathevent's edx past an error. */
@@ -68,7 +68,6 @@ constexpr u32 kNameAt = 0x5645d4;                // the file's name
 constexpr Var<Event> kCurrent{0x564654}, kNext{0x564658};
 constexpr Var<u32> kMap{0x56465c}, kNodes{0x564660}, kPathStream{0x564664};
 constexpr Var<u32> kPathRestore{0xa09b2c};
-constexpr Var<u32> kTopupHook{0x56480c};
 
 // Its errors' source, and the functions' names.
 constexpr u32 kPathFile = 0x54a8b8;
@@ -80,7 +79,7 @@ constexpr Where kInterruptError{kPathFile, 0x54aaa8};
 // (endsSeen, bufferedTime, queueStreamFile, interruptStream, setUpStreamer,
 // restoreStreamer, scheduleTask, unscheduleTask) is a rewrite too, called as
 // C++.
-constexpr u32 kPathTask = 0x4e6d68, kPathHook = 0x4e6d94, kPathRestoreFunction = 0x4e7388;
+constexpr u32 kPathTask = 0x4e6d68, kPathRestoreFunction = 0x4e7388;
 
 // Its answers: before SNDinit or SNDpathinit; set up already; the map's magic
 // and version; the streamer would not.
@@ -149,7 +148,6 @@ Result stepOn(App* app, ThreadState& ts, u32 esp)
     if (record<Node>(app, kNodes(app) + result).branches == 0 && kCurrent(app).event < 0)
     {
         result = unscheduleTask(app, kPathTask);
-        kTopupHook.set(app, 0);
     }
     return int32_t(result);
 }
@@ -168,14 +166,6 @@ Result runPathTask(App* app, ThreadState& ts, u32 esp)
     if (*buffered < int32_t(wanted) && !stepOn(app, ts, esp - 4))
         return {};
     return 0;
-}
-
-/* 0x4e6d94's: Pathfinder's top-up hook: the time to wait for is the time
- * asked for plus `extra` (that alone for none).  The time asked for. */
-u32 topUpHook(App* app, u32 extra)
-{
-    kWaitTime.set(app, uint16_t(extra == 0 ? kBufTime(app) : extra + kBufTime(app)));
-    return kBufTime(app);
 }
 
 }  // namespace
@@ -249,7 +239,6 @@ Result startPathStream(App* app, ThreadState& ts, u32 esp, u32 stream, u32 name,
         || !queueStreamFile(app, ts, f - 8, name, nodeOffset(app, playing(app)))
         || !scheduleTask(app, ts, f - 8, kPathTask, 0, 1))
         return {};
-    kTopupHook.set(app, kPathHook);
     return 0;
 }
 
@@ -358,7 +347,6 @@ Result pathRestore(App* app, ThreadState& ts, u32 esp)
         return {};
     unscheduleTask(app, kPathTask);
     kMap.set(app, 0);
-    kTopupHook.set(app, 0);
     kPathRestore.set(app, 0);
     return 0;
 }
@@ -378,12 +366,6 @@ nfs::u32 pathTask(App* app, ThreadState& ts, nfs::Args& args)
 {
     const Entry e(ts, args);
     return e.finish(ts, args, stream::runPathTask(app, ts, e.esp));
-}
-
-nfs::u32 pathHook(App* app, ThreadState& ts, nfs::Args& args)
-{
-    const Entry e(ts, args);
-    return e.back(ts, args, stream::topUpHook(app, e.eax));
 }
 
 nfs::u32 SNDpathinit(App* app, ThreadState& ts, nfs::Args& args)

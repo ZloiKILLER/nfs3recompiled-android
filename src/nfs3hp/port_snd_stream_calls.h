@@ -40,14 +40,6 @@ Result purgeStreamer(App* app, ThreadState& ts, u32 esp);
 // The game's 0x4e8320: the end chunks the streamer has seen.
 u32 endsSeen(App* app);
 
-// The game's 0x4ff670: the stream topped up with `argument` before a load (its top-up function is handed 0 in edx
-// and ecx, which it does not read); esp the frame base.
-Result topUpAsked(App* app, ThreadState& ts, u32 esp, u32 argument);
-// The game's 0x4ff7f0: the top-up waited for; esp the frame base.
-Result topUpWaited(App* app, ThreadState& ts, u32 esp);
-// The game's 0x4ff820: the load's block size, 0x3e8.
-u32 loadBlockSizeIs(App* app);
-
 // The CD streams (port_snd_cdstream.cpp).
 // The game's 0x4e4790: the first CD stream made, of `size` bytes in pool `pool`, blocks of `blockSize` read at
 // once: the stream; esp the frame base.

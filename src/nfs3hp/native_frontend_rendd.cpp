@@ -69,7 +69,6 @@ nfs::u32 rendFlushAndList(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
 nfs::u32 rendDrawListPlain(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
 nfs::u32 rendDrawListAt(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
 nfs::u32 rendDrawListMirrored(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
-nfs::u32 rendFillReciprocals(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
 nfs::u32 rendSetClipBounds(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
 nfs::u32 rendSetProjection(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
 nfs::u32 rendProjectPoints(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args);
@@ -89,7 +88,7 @@ nfs::u32 rendProjectPoints(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
  *                       its colours (sub_4ba350, sub_4ba810, sub_4b9550);
  *   the replay's pose   the recorded car drawn as a ghost (sub_4b9df0);
  *   the projection      its numbers (sub_4bf1b0, sub_4bf260) and the points through
- *                       it (sub_4bf370), and the table of reciprocals (sub_4bf110).
+ *                       it (sub_4bf370).
  *
  * The cars' state stays in guest memory, where the game reads it.  Only what is handed
  * to a callee by address is kept in the frame: the rest of the game's frame
@@ -303,7 +302,7 @@ constexpr u32 kOpenListHead = 0x7a3d0c;
 
 constexpr u32 kFrameCount = 0x7d3684;
 constexpr u32 kWheelStamp = 0x55fe28;
-constexpr u32 kDriverOnCard = 0x7a3a60;      // 1 but on the software renderers
+constexpr u32 kDriverOnCard = 0x7a3a60;      // the card's depth with the Z-buffer on, 0 with it off (hudStates)
 constexpr u32 kDepthBias = 0x7dcfe0;
 constexpr u32 kSun = 0x55d2a8;
 constexpr u32 kCarTable = 0x5efac8;          // the cars
@@ -2388,27 +2387,6 @@ nfs::u32 frontend::rendDrawListMirrored(nfs::App* app, nfs::ThreadState& ts, nfs
 // ---------------------------------------------------------------------------
 // The projection
 // ---------------------------------------------------------------------------
-
-/* sub_4bf110: the table of reciprocals' mantissas at 0x7d30d8, 256 of them, each with its
- * exponent's bits set. */
-nfs::u32 frontend::rendd::fillReciprocals(App* app, ThreadState& ts)
-{
-    Guest guest(app, ts);
-    constexpr u32 kReciprocals = 0x7d30d8;
-    for (u32 i = 0; i < 0x100; ++i)
-    {
-        const float value = floatFrom((i << 15) | 0x3f804000);
-        const u32 inverse = bitsOf(float(fp::div(1.0, double(value))));
-        guest.setDword(kReciprocals + 4 * i, (inverse & 0x7fffff) | 0x7e800000);
-    }
-    return 0x100;
-}
-
-nfs::u32 frontend::rendFillReciprocals(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
-{
-    static fe::Site site{ "sub_4bf110", 0, 0, nullptr, 0, fe::kRestoreEdx };
-    return fe::runThunk(app, ts, args, site, [&](Guest&) { return rendd::fillReciprocals(app, ts); });
-}
 
 /* sub_4bf1b0: the numbers of the clip: the view's left, top, right and bottom, then its two
  * on the stack, near and far; and every vertex of the cache marked unused. */

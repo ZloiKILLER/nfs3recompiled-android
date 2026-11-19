@@ -1161,39 +1161,4 @@ void ea::error(nfs::App* app, nfs::ThreadState& ts, nfs::u32 format, guest::Word
         ts.sp -= 4;
 }
 
-
-/* The game asked the processor what it could do and timed it, to choose what to
- * run on it.  No phone needs that asked: what is left of the answers is what the
- * sound's set-up and the memmove read, MMX's routines (native_mix.cpp). */
-namespace removed
-{
-
-void checkProcessor(nfs::App* app)
-{
-    app->getMemory<nfs::u32>(0x5643b4) = 1;  // MMX's set of the mixing's routines
-    app->getMemory<nfs::u32>(0x5643ac) = 1;
-    app->getMemory<nfs::u32>(0x5643bc) = 0;  // no timestamp counter to read
-}
-
-void timeProcessor(nfs::App* app)
-{
-    NFS2_USE(app);
-}
-
-nfs::u32 processorChecked(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
-{
-    checkProcessor(app);
-    ts.sp += 4;
-    return args.eax;
-}
-
-nfs::u32 processorSpeed(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
-{
-    timeProcessor(app);
-    ts.sp += 4;
-    return args.eax;
-}
-
-}  // namespace removed
-
 }  // namespace nfs3hp

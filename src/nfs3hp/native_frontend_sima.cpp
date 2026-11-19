@@ -58,9 +58,6 @@
 namespace nfs3hp
 {
 
-/* NFS_CAR_TRACE's records of a driver's lane votes (native_vertices.cpp). */
-bool aiVotes(nfs::App* app, nfs::ThreadState& ts, const nfs::Args& registers);
-
 namespace
 {
 
@@ -1352,8 +1349,6 @@ nfs::u32 frontend::sima::nodeGap(App* app, ThreadState& ts, u32 node, u32 from)
 /* sub_40de30: an opponent's lane votes added up and acted on. */
 nfs::u32 frontend::simLaneSteer(nfs::App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    if (aiVotes(app, ts, args))
-        return args.eax;
     static fe::Site site{ "sub_40de30", 0, 0, nullptr, 0, fe::kRestoreEdx };
     const u32 car = args.eax;
     return fe::runThunk(app, ts, args, site, [&](Guest&) { return sima::laneSteer(app, ts, car); });

@@ -83,6 +83,13 @@ public:
      * paths stay in step.  `button` is 0 to 3, as DIMOFS_BUTTON0 counts them. */
     static void movePointer(nfs::s32 dx, nfs::s32 dy);
     static void pressPointer(nfs::u32 button, bool down);
+
+    /* How many times a button has gone down, a mouse's or a pointer's, since
+     * the game started: whoever wants to know of a click compares two counts. */
+    static nfs::u32 presses();
+    /* A click counted (presses) and handed to nobody: a tap that only says
+     * "go on" where the game is not listening to its pointer. */
+    static void notePress();
 };
 
 struct GamepadState

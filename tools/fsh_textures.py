@@ -17,8 +17,8 @@ angles), kept as they are.  The track files carry 0x7e (ARGB 1555) and 0x7d
 
 A .qfs is the shape file RefPack-packed; the game unpacks one only where it
 looks packed (native_ea_formats.cpp), so pack writes it unpacked.  Every
-picture packs as 0x7d: the port takes 8888 for any of them (NFS_TEXTURES32,
-port_thrash.cpp).
+picture packs as 0x7d: the port takes 8888 for any of them (port_thrash.cpp,
+the full colour change).
 """
 
 import json

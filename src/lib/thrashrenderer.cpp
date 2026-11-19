@@ -326,11 +326,6 @@ static GLuint compileShader(GLenum type, const std::string& defines, const char*
 void ThrashRenderer::compileShaders(int depthBits, const char* renderer)
 {
     m_depth16 = needsDepthSteps(depthBits, renderer);
-    const char* depth16 = SDL_getenv("NFS_DEPTH16");
-    if (depth16 && SDL_strcmp(depth16, "0") == 0)
-        m_depth16 = false;
-    else if (depth16 && SDL_strcmp(depth16, "1") == 0)
-        m_depth16 = true;
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[GFX] depth in %s (%d bits, %s)",
                 m_depth16 ? "the Voodoo's 16-bit steps" : "the GPU's own precision", depthBits,
                 renderer ? renderer : "?");
@@ -1009,17 +1004,7 @@ void ThrashRenderer::resetTextures()
 }
 
 /* Far wrapped texture coordinates brought back by whole repeats: the GPU
- * interpolates them in floats, which lose the fraction far from the origin
- * (NFS_TEXCOORD_REBASE=0 keeps them as they come). */
-static bool rebaseOn()
-{
-    static const bool on = []() {
-        const char* value = SDL_getenv("NFS_TEXCOORD_REBASE");
-        return !value || SDL_strcmp(value, "0") != 0;
-    }();
-    return on;
-}
-
+ * interpolates them in floats, which lose the fraction far from the origin. */
 static void rebase(float coord[3], const float oow[3])
 {
     const float limit = 1024.f;
@@ -1040,7 +1025,7 @@ void ThrashRenderer::finishTriangle(ThrashVertex* out)
     const bool fogged = (m_fogMode & 0x3) == 0x2;
     const nfs::u8 combine[4] = { nfs::u8(m_colorFactor != 0.f), nfs::u8(m_alphaFactor != 0.f), 0,
                                    nfs::u8(fogged) };
-    if ((m_wrapS || m_wrapT) && rebaseOn())
+    if (m_wrapS || m_wrapT)
     {
         const float oow[3] = { out[0].oow, out[1].oow, out[2].oow };
         if (m_wrapS)

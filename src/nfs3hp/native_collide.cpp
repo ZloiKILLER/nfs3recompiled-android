@@ -31,8 +31,8 @@
 
 /* The game's collisions -- car with car, car with the track's walls, car with
  * the track's objects -- the COLL file of a track's objects, and the drawing
- * code that follows them in nfs3.exe: render states, the software
- * renderer's blend, the polygon lists' drawers, the race's mouse pointer, and
+ * code that follows them in nfs3.exe: render states, the polygon lists'
+ * drawers, the race's mouse pointer, and
  * the text lines of the race's messages.  The game's code calls each by the name it has here.
  *
  * A car's record, as the collisions read it: its position at 0x98 (three
@@ -121,7 +121,7 @@ constexpr u32 kWallScale = 0x537414, kWallMarginRace = 0x53741c, kWallMarginOthe
 constexpr u32 kSpeedStep = 0x53742c, kToFixed = 0x537434, kPolygonScale = 0x53743c;
 constexpr u32 kObjectScale = 0x537444, kObjectQuarter = 0x53744c, kObjectTwo = 0x537450;
 constexpr u32 kObjectToFixed = 0x537454, kObjectHalf = 0x53745c, kObjectSpeed = 0x537464;
-constexpr u32 kDepthNear = 0x537474, kDepthFar = 0x53747c, kPointerSize = 0x53748c;
+constexpr u32 kPointerSize = 0x53748c;
 // The wall test's tables in nfs3.exe's code: three zero floats twice, the
 // four edges' bits.
 constexpr u32 kZeroVector = 0x42dd30, kZeroVector2 = 0x42dd3c, kEdgeBits = 0x42dd48;
@@ -189,11 +189,6 @@ auto feCore(App* app, ThreadState& ts, Args... args)
 u16 half(App* app, u32 address)
 {
     return app->getMemory<u16>(address);
-}
-
-void putHalf(App* app, u32 address, u16 value)
-{
-    app->getMemory<u16>(address) = value;
 }
 
 Float loadFloat(App* app, u32 address)
@@ -373,11 +368,6 @@ nfs::u32 statesForScreens(App* app, nfs::ThreadState& ts, nfs::Args& args);
 nfs::u32 passLayerNothing(App* app, nfs::ThreadState& ts, nfs::Args& args);
 nfs::u32 passSecondLayer(App* app, nfs::ThreadState& ts, nfs::Args& args);
 nfs::u32 passFirstLayer(App* app, nfs::ThreadState& ts, nfs::Args& args);
-nfs::u32 makeBlendTables(App* app, nfs::ThreadState& ts, nfs::Args& args);
-nfs::u32 blendSpan(App* app, nfs::ThreadState& ts, nfs::Args& args);
-nfs::u32 subdivisionDepth(App* app, nfs::ThreadState& ts, nfs::Args& args);
-nfs::u32 drawTexturedTriangles(App* app, nfs::ThreadState& ts, nfs::Args& args);
-nfs::u32 drawFlatTriangles(App* app, nfs::ThreadState& ts, nfs::Args& args);
 nfs::u32 drawTrianglesByZ(App* app, nfs::ThreadState& ts, nfs::Args& args);
 nfs::u32 drawQuadsByZ(App* app, nfs::ThreadState& ts, nfs::Args& args);
 nfs::u32 drawFlatTrianglesAgain(App* app, nfs::ThreadState& ts, nfs::Args& args);
@@ -1980,142 +1970,13 @@ nfs::u32 passFirstLayer(App* app, nfs::ThreadState& ts, nfs::Args& args)
     return args.eax;
 }
 
-// The software renderer's blend: its tables of a channel times another (5
-// bits by 5 at 0x5f1798, 6 by 5 at 0x5f0798, a word each) and the pixel
-// format's masks and shifts (0x554e70 on: blue, green, red's masks, 0,
-// green's and red's shifts), for 15 bits a pixel (0x56438c 0xf) or 16.
-constexpr u32 kBlendMasks = 0x554e70, kPixelBits = 0x56438c;
-constexpr u32 kBlueMask = kBlendMasks, kGreenMask = kBlendMasks + 4, kRedMask = kBlendMasks + 8;
-constexpr u32 kGreenShift = kBlendMasks + 0x10, kRedShift = kBlendMasks + 0x14;
-// The tables blendSpan reads each channel through.
-constexpr u32 kBlueTable = 0x5f1f98, kGreenTable = 0x5f1fa4, kRedTable = 0x5f1f9c;
-
-/* The software renderer's blend tables -- a times b over 31, rounded up, to
- * 31 (63 for green's) -- and the pixel format's masks and shifts.  The last
- * quotient, which the code leaves in eax. */
-u32 fillBlendTables(App* app)
-{
-    struct Table
-    {
-        i32 columns, most;
-        u32 at;
-    };
-    static const Table tables[] = {{0x20, 0x1f, 0x5f1798}, {0x40, 0x3f, 0x5f0798}};
-    i32 quotient = 0;
-    for (const Table& t : tables)
-    {
-        u32 entry = t.at;
-        for (i32 a = 0; a < 0x20; ++a)
-            for (i32 b = 0; b < t.columns; ++b)
-            {
-                quotient = (a * b + 0x1e) / 0x1f;
-                putHalf(app, entry, u16(quotient > t.most ? t.most : quotient));
-                entry += 2;
-            }
-    }
-    const bool fifteen = at(app, kPixelBits) == 0xf;
-    put(app, kBlueMask, 0x1f);
-    put(app, kGreenMask, fifteen ? 0x3e0 : 0x7e0);
-    put(app, kBlendMasks + 0xc, 0);
-    put(app, kRedMask, fifteen ? 0x7c00 : 0xf800);
-    put(app, kGreenShift, 5);
-    put(app, kRedShift, fifteen ? 0xa : 0xb);
-    return u32(quotient);
-}
-
-/* 0x431c50: fillBlendTables. */
-nfs::u32 makeBlendTables(App* app, nfs::ThreadState& ts, nfs::Args& args)
-{
-    args.eax = fillBlendTables(app);
-    ts.sp += 4;
-    return args.eax;
-}
-
-// A span's record, as blendSpan reads it: the texture's rows, the texel's
-// mask, the screen's pixel and the span's last, u and v (16.16 and 15
-// bits) and their steps.
-constexpr u32 kSpanRows = 0, kSpanMask = 8, kSpanPixel = 0xc, kSpanLast = 0x10, kSpanU = 0x14, kSpanV = 0x18;
-constexpr u32 kSpanStepU = 0x1c, kSpanStepV = 0x20;
-
-/* The span at `span` blended into the screen, a pixel at a time: each
- * texel's channels through the blend tables added to the screen pixel's,
- * each to its most -- compared signed, as the code does. */
-void blendInto(App* app, u32 span)
-{
-    const auto channel = [&](u32 table, u32 mask, u32 shift, u32 texel, u32 pixel) {
-        const u32 index = u32(s32(texel & mask) >> shift) * 2;
-        const u32 value = u32(half(app, at(app, table) + index)) << shift;
-        const u32 sum = value + (pixel & mask);
-        return s32(sum) > s32(mask) ? mask : sum;
-    };
-    while (at(app, span + kSpanLast) >= at(app, span + kSpanPixel))
-    {
-        const u32 u = at(app, span + kSpanU);
-        const u32 texelAt = ((at(app, span + kSpanV) & at(app, span + kSpanMask)) + u) >> 15;
-        const u32 texel = at(app, at(app, span + kSpanRows) + texelAt * 4);
-        const u32 nextU = u + at(app, span + kSpanStepU);
-        const u32 nextV = at(app, span + kSpanV) + at(app, span + kSpanStepV);
-        const u32 pixel = half(app, at(app, span + kSpanPixel));
-        put(app, span + kSpanV, nextV);
-        const u32 blueTable = at(app, kBlueTable);
-        put(app, span + kSpanU, nextU);
-        // Blue's is not shifted: its table is read at the texel's blue twice.
-        u32 blue = u32(half(app, blueTable + (at(app, kBlueMask) & texel) * 2)) + (pixel & at(app, kBlueMask));
-        if (s32(blue) > s32(at(app, kBlueMask)))
-            blue = at(app, kBlueMask);
-        const u32 green = channel(kGreenTable, at(app, kGreenMask), byte(app, kGreenShift) & 0x1f, texel, pixel);
-        const u32 red = channel(kRedTable, at(app, kRedMask), byte(app, kRedShift) & 0x1f, texel, pixel);
-        const u32 to = at(app, span + kSpanPixel);
-        put(app, span + kSpanPixel, to + 2);
-        putHalf(app, to, u16(green | blue | red));
-    }
-}
-
-/* 0x431d50 (handed to the software renderer as its blend): blendInto for the
- * span at eax. */
-nfs::u32 blendSpan(App* app, nfs::ThreadState& ts, nfs::Args& args)
-{
-    blendInto(app, args.eax);
-    ts.sp += 4;
-    return args.eax;
-}
-
-// A corner's depth, as the drawers' corners have it; the depths a quad is
-// subdivided within (doubles).
-constexpr u32 kCornerDepth = 8;
-
-/* How finely the quad of the corners a, b, c and d is to be subdivided, by
- * the nearest of their depths: 0 beyond kDepthNear, 1 beyond kDepthFar,
- * else 2.  The nearest is kept as its bits (a NaN taken, as fcom's below
- * says for it) and goes to a double, exactly. */
-u32 subdivisions(App* app, u32 a, u32 b, u32 c, u32 d)
-{
-    u32 nearest = at(app, a + kCornerDepth);
-    for (const u32 corner : {b, c, d})
-        if (fBelow(loadFloat(app, corner + kCornerDepth), floatAt(nearest)))
-            nearest = at(app, corner + kCornerDepth);
-    if (fAbove(floatAt(nearest), loadDouble(app, kDepthNear)))
-        return 0;
-    if (fAbove(floatAt(nearest), loadDouble(app, kDepthFar)))
-        return 1;
-    return 2;
-}
-
-/* 0x432690: subdivisions of the corners eax, edx, ebx and ecx. */
-nfs::u32 subdivisionDepth(App* app, nfs::ThreadState& ts, nfs::Args& args)
-{
-    args.eax = subdivisions(app, args.eax, args.edx, args.ebx, args.ecx);
-    ts.sp += 4;
-    return args.eax;
-}
-
 // A polygon list's record, as the drawers read it: the next (+0), its kind
 // (+4, a word: 0 a quad, 1 a triangle), its flags (+6: 1 the alpha test, 2
 // its corners' texture coordinates kept, 4 no depth bias, 0x10 drawn by z),
 // its corners (+8 on), its texture (+0x18: the handle +4, the coordinates
-// from +8, its flags +0x28, 8 the software blend's).
+// from +8).
 constexpr u32 kRecordKind = 4, kRecordFlags = 6, kRecordCorners = 8, kRecordTexture = 0x18;
-constexpr u32 kTextureHandle = 4, kTextureFlags = 0x28;
+constexpr u32 kTextureHandle = 4;
 constexpr u32 kCornerU = 0x18, kCornerV = 0x1c;  // a corner's texture coordinates
 constexpr u32 kKindQuad = 0, kKindTriangle = 1;
 constexpr u32 kDrawQuadZ = 0x4c20e0;       // the quad eax, edx, ebx, ecx drawn by z (render::quadByZDrawn)
@@ -2221,47 +2082,6 @@ nfs::u32 drawer(App* app, ThreadState& ts, nfs::Args& args, std::optional<u32> (
 
 }  // namespace
 
-/* The textured triangles from `record` on, while they are triangles: the
- * alpha test by the flags, the texture's coordinates into the three corners
- * unless flag 2 (the first's as words, the second's as floats, the third's
- * as words, each from the record's texture read again), the texture, the
- * software blend's colour for a texture's flag 8, the triangle drawn.  The
- * next record, or nullopt when the game stopped. */
-std::optional<u32> texturedTriangles(App* app, ThreadState& ts, u32 record)
-{
-    for (;;)
-    {
-        safepoint(app, ts);
-        const u32 first = at(app, record + kRecordCorners), second = at(app, record + kRecordCorners + 4);
-        const u32 third = at(app, record + kRecordCorners + 8);
-        const u8 flags = byte(app, record + kRecordFlags);
-        if (!alphaState(app, ts, (flags & 1) != 0))
-            return std::nullopt;
-        const u32 texture = at(app, record + kRecordTexture);
-        const auto from = [&](u32 offset) { return at(app, record + kRecordTexture) + offset; };
-        if (texture != 0 && !(flags & 2))
-        {
-            put(app, first + kCornerU, at(app, from(8)));
-            put(app, first + kCornerV, at(app, from(0xc)));
-            storeFloat(app, second + kCornerU, loadFloat(app, from(0x10)));
-            storeFloat(app, second + kCornerV, loadFloat(app, from(0x14)));
-            put(app, third + kCornerU, at(app, from(0x18)));
-            put(app, third + kCornerV, at(app, from(0x1c)));
-        }
-        if (!textureState(app, ts, record, texture))
-            return std::nullopt;
-        const u32 now = at(app, record + kRecordTexture);
-        if (now != 0 && (byte(app, now + kTextureFlags) & 8)
-            && !guest::direct<0x432390, graphics::softwareBlendColour>(app, ts, at(app, first + 0x10)))
-            return std::nullopt;
-        if (!drawTriangle(app, ts, first, second, third))
-            return std::nullopt;
-        if (const auto next = runEnds(app, at(app, record), kKindTriangle))
-            return next;
-        record = at(app, record);
-    }
-}
-
 /* The flat triangle at `record`: no texture, the alpha test by its flags,
  * drawn (its corners +8 and +0xc).  The next record. */
 std::optional<u32> flatTriangle(App* app, ThreadState& ts, u32 record)
@@ -2276,10 +2096,12 @@ std::optional<u32> flatTriangle(App* app, ThreadState& ts, u32 record)
     return at(app, record);
 }
 
-/* The triangles from `record` on, while they are triangles: as
- * texturedTriangles, the coordinates the first's as floats, the others' as
- * words, no software blend, the depth bias by flag 4, drawn by z for flag
- * 0x10. */
+/* The triangles from `record` on, while they are triangles: the alpha test
+ * by the flags, the texture's coordinates into the three corners unless flag
+ * 2 (the first's as floats, the others' as words, each from the record's
+ * texture read again), the texture, the depth bias by flag 4, the triangle
+ * drawn -- by z for flag 0x10.  The next record, or nullopt when the game
+ * stopped. */
 std::optional<u32> trianglesByZ(App* app, ThreadState& ts, u32 record)
 {
     for (;;)
@@ -2348,19 +2170,6 @@ std::optional<u32> quadsByZ(App* app, ThreadState& ts, u32 record)
     }
 }
 
-/* 0x433530 (a polygon list's drawer, the software renderers' and
- * Direct3D's): texturedTriangles. */
-nfs::u32 drawTexturedTriangles(App* app, nfs::ThreadState& ts, nfs::Args& args)
-{
-    return drawer(app, ts, args, texturedTriangles);
-}
-
-/* 0x433660 (a polygon list's drawer): flatTriangle. */
-nfs::u32 drawFlatTriangles(App* app, nfs::ThreadState& ts, nfs::Args& args)
-{
-    return drawer(app, ts, args, flatTriangle);
-}
-
 /* 0x4336e0 (a polygon list's drawer, the driver's): trianglesByZ. */
 nfs::u32 drawTrianglesByZ(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
@@ -2373,8 +2182,7 @@ nfs::u32 drawQuadsByZ(App* app, nfs::ThreadState& ts, nfs::Args& args)
     return drawer(app, ts, args, quadsByZ);
 }
 
-/* 0x4339d0 (a polygon list's drawer, the driver's): flatTriangle, the same
- * code again. */
+/* 0x4339d0 (a polygon list's drawer, the driver's): flatTriangle. */
 nfs::u32 drawFlatTrianglesAgain(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
     return drawer(app, ts, args, flatTriangle);
@@ -2560,13 +2368,12 @@ nfs::u32 raceEndNothing(App* app, nfs::ThreadState& ts, nfs::Args& args)
     return args.eax;
 }
 
-/* 0x434b00: the drawing made ready at the race's start: the reciprocals'
- * table (0x4eb3c0), the polygon lists' drawers (0x434870, by address: the
- * eax it leaves is this one's, and render's core gives nothing back). */
+/* 0x434b00: the drawing made ready at the race's start: the polygon lists'
+ * drawers (0x434870, by address: the eax it leaves is this one's, and
+ * render's core gives nothing back). */
 nfs::u32 raceStartDrawing(App* app, nfs::ThreadState& ts, nfs::Args& args)
 {
-    if (!guest::direct<0x4eb3c0, graphics::reciprocalsMade>(app, ts)
-        || !guest::direct<0x434870, render::polygonDrawersSet>(app, ts))
+    if (!guest::direct<0x434870, render::polygonDrawersSet>(app, ts))
         return args.eax;
     ts.sp += 4;
     return args.eax;
@@ -3128,8 +2935,7 @@ void frameCounted(App* app)
 
 bool raceStartPrepared(App* app, ThreadState& ts)
 {
-    return guest::direct<0x4eb3c0, graphics::reciprocalsMade>(app, ts)
-           && guest::direct<0x434870, render::polygonDrawersSet>(app, ts);
+    return guest::direct<0x434870, render::polygonDrawersSet>(app, ts);
 }
 
 void carListCleared(App* app)

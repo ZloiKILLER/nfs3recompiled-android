@@ -10,8 +10,8 @@
  * bus); a voice sends to it at its own level (+0x39) scaled by the bus's.  The
  * reverb: 4 delay lines in 0xa0d2b4.. of prime lengths, their state at
  * 0xa181b0..0xa18200, their gains at 0x56ae3c; the mixer (port_snd_mixer.cpp)
- * runs it.  The mixer's start: its tables of functions for the CPU it runs on,
- * its three buffers, its output for the card's format.
+ * runs it.  The mixer's start: its tables of functions (the MMX set), its
+ * three buffers, its output for the card's format.
  *
  * Each is here as C++ with arguments and a result, and as the entry the game's
  * code calls by its address; the float arithmetic is the code's in double with
@@ -34,9 +34,8 @@ static_assert(sizeof(Bus) == 0x10, "SND's effect bus");
 constexpr Records<Bus> kBuses{0xa0a25c};
 constexpr Var<u32> kSetFx{0x9ef654};                // what eacsnd's start calls for the bus
 constexpr Table<u32> kFxFunctions{0x9f6a60};        // the mixer's reverb, its send, its end
-constexpr Var<u32> kMmx{0x5643b4};                  // whether the CPU has MMX
-constexpr Var<uint8_t> kIntegerSend{0x9f6a5b};        // the send in 16 bits: the MMX set's
-constexpr Var<uint8_t> kPlainSet{0x9f6a5a};
+constexpr Var<uint8_t> kIntegerSend{0x9f6a5b};        // the reverb's send in 16 bits, as the MMX set has it
+constexpr Var<uint8_t> kFrameShift{0x9f6a5a};         // the accumulator's frame shift (0: 16-bit stereo)
 constexpr Var<u32> kOutputFunction{0x9f6b20};
 constexpr Var<uint16_t> kBlockBytes{0x9f6a58};        // a 256-frame block's output, in bytes
 constexpr Var<u32> kClearFunction{0x9f6a5c};        // cdecl (accumulator, dwords)
@@ -309,40 +308,27 @@ Result setMixerOutput(App* app, ThreadState& ts, u32 esp, u32 eax)
     return 0;
 }
 
-/* 0x4ffd84's: the mixer's functions, by whether the CPU has MMX: its volume
- * functions, resamplers, outputs, clear and emms.  The code's eax: the
- * output function. */
+/* 0x4ffd84's: the mixer's functions, the MMX set (the only one the port has):
+ * its volume functions, resamplers, outputs, clear and emms; the send in 16
+ * bits and the accumulator's frames unshifted.  The code's eax: the output
+ * function. */
 u32 pickMixerFunctions(App* app)
 {
     struct Set
     {
         u32 at, value;
     };
-    const u32 mmx = kMmx(app);
-    kIntegerSend.set(app, uint8_t(mmx));
-    if (mmx != 0)
-    {
-        static const Set sets[] = {
-            {0x9f6adc, 0x51f580}, {0x9f6ae0, 0x51f680}, {0x9f6ae4, 0x51f750}, {0x9f6ae8, 0x51f850},
-            {0x9f6afc, 0x51fc38}, {0x9f6b00, 0x52002c}, {0x9f6b04, 0x5203a0}, {0x9f6aec, 0x51fc38},
-            {0x9f6af0, 0x52002c}, {0x9f6af4, 0x5203a0}, {0x9f6b08, 0x5207e4}, {0x9f6af8, 0x5207e4},
-            {0x9f6b0c, 0x520830}, {0x9f6b10, 0x520870}, {0x9f6b18, 0x520920}, {0x9f6a5c, 0x5209a0},
-            {0x9f6b24, 0x520a00}, {0x9f6b14, 0x520a10}};
-        for (const Set& s : sets)
-            store(app, s.at, s.value);
-        kPlainSet.set(app, 0);
-        return 0x520920;
-    }
     static const Set sets[] = {
-        {0x9f6adc, 0x520a40}, {0x9f6ae0, 0x520e00}, {0x9f6ae4, 0x520a40}, {0x9f6ae8, 0x520e00},
-        {0x9f6aec, 0x5211c0}, {0x9f6af0, 0x521310}, {0x9f6af4, 0x5211c0}, {0x9f6af8, 0x521310},
-        {0x9f6b00, 0x521800}, {0x9f6b08, 0x521800}, {0x9f6b10, 0x521840}, {0x9f6b24, 0x4ffd80},
-        {0x9f6afc, 0x521bc4}, {0x9f6b04, 0x521bc4}, {0x9f6b0c, 0x521c10}, {0x9f6b14, 0x500910},
-        {0x9f6a5c, 0x521c90}, {0x9f6b18, 0x521d00}};
+        {0x9f6adc, 0x51f580}, {0x9f6ae0, 0x51f680}, {0x9f6ae4, 0x51f750}, {0x9f6ae8, 0x51f850},
+        {0x9f6afc, 0x51fc38}, {0x9f6b00, 0x52002c}, {0x9f6b04, 0x5203a0}, {0x9f6aec, 0x51fc38},
+        {0x9f6af0, 0x52002c}, {0x9f6af4, 0x5203a0}, {0x9f6b08, 0x5207e4}, {0x9f6af8, 0x5207e4},
+        {0x9f6b0c, 0x520830}, {0x9f6b10, 0x520870}, {0x9f6b18, 0x520920}, {0x9f6a5c, 0x5209a0},
+        {0x9f6b24, 0x520a00}, {0x9f6b14, 0x520a10}};
+    kIntegerSend.set(app, 1);
     for (const Set& s : sets)
         store(app, s.at, s.value);
-    kPlainSet.set(app, 1);
-    return 0x520110;
+    kFrameShift.set(app, 0);
+    return 0x520920;
 }
 
 /* 0x4fff18's (iSNDmixinit): the mixer started for the card's format `format`,
@@ -352,8 +338,7 @@ u32 pickMixerFunctions(App* app)
 Result startMixer(App* app, ThreadState& ts, u32 esp, u32 format, u32 ended)
 {
     const u32 frame = esp - 4 * 4;
-    if (!pickPcmFirstSetups(app, ts, frame - 4))
-        return {};
+    pickPcmFirstSetups(app);
     pickPcmSecondSetups(app);
     pickXaSetups(app);
     pickLastSetups(app);
